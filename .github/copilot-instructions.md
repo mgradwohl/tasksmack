@@ -607,6 +607,30 @@ if (path.compare(0, 6, "/proc/") == 0)
 - Ensure code builds and tests pass before committing
 - Post commit monitor the CI results for issues and address any problems promptly
 
+## CI Workflow Reports
+
+The CI pipeline generates several reports that can help with debugging and code quality.
+
+### How to Access the Reports
+
+**Using GitHub UI:**
+1. Go to the **Actions** tab in the repository
+2. Click on the workflow run you want to inspect
+3. Scroll to the bottom to find the **Artifacts** section
+4. Download any of these artifacts:
+   - `coverage-html-report` - Full HTML coverage report
+   - `asan-ubsan-report` - AddressSanitizer + UndefinedBehaviorSanitizer results
+   - `tsan-report` - ThreadSanitizer results
+   - `linux-test-results` / `windows-test-results` - Test results
+   - `clang-tidy-results` - Static analysis output
+
+**Using GitHub CLI:**
+```bash
+gh run download <run-id> -n coverage-html-report
+gh run download <run-id> -n asan-ubsan-report
+gh run download <run-id> -n tsan-report
+```
+
 ## Common Pitfalls to Avoid
 
 - Don't use `using namespace std` in headers

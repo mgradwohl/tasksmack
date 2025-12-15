@@ -109,6 +109,31 @@ Please use the appropriate **issue template**:
 
 The templates will guide you to include all necessary information.
 
+## CI Workflow Reports
+
+The CI pipeline generates several reports that can help with debugging and code quality. Here's how to access them:
+
+### Using GitHub UI
+
+1. Go to the **Actions** tab in the repository
+2. Click on the workflow run you want to inspect
+3. Scroll to the bottom to find the **Artifacts** section
+4. Download any of these artifacts:
+   - `coverage-html-report` - Full HTML coverage report
+   - `asan-ubsan-report` - AddressSanitizer + UndefinedBehaviorSanitizer results
+   - `tsan-report` - ThreadSanitizer results
+   - `linux-test-results` / `windows-test-results` - Test results
+   - `clang-tidy-results` - Static analysis output
+
+### Using GitHub CLI
+
+```bash
+# Download specific artifacts by name
+gh run download <run-id> -n coverage-html-report
+gh run download <run-id> -n asan-ubsan-report
+gh run download <run-id> -n tsan-report
+```
+
 ### Security Issues
 
 For security vulnerabilities, please see [SECURITY.md](SECURITY.md) for responsible disclosure guidelines. **Do not** open public issues for security vulnerabilities.
