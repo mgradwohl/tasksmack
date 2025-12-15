@@ -4,13 +4,16 @@
 
 #include <cassert>
 
+// clang-format off
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <glad/gl.h>
+// clang-format on
 
 namespace Core
 {
 
-Window::Window(const WindowSpecification& spec) : m_Spec(spec)
+Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 {
     spdlog::info("Creating window: {} ({}x{})", m_Spec.Title, m_Spec.Width, m_Spec.Height);
 
@@ -21,6 +24,7 @@ Window::Window(const WindowSpecification& spec) : m_Spec(spec)
     glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 #endif
 
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) - glfwWindowHint must be called before glfwCreateWindow
     m_Handle = glfwCreateWindow(static_cast<int>(m_Spec.Width), static_cast<int>(m_Spec.Height), m_Spec.Title.c_str(), nullptr, nullptr);
 
     if (m_Handle == nullptr)

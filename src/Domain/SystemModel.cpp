@@ -111,7 +111,8 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
     else
     {
         // Fallback for older kernels without MemAvailable
-        snap.memoryUsedBytes = counters.memory.totalBytes - counters.memory.freeBytes - counters.memory.cachedBytes - counters.memory.buffersBytes;
+        snap.memoryUsedBytes =
+            counters.memory.totalBytes - counters.memory.freeBytes - counters.memory.cachedBytes - counters.memory.buffersBytes;
     }
 
     // Memory percentage

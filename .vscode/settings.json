@@ -66,7 +66,9 @@
     "C_Cpp.codeFolding": "disabled",
     "C_Cpp.configurationWarnings": "disabled",
     "C_Cpp.default.intelliSenseMode": "clang-x64",
-    "C_Cpp.clang_format_sortIncludes": false
+    "C_Cpp.clang_format_sortIncludes": false,
+    // Disable CMake Tools test discovery - use CTest preset tasks instead
+    "cmake.ctest.testExplorerIntegrationEnabled": false
     // "cmake.cmakePath": "/snap/bin/cmake",
     // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
     // "cmake.ctestPath": "/snap/bin/cmake"

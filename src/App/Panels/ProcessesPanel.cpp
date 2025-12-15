@@ -2,11 +2,10 @@
 
 #include "Platform/Factory.h"
 
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-
-#include <imgui.h>
 
 namespace App
 {
@@ -17,7 +16,10 @@ ProcessesPanel::ProcessesPanel() : Panel("Processes")
 
 ProcessesPanel::~ProcessesPanel()
 {
-    onDetach();
+    // Note: onDetach() should be called by the layer stack, not destructor
+    // to avoid virtual dispatch during destruction
+    m_Sampler.reset();
+    m_ProcessModel.reset();
 }
 
 void ProcessesPanel::onAttach()
@@ -112,37 +114,33 @@ void ProcessesPanel::render(bool* open)
                 const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
                 const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
 
-                std::sort(sortedIndices.begin(),
-                          sortedIndices.end(),
-                          [&currentSnapshots, &spec, ascending](size_t a, size_t b)
-                          {
-                              const auto& procA = currentSnapshots[a];
-                              const auto& procB = currentSnapshots[b];
+                std::ranges::sort(sortedIndices,
+                                  [&currentSnapshots, &spec, ascending](size_t a, size_t b)
+                                  {
+                                      const auto& procA = currentSnapshots[a];
+                                      const auto& procB = currentSnapshots[b];
 
-                              int cmp = 0;
-                              switch (spec.ColumnIndex)
-                              {
-                              case 0: // PID
-                                  cmp = (procA.pid < procB.pid) ? -1 : ((procA.pid > procB.pid) ? 1 : 0);
-                                  break;
-                              case 1: // Name
-                                  cmp = procA.name.compare(procB.name);
-                                  break;
-                              case 2: // CPU %
-                                  cmp = (procA.cpuPercent < procB.cpuPercent) ? -1 : ((procA.cpuPercent > procB.cpuPercent) ? 1 : 0);
-                                  break;
-                              case 3: // Memory
-                                  cmp = (procA.memoryBytes < procB.memoryBytes) ? -1 : ((procA.memoryBytes > procB.memoryBytes) ? 1 : 0);
-                                  break;
-                              case 4: // Status
-                                  cmp = procA.displayState.compare(procB.displayState);
-                                  break;
-                              default:
-                                  break;
-                              }
+                                      auto compare = [ascending](auto lhs, auto rhs) -> bool
+                                      {
+                                          return ascending ? (lhs < rhs) : (rhs < lhs);
+                                      };
 
-                              return ascending ? (cmp < 0) : (cmp > 0);
-                          });
+                                      switch (spec.ColumnIndex)
+                                      {
+                                      case 0: // PID
+                                          return compare(procA.pid, procB.pid);
+                                      case 1: // Name
+                                          return compare(procA.name, procB.name);
+                                      case 2: // CPU %
+                                          return compare(procA.cpuPercent, procB.cpuPercent);
+                                      case 3: // Memory
+                                          return compare(procA.memoryBytes, procB.memoryBytes);
+                                      case 4: // Status
+                                          return compare(procA.displayState, procB.displayState);
+                                      default:
+                                          return false;
+                                      }
+                                  });
             }
         }
 

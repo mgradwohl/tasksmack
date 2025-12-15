@@ -69,24 +69,32 @@ IncludeBlocks: Regroup
 
 IncludeCategories:
   # 1. Main/matching header for this translation unit
-  - Regex: '^"([^"]+)\.h"$'
+  - Regex: '^"([^"]+)\.(h|hpp)$'
     Priority: 1
 
-  # 2. Project-local headers (src/, include/, tests/)
-  - Regex: '^"(src|include|tests)/.*"'
+  # 2. Project-local headers (quoted includes from src/, include/, tests/, or relative paths)
+  - Regex: '^".*"'
     Priority: 2
 
-  # 3. Third-party libraries (spdlog, fmt, boost, etc.)
-  - Regex: '^<(spdlog|fmt|boost|gtest|gmock)/.*>'
+  # 3. Third-party libraries (spdlog, imgui, implot, glad, GLFW, gtest, etc.)
+  - Regex: '^<(spdlog|fmt|boost|gtest|gmock|imgui|implot|glad|GLFW)/.*>'
     Priority: 3
 
-  # 4. C++ standard library
-  - Regex: '^<([a-zA-Z0-9_]+)>$'
+  # 4. Third-party single-header libs (imgui.h, implot.h without path)
+  - Regex: '^<(imgui|implot|glad).*\.h>'
+    Priority: 3
+
+  # 5. C++ standard library headers (no extension)
+  - Regex: '^<[a-z_]+>$'
     Priority: 4
 
-  # 5. Everything else (system misc, OS libs, unknown libs)
-  - Regex: '.*'
+  # 6. POSIX/C system headers (.h extension, including sys/ paths)
+  - Regex: '^<.+\.h>$'
     Priority: 5
+
+  # 7. Everything else (catch-all)
+  - Regex: '.*'
+    Priority: 6
 
 SortUsingDeclarations: true
 

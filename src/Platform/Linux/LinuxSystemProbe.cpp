@@ -12,8 +12,7 @@
 namespace Platform
 {
 
-LinuxSystemProbe::LinuxSystemProbe()
-    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_NumCores(static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)))
+LinuxSystemProbe::LinuxSystemProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_NumCores(static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)))
 {
     if (m_TicksPerSecond <= 0)
     {
@@ -72,7 +71,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters) const
 
     while (std::getline(statFile, line))
     {
-        if (line.compare(0, 3, "cpu") != 0)
+        if (!line.starts_with("cpu"))
         {
             // Past CPU lines
             break;
