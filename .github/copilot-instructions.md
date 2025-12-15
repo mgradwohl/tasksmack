@@ -109,7 +109,7 @@ The `.clangd` file configures clangd for IDE integration:
 
 1. Matching header (`.cpp` files only)
 2. Project headers (`src/`, `include/`, `tests/`), alphabetical
-3. Third-party libraries (spdlog, gtest, imgui, implot), alphabetical
+3. Third-party libraries (glad, glfw, gtest, imgui, implot, spdlog), alphabetical
 4. C++ standard library headers, alphabetical
 5. Other (fallback)
 
