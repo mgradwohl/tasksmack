@@ -399,7 +399,8 @@ if(CLANG_TIDY_EXE)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Running clang-tidy on project sources"
     )
-    add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands)
+    # Depend on glad_gl_core_33 to ensure GLAD headers are generated before clang-tidy runs
+    add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
 endif()
 
 if(CLANG_FORMAT_EXE)
