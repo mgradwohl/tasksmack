@@ -367,7 +367,7 @@ private:
             std::lock_guard<std::mutex> lock(m_CallbackMutex);
             if (m_Callback)
             {
-                m_Callback(data, totalCpuTime);
+**Section Separators:** Use descriptive section comments to organize related tests. Use exactly 10 equals signs on each side for consistency:
             }
             
             std::this_thread::sleep_for(m_Config.interval);
