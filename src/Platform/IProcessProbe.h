@@ -2,7 +2,6 @@
 
 #include "ProcessTypes.h"
 
-#include <memory>
 #include <vector>
 
 namespace Platform

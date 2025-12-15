@@ -37,8 +37,9 @@ runs:
         chmod +x llvm.sh
         sudo ./llvm.sh ${{ inputs.llvm-version }}
         
-        # Build package list
-        PACKAGES=""
+        # Build package list - always include GUI dependencies for this project
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev"
+        
         if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
         fi
@@ -52,10 +53,9 @@ runs:
           PACKAGES="$PACKAGES clang-tidy-${{ inputs.llvm-version }}"
         fi
         
-        # Install additional packages if any
-        if [[ -n "$PACKAGES" ]]; then
-          sudo apt-get install -y $PACKAGES
-        fi
+        # Install packages
+        sudo apt-get update
+        sudo apt-get install -y $PACKAGES
 
     - name: Configure LLVM alternatives
       shell: bash

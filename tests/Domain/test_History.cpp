@@ -3,9 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <numeric>
 #include <string>
-#include <vector>
 
 namespace Domain
 {

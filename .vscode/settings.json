@@ -24,6 +24,11 @@
     "C_Cpp.codeAnalysis.exclude": {
         "**": true
     },
+    "C_Cpp.files.exclude": {
+        "**/build/**": true,
+        "**/gladsources/**": true,
+        "**/_deps/**": true
+    },
     "C_Cpp.enhancedColorization": "disabled",
     "C_Cpp.dimInactiveRegions": false,
     // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-22/bin/clangd"
