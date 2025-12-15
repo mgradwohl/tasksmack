@@ -267,6 +267,7 @@ TaskSmack separates OS-specific data collection from cross-platform calculations
 - **Computes deltas and rates** from counter differences over time
 - **Maintains previous state** to calculate changes (e.g., CPU% from tick deltas)
 - **Publishes immutable snapshots** for UI consumption
+- **Uses `History<T, N>` template** for fixed-size ring buffers to store time-series data for plotting
 - **Example:** `ProcessModel::refresh()` computes CPU% from current vs. previous `ProcessCounters`
 
 ### Why This Separation?
@@ -328,6 +329,57 @@ public:
 - **Use `BackgroundSampler` for non-blocking updates** - UI thread reads latest snapshot atomically
 - **Never call probe methods from UI thread** - always go through domain models
 - **Sampler owns refresh interval** (e.g., 1 second) and runs on background thread with `std::jthread`
+
+### Concurrency Patterns
+- **Use `std::jthread` with `std::stop_token`** for background threads (automatic cancellation support)
+- **Use `std::atomic<bool>` for simple flags** (e.g., `m_Running`, `m_RefreshRequested`)
+- **Use `std::mutex` for protecting callbacks and configuration** that may be accessed from multiple threads
+- **Callbacks for data delivery:** Background thread calls callback with new data; UI thread registers callback to receive updates
+
+**Example:**
+```cpp
+class BackgroundSampler
+{
+public:
+    using SnapshotCallback = std::function<void(const std::vector<ProcessCounters>&, uint64_t)>;
+    
+    void start()
+    {
+        m_SamplerThread = std::jthread([this](std::stop_token token) {
+            samplerLoop(token);
+        });
+        m_Running = true;
+    }
+    
+    void stop()
+    {
+        // std::jthread automatically sends stop signal on destruction
+        m_Running = false;
+    }
+    
+private:
+    void samplerLoop(std::stop_token stopToken)
+    {
+        while (!stopToken.stop_requested())
+        {
+            auto data = m_Probe->enumerate();
+            
+            std::lock_guard<std::mutex> lock(m_CallbackMutex);
+            if (m_Callback)
+            {
+                m_Callback(data, totalCpuTime);
+            }
+            
+            std::this_thread::sleep_for(m_Config.interval);
+        }
+    }
+    
+    std::jthread m_SamplerThread;
+    std::atomic<bool> m_Running{false};
+    std::mutex m_CallbackMutex;
+    SnapshotCallback m_Callback;
+};
+```
 
 ### ImGui Tables
 - Use `ImGui::BeginTable()` / `ImGui::EndTable()` for structured data
@@ -650,3 +702,9 @@ When performing a code review on this project:
 7. **Performance**: Flag unnecessary copies, suggest `const&` or move semantics where appropriate
 
 8. **Testing**: Suggest tests for new functionality, verify edge cases are covered
+
+9. **Architecture Boundaries**: Verify layer dependencies are correct:
+   - Platform probes should return raw counters, not computed values
+   - Domain should not depend on UI, Core, or graphics libraries  
+   - UI should not call Platform probes directly
+   - All OpenGL calls should be in UI/Core layers only
