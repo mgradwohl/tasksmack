@@ -49,3 +49,6 @@ Thumbs.db
 # Core dumps
 core
 core.*
+
+# ImGui state file
+imgui.ini
