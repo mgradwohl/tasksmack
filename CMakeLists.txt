@@ -325,8 +325,10 @@ if(UNIX AND NOT APPLE)
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_SOURCES
-        # src/Platform/Windows/WindowsProcessProbe.cpp
-        # src/Platform/Windows/Factory.cpp
+        src/Platform/Windows/WindowsProcessProbe.cpp
+        src/Platform/Windows/WindowsProcessActions.cpp
+        src/Platform/Windows/WindowsSystemProbe.cpp
+        src/Platform/Windows/Factory.cpp
     )
 endif()
 
@@ -351,7 +353,9 @@ if(UNIX AND NOT APPLE)
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
-        # src/Platform/Windows/WindowsProcessProbe.h
+        src/Platform/Windows/WindowsProcessProbe.h
+        src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsSystemProbe.h
     )
 endif()
 

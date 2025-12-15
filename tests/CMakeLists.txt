@@ -58,7 +58,7 @@ target_include_directories(TaskSmack_tests PRIVATE
 )
 
 target_link_libraries(TaskSmack_tests PRIVATE
-    GTest::gtest_main
+    gtest_main
     spdlog::spdlog_header_only
 )
 
