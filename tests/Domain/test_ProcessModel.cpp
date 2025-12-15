@@ -9,6 +9,7 @@
 /// - Thread-safe operations
 
 #include "Domain/ProcessModel.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
@@ -18,56 +19,14 @@
 #include <thread>
 #include <vector>
 
-/// Mock probe that returns controlled test data.
-/// Defined outside anonymous namespace to work with std::make_unique.
-class MockProcessProbe : public Platform::IProcessProbe
-{
-  public:
-    void setCounters(std::vector<Platform::ProcessCounters> counters)
-    {
-        m_Counters = std::move(counters);
-    }
-
-    void setTotalCpuTime(uint64_t time)
-    {
-        m_TotalCpuTime = time;
-    }
-
-    void setCapabilities(Platform::ProcessCapabilities caps)
-    {
-        m_Capabilities = caps;
-    }
-
-    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
-    {
-        return m_Counters;
-    }
-
-    [[nodiscard]] uint64_t totalCpuTime() const override
-    {
-        return m_TotalCpuTime;
-    }
-
-    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
-    {
-        return m_Capabilities;
-    }
-
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return 100;
-    } // Standard HZ value
-
-  private:
-    std::vector<Platform::ProcessCounters> m_Counters;
-    uint64_t m_TotalCpuTime = 0;
-    Platform::ProcessCapabilities m_Capabilities;
-};
+// Use shared mock from TestMocks namespace
+using TestMocks::makeProcessCounters;
+using TestMocks::MockProcessProbe;
 
 namespace
 {
 
-/// Helper to create a process counter.
+/// Helper to create a process counter (legacy compatibility wrapper).
 Platform::ProcessCounters makeCounter(int32_t pid,
                                       const std::string& name,
                                       char state,
@@ -77,18 +36,7 @@ Platform::ProcessCounters makeCounter(int32_t pid,
                                       uint64_t rssBytes = 1024 * 1024,
                                       int32_t parentPid = 1)
 {
-    Platform::ProcessCounters c;
-    c.pid = pid;
-    c.parentPid = parentPid;
-    c.name = name;
-    c.state = state;
-    c.userTime = userTime;
-    c.systemTime = systemTime;
-    c.startTimeTicks = startTime;
-    c.rssBytes = rssBytes;
-    c.virtualBytes = rssBytes * 2;
-    c.threadCount = 1;
-    return c;
+    return makeProcessCounters(pid, name, state, userTime, systemTime, startTime, rssBytes, parentPid);
 }
 
 } // namespace

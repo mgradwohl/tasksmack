@@ -10,6 +10,7 @@
 /// - Per-core CPU tracking
 
 #include "Domain/SystemModel.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/SystemTypes.h"
 
@@ -19,91 +20,11 @@
 #include <thread>
 #include <vector>
 
-/// Mock probe that returns controlled test data.
-class MockSystemProbe : public Platform::ISystemProbe
-{
-  public:
-    void setCounters(Platform::SystemCounters counters)
-    {
-        m_Counters = std::move(counters);
-    }
-
-    void setCapabilities(Platform::SystemCapabilities caps)
-    {
-        m_Capabilities = caps;
-    }
-
-    [[nodiscard]] Platform::SystemCounters read() override
-    {
-        return m_Counters;
-    }
-
-    [[nodiscard]] Platform::SystemCapabilities capabilities() const override
-    {
-        return m_Capabilities;
-    }
-
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return 100;
-    }
-
-  private:
-    Platform::SystemCounters m_Counters;
-    Platform::SystemCapabilities m_Capabilities;
-};
-
-namespace
-{
-
-/// Helper to create CPU counters with specific values.
-Platform::CpuCounters makeCpuCounters(uint64_t user, uint64_t nice, uint64_t system, uint64_t idle, uint64_t iowait = 0, uint64_t steal = 0)
-{
-    Platform::CpuCounters c;
-    c.user = user;
-    c.nice = nice;
-    c.system = system;
-    c.idle = idle;
-    c.iowait = iowait;
-    c.steal = steal;
-    return c;
-}
-
-/// Helper to create memory counters.
-Platform::MemoryCounters makeMemoryCounters(uint64_t total,
-                                            uint64_t available,
-                                            uint64_t free = 0,
-                                            uint64_t cached = 0,
-                                            uint64_t buffers = 0,
-                                            uint64_t swapTotal = 0,
-                                            uint64_t swapFree = 0)
-{
-    Platform::MemoryCounters m;
-    m.totalBytes = total;
-    m.availableBytes = available;
-    m.freeBytes = free;
-    m.cachedBytes = cached;
-    m.buffersBytes = buffers;
-    m.swapTotalBytes = swapTotal;
-    m.swapFreeBytes = swapFree;
-    return m;
-}
-
-/// Helper to create a full system counters struct.
-Platform::SystemCounters makeSystemCounters(Platform::CpuCounters cpu,
-                                            Platform::MemoryCounters memory,
-                                            uint64_t uptime = 0,
-                                            std::vector<Platform::CpuCounters> perCore = {})
-{
-    Platform::SystemCounters s;
-    s.cpuTotal = cpu;
-    s.memory = memory;
-    s.uptimeSeconds = uptime;
-    s.cpuPerCore = std::move(perCore);
-    return s;
-}
-
-} // namespace
+// Use shared mock from TestMocks namespace
+using TestMocks::makeCpuCounters;
+using TestMocks::makeMemoryCounters;
+using TestMocks::makeSystemCounters;
+using TestMocks::MockSystemProbe;
 
 // =============================================================================
 // Construction Tests

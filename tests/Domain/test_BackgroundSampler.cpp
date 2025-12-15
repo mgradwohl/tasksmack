@@ -10,6 +10,7 @@
 /// - Capabilities passthrough
 
 #include "Domain/BackgroundSampler.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
@@ -24,63 +25,8 @@
 
 using namespace std::chrono_literals;
 
-/// Mock probe for BackgroundSampler tests.
-class MockSamplerProbe : public Platform::IProcessProbe
-{
-  public:
-    void setCounters(std::vector<Platform::ProcessCounters> counters)
-    {
-        m_Counters = std::move(counters);
-    }
-
-    void setTotalCpuTime(uint64_t time)
-    {
-        m_TotalCpuTime = time;
-    }
-
-    void setCapabilities(Platform::ProcessCapabilities caps)
-    {
-        m_Capabilities = caps;
-    }
-
-    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
-    {
-        m_EnumerateCount.fetch_add(1);
-        return m_Counters;
-    }
-
-    [[nodiscard]] uint64_t totalCpuTime() const override
-    {
-        return m_TotalCpuTime;
-    }
-
-    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
-    {
-        return m_Capabilities;
-    }
-
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return m_TicksPerSecond;
-    }
-
-    void setTicksPerSecond(long tps)
-    {
-        m_TicksPerSecond = tps;
-    }
-
-    [[nodiscard]] int enumerateCount() const
-    {
-        return m_EnumerateCount.load();
-    }
-
-  private:
-    std::vector<Platform::ProcessCounters> m_Counters;
-    uint64_t m_TotalCpuTime = 0;
-    Platform::ProcessCapabilities m_Capabilities;
-    long m_TicksPerSecond = 100;
-    std::atomic<int> m_EnumerateCount{0};
-};
+// Use shared mock from TestMocks namespace
+using TestMocks::MockProcessProbe;
 
 // =============================================================================
 // Construction Tests
@@ -88,7 +34,7 @@ class MockSamplerProbe : public Platform::IProcessProbe
 
 TEST(BackgroundSamplerTest, ConstructWithValidProbe)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
 
     EXPECT_FALSE(sampler.isRunning());
@@ -96,7 +42,7 @@ TEST(BackgroundSamplerTest, ConstructWithValidProbe)
 
 TEST(BackgroundSamplerTest, ConstructWithCustomInterval)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::SamplerConfig config;
     config.interval = 500ms;
 
@@ -107,7 +53,7 @@ TEST(BackgroundSamplerTest, ConstructWithCustomInterval)
 
 TEST(BackgroundSamplerTest, DefaultIntervalIsOneSecond)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
 
     EXPECT_EQ(sampler.interval(), 1000ms);
@@ -119,7 +65,7 @@ TEST(BackgroundSamplerTest, DefaultIntervalIsOneSecond)
 
 TEST(BackgroundSamplerTest, StartSetsRunningTrue)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
 
     sampler.start();
@@ -131,7 +77,7 @@ TEST(BackgroundSamplerTest, StartSetsRunningTrue)
 
 TEST(BackgroundSamplerTest, StopWhenNotRunningIsNoOp)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
 
     // Should not crash
@@ -141,7 +87,7 @@ TEST(BackgroundSamplerTest, StopWhenNotRunningIsNoOp)
 
 TEST(BackgroundSamplerTest, DoubleStartIsIgnored)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
 
     sampler.start();
@@ -153,7 +99,7 @@ TEST(BackgroundSamplerTest, DoubleStartIsIgnored)
 
 TEST(BackgroundSamplerTest, DestructorStopsSampler)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     {
         Domain::BackgroundSampler sampler(std::move(probe));
         sampler.start();
@@ -170,7 +116,7 @@ TEST(BackgroundSamplerTest, DestructorStopsSampler)
 
 TEST(BackgroundSamplerTest, CallbackInvokedOnSample)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
     Platform::ProcessCounters pc;
@@ -219,7 +165,7 @@ TEST(BackgroundSamplerTest, CallbackInvokedOnSample)
 
 TEST(BackgroundSamplerTest, CallbackInvokedMultipleTimes)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
     rawProbe->setCounters({});
@@ -245,7 +191,7 @@ TEST(BackgroundSamplerTest, CallbackInvokedMultipleTimes)
 
 TEST(BackgroundSamplerTest, NoCallbackSetDoesNotCrash)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
 
     Domain::SamplerConfig config;
     config.interval = 50ms;
@@ -267,7 +213,7 @@ TEST(BackgroundSamplerTest, NoCallbackSetDoesNotCrash)
 
 TEST(BackgroundSamplerTest, SetIntervalWhileRunning)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
     rawProbe->setCounters({});
@@ -288,7 +234,7 @@ TEST(BackgroundSamplerTest, SetIntervalWhileRunning)
 
 TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
 
     Domain::BackgroundSampler sampler(std::move(probe));
 
@@ -303,7 +249,7 @@ TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
 
 TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
     rawProbe->setCounters({});
@@ -339,7 +285,7 @@ TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 
 TEST(BackgroundSamplerTest, CapabilitiesPassedFromProbe)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCapabilities caps;
     caps.hasIoCounters = true;
     caps.hasThreadCount = true;
@@ -358,7 +304,7 @@ TEST(BackgroundSamplerTest, CapabilitiesPassedFromProbe)
 
 TEST(BackgroundSamplerTest, TicksPerSecondPassedFromProbe)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     probe->setTicksPerSecond(250);
 
     Domain::BackgroundSampler sampler(std::move(probe));
@@ -372,7 +318,7 @@ TEST(BackgroundSamplerTest, TicksPerSecondPassedFromProbe)
 
 TEST(BackgroundSamplerTest, ConcurrentIntervalChanges)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({});
 
     Domain::SamplerConfig config;
@@ -409,7 +355,7 @@ TEST(BackgroundSamplerTest, ConcurrentIntervalChanges)
 
 TEST(BackgroundSamplerTest, ConcurrentCallbackChange)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({});
 
     Domain::SamplerConfig config;
@@ -436,7 +382,7 @@ TEST(BackgroundSamplerTest, ConcurrentCallbackChange)
 
 TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     probe->setCounters({});
 
@@ -480,7 +426,7 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 
 TEST(BackgroundSamplerTest, VeryShortInterval)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     probe->setCounters({});
 
@@ -500,7 +446,7 @@ TEST(BackgroundSamplerTest, VeryShortInterval)
 
 TEST(BackgroundSamplerTest, StartStopStartCycle)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     probe->setCounters({});
 
@@ -526,7 +472,7 @@ TEST(BackgroundSamplerTest, StartStopStartCycle)
 
 TEST(BackgroundSamplerTest, EmptyProcessList)
 {
-    auto probe = std::make_unique<MockSamplerProbe>();
+    auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({}); // Empty list
 
     Domain::SamplerConfig config;

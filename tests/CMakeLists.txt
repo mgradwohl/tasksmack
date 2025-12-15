@@ -54,6 +54,7 @@ add_executable(TaskSmack_tests
 
 target_include_directories(TaskSmack_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
 )
 
 target_link_libraries(TaskSmack_tests PRIVATE
