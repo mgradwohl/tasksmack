@@ -21,7 +21,7 @@ struct ApplicationSpecification
 class Application
 {
   public:
-    explicit Application(const ApplicationSpecification& spec = ApplicationSpecification());
+    explicit Application(ApplicationSpecification spec = ApplicationSpecification());
     ~Application();
 
     Application(const Application&) = delete;

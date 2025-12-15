@@ -4,15 +4,18 @@
 
 #include <spdlog/spdlog.h>
 
-// GLAD must be included before any other OpenGL headers (including GLFW)
-#include <filesystem>
-
+// clang-format off
+// GLFW_INCLUDE_NONE must be defined before including GLFW to prevent GL header conflicts with glad
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
-// #include <glad/gl.h>
+#include <glad/gl.h>
+// clang-format on
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
+
+#include <filesystem>
 
 #ifdef __linux__
 // No additional includes needed - std::filesystem handles it

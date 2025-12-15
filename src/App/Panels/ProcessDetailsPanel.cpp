@@ -2,18 +2,19 @@
 
 #include "Platform/Factory.h"
 
+#include <imgui.h>
+#include <implot.h>
 #include <spdlog/spdlog.h>
 
 #include <array>
-
-#include <imgui.h>
-#include <implot.h>
 
 namespace App
 {
 
 ProcessDetailsPanel::ProcessDetailsPanel()
-    : Panel("Process Details"), m_ProcessActions(Platform::makeProcessActions()), m_ActionCapabilities(m_ProcessActions->actionCapabilities())
+    : Panel("Process Details"),
+      m_ProcessActions(Platform::makeProcessActions()),
+      m_ActionCapabilities(m_ProcessActions->actionCapabilities())
 {
 }
 
@@ -344,7 +345,7 @@ void ProcessDetailsPanel::renderActions()
     // Action result feedback
     if (!m_LastActionResult.empty())
     {
-        bool isError = m_LastActionResult.find("Error") != std::string::npos || m_LastActionResult.find("Failed") != std::string::npos;
+        bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
         ImVec4 color = isError ? ImVec4(1.0F, 0.3F, 0.3F, 1.0F) : ImVec4(0.3F, 1.0F, 0.3F, 1.0F);
         ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
         ImGui::Spacing();

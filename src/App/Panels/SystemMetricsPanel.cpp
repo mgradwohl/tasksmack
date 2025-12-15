@@ -2,13 +2,11 @@
 
 #include "Platform/Factory.h"
 
-#include <spdlog/spdlog.h>
-
-#include <array>
-#include <chrono>
-
 #include <imgui.h>
 #include <implot.h>
+#include <spdlog/spdlog.h>
+
+#include <chrono>
 
 namespace App
 {
@@ -19,7 +17,14 @@ SystemMetricsPanel::SystemMetricsPanel() : Panel("System Metrics")
 
 SystemMetricsPanel::~SystemMetricsPanel()
 {
-    onDetach();
+    // Direct cleanup to avoid virtual dispatch during destruction
+    m_Running = false;
+    if (m_SamplerThread.joinable())
+    {
+        m_SamplerThread.request_stop();
+        m_SamplerThread.join();
+    }
+    m_Model.reset();
 }
 
 void SystemMetricsPanel::onAttach()
@@ -29,13 +34,15 @@ void SystemMetricsPanel::onAttach()
 
     // Start background sampler
     m_Running = true;
-    m_SamplerThread = std::jthread([this](std::stop_token stopToken) {
-        while (!stopToken.stop_requested() && m_Running)
+    m_SamplerThread = std::jthread(
+        [this](std::stop_token stopToken)
         {
-            m_Model->refresh();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-    });
+            while (!stopToken.stop_requested() && m_Running)
+            {
+                m_Model->refresh();
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        });
 
     spdlog::info("SystemMetricsPanel: initialized with background sampling");
 }
@@ -123,8 +130,10 @@ void SystemMetricsPanel::renderOverview()
 
         if (days > 0)
         {
-            ImGui::Text("Uptime: %lud %luh %lum", static_cast<unsigned long>(days),
-                        static_cast<unsigned long>(hours), static_cast<unsigned long>(minutes));
+            ImGui::Text("Uptime: %lud %luh %lum",
+                        static_cast<unsigned long>(days),
+                        static_cast<unsigned long>(hours),
+                        static_cast<unsigned long>(minutes));
         }
         else if (hours > 0)
         {
@@ -184,7 +193,8 @@ void SystemMetricsPanel::renderOverview()
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 100.0F);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
-        auto addRow = [](const char* label, double value, ImVec4 color) {
+        auto addRow = [](const char* label, double value, ImVec4 color)
+        {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "%s", label);
@@ -246,7 +256,9 @@ void SystemMetricsPanel::renderCpuSection()
 
     // Current values
     ImGui::Text("Current: %.1f%% (User: %.1f%%, System: %.1f%%)",
-                snap.cpuTotal.totalPercent, snap.cpuTotal.userPercent, snap.cpuTotal.systemPercent);
+                snap.cpuTotal.totalPercent,
+                snap.cpuTotal.userPercent,
+                snap.cpuTotal.systemPercent);
 }
 
 void SystemMetricsPanel::renderMemorySection()
@@ -289,7 +301,8 @@ void SystemMetricsPanel::renderMemorySection()
     ImGui::Spacing();
 
     // Memory details
-    auto formatSize = [](uint64_t bytes) -> std::pair<double, const char*> {
+    auto formatSize = [](uint64_t bytes) -> std::pair<double, const char*>
+    {
         constexpr double GB = 1024.0 * 1024.0 * 1024.0;
         constexpr double MB = 1024.0 * 1024.0;
 
@@ -410,14 +423,14 @@ void SystemMetricsPanel::renderPerCoreSection()
 
             // Color palette for cores
             static const ImVec4 coreColors[] = {
-                ImVec4(0.3F, 0.7F, 1.0F, 1.0F),  // Blue
-                ImVec4(1.0F, 0.5F, 0.3F, 1.0F),  // Orange
-                ImVec4(0.3F, 1.0F, 0.3F, 1.0F),  // Green
-                ImVec4(1.0F, 0.3F, 0.7F, 1.0F),  // Pink
-                ImVec4(0.7F, 0.3F, 1.0F, 1.0F),  // Purple
-                ImVec4(1.0F, 1.0F, 0.3F, 1.0F),  // Yellow
-                ImVec4(0.3F, 1.0F, 1.0F, 1.0F),  // Cyan
-                ImVec4(1.0F, 0.7F, 0.5F, 1.0F),  // Peach
+                ImVec4(0.3F, 0.7F, 1.0F, 1.0F), // Blue
+                ImVec4(1.0F, 0.5F, 0.3F, 1.0F), // Orange
+                ImVec4(0.3F, 1.0F, 0.3F, 1.0F), // Green
+                ImVec4(1.0F, 0.3F, 0.7F, 1.0F), // Pink
+                ImVec4(0.7F, 0.3F, 1.0F, 1.0F), // Purple
+                ImVec4(1.0F, 1.0F, 0.3F, 1.0F), // Yellow
+                ImVec4(0.3F, 1.0F, 1.0F, 1.0F), // Cyan
+                ImVec4(1.0F, 0.7F, 0.5F, 1.0F), // Peach
             };
             constexpr size_t numColors = sizeof(coreColors) / sizeof(coreColors[0]);
 

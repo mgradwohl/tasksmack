@@ -4,8 +4,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <ranges>
 
+// clang-format off
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+// clang-format on
 
 namespace Core
 {
@@ -20,7 +24,7 @@ void glfwErrorCallback(int error, const char* description)
 }
 } // namespace
 
-Application::Application(const ApplicationSpecification& spec) : m_Spec(spec)
+Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
     assert(s_Instance == nullptr && "Application already exists!");
     s_Instance = this;
@@ -47,9 +51,9 @@ Application::Application(const ApplicationSpecification& spec) : m_Spec(spec)
 Application::~Application()
 {
     // Detach layers in reverse order
-    for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend(); ++it)
+    for (auto& layer : std::views::reverse(m_LayerStack))
     {
-        (*it)->onDetach();
+        layer->onDetach();
     }
     m_LayerStack.clear();
     m_Window.reset();

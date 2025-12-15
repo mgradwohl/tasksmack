@@ -19,7 +19,7 @@ struct WindowSpecification
 class Window
 {
   public:
-    explicit Window(const WindowSpecification& spec = WindowSpecification());
+    explicit Window(WindowSpecification spec = WindowSpecification());
     ~Window();
 
     Window(const Window&) = delete;

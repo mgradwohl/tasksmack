@@ -2,10 +2,9 @@
 
 #include "Core/Application.h"
 
-#include <spdlog/spdlog.h>
-
 #include <imgui.h>
 #include <implot.h>
+#include <spdlog/spdlog.h>
 
 namespace App
 {
