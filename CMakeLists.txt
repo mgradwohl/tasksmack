@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(MyProject VERSION 0.1.0 LANGUAGES CXX)
+project(TaskSmack VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,18 +21,18 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     )
 endif()
 
-option(MYPROJECT_ENABLE_IPO "Enable interprocedural optimization" ON)
-option(MYPROJECT_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
-option(MYPROJECT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
-option(MYPROJECT_BUILD_TESTS "Build tests" ON)
-option(MYPROJECT_ENABLE_PCH "Enable precompiled headers" ON)
-option(MYPROJECT_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
-option(MYPROJECT_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
-option(MYPROJECT_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" OFF)
-set(MYPROJECT_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
+option(TASKSMACK_ENABLE_IPO "Enable interprocedural optimization" ON)
+option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
+option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
+option(TASKSMACK_BUILD_TESTS "Build tests" ON)
+option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
+option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
+option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
+option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" OFF)
+set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 
 # Compiler caching (ccache/sccache) - required for development
-if(MYPROJECT_ENABLE_CCACHE)
+if(TASKSMACK_ENABLE_CCACHE)
     find_program(CCACHE_PROGRAM ccache)
     find_program(SCCACHE_PROGRAM sccache)
     if(SCCACHE_PROGRAM)
@@ -52,19 +52,19 @@ if(MYPROJECT_ENABLE_CCACHE)
 endif()
 
 # Code coverage support (Clang only)
-if(MYPROJECT_ENABLE_COVERAGE)
+if(TASKSMACK_ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(STATUS "Code coverage enabled")
         add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
         add_link_options(-fprofile-instr-generate -fcoverage-mapping)
     else()
         message(WARNING "Code coverage is only supported with Clang. Disabling coverage.")
-        set(MYPROJECT_ENABLE_COVERAGE OFF)
+        set(TASKSMACK_ENABLE_COVERAGE OFF)
     endif()
 endif()
 
-function(myproject_apply_default_warnings target_name)
-    if(NOT MYPROJECT_ENABLE_WARNINGS)
+function(tasksmack_apply_default_warnings target_name)
+    if(NOT TASKSMACK_ENABLE_WARNINGS)
         return()
     endif()
 
@@ -86,7 +86,7 @@ function(myproject_apply_default_warnings target_name)
             -Wcast-align
             -Wundef
             -Werror=return-type
-            $<$<BOOL:${MYPROJECT_WARNINGS_AS_ERRORS}>:-Werror>
+            $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:-Werror>
         )
 
         # Platform-specific warning adjustments
@@ -107,7 +107,7 @@ function(myproject_apply_default_warnings target_name)
             /W4
             /permissive-
             /EHsc
-            $<$<BOOL:${MYPROJECT_WARNINGS_AS_ERRORS}>:/WX>
+            $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:/WX>
         )
     endif()
 endfunction()
@@ -128,7 +128,7 @@ find_program(CLANG_FORMAT_EXE NAMES clang-format
         "C:/Program Files/LLVM/bin"
 )
 
-if(MYPROJECT_ENABLE_IPO)
+if(TASKSMACK_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported)
     if(ipo_supported)
@@ -136,25 +136,25 @@ if(MYPROJECT_ENABLE_IPO)
     endif()
 endif()
 
-if(MYPROJECT_ENABLE_FETCHCONTENT_CACHE)
-    if(MYPROJECT_FETCHCONTENT_CACHE_DIR)
-        set(_myproject_fetchcontent_cache "${MYPROJECT_FETCHCONTENT_CACHE_DIR}")
+if(TASKSMACK_ENABLE_FETCHCONTENT_CACHE)
+    if(TASKSMACK_FETCHCONTENT_CACHE_DIR)
+        set(_tasksmack_fetchcontent_cache "${TASKSMACK_FETCHCONTENT_CACHE_DIR}")
     elseif(DEFINED ENV{FETCHCONTENT_BASE_DIR} AND NOT "$ENV{FETCHCONTENT_BASE_DIR}" STREQUAL "")
-        set(_myproject_fetchcontent_cache "$ENV{FETCHCONTENT_BASE_DIR}")
+        set(_tasksmack_fetchcontent_cache "$ENV{FETCHCONTENT_BASE_DIR}")
     else()
         # Keep the shared cache outside build trees but near the workspace
-        set(_myproject_fetchcontent_cache "${CMAKE_SOURCE_DIR}/.cache/fetchcontent")
+        set(_tasksmack_fetchcontent_cache "${CMAKE_SOURCE_DIR}/.cache/fetchcontent")
     endif()
 
-    if(NOT IS_ABSOLUTE "${_myproject_fetchcontent_cache}")
-        get_filename_component(_myproject_fetchcontent_cache "${_myproject_fetchcontent_cache}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    if(NOT IS_ABSOLUTE "${_tasksmack_fetchcontent_cache}")
+        get_filename_component(_tasksmack_fetchcontent_cache "${_tasksmack_fetchcontent_cache}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
     endif()
 
-    if(NOT _myproject_fetchcontent_cache STREQUAL "")
-        file(MAKE_DIRECTORY "${_myproject_fetchcontent_cache}")
-        set(FETCHCONTENT_BASE_DIR "${_myproject_fetchcontent_cache}" CACHE PATH "Base dir for FetchContent downloads" FORCE)
+    if(NOT _tasksmack_fetchcontent_cache STREQUAL "")
+        file(MAKE_DIRECTORY "${_tasksmack_fetchcontent_cache}")
+        set(FETCHCONTENT_BASE_DIR "${_tasksmack_fetchcontent_cache}" CACHE PATH "Base dir for FetchContent downloads" FORCE)
         if(NOT CPM_SOURCE_CACHE)
-            set(CPM_SOURCE_CACHE "${_myproject_fetchcontent_cache}" CACHE PATH "CPM.cmake source cache" FORCE)
+            set(CPM_SOURCE_CACHE "${_tasksmack_fetchcontent_cache}" CACHE PATH "CPM.cmake source cache" FORCE)
         endif()
         message(STATUS "FetchContent cache enabled: ${FETCHCONTENT_BASE_DIR}")
     endif()
@@ -165,9 +165,9 @@ include(GNUInstallDirs)
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE ALWAYS)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(STATUS "Configuring MyProject with clang: ${CMAKE_CXX_COMPILER}")
+    message(STATUS "Configuring TaskSmack with clang: ${CMAKE_CXX_COMPILER}")
 else()
-    message(WARNING "MyProject is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
+    message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
 endif()
 
 # Prefer header-only spdlog and std::format to sidestep MSVC fmt deprecation noise.
@@ -199,11 +199,11 @@ configure_file(
     @ONLY
 )
 
-set(MYPROJECT_SOURCES
+set(TASKSMACK_SOURCES
     src/main.cpp
 )
 
-set(MYPROJECT_HEADERS
+set(TASKSMACK_HEADERS
 )
 
 if(CLANG_TIDY_EXE)
@@ -245,8 +245,8 @@ if(CLANG_TIDY_EXE)
             -p ${CMAKE_BINARY_DIR}
             --extra-arg=-std=c++23
             --extra-arg=-Wno-unknown-warning-option
-            ${MYPROJECT_SOURCES}
-            ${MYPROJECT_HEADERS}
+            ${TASKSMACK_SOURCES}
+            ${TASKSMACK_HEADERS}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Running clang-tidy on project sources"
     )
@@ -256,23 +256,23 @@ endif()
 if(CLANG_FORMAT_EXE)
     add_custom_target(run-clang-format
         COMMAND ${CLANG_FORMAT_EXE} -i
-            ${MYPROJECT_SOURCES}
-            ${MYPROJECT_HEADERS}
+            ${TASKSMACK_SOURCES}
+            ${TASKSMACK_HEADERS}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Applying clang-format to project sources"
     )
 endif()
 
-add_executable(MyProject
-    ${MYPROJECT_SOURCES}
-    ${MYPROJECT_HEADERS}
+add_executable(TaskSmack
+    ${TASKSMACK_SOURCES}
+    ${TASKSMACK_HEADERS}
 )
 
-target_compile_features(MyProject PRIVATE cxx_std_23)
+target_compile_features(TaskSmack PRIVATE cxx_std_23)
 
 # Precompiled headers
-if(MYPROJECT_ENABLE_PCH)
-    target_precompile_headers(MyProject PRIVATE
+if(TASKSMACK_ENABLE_PCH)
+    target_precompile_headers(TaskSmack PRIVATE
         <string>
         <vector>
         <memory>
@@ -286,36 +286,36 @@ if(MYPROJECT_ENABLE_PCH)
     )
 endif()
 
-myproject_apply_default_warnings(MyProject)
+tasksmack_apply_default_warnings(TaskSmack)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(MyProject PRIVATE
+    target_compile_options(TaskSmack PRIVATE
         $<$<CONFIG:Debug>:-glldb>
         $<$<CONFIG:RelWithDebInfo>:-glldb>
     )
 endif()
 
 if(WIN32)
-    target_compile_definitions(MyProject PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(TaskSmack PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-target_include_directories(MyProject PRIVATE
+target_include_directories(TaskSmack PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
-target_link_libraries(MyProject PRIVATE
+target_link_libraries(TaskSmack PRIVATE
     spdlog::spdlog_header_only
 )
 
-install(TARGETS MyProject
+install(TARGETS TaskSmack
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-if(MYPROJECT_BUILD_TESTS)
+if(TASKSMACK_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

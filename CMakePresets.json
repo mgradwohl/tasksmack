@@ -16,7 +16,7 @@
                 "CMAKE_CXX_STANDARD_REQUIRED": "ON",
                 "CMAKE_CXX_EXTENSIONS": "OFF",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "MYPROJECT_ENABLE_FETCHCONTENT_CACHE": "ON"
+                "TASKSMACK_ENABLE_FETCHCONTENT_CACHE": "ON"
             }
         },
         {
@@ -100,7 +100,7 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "MYPROJECT_ENABLE_IPO": "ON",
+                "TASKSMACK_ENABLE_IPO": "ON",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=lld -s",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-s",
@@ -114,8 +114,8 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MYPROJECT_ENABLE_COVERAGE": "ON",
-                "MYPROJECT_ENABLE_PCH": "OFF"
+                "TASKSMACK_ENABLE_COVERAGE": "ON",
+                "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
         {
@@ -128,7 +128,7 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
-                "MYPROJECT_ENABLE_PCH": "OFF"
+                "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
         {
@@ -141,7 +141,7 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=thread -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
-                "MYPROJECT_ENABLE_PCH": "OFF"
+                "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
         {
@@ -183,7 +183,7 @@
             "binaryDir": "${sourceDir}/build/win-optimized",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "MYPROJECT_ENABLE_IPO": "ON",
+                "TASKSMACK_ENABLE_IPO": "ON",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=lld -s",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-s",
@@ -198,8 +198,8 @@
             "binaryDir": "${sourceDir}/build/win-coverage",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MYPROJECT_ENABLE_COVERAGE": "ON",
-                "MYPROJECT_ENABLE_PCH": "OFF"
+                "TASKSMACK_ENABLE_COVERAGE": "ON",
+                "TASKSMACK_ENABLE_PCH": "OFF"
             }
         }
     ],

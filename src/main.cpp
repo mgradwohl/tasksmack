@@ -35,7 +35,7 @@ auto main() -> int
     }
     auto msvcSink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
     auto consoleSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    auto logger = std::make_shared<spdlog::logger>("MyProject", spdlog::sinks_init_list{msvcSink, consoleSink});
+    auto logger = std::make_shared<spdlog::logger>("TaskSmack", spdlog::sinks_init_list{msvcSink, consoleSink});
 
     spdlog::set_default_logger(logger);
 
@@ -46,9 +46,9 @@ auto main() -> int
     spdlog::flush_on(spdlog::level::debug);
 #endif
 
-    spdlog::info("{} v{} ({} build)", myproject::Version::PROJECT_NAME, myproject::Version::STRING, myproject::Version::BUILD_TYPE);
-    spdlog::debug("Compiler: {} {}", myproject::Version::COMPILER_ID, myproject::Version::COMPILER_VERSION);
-    spdlog::debug("Built: {} {}", myproject::Version::BUILD_DATE, myproject::Version::BUILD_TIME);
+    spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
+    spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
     std::printf("Hello, World!\n");
     return 0;

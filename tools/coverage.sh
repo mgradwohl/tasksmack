@@ -78,7 +78,7 @@ rm -f *.profraw default.profdata
 export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
 
 # Run the test executable directly to capture coverage
-./tests/MyProject_tests
+./tests/TaskSmack_tests
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
@@ -89,7 +89,7 @@ echo "==> Generating HTML report..."
 mkdir -p "$COVERAGE_DIR"
 
 $LLVM_COV show \
-    "${BUILD_DIR}/tests/MyProject_tests" \
+    "${BUILD_DIR}/tests/TaskSmack_tests" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -format=html \
     -output-dir="$COVERAGE_DIR" \
@@ -100,7 +100,7 @@ $LLVM_COV show \
 # Step 5: Generate summary
 echo "==> Coverage Summary:"
 $LLVM_COV report \
-    "${BUILD_DIR}/tests/MyProject_tests" \
+    "${BUILD_DIR}/tests/TaskSmack_tests" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -ignore-filename-regex='.*/(build|_deps|tests)/.*'
 

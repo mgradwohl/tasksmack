@@ -1,10 +1,10 @@
-# MyProject - Copilot Instructions
+# TaskSmack - Copilot Instructions
 
 This file provides guidance for GitHub Copilot coding agents working on this project.
 
 ## Project Overview
 
-MyProject is a cross-platform C++23 application built with modern tooling. The project emphasizes:
+TaskSmack is a cross-platform C++23 application built with modern tooling. The project emphasizes:
 - Modern C++23 with clang as the primary toolchain
 - Clean architecture with proper separation of concerns
 - Cross-platform support (Linux, Windows)
@@ -79,9 +79,9 @@ The project applies comprehensive warnings tuned for Clang on Windows and Linux:
 - **Baseline (all platforms):** `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wnon-virtual-dtor -Woverloaded-virtual -Wformat=2 -Wimplicit-fallthrough -Wnull-dereference -Wdouble-promotion -Wcast-align -Wundef -Werror=return-type`
 - **Linux/macOS:** Adds `-Wmisleading-indentation`
 - **Windows:** Adds `-Wno-unknown-pragmas -Wno-nonportable-system-include-path` (suppresses MSVC STL/SDK noise)
-- **Warnings-as-errors:** Controlled by `MYPROJECT_WARNINGS_AS_ERRORS` (default ON)
+- **Warnings-as-errors:** Controlled by `TASKSMACK_WARNINGS_AS_ERRORS` (default ON)
 
-Warnings are applied per-target via `myproject_apply_default_warnings()` — they do NOT affect third-party dependencies.
+Warnings are applied per-target via `tasksmack_apply_default_warnings()` — they do NOT affect third-party dependencies.
 
 ### IDE Configuration (clangd)
 The `.clangd` file configures clangd for IDE integration:
@@ -157,7 +157,7 @@ coverage/               # Coverage reports (gitignored)
 - When making changes to the project structure, scripts (.sh or .ps1), clang files (.clang-format, .clang-tidy, .clangd), or CMake files, update README.md accordingly and copilot-instructions.md if needed and ensure setup scripts and workflow.yml files reflect changes.
 - if new folders are created under the project root, make sure to make a smart choice to .gitignore them if needed and exclude them from clangd, clang-format and clang-tidy configurations.
 - When adding a new component or depency ensure to use CMake FetchContent where possible and document the addition in README.md, and update setup scripts, project scripts, readmes, workflow.yml files as needed, and copilot-instructions.md if needed. Also update clangd, clang-format and clang-tidy configurations to exclude the new dependency if needed. 
-- If FetchContent downloads need to be reused across presets, enable the shared cache via `MYPROJECT_ENABLE_FETCHCONTENT_CACHE=ON` (optional). The default cache location is `.cache/fetchcontent` beside the source root (gitignored). Respect a user-specified `MYPROJECT_FETCHCONTENT_CACHE_DIR` or the standard `FETCHCONTENT_BASE_DIR` environment variable when provided.
+- If FetchContent downloads need to be reused across presets, enable the shared cache via `TASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON` (optional). The default cache location is `.cache/fetchcontent` beside the source root (gitignored). Respect a user-specified `TASKSMACK_FETCHCONTENT_CACHE_DIR` or the standard `FETCHCONTENT_BASE_DIR` environment variable when provided.
 
 ## Testing
 
@@ -188,7 +188,7 @@ TEST(MyClassTest, BasicFunctionality)
 
 ### Adding a New Feature
 1. Create/modify source files in `src/`
-2. Update `MYPROJECT_SOURCES` in CMakeLists.txt if adding files
+2. Update `TASKSMACK_SOURCES` in CMakeLists.txt if adding files
 3. Add tests in `tests/`
 4. Run clang-format
 5. Run clang-tidy

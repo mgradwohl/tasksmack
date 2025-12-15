@@ -40,14 +40,14 @@ endforeach()
 include(GoogleTest)
 
 # Example test executable
-add_executable(MyProject_tests
+add_executable(TaskSmack_tests
     test_main.cpp
 )
 
-target_link_libraries(MyProject_tests PRIVATE
+target_link_libraries(TaskSmack_tests PRIVATE
     GTest::gtest_main
 )
 
-myproject_apply_default_warnings(MyProject_tests)
+tasksmack_apply_default_warnings(TaskSmack_tests)
 
-gtest_discover_tests(MyProject_tests)
+gtest_discover_tests(TaskSmack_tests)

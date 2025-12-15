@@ -1,4 +1,4 @@
-# MyProject - TODO & Improvement Ideas
+# TaskSmack - TODO & Improvement Ideas
 
 ## Recommended Next Steps
 

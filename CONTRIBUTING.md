@@ -1,4 +1,4 @@
-# Contributing to MyProject
+# Contributing to TaskSmack
 
 Thank you for your interest in contributing!
 

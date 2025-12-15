@@ -1,4 +1,4 @@
-# MyProject
+# TaskSmack
 
 A modern C++23 project template with clang toolchain, CMake Presets, Google Test, and VS Code integration.
 
@@ -36,7 +36,7 @@ cd YOUR_REPO_NAME
 
 ### Step 3: Run the Setup Script
 
-The setup script renames all placeholder names (`MyProject`, `MYPROJECT`, `myproject`) throughout the codebase to your project name:
+The setup script renames all placeholder names (`TaskSmack`, `TASKSMACK`, `tasksmack`) throughout the codebase to your project name:
 
 ```bash
 # Linux/macOS
@@ -46,7 +46,7 @@ The setup script renames all placeholder names (`MyProject`, `MYPROJECT`, `mypro
 .\setup.ps1 -Name "YourProjectName"
 
 # Optional: include author name
-./setup.sh --name "YourProjectName" --author "Your Name"
+./setup.sh --name "YourProjectName" --author "Matt Gradwohl"
 ```
 
 > **Note:** The setup script deletes itself after running - it's only needed once.
@@ -261,7 +261,7 @@ cmake --preset asan-ubsan
 cmake --build --preset asan-ubsan
 ctest --preset asan-ubsan
 # Or run directly:
-ASAN_OPTIONS=detect_leaks=1 ./build/asan-ubsan/MyProject
+ASAN_OPTIONS=detect_leaks=1 ./build/asan-ubsan/TaskSmack
 ```
 
 **ThreadSanitizer** — catches data races in multithreaded code (cannot combine with ASan):
@@ -304,12 +304,12 @@ The project applies a comprehensive set of compiler warnings tuned for Clang on 
 **CMake options:**
 | Option | Default | Description |
 |--------|---------|-------------|
-| `MYPROJECT_ENABLE_WARNINGS` | `ON` | Enable all warnings |
-| `MYPROJECT_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors (`-Werror`) |
+| `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable all warnings |
+| `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors (`-Werror`) |
 
 To disable warnings-as-errors for local development:
 ```bash
-cmake --preset debug -DMYPROJECT_WARNINGS_AS_ERRORS=OFF
+cmake --preset debug -DTASKSMACK_WARNINGS_AS_ERRORS=OFF
 ```
 
 ## Packaging with CPack
@@ -353,11 +353,11 @@ Usage:
 ```cpp
 #include "version.h"
 
-spdlog::info("{} v{}", myproject::Version::PROJECT_NAME, myproject::Version::STRING);
-spdlog::debug("Built: {} {}", myproject::Version::BUILD_DATE, myproject::Version::BUILD_TIME);
+spdlog::info("{} v{}", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING);
+spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 ```
 
-The header is generated to `build/<preset>/generated/version.h` and provides both C macros (`MYPROJECT_VERSION`) and a C++ namespace (`myproject::Version`).
+The header is generated to `build/<preset>/generated/version.h` and provides both C macros (`TASKSMACK_VERSION`) and a C++ namespace (`tasksmack::Version`).
 
 ## Adding Dependencies
 
@@ -384,15 +384,15 @@ target_link_libraries(YourProjectName PRIVATE mylib)
 By default, dependencies fetched via FetchContent live under each build dir’s `_deps`. To speed up repeated config/builds across presets while keeping the source tree clean, enable the shared cache (it defaults to `.cache/fetchcontent` beside the source root and is gitignored/excluded from tooling):
 
 ```bash
-cmake --preset debug -DMYPROJECT_ENABLE_FETCHCONTENT_CACHE=ON
+cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
 
-cmake --preset win-debug -DMYPROJECT_ENABLE_FETCHCONTENT_CACHE=ON
+cmake --preset win-debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
 ```
 
-To pick a custom cache directory (also reused by CPM if you add it), set either `MYPROJECT_FETCHCONTENT_CACHE_DIR` or the standard `FETCHCONTENT_BASE_DIR`:
+To pick a custom cache directory (also reused by CPM if you add it), set either `TASKSMACK_FETCHCONTENT_CACHE_DIR` or the standard `FETCHCONTENT_BASE_DIR`:
 
 ```bash
-cmake --preset debug -DMYPROJECT_ENABLE_FETCHCONTENT_CACHE=ON -DMYPROJECT_FETCHCONTENT_CACHE_DIR=/path/to/cache
+cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON -DTASKSMACK_FETCHCONTENT_CACHE_DIR=/path/to/cache
 ```
 
 ## CI/CD
@@ -419,7 +419,7 @@ This section documents intentional design choices to help template users underst
 | **FetchContent** | Simple dependency management built into CMake. No external package manager required. |
 | **Platform default C++ libraries** | libstdc++ on Linux, MSVC STL on Windows. More portable than forcing libc++ everywhere. |
 | **clangd for IDE** | Superior C++ language server. cpptools disabled to avoid conflicts. |
-| **Individual CMake options** | Granular control (e.g., `MYPROJECT_ENABLE_PCH`) rather than umbrella "Developer Mode". |
+| **Individual CMake options** | Granular control (e.g., `TASKSMACK_ENABLE_PCH`) rather than umbrella "Developer Mode". |
 
 ### Disabled Clang-Tidy Checks
 

@@ -87,7 +87,7 @@ switch ($BuildType) {
     "optimized" {
         $CMakeArgs += @(
             "-DCMAKE_BUILD_TYPE=Release"
-            "-DMYPROJECT_ENABLE_IPO=ON"
+            "-DTASKSMACK_ENABLE_IPO=ON"
             "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON"
             "-DCMAKE_EXE_LINKER_FLAGS_RELEASE=-s"
             "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-s"

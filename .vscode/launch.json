@@ -2,12 +2,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug MyProject (Debug)",
+            "name": "Debug TaskSmack (Debug)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/debug/MyProject",
+            "program": "${workspaceFolder}/build/debug/TaskSmack",
             "windows": {
-                "program": "${workspaceFolder}/build/win-debug/MyProject.exe"
+                "program": "${workspaceFolder}/build/win-debug/TaskSmack.exe"
             },
             "args": [],
             "cwd": "${workspaceFolder}",
@@ -19,12 +19,12 @@
             }
         },
         {
-            "name": "Debug MyProject (RelWithDebInfo)",
+            "name": "Debug TaskSmack (RelWithDebInfo)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/relwithdebinfo/MyProject",
+            "program": "${workspaceFolder}/build/relwithdebinfo/TaskSmack",
             "windows": {
-                "program": "${workspaceFolder}/build/win-relwithdebinfo/MyProject.exe"
+                "program": "${workspaceFolder}/build/win-relwithdebinfo/TaskSmack.exe"
             },
             "args": [],
             "cwd": "${workspaceFolder}",
@@ -36,12 +36,12 @@
             }
         },
         {
-            "name": "Run MyProject (Release)",
+            "name": "Run TaskSmack (Release)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/release/MyProject",
+            "program": "${workspaceFolder}/build/release/TaskSmack",
             "windows": {
-                "program": "${workspaceFolder}/build/win-release/MyProject.exe"
+                "program": "${workspaceFolder}/build/win-release/TaskSmack.exe"
             },
             "args": [],
             "cwd": "${workspaceFolder}",
@@ -54,12 +54,12 @@
             }
         },
         {
-            "name": "Run MyProject (Optimized)",
+            "name": "Run TaskSmack (Optimized)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/optimized/MyProject",
+            "program": "${workspaceFolder}/build/optimized/TaskSmack",
             "windows": {
-                "program": "${workspaceFolder}/build/win-optimized/MyProject.exe"
+                "program": "${workspaceFolder}/build/win-optimized/TaskSmack.exe"
             },
             "args": [],
             "cwd": "${workspaceFolder}",
@@ -72,10 +72,10 @@
             }
         },
         {
-            "name": "Debug MyProject (ASan+UBSan) [Linux]",
+            "name": "Debug TaskSmack (ASan+UBSan) [Linux]",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/asan-ubsan/MyProject",
+            "program": "${workspaceFolder}/build/asan-ubsan/TaskSmack",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build ASan+UBSan (Linux)",
@@ -90,10 +90,10 @@
             }
         },
         {
-            "name": "Debug MyProject (TSan) [Linux]",
+            "name": "Debug TaskSmack (TSan) [Linux]",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/tsan/MyProject",
+            "program": "${workspaceFolder}/build/tsan/TaskSmack",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build TSan (Linux)",
