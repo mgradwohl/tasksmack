@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "Domain/SystemModel.h"
-#include "Platform/ISystemProbe.h"
 
 #include <memory>
 #include <thread>

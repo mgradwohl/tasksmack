@@ -2,8 +2,6 @@
 
 #include "SystemTypes.h"
 
-#include <memory>
-
 namespace Platform
 {
 

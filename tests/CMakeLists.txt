@@ -43,6 +43,9 @@ include(GoogleTest)
 add_executable(TaskSmack_tests
     test_main.cpp
     Domain/test_History.cpp
+    Domain/test_ProcessModel.cpp
+    # Source files under test (Domain layer is header + implementation)
+    ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
 )
 
 target_include_directories(TaskSmack_tests PRIVATE
@@ -51,6 +54,7 @@ target_include_directories(TaskSmack_tests PRIVATE
 
 target_link_libraries(TaskSmack_tests PRIVATE
     GTest::gtest_main
+    spdlog::spdlog_header_only
 )
 
 tasksmack_apply_default_warnings(TaskSmack_tests)
