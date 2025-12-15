@@ -2,6 +2,9 @@
 #include <windows.h>
 #endif
 
+#include "App/ShellLayer.h"
+#include "Core/Application.h"
+#include "UI/UILayer.h"
 #include "version.h"
 
 #include <spdlog/common.h>
@@ -50,6 +53,23 @@ auto main() -> int
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
-    std::printf("Hello, World!\n");
+    // Create application
+    Core::ApplicationSpecification appSpec;
+    appSpec.Name = "TaskSmack";
+    appSpec.Width = 1280;
+    appSpec.Height = 720;
+    appSpec.VSync = true;
+
+    Core::Application app(appSpec);
+
+    // Push UI layer (initializes ImGui/ImPlot backends)
+    app.pushLayer<UI::UILayer>();
+
+    // Push shell layer (docking workspace with panels)
+    app.pushLayer<App::ShellLayer>();
+
+    // Run the application
+    app.run();
+
     return 0;
 }

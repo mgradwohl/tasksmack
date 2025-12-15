@@ -11,6 +11,7 @@ set -euo pipefail
 MIN_CMAKE_VERSION="3.28"
 MIN_CLANG_VERSION="22"
 MIN_CCACHE_VERSION="4.9.1"
+MIN_GIT_VERSION="2.30"
 
 # Colors for output
 RED='\033[0;31m'
@@ -151,6 +152,15 @@ get_llvm_cov_version() {
     fi
 }
 
+# Get git version
+get_git_version() {
+    if command -v git &>/dev/null; then
+        git --version 2>/dev/null | grep -oE 'git version [0-9]+\.[0-9]+(\.[0-9]+)?' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+    else
+        echo ""
+    fi
+}
+
 # Main
 echo ""
 echo -e "${BOLD}========================================"
@@ -240,6 +250,16 @@ if [[ -n "$format_ver" ]]; then
     print_status "clang-format" "ok" "$format_ver" "$format_path" ""
 else
     print_status "clang-format" "fail" "" "$format_path" ""
+    ALL_OK=false
+fi
+
+# Check git (required for FetchContent dependencies)
+git_ver=$(get_git_version)
+git_path=$(get_path git)
+if [[ -n "$git_ver" ]] && version_ge "$git_ver" "$MIN_GIT_VERSION"; then
+    print_status "git" "ok" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
+else
+    print_status "git" "fail" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
     ALL_OK=false
 fi
 

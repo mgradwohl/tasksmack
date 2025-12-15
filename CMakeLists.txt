@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(TaskSmack VERSION 0.1.0 LANGUAGES CXX)
+# Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
+cmake_policy(SET CMP0169 OLD)
+
+project(TaskSmack VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -164,6 +167,8 @@ include(FetchContent)
 include(GNUInstallDirs)
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE ALWAYS)
 
+find_package(OpenGL REQUIRED)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(STATUS "Configuring TaskSmack with clang: ${CMAKE_CXX_COMPILER}")
 else()
@@ -190,6 +195,103 @@ if(TARGET spdlog)
     target_compile_definitions(spdlog PUBLIC SPDLOG_USE_STD_FORMAT $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
 endif()
 
+# OpenGL + ImGui stack dependencies
+
+# GLFW
+find_package(glfw3 3.4 QUIET)
+if(NOT glfw3_FOUND)
+    FetchContent_Declare(
+        glfw3
+        DOWNLOAD_EXTRACT_TIMESTAMP OFF
+        URL https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip
+    )
+    FetchContent_GetProperties(glfw3)
+    if(NOT glfw3_POPULATED)
+        set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+        set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Populate(glfw3)
+        add_subdirectory(${glfw3_SOURCE_DIR} ${glfw3_BINARY_DIR})
+    endif()
+endif()
+set_target_properties(glfw PROPERTIES FOLDER "third_party")
+
+# OpenGL
+find_package(OpenGL REQUIRED)
+
+# GLAD
+FetchContent_Declare(
+    glad
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/Dav1dde/glad/archive/refs/tags/v2.0.8.zip
+)
+FetchContent_GetProperties(glad)
+if(NOT glad_POPULATED)
+    FetchContent_MakeAvailable(glad)
+    add_subdirectory("${glad_SOURCE_DIR}/cmake" glad_cmake)
+    glad_add_library(glad_gl_core_33 REPRODUCIBLE EXCLUDE_FROM_ALL LOADER API gl:core=3.3)
+endif()
+set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
+
+# ImGui
+FetchContent_Declare(
+    imgui
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/ocornut/imgui/archive/refs/heads/docking.zip
+)
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    FetchContent_Populate(imgui)
+endif()
+
+add_library(imgui_lib STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui_lib
+    SYSTEM PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+        ${imgui_SOURCE_DIR}/misc/cpp
+)
+target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33)
+target_compile_definitions(imgui_lib PUBLIC
+    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    IMGUI_IMPL_OPENGL_LOADER_GLAD2
+)
+set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
+
+# ImPlot (master branch for compatibility with latest ImGui)
+FetchContent_Declare(
+    implot
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/epezent/implot/archive/refs/heads/master.zip
+)
+FetchContent_GetProperties(implot)
+if(NOT implot_POPULATED)
+    FetchContent_Populate(implot)
+endif()
+
+add_library(implot_lib STATIC
+    ${implot_SOURCE_DIR}/implot.cpp
+    ${implot_SOURCE_DIR}/implot_items.cpp
+    ${implot_SOURCE_DIR}/implot_demo.cpp
+)
+target_include_directories(implot_lib
+    SYSTEM PUBLIC
+        ${implot_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}
+)
+target_link_libraries(implot_lib PUBLIC imgui_lib)
+set_target_properties(implot_lib PROPERTIES FOLDER "third_party")
+
 # Generate version header from template
 string(TOUPPER ${PROJECT_NAME} PROJECT_NAME_UPPER)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
@@ -201,10 +303,57 @@ configure_file(
 
 set(TASKSMACK_SOURCES
     src/main.cpp
+    src/Core/Application.cpp
+    src/Core/Window.cpp
+    src/UI/UILayer.cpp
+    src/App/ShellLayer.cpp
+    src/App/Panels/ProcessesPanel.cpp
+    src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/SystemMetricsPanel.cpp
+    src/Domain/ProcessModel.cpp
+    src/Domain/BackgroundSampler.cpp
+    src/Domain/SystemModel.cpp
 )
 
+# Platform-specific sources
+if(UNIX AND NOT APPLE)
+    list(APPEND TASKSMACK_SOURCES
+        src/Platform/Linux/LinuxProcessProbe.cpp
+        src/Platform/Linux/LinuxProcessActions.cpp
+        src/Platform/Linux/LinuxSystemProbe.cpp
+        src/Platform/Linux/Factory.cpp
+    )
+elseif(WIN32)
+    list(APPEND TASKSMACK_SOURCES
+        # src/Platform/Windows/WindowsProcessProbe.cpp
+        # src/Platform/Windows/Factory.cpp
+    )
+endif()
+
 set(TASKSMACK_HEADERS
+    src/Core/Application.h
+    src/Core/Window.h
+    src/Core/Layer.h
+    src/UI/UILayer.h
+    src/App/ShellLayer.h
+    src/App/Panels/ProcessesPanel.h
+    src/Platform/ProcessTypes.h
+    src/Platform/IProcessProbe.h
+    src/Platform/Factory.h
+    src/Domain/ProcessSnapshot.h
+    src/Domain/ProcessModel.h
 )
+
+# Platform-specific headers
+if(UNIX AND NOT APPLE)
+    list(APPEND TASKSMACK_HEADERS
+        src/Platform/Linux/LinuxProcessProbe.h
+    )
+elseif(WIN32)
+    list(APPEND TASKSMACK_HEADERS
+        # src/Platform/Windows/WindowsProcessProbe.h
+    )
+endif()
 
 if(CLANG_TIDY_EXE)
     # Generate a PCH-free and module-free compile_commands.json for clang-tidy
@@ -273,6 +422,9 @@ target_compile_features(TaskSmack PRIVATE cxx_std_23)
 # Precompiled headers
 if(TASKSMACK_ENABLE_PCH)
     target_precompile_headers(TaskSmack PRIVATE
+        # GL headers first to prevent conflicts with system headers
+        <glad/gl.h>
+        # Standard library headers
         <string>
         <vector>
         <memory>
@@ -282,6 +434,7 @@ if(TASKSMACK_ENABLE_PCH)
         <variant>
         <span>
         <format>
+        # Third-party headers
         <spdlog/spdlog.h>
     )
 endif()
@@ -306,7 +459,26 @@ target_include_directories(TaskSmack PRIVATE
 
 target_link_libraries(TaskSmack PRIVATE
     spdlog::spdlog_header_only
+    imgui_lib
+    implot_lib
+    OpenGL::GL
 )
+
+# Copy assets (fonts) to build directory
+set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
+add_custom_command(TARGET TaskSmack POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TaskSmack>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${TASKSMACK_ASSETS_DIR}/fonts"
+        "$<TARGET_FILE_DIR:TaskSmack>/assets/fonts"
+    COMMENT "Copying font assets to build directory"
+)
+
+# Link X11 on Linux (required by ImGui GLFW backend)
+if(UNIX AND NOT APPLE)
+    find_package(X11 REQUIRED)
+    target_link_libraries(TaskSmack PRIVATE X11::X11)
+endif()
 
 install(TARGETS TaskSmack
     BUNDLE DESTINATION .
