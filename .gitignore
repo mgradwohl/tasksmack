@@ -16,6 +16,13 @@
 /coverage/
 *.profraw
 *.profdata
+coverage-output.txt
+
+# Test results and sanitizer outputs
+test-results.xml
+/sanitizer-logs/
+/sanitizer-reports/
+clang-tidy-output.txt
 
 # CMake artifacts
 CMakeCache.txt
