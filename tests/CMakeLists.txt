@@ -39,9 +39,14 @@ endforeach()
 
 include(GoogleTest)
 
-# Example test executable
+# Test executable with all test sources
 add_executable(TaskSmack_tests
     test_main.cpp
+    Domain/test_History.cpp
+)
+
+target_include_directories(TaskSmack_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
 )
 
 target_link_libraries(TaskSmack_tests PRIVATE

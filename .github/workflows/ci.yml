@@ -46,7 +46,7 @@ jobs:
       run: cmake --build --preset debug
     
     - name: Test
-      run: ctest --preset debug
+      run: ctest --preset debug -j $(nproc) --output-on-failure --timeout 60
 
   build-windows:
     needs: validate-environment
@@ -75,7 +75,7 @@ jobs:
       run: cmake --build --preset win-debug
     
     - name: Test
-      run: ctest --preset win-debug
+      run: ctest --preset win-debug -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
 
   format-check:
     needs: validate-environment
@@ -169,4 +169,4 @@ jobs:
       run: cmake --build --preset ${{ matrix.preset }}
     
     - name: Test with sanitizers
-      run: ctest --preset ${{ matrix.preset }}
+      run: ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120
