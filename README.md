@@ -4,7 +4,7 @@ A modern C++23 project template with clang toolchain, CMake Presets, Google Test
 
 ## Features
 
-- **Modern C++23** with clang as the primary compiler (LLVM 22)
+- **Modern C++23** with clang as the primary compiler (LLVM 21+)
 - **CMake 3.28+** build system with CMake Presets and Ninja
 - **Auto-generated version header** with version, build type, compiler, and timestamp
 - **Precompiled headers** for faster compilation
@@ -93,7 +93,7 @@ ctest --preset win-debug
 ## Requirements
 
 ### Linux
-- Clang 22+ recommended
+- Clang 21+ recommended
 - CMake 3.28+ (4.2.1+ recommended)
 - Ninja
 - lld (LLVM linker)
@@ -104,12 +104,12 @@ ctest --preset win-debug
 - Python 3 with jinja2 (required for GLAD OpenGL loader generation)
 
 ```bash
-# Ubuntu/Debian (with LLVM APT repository for clang-22)
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2
+# Ubuntu/Debian (with LLVM APT repository for clang-21)
+sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2
 ```
 
 ### Windows
-- LLVM/Clang 22+ (includes clang-tidy, clang-format, lld, llvm-cov)
+- LLVM/Clang 21+ (includes clang-tidy, clang-format, lld, llvm-cov)
 - Set `LLVM_ROOT` environment variable
 - CMake 3.28+
 - Ninja

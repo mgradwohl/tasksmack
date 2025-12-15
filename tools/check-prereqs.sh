@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Required versions (minimum)
 MIN_CMAKE_VERSION="3.28"
-MIN_CLANG_VERSION="22"
+MIN_CLANG_VERSION="21"
 MIN_CCACHE_VERSION="4.9.1"
 MIN_GIT_VERSION="2.30"
 
@@ -179,15 +179,49 @@ get_python3_version() {
     fi
 }
 
+# Get working Python 3 command
+get_python_cmd() {
+    if command -v python3 &>/dev/null; then
+        echo "python3"
+    elif command -v python &>/dev/null; then
+        # Check if python is Python 3
+        local ver
+        ver=$(python --version 2>/dev/null | grep -oE 'Python [0-9]+' | grep -oE '[0-9]+' | head -1)
+        if [[ "$ver" == "3" ]]; then
+            echo "python"
+        else
+            echo ""
+        fi
+    else
+        echo ""
+    fi
+}
+
 # Check if jinja2 Python module is installed
 check_jinja2() {
-    if command -v python3 &>/dev/null; then
-        python3 -c "import jinja2" 2>/dev/null && echo "yes" || echo "no"
-    elif command -v python &>/dev/null; then
-        python -c "import jinja2" 2>/dev/null && echo "yes" || echo "no"
+    local python_cmd
+    python_cmd=$(get_python_cmd)
+    if [[ -z "$python_cmd" ]]; then
+        echo "no"
+        return
+    fi
+    # Try importing jinja2 - works for both system and user site-packages
+    if $python_cmd -c "import jinja2" 2>/dev/null; then
+        echo "yes"
     else
         echo "no"
     fi
+}
+
+# Get jinja2 version for display
+get_jinja2_version() {
+    local python_cmd
+    python_cmd=$(get_python_cmd)
+    if [[ -z "$python_cmd" ]]; then
+        echo ""
+        return
+    fi
+    $python_cmd -c "import jinja2; print(jinja2.__version__)" 2>/dev/null || echo ""
 }
 
 # Main
@@ -305,10 +339,12 @@ fi
 
 # Check jinja2 Python module (required for GLAD)
 jinja2_installed=$(check_jinja2)
+jinja2_ver=$(get_jinja2_version)
 if [[ "$jinja2_installed" == "yes" ]]; then
-    print_status "jinja2" "ok" "installed" "(python module)" ""
+    jinja2_display=${jinja2_ver:-installed}
+    print_status "jinja2" "ok" "$jinja2_display" "(python module)" ""
 else
-    print_status "jinja2" "fail" "missing" "(python module)" ""
+    print_status "jinja2" "fail" "missing" "(pip install jinja2)" ""
     ALL_OK=false
 fi
 

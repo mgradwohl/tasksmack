@@ -11,7 +11,7 @@ param()
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.28"
-$MIN_CLANG_VERSION = 22
+$MIN_CLANG_VERSION = 21
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
 
 # Helper function to print status
@@ -173,20 +173,34 @@ function Get-LLVMCovVersion {
     return $null
 }
 
-# Get Python 3 version
-function Get-Python3Version {
+# Get working Python 3 command (handles Windows Store alias issues)
+function Get-WorkingPythonCommand {
+    # Try python3 first - but verify it actually works (Windows Store alias might fail)
     try {
-        # Try python3 first
-        $output = (& python3 --version 2>&1) | Out-String
-        if ($output -match 'Python (\d+\.\d+(\.\d+)?)') {
-            return $Matches[1]
+        $result = & python3 --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and $result -match 'Python 3\.') {
+            return "python3"
         }
     }
     catch {}
+    # Fall back to python (might be Python 3 on Windows)
     try {
-        # Fall back to python (might be Python 3 on Windows)
-        $output = (& python --version 2>&1) | Out-String
-        if ($output -match 'Python (3\.\d+(\.\d+)?)') {
+        $result = & python --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and $result -match 'Python 3\.') {
+            return "python"
+        }
+    }
+    catch {}
+    return $null
+}
+
+# Get Python 3 version
+function Get-Python3Version {
+    $pythonCmd = Get-WorkingPythonCommand
+    if (-not $pythonCmd) { return $null }
+    try {
+        $output = (& $pythonCmd --version 2>&1) | Out-String
+        if ($output -match 'Python (\d+\.\d+(\.\d+)?)') {
             return $Matches[1]
         }
     }
@@ -196,13 +210,39 @@ function Get-Python3Version {
 
 # Check if jinja2 Python module is installed
 function Test-Jinja2Installed {
+    $pythonCmd = Get-WorkingPythonCommand
+    if (-not $pythonCmd) { return $false }
     try {
-        $pythonCmd = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
-        $result = & $pythonCmd -c "import jinja2; print('yes')" 2>&1
-        return $result -eq "yes"
+        # Try importing jinja2 - this works for both system and user site-packages
+        $result = & $pythonCmd -c "import jinja2; print(jinja2.__version__)" 2>&1
+        if ($LASTEXITCODE -eq 0 -and $result -match '^\d+\.') {
+            return $true
+        }
+    }
+    catch {}
+    # Fallback: check pip show (handles user installs)
+    try {
+        $result = & $pythonCmd -m pip show jinja2 2>&1
+        if ($LASTEXITCODE -eq 0 -and $result -match 'Name: Jinja2') {
+            return $true
+        }
     }
     catch {}
     return $false
+}
+
+# Get jinja2 version for display
+function Get-Jinja2Version {
+    $pythonCmd = Get-WorkingPythonCommand
+    if (-not $pythonCmd) { return $null }
+    try {
+        $result = & $pythonCmd -c "import jinja2; print(jinja2.__version__)" 2>&1
+        if ($LASTEXITCODE -eq 0 -and $result -match '^\d+\.') {
+            return $result.Trim()
+        }
+    }
+    catch {}
+    return $null
 }
 
 # Main
@@ -328,8 +368,8 @@ else {
 
 # Check Python 3 (required for GLAD OpenGL loader generation)
 $python3Ver = Get-Python3Version
-$python3Path = Get-ToolPath "python3"
-if (-not $python3Path) { $python3Path = Get-ToolPath "python" }
+$pythonCmd = Get-WorkingPythonCommand
+$python3Path = if ($pythonCmd) { Get-ToolPath $pythonCmd } else { $null }
 if ($python3Ver) {
     Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required "3.0"
 }
@@ -340,11 +380,13 @@ else {
 
 # Check jinja2 Python module (required for GLAD)
 $jinja2Installed = Test-Jinja2Installed
+$jinja2Ver = Get-Jinja2Version
 if ($jinja2Installed) {
-    Write-Status -Name "jinja2" -Status "ok" -Version "installed" -Path "(python module)" -Required ""
+    $jinja2Display = if ($jinja2Ver) { $jinja2Ver } else { "installed" }
+    Write-Status -Name "jinja2" -Status "ok" -Version $jinja2Display -Path "(python module)" -Required ""
 }
 else {
-    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(python module)" -Required ""
+    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(pip install jinja2)" -Required ""
     $AllOK = $false
 }
 

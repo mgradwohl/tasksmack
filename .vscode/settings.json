@@ -31,7 +31,7 @@
     },
     "C_Cpp.enhancedColorization": "disabled",
     "C_Cpp.dimInactiveRegions": false,
-    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-22/bin/clangd"
+    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
     // Windows: Use absolute path since ${env:} may not expand in all contexts
     "clangd.path": "${env:LLVM_ROOT}/bin/clangd",
     "clangd.arguments": [

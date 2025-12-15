@@ -8,10 +8,10 @@ Thank you for your interest in contributing!
 
 **Linux:**
 ```bash
-# Ubuntu/Debian
-sudo apt install clang-22 lld-22 cmake ninja-build python3 python3-jinja2
+# Ubuntu/Debian (with LLVM APT repository)
+sudo apt install clang-21 lld-21 cmake ninja-build python3 python3-jinja2
 
-# Or use a recent clang version available on your system
+# Or use a recent clang version (21+) available on your system
 ```
 
 **Windows:**
@@ -20,6 +20,35 @@ sudo apt install clang-22 lld-22 cmake ninja-build python3 python3-jinja2
 3. Install CMake and Ninja
 4. Install Python 3 (`winget install Python.Python.3.12`) and jinja2 (`pip install jinja2`)
 5. (Optional) Install vcpkg for package management
+
+### Verify Prerequisites
+
+Run the prerequisite checker to verify all required tools are installed with correct versions:
+
+```bash
+./tools/check-prereqs.sh    # Linux
+.\tools\check-prereqs.ps1   # Windows
+```
+
+The script checks for:
+| Tool | Minimum Version | Purpose |
+|------|-----------------|---------|
+| clang/clang++ | 21+ | C++23 compiler |
+| cmake | 3.28+ | Build system |
+| ninja | any | Build backend |
+| lld | any | Fast linker |
+| ccache | 4.9.1+ | Compiler cache |
+| clang-tidy | any | Static analysis |
+| clang-format | any | Code formatting |
+| llvm-profdata | any | Coverage (optional) |
+| llvm-cov | any | Coverage (optional) |
+| python3 | 3.0+ | GLAD OpenGL loader generation |
+| jinja2 | any | GLAD template engine |
+
+**Common fixes:**
+- **jinja2 not found:** Run `pip install jinja2` (or `pip install --user jinja2` if no admin rights)
+- **LLVM_ROOT not set (Windows):** Add to environment variables or run `Devshell-Updated.ps1`
+- **Wrong clang version:** Ensure LLVM 21+ is in PATH before older versions
 
 ### Building
 

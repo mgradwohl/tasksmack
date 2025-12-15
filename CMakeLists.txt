@@ -117,7 +117,7 @@ endfunction()
 
 find_program(CLANG_TIDY_EXE NAMES clang-tidy
     HINTS
-        "/usr/lib/llvm-22/bin"
+        "/usr/lib/llvm-21/bin"
         "$ENV{LLVM_ROOT}/bin"
         "$ENV{ProgramFiles}/LLVM/bin"
         "C:/Program Files/LLVM/bin"
@@ -125,7 +125,7 @@ find_program(CLANG_TIDY_EXE NAMES clang-tidy
 
 find_program(CLANG_FORMAT_EXE NAMES clang-format
     HINTS
-        "/usr/lib/llvm-22/bin"
+        "/usr/lib/llvm-21/bin"
         "$ENV{LLVM_ROOT}/bin"
         "$ENV{ProgramFiles}/LLVM/bin"
         "C:/Program Files/LLVM/bin"
