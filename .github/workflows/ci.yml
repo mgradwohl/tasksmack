@@ -313,7 +313,7 @@ jobs:
         echo "## ${{ matrix.preset }} Sanitizer Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        if [ "${{ steps.sanitizer-test.outputs.test_result }}" == "0" ]; then
+        if [ "${{ steps.sanitizer-test.outputs.test_result }}" = "0" ]; then
           echo "✅ **Status:** PASSED - No issues detected" >> $GITHUB_STEP_SUMMARY
         else
           echo "❌ **Status:** FAILED - Issues detected" >> $GITHUB_STEP_SUMMARY
