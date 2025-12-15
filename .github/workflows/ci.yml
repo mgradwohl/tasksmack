@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
@@ -53,7 +53,7 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Install LLVM
       run: choco install llvm ninja ccache -y
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-24.04
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
@@ -151,7 +151,7 @@ jobs:
         preset: [asan-ubsan, tsan]
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Setup LLVM
       uses: ./.github/actions/setup-llvm
