@@ -494,3 +494,47 @@ TEST(BackgroundSamplerTest, EmptyProcessList)
 
     EXPECT_GT(callbackCount.load(), 0);
 }
+
+TEST(BackgroundSamplerTest, VeryShortIntervalStillWorks)
+{
+    // Test the branch where sleepTime <= 0 (interval shorter than enumerate time)
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({});
+
+    Domain::SamplerConfig config;
+    config.interval = 1ms; // Extremely short interval
+
+    Domain::BackgroundSampler sampler(std::move(probe), config);
+
+    std::atomic<int> callbackCount{0};
+    sampler.setCallback([&](const auto&, uint64_t) { callbackCount.fetch_add(1); });
+
+    sampler.start();
+    std::this_thread::sleep_for(100ms);
+    sampler.stop();
+
+    // Should have been called many times even with very short interval
+    EXPECT_GT(callbackCount.load(), 10);
+}
+
+TEST(BackgroundSamplerTest, ZeroIntervalHandledGracefully)
+{
+    // Edge case: zero interval
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({});
+
+    Domain::SamplerConfig config;
+    config.interval = 0ms; // Zero interval - sleepTime will always be <= 0
+
+    Domain::BackgroundSampler sampler(std::move(probe), config);
+
+    std::atomic<int> callbackCount{0};
+    sampler.setCallback([&](const auto&, uint64_t) { callbackCount.fetch_add(1); });
+
+    sampler.start();
+    std::this_thread::sleep_for(50ms);
+    sampler.stop();
+
+    // Should have been called many times with zero interval
+    EXPECT_GT(callbackCount.load(), 5);
+}

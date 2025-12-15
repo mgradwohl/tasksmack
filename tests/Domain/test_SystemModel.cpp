@@ -27,6 +27,61 @@ using TestMocks::makeSystemCounters;
 using TestMocks::MockSystemProbe;
 
 // =============================================================================
+// Platform::CpuCounters Tests (SystemTypes.h)
+// =============================================================================
+
+TEST(CpuCountersTest, TotalCalculatesAllComponents)
+{
+    Platform::CpuCounters c;
+    c.user = 100;
+    c.nice = 20;
+    c.system = 50;
+    c.idle = 800;
+    c.iowait = 10;
+    c.irq = 5;
+    c.softirq = 3;
+    c.steal = 7;
+    c.guest = 4;
+    c.guestNice = 1;
+
+    // total = 100 + 20 + 50 + 800 + 10 + 5 + 3 + 7 + 4 + 1 = 1000
+    EXPECT_EQ(c.total(), 1000);
+}
+
+TEST(CpuCountersTest, ActiveExcludesIdleAndIowait)
+{
+    Platform::CpuCounters c;
+    c.user = 100;
+    c.nice = 20;
+    c.system = 50;
+    c.idle = 800;  // NOT included in active
+    c.iowait = 10; // NOT included in active
+    c.irq = 5;
+    c.softirq = 3;
+    c.steal = 7;
+    c.guest = 4;
+    c.guestNice = 1;
+
+    // active = 100 + 20 + 50 + 5 + 3 + 7 + 4 + 1 = 190
+    // (excludes idle=800 and iowait=10)
+    EXPECT_EQ(c.active(), 190);
+}
+
+TEST(CpuCountersTest, ActiveWithZeroValues)
+{
+    Platform::CpuCounters c;
+    // All zeros by default
+    EXPECT_EQ(c.active(), 0);
+}
+
+TEST(CpuCountersTest, TotalWithZeroValues)
+{
+    Platform::CpuCounters c;
+    // All zeros by default
+    EXPECT_EQ(c.total(), 0);
+}
+
+// =============================================================================
 // Construction Tests
 // =============================================================================
 

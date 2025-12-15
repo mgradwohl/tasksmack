@@ -410,6 +410,45 @@ TEST(ProcessModelTest, StateTranslationUnknown)
     EXPECT_EQ(snaps[0].displayState, "Unknown");
 }
 
+TEST(ProcessModelTest, StateTranslationTracing)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "debugged_proc", 't', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    EXPECT_EQ(snaps[0].displayState, "Tracing");
+}
+
+TEST(ProcessModelTest, StateTranslationDead)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "dead_proc", 'X', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    EXPECT_EQ(snaps[0].displayState, "Dead");
+}
+
+TEST(ProcessModelTest, StateTranslationIdle)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "idle_kernel_thread", 'I', 0, 0)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    EXPECT_EQ(snaps[0].displayState, "Idle");
+}
+
 // =============================================================================
 // Snapshot Data Mapping Tests
 // =============================================================================
