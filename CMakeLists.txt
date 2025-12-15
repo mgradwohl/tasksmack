@@ -365,7 +365,7 @@ if(CLANG_TIDY_EXE)
                 ${CMAKE_BINARY_DIR}/compile_commands.json
                 ${CMAKE_BINARY_DIR}/compile_commands.json.bak
             COMMAND powershell -NoProfile -Command
-                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '-Xclang -include-pch -Xclang [^ ]*\\.pch', '' -replace '-Xclang -emit-pch', '' -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', '' -replace '-Winvalid-pch', '' -replace '-fpch-instantiate-templates', '' -replace '@CMakeFiles[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
+                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '-Xclang -include-pch -Xclang [^ ]*\\.pch', '' -replace '-Xclang -emit-pch', '' -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', '' -replace '-Winvalid-pch', '' -replace '-fpch-instantiate-templates', '' -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
             COMMENT "Stripping PCH flags from compile_commands.json for clang-tidy"
         )
@@ -380,7 +380,7 @@ if(CLANG_TIDY_EXE)
                 -e "s/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g"
                 -e "s/-Winvalid-pch//g"
                 -e "s/-fpch-instantiate-templates//g"
-                -e "s/@CMakeFiles[^ ]*\\.modmap//g"
+                -e "s/@[^ ]*\\.modmap//g"
                 -e "s/-fmodule-output=[^ ]*//g"
                 ${CMAKE_BINARY_DIR}/compile_commands.json
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json

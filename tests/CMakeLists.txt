@@ -45,9 +45,11 @@ add_executable(TaskSmack_tests
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
+    Domain/test_BackgroundSampler.cpp
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
 )
 
 target_include_directories(TaskSmack_tests PRIVATE
