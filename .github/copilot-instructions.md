@@ -277,3 +277,27 @@ These checks are disabled in `.clang-tidy` due to false positives or excessive n
 2. Run static analysis tools
 3. Follow the principle of least surprise
 4. Refer to C++ Core Guidelines for best practices
+
+## Code Review Instructions
+
+When performing a code review on this project:
+
+1. **C++23 Compliance**: Flag any use of deprecated patterns when modern C++23 alternatives exist (e.g., prefer `std::ranges`, `std::views`, `std::string::contains()`)
+
+2. **Memory Safety**: Check for potential memory issues - prefer smart pointers, RAII, avoid raw `new`/`delete`
+
+3. **Thread Safety**: Verify proper mutex usage, check for race conditions, ensure `std::atomic` is used correctly
+
+4. **Error Handling**: Ensure functions check return values and handle errors appropriately
+
+5. **Naming Conventions**: Enforce project standards:
+   - Classes: PascalCase
+   - Functions: camelCase  
+   - Members: m_camelCase
+   - Constants: UPPER_SNAKE_CASE
+
+6. **Include Order**: Verify includes follow project standard (matching header → project → third-party → stdlib)
+
+7. **Performance**: Flag unnecessary copies, suggest `const&` or move semantics where appropriate
+
+8. **Testing**: Suggest tests for new functionality, verify edge cases are covered

@@ -37,8 +37,8 @@ runs:
         chmod +x llvm.sh
         sudo ./llvm.sh ${{ inputs.llvm-version }}
         
-        # Build package list - always include GUI dependencies for this project
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev"
+        # Build package list - always include GUI dependencies and Python for GLAD
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev python3 python3-jinja2"
         
         if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
