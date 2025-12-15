@@ -9,7 +9,7 @@ Thank you for your interest in contributing!
 **Linux:**
 ```bash
 # Ubuntu/Debian
-sudo apt install clang-22 lld-22 cmake ninja-build
+sudo apt install clang-22 lld-22 cmake ninja-build python3 python3-jinja2
 
 # Or use a recent clang version available on your system
 ```
@@ -18,7 +18,8 @@ sudo apt install clang-22 lld-22 cmake ninja-build
 1. Install LLVM from https://releases.llvm.org/
 2. Set `LLVM_ROOT` environment variable to the LLVM installation path
 3. Install CMake and Ninja
-4. (Optional) Install vcpkg for package management
+4. Install Python 3 (`winget install Python.Python.3.12`) and jinja2 (`pip install jinja2`)
+5. (Optional) Install vcpkg for package management
 
 ### Building
 

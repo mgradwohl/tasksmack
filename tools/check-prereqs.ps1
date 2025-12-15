@@ -173,6 +173,38 @@ function Get-LLVMCovVersion {
     return $null
 }
 
+# Get Python 3 version
+function Get-Python3Version {
+    try {
+        # Try python3 first
+        $output = (& python3 --version 2>&1) | Out-String
+        if ($output -match 'Python (\d+\.\d+(\.\d+)?)') {
+            return $Matches[1]
+        }
+    }
+    catch {}
+    try {
+        # Fall back to python (might be Python 3 on Windows)
+        $output = (& python --version 2>&1) | Out-String
+        if ($output -match 'Python (3\.\d+(\.\d+)?)') {
+            return $Matches[1]
+        }
+    }
+    catch {}
+    return $null
+}
+
+# Check if jinja2 Python module is installed
+function Test-Jinja2Installed {
+    try {
+        $pythonCmd = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
+        $result = & $pythonCmd -c "import jinja2; print('yes')" 2>&1
+        return $result -eq "yes"
+    }
+    catch {}
+    return $false
+}
+
 # Main
 Write-Host ""
 Write-Host "========================================" -ForegroundColor White
@@ -292,6 +324,28 @@ if ($covVer) {
 else {
     Write-Status -Name "llvm-cov" -Status "fail" -Version $null -Path $covPath -Required ""
     # Don't fail for optional coverage tools
+}
+
+# Check Python 3 (required for GLAD OpenGL loader generation)
+$python3Ver = Get-Python3Version
+$python3Path = Get-ToolPath "python3"
+if (-not $python3Path) { $python3Path = Get-ToolPath "python" }
+if ($python3Ver) {
+    Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required "3.0"
+}
+else {
+    Write-Status -Name "python3" -Status "fail" -Version $null -Path $python3Path -Required "3.0"
+    $AllOK = $false
+}
+
+# Check jinja2 Python module (required for GLAD)
+$jinja2Installed = Test-Jinja2Installed
+if ($jinja2Installed) {
+    Write-Status -Name "jinja2" -Status "ok" -Version "installed" -Path "(python module)" -Required ""
+}
+else {
+    Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(python module)" -Required ""
+    $AllOK = $false
 }
 
 Write-Host "──────────────────────────────────────────────────────────────────────────"

@@ -101,10 +101,11 @@ ctest --preset win-debug
 - clang-format (code formatting)
 - ccache 4.9.1+ (required for faster rebuilds)
 - llvm-profdata, llvm-cov (for coverage reports)
+- Python 3 with jinja2 (required for GLAD OpenGL loader generation)
 
 ```bash
 # Ubuntu/Debian (with LLVM APT repository for clang-22)
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache
+sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2
 ```
 
 ### Windows
@@ -113,6 +114,13 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - CMake 3.28+
 - Ninja
 - ccache 4.9.1+ (install via `choco install ccache` or `scoop install ccache`)
+- Python 3 with jinja2 (required for GLAD OpenGL loader generation)
+
+```powershell
+# Install Python 3 and jinja2 via winget
+winget install Python.Python.3.12
+pip install jinja2
+```
 
 #### Windows Development Environment
 

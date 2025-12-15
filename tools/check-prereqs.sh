@@ -161,6 +161,35 @@ get_git_version() {
     fi
 }
 
+# Get python3 version
+get_python3_version() {
+    if command -v python3 &>/dev/null; then
+        python3 --version 2>/dev/null | grep -oE 'Python [0-9]+\.[0-9]+(\.[0-9]+)?' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+    elif command -v python &>/dev/null; then
+        # Check if python is Python 3
+        local ver
+        ver=$(python --version 2>/dev/null | grep -oE 'Python [0-9]+\.[0-9]+(\.[0-9]+)?' | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+        if [[ "$ver" == 3.* ]]; then
+            echo "$ver"
+        else
+            echo ""
+        fi
+    else
+        echo ""
+    fi
+}
+
+# Check if jinja2 Python module is installed
+check_jinja2() {
+    if command -v python3 &>/dev/null; then
+        python3 -c "import jinja2" 2>/dev/null && echo "yes" || echo "no"
+    elif command -v python &>/dev/null; then
+        python -c "import jinja2" 2>/dev/null && echo "yes" || echo "no"
+    else
+        echo "no"
+    fi
+}
+
 # Main
 echo ""
 echo -e "${BOLD}========================================"
@@ -260,6 +289,26 @@ if [[ -n "$git_ver" ]] && version_ge "$git_ver" "$MIN_GIT_VERSION"; then
     print_status "git" "ok" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
 else
     print_status "git" "fail" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
+    ALL_OK=false
+fi
+
+# Check Python 3 (required for GLAD OpenGL loader generation)
+python3_ver=$(get_python3_version)
+python3_path=$(get_path python3)
+[[ -z "$python3_path" ]] && python3_path=$(get_path python)
+if [[ -n "$python3_ver" ]]; then
+    print_status "python3" "ok" "$python3_ver" "$python3_path" "3.0"
+else
+    print_status "python3" "fail" "" "$python3_path" "3.0"
+    ALL_OK=false
+fi
+
+# Check jinja2 Python module (required for GLAD)
+jinja2_installed=$(check_jinja2)
+if [[ "$jinja2_installed" == "yes" ]]; then
+    print_status "jinja2" "ok" "installed" "(python module)" ""
+else
+    print_status "jinja2" "fail" "missing" "(python module)" ""
     ALL_OK=false
 fi
 
