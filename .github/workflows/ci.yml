@@ -50,7 +50,7 @@ jobs:
     
     - name: Upload test results
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: linux-test-results
         path: build/debug/test-results.xml
@@ -86,7 +86,7 @@ jobs:
     
     - name: Upload test results
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: windows-test-results
         path: build/win-debug/test-results.xml
@@ -131,7 +131,7 @@ jobs:
     
     - name: Upload clang-tidy results
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: clang-tidy-results
         path: clang-tidy-output.txt
@@ -179,7 +179,7 @@ jobs:
     
     - name: Upload coverage report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: coverage-report
         path: coverage/
@@ -335,7 +335,7 @@ jobs:
     
     - name: Upload sanitizer logs and reports
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: ${{ matrix.preset }}-report
         path: |
