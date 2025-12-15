@@ -1,0 +1,51 @@
+# Build directories
+/build/
+/build-*/
+/out/
+/Debug/
+/Release/
+/debug/
+/release/
+/optimized/
+/.cache/
+
+# CPack output
+/dist/
+
+# Coverage output
+/coverage/
+*.profraw
+*.profdata
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake-build*/
+Makefile
+install_manifest.txt
+Testing/
+CTestTestfile.cmake
+compile_commands.json
+
+# VS Code / CLion
+*.user
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+/.local/
+
+# Backup/temp files
+*~
+*.bak
+*.orig
+*.swp
+*.swo
+
+# clangd cache
+.clangd/
+
+# Core dumps
+core
+core.*

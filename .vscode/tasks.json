@@ -1,0 +1,478 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "CMake: Configure Debug",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"debug"
+			],
+			"windows": {
+				"args": [
+					"--preset",
+					"win-debug"
+				]
+			},
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Configure RelWithDebInfo",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"relwithdebinfo"
+			],
+			"windows": {
+				"args": [
+					"--preset",
+					"win-relwithdebinfo"
+				]
+			},
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Configure Release",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"release"
+			],
+			"windows": {
+				"args": [
+					"--preset",
+					"win-release"
+				]
+			},
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Configure Optimized",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"optimized"
+			],
+			"windows": {
+				"args": [
+					"--preset",
+					"win-optimized"
+				]
+			},
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Configure ASan+UBSan (Linux)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"asan-ubsan"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Configure TSan (Linux)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"tsan"
+			],
+			"group": "build",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CMake: Build Debug",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"debug"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-debug"
+				]
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"dependsOn": "CMake: Configure Debug",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Build RelWithDebInfo",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"relwithdebinfo"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-relwithdebinfo"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Configure RelWithDebInfo",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Build Release",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"release"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-release"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Configure Release",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Build Optimized",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"optimized"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-optimized"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Configure Optimized",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Build ASan+UBSan (Linux)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"asan-ubsan"
+			],
+			"group": "build",
+			"dependsOn": "CMake: Configure ASan+UBSan (Linux)",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Build TSan (Linux)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"tsan"
+			],
+			"group": "build",
+			"dependsOn": "CMake: Configure TSan (Linux)",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Test Debug",
+			"type": "shell",
+			"command": "ctest",
+			"args": [
+				"--preset",
+				"debug"
+			],
+			"windows": {
+				"args": [
+					"--preset",
+					"win-debug"
+				]
+			},
+			"group": "test",
+			"dependsOn": "CMake: Build Debug",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Test ASan+UBSan (Linux)",
+			"type": "shell",
+			"command": "ctest",
+			"args": [
+				"--preset",
+				"asan-ubsan"
+			],
+			"group": "test",
+			"dependsOn": "CMake: Build ASan+UBSan (Linux)",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "CMake: Test TSan (Linux)",
+			"type": "shell",
+			"command": "ctest",
+			"args": [
+				"--preset",
+				"tsan"
+			],
+			"group": "test",
+			"dependsOn": "CMake: Build TSan (Linux)",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			}
+		},
+		{
+			"label": "Clang-Tidy",
+			"type": "shell",
+			"command": "${workspaceFolder}/tools/clang-tidy.sh",
+			"args": [
+				"-v",
+				"debug"
+			],
+			"windows": {
+				"command": "pwsh",
+				"args": [
+					"-File",
+					"${workspaceFolder}/tools/clang-tidy.ps1",
+					"-ShowDetails",
+					"debug"
+				]
+			},
+			"group": "test",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "Clang-Format",
+			"type": "shell",
+			"command": "${workspaceFolder}/tools/clang-format.sh",
+			"args": [
+				"-v"
+			],
+			"windows": {
+				"command": "pwsh",
+				"args": [
+					"-File",
+					"${workspaceFolder}/tools/clang-format.ps1",
+					"-ShowDetails"
+				]
+			},
+			"group": "test",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "Check Format",
+			"type": "shell",
+			"command": "${workspaceFolder}/tools/check-format.sh",
+			"args": [
+				"-v"
+			],
+			"windows": {
+				"command": "pwsh",
+				"args": [
+					"-File",
+					"${workspaceFolder}/tools/check-format.ps1",
+					"-ShowDetails"
+				]
+			},
+			"group": "test",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "CPack: Create Package",
+			"type": "shell",
+			"command": "cpack",
+			"args": [
+				"--config",
+				"${workspaceFolder}/build/release/CPackConfig.cmake",
+				"-G",
+				"ZIP"
+			],
+			"windows": {
+				"args": [
+					"--config",
+					"${workspaceFolder}/build/win-release/CPackConfig.cmake",
+					"-G",
+					"ZIP"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Build Release",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "Coverage: Generate Report",
+			"type": "shell",
+			"command": "${workspaceFolder}/tools/coverage.sh",
+			"args": [
+				"-v"
+			],
+			"windows": {
+				"command": "pwsh",
+				"args": [
+					"-File",
+					"${workspaceFolder}/tools/coverage.ps1",
+					"-ShowDetails"
+				]
+			},
+			"group": "test",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
+			"label": "Check Prerequisites",
+			"type": "shell",
+			"command": "${workspaceFolder}/tools/check-prereqs.sh",
+			"windows": {
+				"command": "pwsh",
+				"args": [
+					"-File",
+					"${workspaceFolder}/tools/check-prereqs.ps1"
+				]
+			},
+			"group": "test",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		}
+	]
+}

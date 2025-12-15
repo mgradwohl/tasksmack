@@ -1,0 +1,110 @@
+name: 'Setup LLVM'
+description: 'Install and configure LLVM toolchain on Ubuntu'
+inputs:
+  llvm-version:
+    description: 'LLVM version to install'
+    required: false
+    default: '22'
+  install-clang-format:
+    description: 'Install clang-format'
+    required: false
+    default: 'false'
+  install-clang-tidy:
+    description: 'Install clang-tidy'
+    required: false
+    default: 'false'
+  install-coverage-tools:
+    description: 'Install llvm-profdata and llvm-cov for coverage'
+    required: false
+    default: 'false'
+  install-ninja:
+    description: 'Install ninja build system'
+    required: false
+    default: 'true'
+  install-ccache:
+    description: 'Install ccache'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install LLVM ${{ inputs.llvm-version }}
+      shell: bash
+      run: |
+        # Download and run LLVM installer
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh ${{ inputs.llvm-version }}
+        
+        # Build package list
+        PACKAGES=""
+        if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
+          PACKAGES="$PACKAGES ninja-build"
+        fi
+        if [[ "${{ inputs.install-ccache }}" == "true" ]]; then
+          PACKAGES="$PACKAGES ccache"
+        fi
+        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+          PACKAGES="$PACKAGES clang-format-${{ inputs.llvm-version }}"
+        fi
+        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+          PACKAGES="$PACKAGES clang-tidy-${{ inputs.llvm-version }}"
+        fi
+        
+        # Install additional packages if any
+        if [[ -n "$PACKAGES" ]]; then
+          sudo apt-get install -y $PACKAGES
+        fi
+
+    - name: Configure LLVM alternatives
+      shell: bash
+      run: |
+        VER=${{ inputs.llvm-version }}
+        
+        # Core LLVM tools (always configured)
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$VER 100
+        sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-$VER 100
+        sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-$VER 100
+        
+        # Set alternatives explicitly
+        sudo update-alternatives --set clang /usr/bin/clang-$VER
+        sudo update-alternatives --set clang++ /usr/bin/clang++-$VER
+        
+        # Optional: clang-format
+        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-$VER 100
+          sudo update-alternatives --set clang-format /usr/bin/clang-format-$VER
+        fi
+        
+        # Optional: clang-tidy
+        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-$VER 100
+          sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$VER
+        fi
+        
+        # Optional: coverage tools
+        if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
+          sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-$VER 100
+          sudo update-alternatives --install /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-$VER 100
+          sudo update-alternatives --set llvm-profdata /usr/bin/llvm-profdata-$VER
+          sudo update-alternatives --set llvm-cov /usr/bin/llvm-cov-$VER
+        fi
+
+    - name: Verify installation
+      shell: bash
+      run: |
+        echo "=== LLVM Installation Summary ==="
+        clang --version | head -1
+        clang++ --version | head -1
+        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+          clang-format --version
+        fi
+        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+          clang-tidy --version | head -1
+        fi
+        if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
+          llvm-profdata --version 2>&1 | head -1 || echo "llvm-profdata: $(which llvm-profdata || echo 'not found')"
+          llvm-cov --version 2>&1 | head -1 || echo "llvm-cov: $(which llvm-cov || echo 'not found')"
+        fi

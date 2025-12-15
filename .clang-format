@@ -1,0 +1,95 @@
+BasedOnStyle: LLVM
+Language: Cpp
+
+# C++23 project (use Latest for newer clang-format compatibility)
+Standard: Latest
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+ColumnLimit: 140
+ContinuationIndentWidth: 4
+
+# Allman braces everywhere
+BreakBeforeBraces: Allman
+
+BraceWrapping:
+  AfterClass: true
+  AfterControlStatement: true
+  AfterEnum: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: true
+  AfterCaseLabel: true
+  BeforeCatch: true
+  BeforeElse: true
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# Make spacing consistent & readable
+SpaceInEmptyParentheses: false
+SpacesInParentheses: false
+SpaceAfterCStyleCast: true
+SpaceAfterTemplateKeyword: false
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeAssignmentOperators: true
+
+# Function calls: no space before, but control statements get one
+SpaceBeforeParens: ControlStatements
+
+# Pointer/reference style
+PointerAlignment: Left
+ReferenceAlignment: Left                  # `int& ref`
+
+# Keep if/for/while blocks multi-line & readable
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: false
+AllowShortBlocksOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+
+# Alignment / wrapping
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: AlignAfterOperator
+BinPackArguments: false
+BinPackParameters: false
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+
+# Includes
+SortIncludes: true
+IncludeBlocks: Regroup
+
+IncludeCategories:
+  # 1. Main/matching header for this translation unit
+  - Regex: '^"([^"]+)\.h"$'
+    Priority: 1
+
+  # 2. Project-local headers (src/, include/, tests/)
+  - Regex: '^"(src|include|tests)/.*"'
+    Priority: 2
+
+  # 3. Third-party libraries (spdlog, fmt, boost, etc.)
+  - Regex: '^<(spdlog|fmt|boost|gtest|gmock)/.*>'
+    Priority: 3
+
+  # 4. C++ standard library
+  - Regex: '^<([a-zA-Z0-9_]+)>$'
+    Priority: 4
+
+  # 5. Everything else (system misc, OS libs, unknown libs)
+  - Regex: '.*'
+    Priority: 5
+
+SortUsingDeclarations: true
+
+# Comments
+ReflowComments: true
+CommentPragmas: '^ NOLINT'

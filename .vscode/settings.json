@@ -1,0 +1,73 @@
+{
+    // CMake Presets - VS Code CMake Tools will use CMakePresets.json
+    "cmake.useCMakePresets": "always",
+    "cmake.generator": "Ninja",
+    "cmake.configureSettings": {
+        "CMAKE_C_STANDARD": "17",
+        "CMAKE_C_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF"
+    },
+    "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+    // Fully disable Microsoft C/C++ IntelliSense - we use clangd exclusively
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "C_Cpp.autocomplete": "disabled",
+    "C_Cpp.errorSquiggles": "disabled",
+    "C_Cpp.formatting": "disabled",
+    "C_Cpp.hover": "disabled",
+    "C_Cpp.suggestSnippets": false,
+    "C_Cpp.default.cppStandard": "c++23",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.codeAnalysis.runAutomatically": false,
+    "C_Cpp.codeAnalysis.clangTidy.enabled": false,
+    "C_Cpp.codeAnalysis.exclude": {
+        "**": true
+    },
+    "C_Cpp.enhancedColorization": "disabled",
+    "C_Cpp.dimInactiveRegions": false,
+    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-22/bin/clangd"
+    // Windows: Use absolute path since ${env:} may not expand in all contexts
+    "clangd.path": "${env:LLVM_ROOT}/bin/clangd",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}",
+        "--background-index",
+        "--enable-config",
+        "--clang-tidy",
+        "--completion-style=detailed",
+        "--header-insertion=iwyu"
+    ],
+    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
+    // Windows: "C:\\Program Files\\LLVM\\bin\\clangd.exe"
+    "clang-format.executable": "${env:LLVM_ROOT}/bin/clang-format",
+    "files.exclude": {
+        "**/generated/**": true,
+        "**/.cache/**": true
+    },
+    "files.watcherExclude": {
+        "**/build/**": true,
+        "**/_deps/**": true,
+        "**/.cache/**": true
+    },
+    "search.exclude": {
+        "**/build/**": true,
+        "**/_deps/**": true,
+        "**/.cache/**": true
+    },
+    "editor.formatOnSave": true,
+    "[cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+    },
+    "[c]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+    },
+    "clangd.checkUpdates": true,
+    "clangd.onConfigChanged": "restart",
+    "C_Cpp.codeFolding": "disabled",
+    "C_Cpp.configurationWarnings": "disabled",
+    "C_Cpp.default.intelliSenseMode": "clang-x64",
+    "C_Cpp.clang_format_sortIncludes": false
+    // "cmake.cmakePath": "/snap/bin/cmake",
+    // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+    // "cmake.ctestPath": "/snap/bin/cmake"
+}

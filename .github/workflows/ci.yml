@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-environment:
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+      with:
+        install-clang-format: 'true'
+        install-clang-tidy: 'true'
+        install-coverage-tools: 'true'
+    
+    - name: Validate prerequisites
+      run: ./tools/check-prereqs.sh
+
+  build-linux:
+    needs: validate-environment
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+    
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: linux-debug
+        max-size: 500M
+    
+    - name: Configure
+      run: cmake --preset debug
+    
+    - name: Build
+      run: cmake --build --preset debug
+    
+    - name: Test
+      run: ctest --preset debug
+
+  build-windows:
+    needs: validate-environment
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install LLVM
+      run: choco install llvm ninja ccache -y
+    
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: windows-debug
+        max-size: 500M
+    
+    - name: Configure
+      env:
+        LLVM_ROOT: C:\Program Files\LLVM
+      run: cmake --preset win-debug
+    
+    - name: Build
+      env:
+        LLVM_ROOT: C:\Program Files\LLVM
+      run: cmake --build --preset win-debug
+    
+    - name: Test
+      run: ctest --preset win-debug
+
+  format-check:
+    needs: validate-environment
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+      with:
+        install-clang-format: 'true'
+        install-ninja: 'false'
+        install-ccache: 'false'
+    
+    - name: Check formatting
+      run: ./tools/check-format.sh
+
+  static-analysis:
+    needs: validate-environment
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+      with:
+        install-clang-tidy: 'true'
+    
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: linux-tidy
+        max-size: 500M
+    
+    - name: Run clang-tidy
+      run: ./tools/clang-tidy.sh debug
+
+  coverage:
+    needs: validate-environment
+    runs-on: ubuntu-24.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+      with:
+        install-coverage-tools: 'true'
+    
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: linux-coverage
+        max-size: 500M
+    
+    - name: Generate coverage report
+      run: ./tools/coverage.sh -v
+    
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage/
+
+  sanitizers:
+    needs: validate-environment
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [asan-ubsan, tsan]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup LLVM
+      uses: ./.github/actions/setup-llvm
+    
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: linux-${{ matrix.preset }}
+        max-size: 500M
+    
+    - name: Configure
+      run: cmake --preset ${{ matrix.preset }}
+    
+    - name: Build
+      run: cmake --build --preset ${{ matrix.preset }}
+    
+    - name: Test with sanitizers
+      run: ctest --preset ${{ matrix.preset }}

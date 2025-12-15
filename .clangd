@@ -1,0 +1,74 @@
+CompileFlags:
+  Add:
+    # Language/std
+    - -std=c++23
+    - -fno-modules
+
+    # Project includes so standalone files still work
+    - -Isrc
+
+    # Treat these as system headers (suppress their warnings)
+    - --system-header-prefix=_deps/
+    - --system-header-prefix=spdlog/
+    - --system-header-prefix=gtest/
+    - --system-header-prefix=gmock/
+    
+    # Standard system header paths (suppress warnings from OS/compiler headers)
+    - --system-header-prefix=/usr/include/
+    - --system-header-prefix=/usr/lib/
+    - --system-header-prefix=/lib/
+
+    # Warnings while parsing
+    - -Wall
+    - -Wextra
+    - -Wpedantic
+    - -Wconversion
+    - -Wsign-conversion
+
+  # Remove PCH, module, and MSVC-specific flags that clangd doesn't support
+  Remove:
+    - -Xclang
+    - -emit-pch
+    - -include-pch
+    - -fpch-*
+    - -Winvalid-pch
+    - -fmodule-output=*
+    - "@CMakeFiles*"
+    - --dependent-lib=*
+
+Diagnostics:
+  # Let clangd run clang-tidy using your .clang-tidy config.
+  # No Add/Remove here – .clang-tidy is the source of truth.
+  ClangTidy: {}
+  UnusedIncludes: Strict
+
+Index:
+  Background: Build
+  StandardLibrary: true
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Hover:
+  ShowAKA: true
+
+Completion:
+  ArgumentLists: FullPlaceholders
+  HeaderInsertion: IWYU
+  AllScopes: true
+  CodePatterns: All
+
+# Suppress diagnostics for build directory, dependencies, and CMake templates
+---
+If:
+  PathMatch:
+    - .*/build/.*
+    - .*/_deps/.*
+    - .*/\.cache/.*
+    - .*/dist/.*
+    - .*/coverage/.*
+    - .*\.in$
+Diagnostics:
+  Suppress: '*'
