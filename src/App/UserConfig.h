@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/ProcessColumnConfig.h"
 #include "UI/Theme.h"
 
 #include <filesystem>
@@ -21,6 +22,9 @@ struct UserSettings
     bool showProcesses = true;
     bool showMetrics = true;
     bool showDetails = true;
+
+    // Process panel column visibility
+    ProcessColumnSettings processColumns;
 
     // Window state (optional, for future use)
     int windowWidth = 1280;

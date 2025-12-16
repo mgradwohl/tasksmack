@@ -250,7 +250,7 @@ Features observed in btop++ that could enhance TaskSmack. Organized by effort an
 | **Disk Panel** | Per-device I/O rates, read/write activity | New `IDiskProbe` reading `/proc/diskstats` (Linux), `GetDiskPerformance` (Windows) |
 | **Process Tree View** | Hierarchical view showing parent-child relationships | Already have `parentPid`; add collapsible tree rendering in UI |
 | **Per-Process I/O Rates** | Read/write bytes per second for each process | Requires `/proc/[pid]/io` (may need elevated privileges on Linux) |
-| **Column Visibility Toggles** | User-configurable visible columns with persistence | Add to config file and Settings dialog |
+| **Column Visibility Toggles** | ✅ Done | Right-click table header to show/hide columns; persisted to config |
 
 ### Higher Effort (Weeks)
 
@@ -295,15 +295,16 @@ Features observed in htop that could enhance TaskSmack.
 | **Command Column** | ✅ Done | Full command line from `/proc/[pid]/cmdline` |
 | **Task Summary** | ✅ Done | "N processes, M running" in panel header |
 | **VIRT Column** | ✅ Done | Virtual memory size |
+| **NI (Nice) Column** | ✅ Done | Process nice value (-20 to 19) |
+| **Thread Count Column** | ✅ Done | Number of threads per process |
+| **PPID Column** | ✅ Done | Parent process ID |
 
 ### Low Effort (Hours)
 
 | Feature | Description | Implementation Notes |
 |---------|-------------|---------------------|
-| **NI (Nice) Column** | Display process nice value (-20 to 19) | Already captured in probe; add column to ProcessesPanel |
 | **SHR Column** | Shared memory size | Linux: field from `/proc/[pid]/statm`; Windows: working set counters |
 | **State Color Coding** | Color-code process states (R=green, S=gray, D=yellow, Z=red) | Add ImGui color push/pop in state column rendering |
-| **Thread Count Column** | Number of threads per process | Already in ProcessCounters where supported |
 
 ### Medium Effort (Days)
 
@@ -324,5 +325,60 @@ Features observed in htop that could enhance TaskSmack.
 | **Help Screen (F1)** | Built-in help overlay explaining columns and shortcuts | Modal window with keyboard shortcut reference |
 | **Strace Integration** | Attach strace to selected process | Linux only; spawn `strace -p <pid>` in terminal |
 | **Lsof Integration** | Show open files for selected process | Linux: spawn `lsof -p <pid>`; Windows: Handle enumeration |
+
+## Future Process Columns (Task Manager Inspired)
+
+Additional columns observed in Windows Task Manager that could enhance TaskSmack. These require significant platform-specific work.
+
+### Currently Implemented
+
+| Column | Description |
+|--------|-------------|
+| PID | Process ID |
+| Name | Process name |
+| User | Process owner |
+| CPU % | CPU usage percentage |
+| MEM % | Memory as percentage of total RAM |
+| RES | Resident memory (physical RAM) |
+| VIRT | Virtual memory size |
+| TIME+ | Cumulative CPU time |
+| S (State) | Process state |
+| PPID | Parent process ID |
+| NI (Nice) | Nice/priority value |
+| THR (Threads) | Thread count |
+| Command | Full command line |
+
+### Medium Effort (Days)
+
+| Column | Description | Implementation Notes |
+|--------|-------------|---------------------|
+| **I/O Read** | Read bytes per second | Linux: `/proc/[pid]/io` (needs root); Windows: `GetProcessIoCounters` |
+| **I/O Write** | Write bytes per second | Same as I/O Read |
+| **SHR** | Shared memory size | Linux: `/proc/[pid]/statm`; Windows: working set counters |
+| **Start Time** | When the process started | Already in probe (`startTimeTicks`), need UI column |
+
+### Higher Effort (Weeks)
+
+| Column | Description | Implementation Notes |
+|--------|-------------|---------------------|
+| **Publisher** | Software publisher/vendor | Windows: PE version info from `GetFileVersionInfo`; Linux: N/A |
+| **Type** | Process type (App, Background, Windows process) | Windows-specific classification |
+| **Status** | Suspended, Efficiency mode, etc. | Windows: `NtQueryInformationProcess`; Linux: cgroups |
+| **Disk** | Per-process disk I/O rate | Requires ETW (Windows) or eBPF (Linux) |
+| **Network** | Per-process network usage | Windows: ETW or `GetPerTcpConnectionEStats`; Linux: netstat/ss parsing |
+| **GPU** | GPU utilization per process | NVML (NVIDIA), D3DKMT (Windows), DRM (Linux) |
+| **GPU Engine** | Which GPU engine is in use | Very Windows/vendor specific |
+| **Power Usage** | Process power consumption | Windows: `PROCESS_POWER_THROTTLING_STATE`; Linux: powercap |
+
+### Research Required
+
+| Column | Notes |
+|--------|-------|
+| **Handles** | Open handles (Windows) / file descriptors (Linux) |
+| **GDI Objects** | Windows-specific (GDI handle count) |
+| **Peak Working Set** | Historical peak memory usage |
+| **Page Faults** | Memory page fault counts |
+| **Base Priority** | Windows thread priority class |
+| **CPU Affinity** | Which CPU cores the process can use |
 
 

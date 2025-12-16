@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
@@ -52,13 +53,34 @@ class ProcessesPanel : public Panel
     /// Get the current process snapshots.
     [[nodiscard]] std::vector<Domain::ProcessSnapshot> snapshots() const;
 
+    /// Get column settings (for persistence)
+    [[nodiscard]] const ProcessColumnSettings& columnSettings() const
+    {
+        return m_ColumnSettings;
+    }
+
+    /// Set column settings (from loaded config)
+    void setColumnSettings(const ProcessColumnSettings& settings)
+    {
+        m_ColumnSettings = settings;
+    }
+
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     int32_t m_SelectedPid = -1;
 
+    // Column visibility
+    ProcessColumnSettings m_ColumnSettings;
+
     // Search/filter state
     std::array<char, 256> m_SearchBuffer{};
+
+    /// Render the column visibility context menu
+    void renderColumnChooserMenu();
+
+    /// Get the number of visible columns
+    [[nodiscard]] int visibleColumnCount() const;
 };
 
 } // namespace App

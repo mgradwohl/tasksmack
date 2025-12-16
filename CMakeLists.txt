@@ -349,6 +349,7 @@ set(TASKSMACK_HEADERS
     src/Core/Layer.h
     src/UI/UILayer.h
     src/App/ShellLayer.h
+    src/App/ProcessColumnConfig.h
     src/App/Panels/ProcessesPanel.h
     src/Platform/ProcessTypes.h
     src/Platform/IProcessProbe.h
