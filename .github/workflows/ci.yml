@@ -108,9 +108,16 @@ jobs:
         LLVM_ROOT: C:\Program Files\LLVM
       run: |
         $pythonPath = "${{ steps.setup-python.outputs.python-path }}"
+        $pythonDir = Split-Path -Parent $pythonPath
         Write-Host "Python in PATH: $(Get-Command python | Select-Object -ExpandProperty Source)"
-        Write-Host "Python3_EXECUTABLE for CMake: $pythonPath"
-        cmake --preset win-debug -DPython3_EXECUTABLE="$pythonPath"
+        Write-Host "Setting CMake Python variables:"
+        Write-Host "  Python3_ROOT_DIR: $pythonDir"
+        Write-Host "  Python3_EXECUTABLE: $pythonPath"
+        cmake --preset win-debug `
+          -DPython3_ROOT_DIR="$pythonDir" `
+          -DPython3_EXECUTABLE="$pythonPath" `
+          -DPython_ROOT_DIR="$pythonDir" `
+          -DPython_EXECUTABLE="$pythonPath"
     
     - name: Build
       env:
