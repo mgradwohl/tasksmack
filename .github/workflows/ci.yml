@@ -63,6 +63,7 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Setup Python
+      id: setup-python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -81,10 +82,20 @@ jobs:
         key: windows-debug
         max-size: 500M
     
+    - name: Verify Python environment
+      run: |
+        python --version
+        python -c "import jinja2; print(f'jinja2 {jinja2.__version__} available')"
+        Write-Host "Python path: $(Get-Command python | Select-Object -ExpandProperty Source)"
+        Write-Host "Python location from setup-python: ${{ steps.setup-python.outputs.python-path }}"
+
     - name: Configure
       env:
         LLVM_ROOT: C:\Program Files\LLVM
-      run: cmake --preset win-debug
+      run: |
+        $pythonDir = Split-Path -Parent "${{ steps.setup-python.outputs.python-path }}"
+        Write-Host "Setting Python_ROOT_DIR to: $pythonDir"
+        cmake --preset win-debug -DPython_ROOT_DIR="$pythonDir" -DPython3_ROOT_DIR="$pythonDir"
     
     - name: Build
       env:
