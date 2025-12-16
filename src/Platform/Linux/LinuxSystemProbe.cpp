@@ -64,8 +64,7 @@ LinuxSystemProbe::LinuxSystemProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m
         m_CpuModel = "Unknown CPU";
     }
 
-    spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}",
-                  m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
+    spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
 
 SystemCounters LinuxSystemProbe::read()

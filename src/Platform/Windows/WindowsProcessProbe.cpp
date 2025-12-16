@@ -111,8 +111,7 @@ namespace
     DWORD domainNameLen = 256;
     SID_NAME_USE sidType{};
 
-    if (LookupAccountSidW(nullptr, tokenUser->User.Sid, userName, &userNameLen,
-                          domainName, &domainNameLen, &sidType) == 0)
+    if (LookupAccountSidW(nullptr, tokenUser->User.Sid, userName, &userNameLen, domainName, &domainNameLen, &sidType) == 0)
     {
         CloseHandle(hToken);
         return {};

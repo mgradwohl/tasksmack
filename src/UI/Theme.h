@@ -15,10 +15,10 @@ namespace UI
 /// Font size presets
 enum class FontSize
 {
-    Small = 0,   // 6pt / 8pt
-    Medium,      // 8pt / 10pt (default)
-    Large,       // 10pt / 12pt
-    ExtraLarge,  // 12pt / 14pt
+    Small = 0,  // 6pt / 8pt
+    Medium,     // 8pt / 10pt (default)
+    Large,      // 10pt / 12pt
+    ExtraLarge, // 12pt / 14pt
     Count
 };
 
@@ -34,33 +34,33 @@ struct ColorScheme
     std::array<ImVec4, 8> accents{};
 
     // Progress bar colors (low, medium, high)
-    ImVec4 progressLow{};     // 0-50%
-    ImVec4 progressMedium{};  // 50-80%
-    ImVec4 progressHigh{};    // 80-100%
+    ImVec4 progressLow{};    // 0-50%
+    ImVec4 progressMedium{}; // 50-80%
+    ImVec4 progressHigh{};   // 80-100%
 
     // Semantic UI colors
-    ImVec4 textMuted{};    // Dimmed/secondary text (labels, hints)
-    ImVec4 textError{};    // Error messages
-    ImVec4 textWarning{};  // Warning messages
-    ImVec4 textSuccess{};  // Success messages
-    ImVec4 textInfo{};     // Informational text
+    ImVec4 textMuted{};   // Dimmed/secondary text (labels, hints)
+    ImVec4 textError{};   // Error messages
+    ImVec4 textWarning{}; // Warning messages
+    ImVec4 textSuccess{}; // Success messages
+    ImVec4 textInfo{};    // Informational text
 
     // Status colors for process states
-    ImVec4 statusRunning{};   // Running/Active
-    ImVec4 statusStopped{};   // Stopped/Terminated
-    ImVec4 statusSleeping{};  // Sleeping/Waiting
+    ImVec4 statusRunning{};  // Running/Active
+    ImVec4 statusStopped{};  // Stopped/Terminated
+    ImVec4 statusSleeping{}; // Sleeping/Waiting
 
     // Chart line colors (for specific metrics)
-    ImVec4 chartCpu{};     // CPU usage line
-    ImVec4 chartMemory{};  // Memory usage line
-    ImVec4 chartIo{};      // I/O usage line
+    ImVec4 chartCpu{};    // CPU usage line
+    ImVec4 chartMemory{}; // Memory usage line
+    ImVec4 chartIo{};     // I/O usage line
 
     // CPU breakdown colors
-    ImVec4 cpuUser{};    // User CPU time
-    ImVec4 cpuSystem{};  // System/kernel CPU time
-    ImVec4 cpuIowait{};  // I/O wait time
-    ImVec4 cpuIdle{};    // Idle time
-    ImVec4 cpuSteal{};   // VM steal time
+    ImVec4 cpuUser{};   // User CPU time
+    ImVec4 cpuSystem{}; // System/kernel CPU time
+    ImVec4 cpuIowait{}; // I/O wait time
+    ImVec4 cpuIdle{};   // Idle time
+    ImVec4 cpuSteal{};  // VM steal time
 
     // Danger button colors
     ImVec4 dangerButton{};
@@ -79,7 +79,7 @@ struct ColorScheme
     ImVec4 titleBgActive{};
     ImVec4 titleBgCollapsed{};
     ImVec4 menuBarBg{};
-    ImVec4 statusBarBg{};  // Status bar background (distinct from window/menu)
+    ImVec4 statusBarBg{}; // Status bar background (distinct from window/menu)
     ImVec4 scrollbarBg{};
     ImVec4 scrollbarGrab{};
     ImVec4 scrollbarGrabHovered{};
@@ -128,24 +128,24 @@ struct ColorScheme
 /// Information about a discovered theme
 struct DiscoveredTheme
 {
-    std::string id;           ///< Theme identifier (filename without extension)
-    std::string name;         ///< Display name from TOML [meta] section
-    std::string description;  ///< Description from TOML [meta] section
-    std::filesystem::path path;  ///< Full path to the TOML file
+    std::string id;             ///< Theme identifier (filename without extension)
+    std::string name;           ///< Display name from TOML [meta] section
+    std::string description;    ///< Description from TOML [meta] section
+    std::filesystem::path path; ///< Full path to the TOML file
 };
 
 /// Font size configuration (in points)
 struct FontSizeConfig
 {
     std::string_view name;
-    float regularPt;  // Body text
-    float largePt;    // Headings
+    float regularPt; // Body text
+    float largePt;   // Headings
 };
 
 /// Global theme manager - provides access to color schemes and font settings
 class Theme
 {
-public:
+  public:
     /// Get the singleton instance
     static auto get() -> Theme&;
 
@@ -154,8 +154,7 @@ public:
     void loadThemes(const std::filesystem::path& themesDir);
 
     /// Get list of discovered themes
-    [[nodiscard]] auto discoveredThemes() const
-        -> const std::vector<DiscoveredTheme>&
+    [[nodiscard]] auto discoveredThemes() const -> const std::vector<DiscoveredTheme>&
     {
         return m_DiscoveredThemes;
     }
@@ -231,7 +230,7 @@ public:
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large);
 
-private:
+  private:
     Theme();
     ~Theme() = default;
 
@@ -243,8 +242,7 @@ private:
     std::size_t m_CurrentThemeIndex = 0;
 
     FontSize m_CurrentFontSize = FontSize::Medium;
-    std::array<FontSizeConfig, static_cast<std::size_t>(FontSize::Count)>
-        m_FontSizes;
+    std::array<FontSizeConfig, static_cast<std::size_t>(FontSize::Count)> m_FontSizes;
 
     // Pre-baked fonts for each size preset (regular and large variants)
     struct FontPair

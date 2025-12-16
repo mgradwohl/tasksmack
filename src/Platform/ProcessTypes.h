@@ -13,10 +13,10 @@ struct ProcessCounters
     int32_t pid = 0;
     int32_t parentPid = 0;
     std::string name;
-    std::string command;          // Full command line
-    std::string user;             // Username (owner) of the process
-    char state = '?';             // Raw state character from OS (e.g., 'R', 'S', 'Z')
-    int32_t nice = 0;             // Nice value (-20 to 19 on Linux)
+    std::string command; // Full command line
+    std::string user;    // Username (owner) of the process
+    char state = '?';    // Raw state character from OS (e.g., 'R', 'S', 'Z')
+    int32_t nice = 0;    // Nice value (-20 to 19 on Linux)
 
     uint64_t startTimeTicks = 0; // For PID reuse detection
 

@@ -25,7 +25,7 @@ ProcessesPanel::~ProcessesPanel()
     if (m_Sampler)
     {
         m_Sampler->stop();
-        m_Sampler->setCallback(nullptr);  // Clear callback to prevent races
+        m_Sampler->setCallback(nullptr); // Clear callback to prevent races
         m_Sampler.reset();
     }
     m_ProcessModel.reset();
@@ -147,7 +147,7 @@ void ProcessesPanel::render(bool* open)
 
     // Process count with state summary (filtered/total)
     ImGui::SameLine();
-    
+
     // Count processes by state
     size_t runningCount = 0;
     for (const auto& proc : currentSnapshots)

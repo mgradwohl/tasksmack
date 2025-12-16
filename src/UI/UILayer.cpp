@@ -86,7 +86,7 @@ void UILayer::loadAllFonts()
     // Build font path relative to executable directory
     auto exeDir = getExecutableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
-    auto fontBoldPath = (exeDir / "assets" / "fonts" / "Inter-Bold.ttf").string();
+    // auto fontBoldPath = (exeDir / "assets" / "fonts" / "Inter-Bold.ttf").string();
 
     spdlog::info("Pre-baking fonts for all {} size presets", static_cast<int>(FontSize::Count));
 

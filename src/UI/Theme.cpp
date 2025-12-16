@@ -5,7 +5,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cmath>
 
 namespace UI
 {
@@ -97,10 +96,10 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tab = ImVec4(0.18F, 0.35F, 0.58F, 0.86F);
     fallback.tabHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
     fallback.tabSelected = ImVec4(0.20F, 0.41F, 0.68F, 1.0F);
-    fallback.tabSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);  // Transparent to disable
+    fallback.tabSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F); // Transparent to disable
     fallback.tabDimmed = ImVec4(0.07F, 0.10F, 0.15F, 0.97F);
     fallback.tabDimmedSelected = ImVec4(0.14F, 0.26F, 0.42F, 1.0F);
-    fallback.tabDimmedSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);  // Transparent
+    fallback.tabDimmedSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F); // Transparent
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
@@ -138,7 +137,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
     if (discovered.empty())
     {
         spdlog::warn("No themes found in {}, using fallback", themesDir.string());
-        return;  // Keep the fallback theme
+        return; // Keep the fallback theme
     }
 
     // Clear the fallback and load real themes
@@ -176,22 +175,16 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
         }
     }
 
-    spdlog::info("Loaded {} themes, current: {}", m_LoadedSchemes.size(),
-                 m_DiscoveredThemes[m_CurrentThemeIndex].name);
+    spdlog::info("Loaded {} themes, current: {}", m_LoadedSchemes.size(), m_DiscoveredThemes[m_CurrentThemeIndex].name);
 }
 
 void Theme::initializeFontSizes()
 {
     // Font size presets (regular/large point sizes)
-    m_FontSizes[static_cast<std::size_t>(FontSize::Small)] = {"Small", 6.0F,
-                                                               8.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {"Medium", 8.0F,
-                                                                10.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {"Large", 10.0F,
-                                                               12.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {"Extra Large",
-                                                                    12.0F,
-                                                                    14.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Small)] = {.name = "Small", .regularPt = 6.0F, .largePt = 8.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -207,8 +200,7 @@ void Theme::setTheme(std::size_t index)
         return;
     }
     m_CurrentThemeIndex = index;
-    spdlog::info("Theme changed to: {}",
-                 m_DiscoveredThemes[m_CurrentThemeIndex].name);
+    spdlog::info("Theme changed to: {}", m_DiscoveredThemes[m_CurrentThemeIndex].name);
     applyImGuiStyle();
 }
 
@@ -344,9 +336,10 @@ auto Theme::heatmapColor(double percent) const -> ImVec4
     const ImVec4& c2 = colors[idx + 1];
 
     const auto localTf = static_cast<float>(localT);
-    return ImVec4(c1.x + (c2.x - c1.x) * localTf, c1.y + (c2.y - c1.y) * localTf,
-                  c1.z + (c2.z - c1.z) * localTf,
-                  c1.w + (c2.w - c1.w) * localTf);
+    return {c1.x + ((c2.x - c1.x) * localTf),
+            c1.y + ((c2.y - c1.y) * localTf),
+            c1.z + ((c2.z - c1.z) * localTf),
+            c1.w + ((c2.w - c1.w) * localTf)};
 }
 
 auto Theme::progressColor(double percent) const -> ImVec4
@@ -429,4 +422,4 @@ void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
     m_Fonts[static_cast<std::size_t>(size)] = {regular, large};
 }
 
-}  // namespace UI
+} // namespace UI

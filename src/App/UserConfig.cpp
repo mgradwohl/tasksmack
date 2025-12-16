@@ -3,9 +3,10 @@
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
-#include <toml++/toml.hpp>
 
 #include <fstream>
+
+#include <toml++/toml.hpp>
 
 #ifdef _WIN32
 // clang-format off
@@ -20,6 +21,7 @@
 // clang-format on
 #else
 #include <cstdlib>
+
 #include <pwd.h>
 #include <unistd.h>
 #endif
@@ -54,14 +56,14 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     return std::filesystem::current_path();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config
-    const char* xdgConfig = std::getenv("XDG_CONFIG_HOME");  // NOLINT(concurrency-mt-unsafe)
+    const char* xdgConfig = std::getenv("XDG_CONFIG_HOME"); // NOLINT(concurrency-mt-unsafe)
     if (xdgConfig != nullptr && xdgConfig[0] != '\0')
     {
         return std::filesystem::path(xdgConfig) / "tasksmack";
     }
 
     // Fall back to ~/.config
-    const char* homeEnv = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
+    const char* homeEnv = std::getenv("HOME"); // NOLINT(concurrency-mt-unsafe)
     if (homeEnv != nullptr && homeEnv[0] != '\0')
     {
         return std::filesystem::path(homeEnv) / ".config" / "tasksmack";
@@ -231,9 +233,7 @@ void UserConfig::applyToApplication()
     // Apply font size
     theme.setFontSize(m_Settings.fontSize);
 
-    spdlog::debug("Applied user config: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  static_cast<int>(m_Settings.fontSize));
+    spdlog::debug("Applied user config: theme={}, fontSize={}", m_Settings.themeId, static_cast<int>(m_Settings.fontSize));
 }
 
 void UserConfig::captureFromApplication()
@@ -246,9 +246,7 @@ void UserConfig::captureFromApplication()
     // Capture font size
     m_Settings.fontSize = theme.currentFontSize();
 
-    spdlog::debug("Captured app state: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  static_cast<int>(m_Settings.fontSize));
+    spdlog::debug("Captured app state: theme={}, fontSize={}", m_Settings.themeId, static_cast<int>(m_Settings.fontSize));
 }
 
 } // namespace App

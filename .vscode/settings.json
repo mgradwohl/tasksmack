@@ -33,7 +33,7 @@
     "C_Cpp.dimInactiveRegions": false,
     // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
     // Windows: Use absolute path since ${env:} may not expand in all contexts
-    "clangd.path": "${env:LLVM_ROOT}/bin/clangd",
+    "clangd.path": "${env:LLVM_ROOT}/bin/clangd.exe",
     "clangd.arguments": [
         "--compile-commands-dir=${workspaceFolder}",
         "--background-index",

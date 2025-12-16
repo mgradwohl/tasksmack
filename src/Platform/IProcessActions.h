@@ -14,11 +14,11 @@ struct ProcessActionResult
 
     static ProcessActionResult ok()
     {
-        return {true, {}};
+        return {.success = true, .errorMessage = {}};
     }
     static ProcessActionResult error(std::string msg)
     {
-        return {false, std::move(msg)};
+        return {.success = false, .errorMessage = std::move(msg)};
     }
 };
 

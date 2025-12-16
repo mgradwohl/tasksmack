@@ -61,12 +61,11 @@ class ProcessModel
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, uint64_t totalCpuTime);
 
-    [[nodiscard]] ProcessSnapshot
-    computeSnapshot(const Platform::ProcessCounters& current,
-                    const Platform::ProcessCounters* previous,
-                    uint64_t totalCpuDelta,
-                    uint64_t systemTotalMemory,
-                    long ticksPerSecond) const;
+    [[nodiscard]] ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
+                                                  const Platform::ProcessCounters* previous,
+                                                  uint64_t totalCpuDelta,
+                                                  uint64_t systemTotalMemory,
+                                                  long ticksPerSecond) const;
 
     [[nodiscard]] static uint64_t makeUniqueKey(int32_t pid, uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

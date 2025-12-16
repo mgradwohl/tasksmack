@@ -17,12 +17,12 @@ struct ProcessSnapshot
     std::string user;         // Username (owner) of the process
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
 
-    double cpuPercent = 0.0;    // Computed from deltas
-    double memoryPercent = 0.0; // RSS as % of total system memory
+    double cpuPercent = 0.0;     // Computed from deltas
+    double memoryPercent = 0.0;  // RSS as % of total system memory
     double cpuTimeSeconds = 0.0; // Cumulative CPU time (user + system)
-    uint64_t memoryBytes = 0;   // RSS
+    uint64_t memoryBytes = 0;    // RSS
     uint64_t virtualBytes = 0;
-    int32_t nice = 0;           // Nice value
+    int32_t nice = 0; // Nice value
 
     // Optional (0 if not supported)
     double ioReadBytesPerSec = 0.0;

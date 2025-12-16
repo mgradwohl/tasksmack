@@ -153,16 +153,16 @@ void SystemMetricsPanel::renderOverview()
         char uptimeBuf[64];
         if (days > 0)
         {
-            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %lud %luh %lum",
+            snprintf(uptimeBuf,
+                     sizeof(uptimeBuf),
+                     "Up: %lud %luh %lum",
                      static_cast<unsigned long>(days),
                      static_cast<unsigned long>(hours),
                      static_cast<unsigned long>(minutes));
         }
         else if (hours > 0)
         {
-            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %luh %lum",
-                     static_cast<unsigned long>(hours),
-                     static_cast<unsigned long>(minutes));
+            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %luh %lum", static_cast<unsigned long>(hours), static_cast<unsigned long>(minutes));
         }
         else
         {
@@ -175,8 +175,7 @@ void SystemMetricsPanel::renderOverview()
     char coreInfo[64];
     if (snap.cpuFreqMHz > 0)
     {
-        snprintf(coreInfo, sizeof(coreInfo), " (%d cores @ %.2f GHz)",
-                 snap.coreCount, static_cast<double>(snap.cpuFreqMHz) / 1000.0);
+        snprintf(coreInfo, sizeof(coreInfo), " (%d cores @ %.2f GHz)", snap.coreCount, static_cast<double>(snap.cpuFreqMHz) / 1000.0);
     }
     else
     {
@@ -263,7 +262,6 @@ void SystemMetricsPanel::renderOverview()
             drawList->AddRectFilled(ImVec2(barStart.x + xOffset, barStart.y),
                                     ImVec2(barStart.x + xOffset + iowaitWidth, barStart.y + barHeight),
                                     ImGui::ColorConvertFloat4ToU32(theme.scheme().cpuIowait));
-            xOffset += iowaitWidth;
         }
 
         // Draw frame border
@@ -331,8 +329,7 @@ void SystemMetricsPanel::renderOverview()
         ImGui::SameLine(m_OverviewLabelWidth);
 
         char loadBuf[64];
-        snprintf(loadBuf, sizeof(loadBuf), "%.2f / %.2f / %.2f (1/5/15 min)",
-                 snap.loadAvg1, snap.loadAvg5, snap.loadAvg15);
+        snprintf(loadBuf, sizeof(loadBuf), "%.2f / %.2f / %.2f (1/5/15 min)", snap.loadAvg1, snap.loadAvg5, snap.loadAvg15);
         ImGui::TextUnformatted(loadBuf);
     }
 
@@ -551,7 +548,7 @@ void SystemMetricsPanel::renderPerCoreSection()
             ImGui::TableNextRow();
             for (int col = 0; col < numCols; ++col)
             {
-                size_t coreIdx = static_cast<size_t>(row * numCols + col);
+                size_t coreIdx = (static_cast<size_t>(row) * static_cast<size_t>(numCols)) + static_cast<size_t>(col);
                 if (coreIdx >= numCores)
                 {
                     break;
@@ -607,7 +604,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                 // ImPlot heatmap expects row-major with (0,0) at top-left
                 // We want oldest time on left, newest on right
                 // And core 0 at top, highest core at bottom
-                heatmapData[core * historySize + t] = static_cast<double>(perCoreHist[core][t]);
+                heatmapData[(core * historySize) + t] = static_cast<double>(perCoreHist[core][t]);
             }
         }
 
@@ -641,14 +638,15 @@ void SystemMetricsPanel::renderPerCoreSection()
 
         ImPlot::PushColormap(m_HeatmapColormap);
 
-        if (ImPlot::BeginPlot("##CPUHeatmap", ImVec2(-1, heatmapHeight), 
-                              ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | ImPlotFlags_NoFrame))
+        if (ImPlot::BeginPlot(
+                "##CPUHeatmap", ImVec2(-1, heatmapHeight), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | ImPlotFlags_NoFrame))
         {
             // No axis labels - cleaner look
-            ImPlot::SetupAxes(nullptr, nullptr, 
+            ImPlot::SetupAxes(nullptr,
+                              nullptr,
                               ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks,
                               ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
-            
+
             // Set limits
             ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(historySize), ImPlotCond_Always);
             ImPlot::SetupAxisLimits(ImAxis_Y1, -0.5, static_cast<double>(coreCount) - 0.5, ImPlotCond_Always);
@@ -676,10 +674,9 @@ void SystemMetricsPanel::renderPerCoreSection()
         }
 
         ImPlot::PopColormap();
-        
+
         // Simple description below the heatmap
-        ImGui::TextColored(theme.scheme().textMuted, "Cores 0-%zu (top to bottom)  |  Oldest (left) to Now (right)", 
-                           coreCount - 1);
+        ImGui::TextColored(theme.scheme().textMuted, "Cores 0-%zu (top to bottom)  |  Oldest (left) to Now (right)", coreCount - 1);
     }
     else
     {

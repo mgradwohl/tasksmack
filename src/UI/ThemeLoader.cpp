@@ -1,11 +1,11 @@
 #include "ThemeLoader.h"
 
 #include <spdlog/spdlog.h>
-#include <toml++/toml.hpp>
 
 #include <algorithm>
 #include <charconv>
-#include <fstream>
+
+#include <toml++/toml.hpp>
 
 namespace UI
 {
@@ -22,18 +22,18 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     if (hex.size() != 6 && hex.size() != 8)
     {
         spdlog::warn("Invalid hex color: {} (expected 6 or 8 digits)", hex);
-        return ImVec4(1.0F, 0.0F, 1.0F, 1.0F);  // Magenta = error color
+        return {1.0F, 0.0F, 1.0F, 1.0F}; // Magenta = error color
     }
 
     unsigned int r = 0;
     unsigned int g = 0;
     unsigned int b = 0;
-    unsigned int a = 255;  // Default to fully opaque
+    unsigned int a = 255; // Default to fully opaque
 
     // Parse RGB components
-    std::from_chars(hex.data(), hex.data() + 2, r, 16);
-    std::from_chars(hex.data() + 2, hex.data() + 4, g, 16);
-    std::from_chars(hex.data() + 4, hex.data() + 6, b, 16);
+    std::from_chars(hex.data(), hex.data() + 2, r, 16);     // NOLINT(bugprone-not-null-terminated-result)
+    std::from_chars(hex.data() + 2, hex.data() + 4, g, 16); // NOLINT(bugprone-not-null-terminated-result)
+    std::from_chars(hex.data() + 4, hex.data() + 6, b, 16); // NOLINT(bugprone-not-null-terminated-result)
 
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
@@ -42,10 +42,10 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     }
 
     constexpr float MAX_COMPONENT = 255.0F;
-    return ImVec4(static_cast<float>(r) / MAX_COMPONENT,
-                  static_cast<float>(g) / MAX_COMPONENT,
-                  static_cast<float>(b) / MAX_COMPONENT,
-                  static_cast<float>(a) / MAX_COMPONENT);
+    return {static_cast<float>(r) / MAX_COMPONENT,
+            static_cast<float>(g) / MAX_COMPONENT,
+            static_cast<float>(b) / MAX_COMPONENT,
+            static_cast<float>(a) / MAX_COMPONENT};
 }
 
 namespace
@@ -68,13 +68,12 @@ auto parseColorNode(const toml::node& node) -> ImVec4
             auto g = arr->get(1)->value_or(0.0);
             auto b = arr->get(2)->value_or(0.0);
             auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-            return ImVec4(static_cast<float>(r), static_cast<float>(g),
-                          static_cast<float>(b), static_cast<float>(a));
+            return {static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a)};
         }
     }
 
     spdlog::warn("Invalid color node type");
-    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F);  // Magenta = error
+    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error
 }
 
 /// Parse color from node_view (returned by at_path)
@@ -95,19 +94,17 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
                 auto g = arr->get(1)->value_or(0.0);
                 auto b = arr->get(2)->value_or(0.0);
                 auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-                return ImVec4(static_cast<float>(r), static_cast<float>(g),
-                              static_cast<float>(b), static_cast<float>(a));
+                return {static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a)};
             }
         }
     }
 
     spdlog::warn("Invalid color node type");
-    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F);  // Magenta = error
+    return {1.0F, 0.0F, 1.0F, 1.0F}; // Magenta = error
 }
 
 /// Get a color from a table, with default fallback
-auto getColor(const toml::table& tbl, std::string_view key,
-              ImVec4 defaultColor = ImVec4(1.0F, 0.0F, 1.0F, 1.0F)) -> ImVec4
+auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor = ImVec4(1.0F, 0.0F, 1.0F, 1.0F)) -> ImVec4
 {
     if (auto node = tbl.at_path(key))
     {
@@ -117,11 +114,9 @@ auto getColor(const toml::table& tbl, std::string_view key,
 }
 
 /// Load a color array (like heatmap gradient or accent colors)
-template <std::size_t N>
-void loadColorArray(const toml::table& tbl, std::string_view key,
-                    std::array<ImVec4, N>& colors)
+template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
-    if (auto arr = tbl.at_path(key).as_array())
+    if (const auto* const arr = tbl.at_path(key).as_array())
     {
         for (std::size_t i = 0; i < std::min(N, arr->size()); ++i)
         {
@@ -130,10 +125,9 @@ void loadColorArray(const toml::table& tbl, std::string_view key,
     }
 }
 
-}  // namespace
+} // namespace
 
-auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir)
-    -> std::vector<ThemeInfo>
+auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std::vector<ThemeInfo>
 {
     std::vector<ThemeInfo> themes;
 
@@ -155,15 +149,12 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir)
     }
 
     // Sort by name for consistent UI ordering
-    std::ranges::sort(themes,
-                      [](const ThemeInfo& a, const ThemeInfo& b)
-                      { return a.name < b.name; });
+    std::ranges::sort(themes, [](const ThemeInfo& a, const ThemeInfo& b) { return a.name < b.name; });
 
     return themes;
 }
 
-auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path)
-    -> std::optional<ThemeInfo>
+auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
     try
     {
@@ -171,10 +162,10 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path)
 
         ThemeInfo info;
         info.path = path;
-        info.id = path.stem().string();  // filename without extension
+        info.id = path.stem().string(); // filename without extension
 
         // Read meta section
-        if (auto meta = tbl["meta"].as_table())
+        if (auto* meta = tbl["meta"].as_table())
         {
             info.name = meta->get("name")->value_or(info.id);
             info.description = meta->get("description")->value_or("");
@@ -188,14 +179,12 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path)
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(),
-                      err.description());
+        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
         return std::nullopt;
     }
 }
 
-auto ThemeLoader::loadTheme(const std::filesystem::path& path)
-    -> std::optional<ColorScheme>
+auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<ColorScheme>
 {
     try
     {
@@ -203,7 +192,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path)
         ColorScheme scheme;
 
         // Meta
-        if (auto meta = tbl["meta"].as_table())
+        if (auto* meta = tbl["meta"].as_table())
         {
             scheme.name = meta->get("name")->value_or("Unknown");
         }
@@ -271,8 +260,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path)
         // Scrollbar colors
         scheme.scrollbarBg = getColor(tbl, "ui.scrollbar.background");
         scheme.scrollbarGrab = getColor(tbl, "ui.scrollbar.grab");
-        scheme.scrollbarGrabHovered =
-            getColor(tbl, "ui.scrollbar.grab_hovered");
+        scheme.scrollbarGrabHovered = getColor(tbl, "ui.scrollbar.grab_hovered");
         scheme.scrollbarGrabActive = getColor(tbl, "ui.scrollbar.grab_active");
 
         // Control colors
@@ -317,8 +305,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path)
         scheme.plotLines = getColor(tbl, "ui.plot.lines");
         scheme.plotLinesHovered = getColor(tbl, "ui.plot.lines_hovered");
         scheme.plotHistogram = getColor(tbl, "ui.plot.histogram");
-        scheme.plotHistogramHovered =
-            getColor(tbl, "ui.plot.histogram_hovered");
+        scheme.plotHistogramHovered = getColor(tbl, "ui.plot.histogram_hovered");
 
         // Table colors
         scheme.tableHeaderBg = getColor(tbl, "ui.table.header_background");
@@ -328,24 +315,19 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path)
         scheme.tableRowBgAlt = getColor(tbl, "ui.table.row_background_alt");
 
         // Misc UI colors
-        scheme.textSelectedBg =
-            getColor(tbl, "ui.misc.text_selected_background");
+        scheme.textSelectedBg = getColor(tbl, "ui.misc.text_selected_background");
         scheme.dragDropTarget = getColor(tbl, "ui.misc.drag_drop_target");
         scheme.navHighlight = getColor(tbl, "ui.misc.nav_highlight");
-        scheme.navWindowingHighlight =
-            getColor(tbl, "ui.misc.nav_windowing_highlight");
-        scheme.navWindowingDimBg =
-            getColor(tbl, "ui.misc.nav_windowing_dim_background");
-        scheme.modalWindowDimBg =
-            getColor(tbl, "ui.misc.modal_window_dim_background");
+        scheme.navWindowingHighlight = getColor(tbl, "ui.misc.nav_windowing_highlight");
+        scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
+        scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
 
         spdlog::info("Loaded theme: {} from {}", scheme.name, path.string());
         return scheme;
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(),
-                      err.description());
+        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
         return std::nullopt;
     }
     catch (const std::exception& ex)
@@ -355,4 +337,4 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path)
     }
 }
 
-}  // namespace UI
+} // namespace UI

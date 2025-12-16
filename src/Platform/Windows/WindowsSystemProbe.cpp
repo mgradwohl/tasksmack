@@ -94,15 +94,13 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
 
     // Get CPU model from registry
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         std::array<char, 256> cpuBuffer{};
         DWORD cpuBufferSize = static_cast<DWORD>(cpuBuffer.size());
         DWORD type = 0;
-        if (RegQueryValueExA(hKey, "ProcessorNameString", nullptr, &type,
-                             reinterpret_cast<LPBYTE>(cpuBuffer.data()), &cpuBufferSize) == ERROR_SUCCESS)
+        if (RegQueryValueExA(hKey, "ProcessorNameString", nullptr, &type, reinterpret_cast<LPBYTE>(cpuBuffer.data()), &cpuBufferSize) ==
+            ERROR_SUCCESS)
         {
             m_CpuModel = cpuBuffer.data();
             // Trim leading/trailing whitespace
@@ -122,8 +120,7 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
         m_CpuModel = "Unknown CPU";
     }
 
-    spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}",
-                  m_NumCores, m_Hostname, m_CpuModel);
+    spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
 
 SystemCounters WindowsSystemProbe::read()
@@ -281,17 +278,14 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
     // Read CPU frequency from registry (in MHz)
     // This is the base frequency; current frequency requires more complex APIs
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         DWORD mhz = 0;
         DWORD dataSize = sizeof(mhz);
         DWORD type = 0;
-        if (RegQueryValueExA(hKey, "~MHz", nullptr, &type,
-                             reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
+        if (RegQueryValueExA(hKey, "~MHz", nullptr, &type, reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
         {
-            counters.cpuFreqMHz = static_cast<double>(mhz);
+            counters.cpuFreqMHz = static_cast<uint64_t>(mhz);
         }
         RegCloseKey(hKey);
     }
@@ -301,14 +295,14 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
 SystemCapabilities WindowsSystemProbe::capabilities() const
 {
     return SystemCapabilities{
-        .hasPerCoreCpu = true,     // Via NtQuerySystemInformation
+        .hasPerCoreCpu = true, // Via NtQuerySystemInformation
         .hasMemoryAvailable = true,
         .hasSwap = true,
         .hasUptime = true,
-        .hasIoWait = false,   // Windows doesn't expose iowait
-        .hasSteal = false,    // Windows doesn't expose steal time
-        .hasLoadAvg = false,  // Windows doesn't have load average
-        .hasCpuFreq = true,   // From registry ~MHz
+        .hasIoWait = false,  // Windows doesn't expose iowait
+        .hasSteal = false,   // Windows doesn't expose steal time
+        .hasLoadAvg = false, // Windows doesn't have load average
+        .hasCpuFreq = true,  // From registry ~MHz
     };
 }
 
