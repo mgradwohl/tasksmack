@@ -9,6 +9,7 @@ CompileFlags:
 
     # Treat these as system headers (suppress their warnings)
     - --system-header-prefix=_deps/
+    - --system-header-prefix=.cache/
     - --system-header-prefix=spdlog/
     - --system-header-prefix=gtest/
     - --system-header-prefix=gmock/
