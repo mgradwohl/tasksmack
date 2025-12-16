@@ -89,32 +89,31 @@ jobs:
         Write-Host "Python path: $(Get-Command python | Select-Object -ExpandProperty Source)"
         Write-Host "Python location from setup-python: ${{ steps.setup-python.outputs.python-path }}"
 
-    - name: Verify Python and jinja2 before configure
+    - name: Add Python to PATH permanently
       run: |
         $pythonExe = "${{ steps.setup-python.outputs.python-path }}"
-        Write-Host "Python executable: $pythonExe"
-        & $pythonExe --version
-        & $pythonExe -m pip list | Select-String jinja2
-        & $pythonExe -c "import sys; print(f'Python path: {sys.executable}'); import jinja2; print(f'jinja2 {jinja2.__version__} found at {jinja2.__file__}')"
+        $pythonDir = Split-Path -Parent $pythonExe
+        Write-Host "Adding Python directory to GITHUB_PATH: $pythonDir"
+        echo "$pythonDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Verify Python and jinja2 before configure
+      run: |
+        Write-Host "Python executable: $(Get-Command python | Select-Object -ExpandProperty Source)"
+        python --version
+        python -m pip list | Select-String jinja2
+        python -c "import sys; print(f'Python path: {sys.executable}'); import jinja2; print(f'jinja2 {jinja2.__version__} found at {jinja2.__file__}')"
 
     - name: Configure
       env:
         LLVM_ROOT: C:\Program Files\LLVM
       run: |
-        $pythonExe = "${{ steps.setup-python.outputs.python-path }}"
-        $pythonDir = Split-Path -Parent $pythonExe
-        $env:PATH = "$pythonDir;$env:PATH"
-        Write-Host "Setting Python3_EXECUTABLE to: $pythonExe"
-        Write-Host "Updated PATH: $env:PATH"
-        cmake --preset win-debug -DPython3_EXECUTABLE="$pythonExe"
+        Write-Host "Python in PATH: $(Get-Command python | Select-Object -ExpandProperty Source)"
+        cmake --preset win-debug -DPython3_EXECUTABLE="${{ steps.setup-python.outputs.python-path }}"
     
     - name: Build
       env:
         LLVM_ROOT: C:\Program Files\LLVM
-      run: |
-        $pythonDir = Split-Path -Parent "${{ steps.setup-python.outputs.python-path }}"
-        $env:PATH = "$pythonDir;$env:PATH"
-        cmake --build --preset win-debug
+      run: cmake --build --preset win-debug
     
     - name: Test
       run: ctest --preset win-debug -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
