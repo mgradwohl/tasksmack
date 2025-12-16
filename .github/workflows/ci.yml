@@ -64,8 +64,8 @@ jobs:
 
     - name: Install Python dependencies for GLAD
       run: |
-        python -m pip install --upgrade pip jinja2
-        python -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
+        python3 -m pip install --upgrade pip jinja2
+        python3 -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
     
     - name: Install LLVM
       run: choco install llvm ninja ccache -y
