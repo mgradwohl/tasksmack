@@ -106,11 +106,11 @@ jobs:
     - name: Configure
       env:
         LLVM_ROOT: C:\Program Files\LLVM
-        Python3_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}
       run: |
+        $pythonPath = "${{ steps.setup-python.outputs.python-path }}"
         Write-Host "Python in PATH: $(Get-Command python | Select-Object -ExpandProperty Source)"
-        Write-Host "Python3_EXECUTABLE env var: $env:Python3_EXECUTABLE"
-        cmake --preset win-debug
+        Write-Host "Python3_EXECUTABLE for CMake: $pythonPath"
+        cmake --preset win-debug -DPython3_EXECUTABLE="$pythonPath"
     
     - name: Build
       env:
