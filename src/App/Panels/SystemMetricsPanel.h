@@ -52,7 +52,7 @@ class SystemMetricsPanel : public Panel
 
     // Heatmap colormap (cached to avoid recreating every frame)
     ImPlotColormap m_HeatmapColormap = -1;
-    UI::ThemeId m_LastThemeId = UI::ThemeId::ArcticFire;
+    std::size_t m_LastThemeIndex = 0;
 
     // Cached layout values (recalculated one frame after font changes)
     UI::FontSize m_LastFontSize = UI::FontSize::Medium;
@@ -60,6 +60,9 @@ class SystemMetricsPanel : public Panel
     float m_PerCoreLabelWidth = 0.0F;
     size_t m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
+
+    // Cached hostname for window title
+    std::string m_Hostname = "System";
 
     void updateCachedLayout();
 };

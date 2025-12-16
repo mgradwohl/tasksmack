@@ -11,10 +11,12 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <sddl.h>
 #include <tlhelp32.h>
 // clang-format on
 
 #include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -68,6 +70,74 @@ namespace
         return 'Z'; // Zombie/terminated
     }
     return '?';
+}
+
+/// Get the username (owner) of a process
+[[nodiscard]] std::string getProcessOwner(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    HANDLE hToken = nullptr;
+    if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken) == 0)
+    {
+        return {};
+    }
+
+    // Get token user size
+    DWORD tokenInfoLen = 0;
+    GetTokenInformation(hToken, TokenUser, nullptr, 0, &tokenInfoLen);
+    if (tokenInfoLen == 0)
+    {
+        CloseHandle(hToken);
+        return {};
+    }
+
+    // Allocate buffer and get token user
+    std::vector<BYTE> tokenInfo(tokenInfoLen);
+    if (GetTokenInformation(hToken, TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
+    {
+        CloseHandle(hToken);
+        return {};
+    }
+
+    // Look up the user name from the SID
+    auto* tokenUser = reinterpret_cast<TOKEN_USER*>(tokenInfo.data());
+    WCHAR userName[256] = {};
+    WCHAR domainName[256] = {};
+    DWORD userNameLen = 256;
+    DWORD domainNameLen = 256;
+    SID_NAME_USE sidType{};
+
+    if (LookupAccountSidW(nullptr, tokenUser->User.Sid, userName, &userNameLen,
+                          domainName, &domainNameLen, &sidType) == 0)
+    {
+        CloseHandle(hToken);
+        return {};
+    }
+
+    CloseHandle(hToken);
+    return wideToUtf8(userName);
+}
+
+/// Get the full command line (image path) of a process
+[[nodiscard]] std::string getProcessCommandLine(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    WCHAR path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+
+    if (QueryFullProcessImageNameW(hProcess, 0, path, &size) != 0)
+    {
+        return wideToUtf8(path);
+    }
+    return {};
 }
 
 } // namespace
@@ -134,6 +204,43 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     // Get process state
     counters.state = getProcessState(hProcess);
 
+    // Get process owner (username)
+    counters.user = getProcessOwner(hProcess);
+
+    // Get full command line (image path)
+    counters.command = getProcessCommandLine(hProcess);
+    if (counters.command.empty())
+    {
+        counters.command = "[" + counters.name + "]";
+    }
+
+    // Get process priority class and map to nice-like value
+    DWORD priorityClass = GetPriorityClass(hProcess);
+    switch (priorityClass)
+    {
+    case IDLE_PRIORITY_CLASS:
+        counters.nice = 19;
+        break;
+    case BELOW_NORMAL_PRIORITY_CLASS:
+        counters.nice = 10;
+        break;
+    case NORMAL_PRIORITY_CLASS:
+        counters.nice = 0;
+        break;
+    case ABOVE_NORMAL_PRIORITY_CLASS:
+        counters.nice = -5;
+        break;
+    case HIGH_PRIORITY_CLASS:
+        counters.nice = -10;
+        break;
+    case REALTIME_PRIORITY_CLASS:
+        counters.nice = -20;
+        break;
+    default:
+        counters.nice = 0;
+        break;
+    }
+
     // Get CPU times
     FILETIME ftCreation{};
     FILETIME ftExit{};
@@ -177,6 +284,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
+        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true, // From QueryFullProcessImageName
+        .hasNice = true,    // From GetPriorityClass
     };
 }
 

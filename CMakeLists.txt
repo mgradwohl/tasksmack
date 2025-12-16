@@ -195,6 +195,15 @@ if(TARGET spdlog)
     target_compile_definitions(spdlog PUBLIC SPDLOG_USE_STD_FORMAT $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
 endif()
 
+# toml++ for configuration files
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+    SYSTEM  # Treat as system headers to suppress warnings
+)
+FetchContent_MakeAvailable(tomlplusplus)
+
 # OpenGL + ImGui stack dependencies
 
 # GLFW
@@ -306,7 +315,9 @@ set(TASKSMACK_SOURCES
     src/Core/Window.cpp
     src/UI/UILayer.cpp
     src/UI/Theme.cpp
+    src/UI/ThemeLoader.cpp
     src/App/ShellLayer.cpp
+    src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
@@ -508,17 +519,22 @@ target_link_libraries(TaskSmack PRIVATE
     spdlog::spdlog_header_only
     imgui_lib
     implot_lib
+    tomlplusplus::tomlplusplus
     OpenGL::GL
 )
 
-# Copy assets (fonts) to build directory
+# Copy assets (fonts and themes) to build directory
 set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
 add_custom_command(TARGET TaskSmack POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TaskSmack>/assets/fonts"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${TASKSMACK_ASSETS_DIR}/fonts"
         "$<TARGET_FILE_DIR:TaskSmack>/assets/fonts"
-    COMMENT "Copying font assets to build directory"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TaskSmack>/assets/themes"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${TASKSMACK_ASSETS_DIR}/themes"
+        "$<TARGET_FILE_DIR:TaskSmack>/assets/themes"
+    COMMENT "Copying assets (fonts, themes) to build directory"
 )
 
 # Link X11 on Linux (required by ImGui GLFW backend)

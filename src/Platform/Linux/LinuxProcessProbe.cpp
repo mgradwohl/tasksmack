@@ -8,12 +8,53 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 #include <dirent.h>
+#include <pwd.h>
 #include <unistd.h>
 
 namespace Platform
 {
+
+namespace
+{
+
+/// Cache UID to username mappings to avoid repeated getpwuid calls
+std::unordered_map<uid_t, std::string>& getUsernameCache()
+{
+    static std::unordered_map<uid_t, std::string> cache;
+    return cache;
+}
+
+/// Get username from UID, with caching
+[[nodiscard]] std::string getUsername(uid_t uid)
+{
+    auto& cache = getUsernameCache();
+    auto it = cache.find(uid);
+    if (it != cache.end())
+    {
+        return it->second;
+    }
+
+    // Look up username from passwd database
+    struct passwd* pwd = getpwuid(uid);
+    std::string username;
+    if (pwd != nullptr && pwd->pw_name != nullptr)
+    {
+        username = pwd->pw_name;
+    }
+    else
+    {
+        // Fall back to UID as string
+        username = std::to_string(uid);
+    }
+
+    cache[uid] = username;
+    return username;
+}
+
+} // namespace
 
 LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(sysconf(_SC_PAGESIZE))
 {
@@ -58,6 +99,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         if (parseProcessStat(pid, counters))
         {
             parseProcessStatm(pid, counters);
+            parseProcessStatus(pid, counters);
+            parseProcessCmdline(pid, counters);
             processes.push_back(std::move(counters));
         }
     }
@@ -75,7 +118,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     return ProcessCapabilities{.hasIoCounters = false, // Would need /proc/[pid]/io (requires root)
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
-                               .hasStartTime = true};
+                               .hasStartTime = true,
+                               .hasUser = true,    // From /proc/[pid]/status Uid field
+                               .hasCommand = true, // From /proc/[pid]/cmdline
+                               .hasNice = true};   // From /proc/[pid]/stat
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -167,6 +213,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.startTimeTicks = starttime;
     counters.virtualBytes = vsize;
     counters.rssBytes = static_cast<uint64_t>(rss) * static_cast<uint64_t>(m_PageSize);
+    counters.nice = static_cast<int32_t>(nice);
 
     return true;
 }
@@ -192,6 +239,71 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     {
         // statm gives more accurate RSS, update if available
         counters.rssBytes = resident * static_cast<uint64_t>(m_PageSize);
+    }
+}
+
+void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters) const
+{
+    // Read /proc/[pid]/status for UID (owner) information
+    // Format is key:value pairs, one per line
+    // We need: Uid: <real> <effective> <saved> <filesystem>
+
+    std::filesystem::path statusPath = std::filesystem::path("/proc") / std::to_string(pid) / "status";
+    std::ifstream statusFile(statusPath);
+    if (!statusFile.is_open())
+    {
+        return;
+    }
+
+    std::string line;
+    while (std::getline(statusFile, line))
+    {
+        // Look for "Uid:" line
+        if (line.starts_with("Uid:"))
+        {
+            std::istringstream iss(line.substr(4)); // Skip "Uid:"
+            uid_t realUid = 0;
+            iss >> realUid;
+            if (!iss.fail())
+            {
+                counters.user = getUsername(realUid);
+            }
+            break;
+        }
+    }
+}
+
+void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters) const
+{
+    // Format: /proc/[pid]/cmdline
+    // Arguments are separated by null bytes
+
+    std::filesystem::path cmdlinePath = std::filesystem::path("/proc") / std::to_string(pid) / "cmdline";
+    std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
+    if (!cmdlineFile.is_open())
+    {
+        return;
+    }
+
+    std::string cmdline;
+    std::getline(cmdlineFile, cmdline, '\0');
+
+    // Read remaining arguments
+    std::string arg;
+    while (std::getline(cmdlineFile, arg, '\0') && !arg.empty())
+    {
+        cmdline += ' ';
+        cmdline += arg;
+    }
+
+    // Some processes (like kernel threads) have empty cmdline - use name instead
+    if (cmdline.empty())
+    {
+        counters.command = "[" + counters.name + "]";
+    }
+    else
+    {
+        counters.command = std::move(cmdline);
     }
 }
 

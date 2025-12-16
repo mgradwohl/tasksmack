@@ -13,7 +13,7 @@
 namespace App
 {
 
-SystemMetricsPanel::SystemMetricsPanel() : Panel("System Metrics")
+SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {
 }
 
@@ -62,7 +62,7 @@ void SystemMetricsPanel::onDetach()
 
 void SystemMetricsPanel::render(bool* open)
 {
-    if (!ImGui::Begin("System Metrics", open))
+    if (!ImGui::Begin(m_Hostname.c_str(), open))
     {
         ImGui::End();
         return;
@@ -78,6 +78,12 @@ void SystemMetricsPanel::render(bool* open)
 
     // Get thread-safe copy of current snapshot
     auto snap = m_Model->snapshot();
+
+    // Update cached hostname if changed
+    if (!snap.hostname.empty() && snap.hostname != m_Hostname)
+    {
+        m_Hostname = snap.hostname;
+    }
 
     // Delayed layout recalculation:
     // Frame N: Font changes externally
@@ -135,36 +141,63 @@ void SystemMetricsPanel::renderOverview()
 {
     auto snap = m_Model->snapshot();
 
-    // System summary
-    ImGui::Text("System Overview");
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // Uptime
+    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned)
+    // Format uptime string
+    std::string uptimeStr;
     if (snap.uptimeSeconds > 0)
     {
         uint64_t days = snap.uptimeSeconds / 86400;
         uint64_t hours = (snap.uptimeSeconds % 86400) / 3600;
         uint64_t minutes = (snap.uptimeSeconds % 3600) / 60;
 
+        char uptimeBuf[64];
         if (days > 0)
         {
-            ImGui::Text("Uptime: %lud %luh %lum",
-                        static_cast<unsigned long>(days),
-                        static_cast<unsigned long>(hours),
-                        static_cast<unsigned long>(minutes));
+            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %lud %luh %lum",
+                     static_cast<unsigned long>(days),
+                     static_cast<unsigned long>(hours),
+                     static_cast<unsigned long>(minutes));
         }
         else if (hours > 0)
         {
-            ImGui::Text("Uptime: %luh %lum", static_cast<unsigned long>(hours), static_cast<unsigned long>(minutes));
+            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %luh %lum",
+                     static_cast<unsigned long>(hours),
+                     static_cast<unsigned long>(minutes));
         }
         else
         {
-            ImGui::Text("Uptime: %lum", static_cast<unsigned long>(minutes));
+            snprintf(uptimeBuf, sizeof(uptimeBuf), "Up: %lum", static_cast<unsigned long>(minutes));
         }
+        uptimeStr = uptimeBuf;
     }
 
-    ImGui::Text("CPU Cores: %d", snap.coreCount);
+    // Display: "CPU Model (N cores @ X.XX GHz)     Uptime: Xd Yh Zm"
+    char coreInfo[64];
+    if (snap.cpuFreqMHz > 0)
+    {
+        snprintf(coreInfo, sizeof(coreInfo), " (%d cores @ %.2f GHz)",
+                 snap.coreCount, static_cast<double>(snap.cpuFreqMHz) / 1000.0);
+    }
+    else
+    {
+        snprintf(coreInfo, sizeof(coreInfo), " (%d cores)", snap.coreCount);
+    }
+
+    float availWidth = ImGui::GetContentRegionAvail().x;
+    float uptimeWidth = ImGui::CalcTextSize(uptimeStr.c_str()).x;
+
+    // CPU model with core count and frequency
+    ImGui::TextUnformatted(snap.cpuModel.c_str());
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(coreInfo);
+
+    // Right-align uptime
+    if (!uptimeStr.empty())
+    {
+        ImGui::SameLine(availWidth - uptimeWidth);
+        ImGui::TextUnformatted(uptimeStr.c_str());
+    }
+
     ImGui::Spacing();
 
     // Get theme for colored progress bars
@@ -199,8 +232,8 @@ void SystemMetricsPanel::renderOverview()
         ImDrawList* drawList = ImGui::GetWindowDrawList();
 
         // Draw background
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + barWidth, barStart.y + barHeight),
-                                ImGui::ColorConvertFloat4ToU32(theme.scheme().cpuIdle), 3.0F);
+        drawList->AddRectFilled(
+            barStart, ImVec2(barStart.x + barWidth, barStart.y + barHeight), ImGui::ColorConvertFloat4ToU32(theme.scheme().cpuIdle), 3.0F);
 
         float xOffset = 0.0F;
 
@@ -210,7 +243,8 @@ void SystemMetricsPanel::renderOverview()
             drawList->AddRectFilled(ImVec2(barStart.x + xOffset, barStart.y),
                                     ImVec2(barStart.x + xOffset + userWidth, barStart.y + barHeight),
                                     ImGui::ColorConvertFloat4ToU32(theme.scheme().cpuUser),
-                                    xOffset < 0.5F ? 3.0F : 0.0F, xOffset < 0.5F ? ImDrawFlags_RoundCornersLeft : 0);
+                                    xOffset < 0.5F ? 3.0F : 0.0F,
+                                    xOffset < 0.5F ? ImDrawFlags_RoundCornersLeft : 0);
             xOffset += userWidth;
         }
 
@@ -233,8 +267,10 @@ void SystemMetricsPanel::renderOverview()
         }
 
         // Draw frame border
-        drawList->AddRect(barStart, ImVec2(barStart.x + barWidth, barStart.y + barHeight),
-                          ImGui::ColorConvertFloat4ToU32(ImGui::GetStyleColorVec4(ImGuiCol_Border)), 3.0F);
+        drawList->AddRect(barStart,
+                          ImVec2(barStart.x + barWidth, barStart.y + barHeight),
+                          ImGui::ColorConvertFloat4ToU32(ImGui::GetStyleColorVec4(ImGuiCol_Border)),
+                          3.0F);
 
         // Reserve space for the bar
         ImGui::Dummy(ImVec2(barWidth, barHeight));
@@ -262,7 +298,9 @@ void SystemMetricsPanel::renderOverview()
 
         if (ImPlot::BeginPlot("##OverviewCPUHistory", ImVec2(-1, 120)))
         {
-            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoTickLabels,
+            ImPlot::SetupAxes(nullptr,
+                              nullptr,
+                              ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoTickLabels,
                               ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoTickLabels);
             ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
 
@@ -285,6 +323,18 @@ void SystemMetricsPanel::renderOverview()
     }
 
     ImGui::Spacing();
+
+    // Load average (Linux only, shows nothing on Windows)
+    if (snap.loadAvg1 > 0.0 || snap.loadAvg5 > 0.0 || snap.loadAvg15 > 0.0)
+    {
+        ImGui::Text("Load Avg:");
+        ImGui::SameLine(m_OverviewLabelWidth);
+
+        char loadBuf[64];
+        snprintf(loadBuf, sizeof(loadBuf), "%.2f / %.2f / %.2f (1/5/15 min)",
+                 snap.loadAvg1, snap.loadAvg5, snap.loadAvg15);
+        ImGui::TextUnformatted(loadBuf);
+    }
 
     // Memory usage bar with themed color
     ImGui::Text("Memory:");
@@ -561,19 +611,20 @@ void SystemMetricsPanel::renderPerCoreSection()
             }
         }
 
-        // Calculate appropriate height (8 pixels per core minimum, max 300px)
-        float heatmapHeight = std::clamp(static_cast<float>(coreCount) * 8.0F, 100.0F, 300.0F);
+        // Use remaining vertical space in the panel, with minimum height
+        float availableHeight = ImGui::GetContentRegionAvail().y;
+        float heatmapHeight = std::max(availableHeight, 80.0F);
 
         // Set up colormap based on theme (only recreate when theme changes)
-        UI::ThemeId currentTheme = theme.currentTheme();
-        if (m_HeatmapColormap == -1 || currentTheme != m_LastThemeId)
+        std::size_t currentThemeIdx = theme.currentThemeIndex();
+        if (m_HeatmapColormap == -1 || currentThemeIdx != m_LastThemeIndex)
         {
             const auto& hm = theme.scheme().heatmap;
             ImVec4 colors[5] = {hm[0], hm[1], hm[2], hm[3], hm[4]};
 
             // Generate unique name for this theme's colormap
             char cmapName[32];
-            snprintf(cmapName, sizeof(cmapName), "CPUHeat_%d", static_cast<int>(currentTheme));
+            snprintf(cmapName, sizeof(cmapName), "CPUHeat_%zu", currentThemeIdx);
 
             // Check if this colormap already exists
             int existingIdx = ImPlot::GetColormapIndex(cmapName);
@@ -585,21 +636,31 @@ void SystemMetricsPanel::renderPerCoreSection()
             {
                 m_HeatmapColormap = existingIdx;
             }
-            m_LastThemeId = currentTheme;
+            m_LastThemeIndex = currentThemeIdx;
         }
 
         ImPlot::PushColormap(m_HeatmapColormap);
 
-        if (ImPlot::BeginPlot("##CPUHeatmap", ImVec2(-1, heatmapHeight), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText))
+        if (ImPlot::BeginPlot("##CPUHeatmap", ImVec2(-1, heatmapHeight), 
+                              ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | ImPlotFlags_NoFrame))
         {
-            // X axis: time (negative = past)
-            // Y axis: core number
-            ImPlot::SetupAxes("Time (s)", "Core", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Invert);
+            // No axis labels - cleaner look
+            ImPlot::SetupAxes(nullptr, nullptr, 
+                              ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks,
+                              ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks);
+            
+            // Set limits
+            ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, static_cast<double>(historySize), ImPlotCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, -0.5, static_cast<double>(coreCount) - 0.5, ImPlotCond_Always);
 
-            double xMin = -static_cast<double>(historySize - 1);
-            double xMax = 0.0;
+            double xMin = 0.0;
+            double xMax = static_cast<double>(historySize);
             double yMin = -0.5;
             double yMax = static_cast<double>(coreCount) - 0.5;
+
+            // heatmapData already set up above with correct order:
+            // History buffer: index 0 = oldest, index size-1 = newest
+            // Direct copy means: left side = oldest, right side = newest
 
             ImPlot::PlotHeatmap("##heat",
                                 heatmapData.data(),
@@ -615,18 +676,10 @@ void SystemMetricsPanel::renderPerCoreSection()
         }
 
         ImPlot::PopColormap();
-
-        // Legend
-        ImGui::Spacing();
-        ImGui::TextColored(theme.heatmapColor(0), "0%%");
-        ImGui::SameLine();
-        ImGui::TextColored(theme.heatmapColor(25), "25%%");
-        ImGui::SameLine();
-        ImGui::TextColored(theme.heatmapColor(50), "50%%");
-        ImGui::SameLine();
-        ImGui::TextColored(theme.heatmapColor(75), "75%%");
-        ImGui::SameLine();
-        ImGui::TextColored(theme.heatmapColor(100), "100%%");
+        
+        // Simple description below the heatmap
+        ImGui::TextColored(theme.scheme().textMuted, "Cores 0-%zu (top to bottom)  |  Oldest (left) to Now (right)", 
+                           coreCount - 1);
     }
     else
     {

@@ -132,6 +132,16 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
     // Uptime
     snap.uptimeSeconds = counters.uptimeSeconds;
 
+    // Static info
+    snap.hostname = counters.hostname;
+    snap.cpuModel = counters.cpuModel;
+
+    // Load average and CPU frequency
+    snap.loadAvg1 = counters.loadAvg1;
+    snap.loadAvg5 = counters.loadAvg5;
+    snap.loadAvg15 = counters.loadAvg15;
+    snap.cpuFreqMHz = counters.cpuFreqMHz;
+
     // CPU usage (requires previous sample for delta)
     if (m_HasPrevious)
     {

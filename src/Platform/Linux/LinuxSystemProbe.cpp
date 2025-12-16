@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -24,7 +25,47 @@ LinuxSystemProbe::LinuxSystemProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m
         spdlog::warn("Failed to get CPU count, using default: {}", m_NumCores);
     }
 
-    spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec", m_NumCores, m_TicksPerSecond);
+    // Read hostname (cached)
+    std::array<char, 256> hostBuffer{};
+    if (gethostname(hostBuffer.data(), hostBuffer.size()) == 0)
+    {
+        m_Hostname = hostBuffer.data();
+    }
+    else
+    {
+        m_Hostname = "unknown";
+    }
+
+    // Read CPU model from /proc/cpuinfo (cached)
+    std::ifstream cpuInfo("/proc/cpuinfo");
+    if (cpuInfo.is_open())
+    {
+        std::string line;
+        while (std::getline(cpuInfo, line))
+        {
+            if (line.starts_with("model name"))
+            {
+                auto pos = line.find(':');
+                if (pos != std::string::npos)
+                {
+                    m_CpuModel = line.substr(pos + 1);
+                    // Trim leading whitespace
+                    while (!m_CpuModel.empty() && m_CpuModel[0] == ' ')
+                    {
+                        m_CpuModel.erase(0, 1);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if (m_CpuModel.empty())
+    {
+        m_CpuModel = "Unknown CPU";
+    }
+
+    spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}",
+                  m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
 
 SystemCounters LinuxSystemProbe::read()
@@ -33,6 +74,9 @@ SystemCounters LinuxSystemProbe::read()
     readCpuCounters(counters);
     readMemoryCounters(counters);
     readUptime(counters);
+    readLoadAvg(counters);
+    readCpuFreq(counters);
+    readStaticInfo(counters);
     return counters;
 }
 
@@ -43,7 +87,9 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasSwap = true,
                               .hasUptime = true,
                               .hasIoWait = true,
-                              .hasSteal = true};
+                              .hasSteal = true,
+                              .hasLoadAvg = true,
+                              .hasCpuFreq = true};
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -195,6 +241,57 @@ void LinuxSystemProbe::readUptime(SystemCounters& counters) const
     if (!uptimeFile.fail())
     {
         counters.uptimeSeconds = static_cast<uint64_t>(uptimeSeconds);
+    }
+}
+
+void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
+{
+    counters.hostname = m_Hostname;
+    counters.cpuModel = m_CpuModel;
+    counters.cpuCoreCount = m_NumCores;
+}
+
+void LinuxSystemProbe::readLoadAvg(SystemCounters& counters) const
+{
+    // Format: /proc/loadavg
+    // 0.31 0.65 0.97 1/330 12345
+    // load1 load5 load15 running/total lastpid
+
+    std::ifstream loadFile("/proc/loadavg");
+    if (!loadFile.is_open())
+    {
+        return;
+    }
+
+    loadFile >> counters.loadAvg1 >> counters.loadAvg5 >> counters.loadAvg15;
+}
+
+void LinuxSystemProbe::readCpuFreq(SystemCounters& counters) const
+{
+    // Try to read current CPU frequency from scaling driver
+    // /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq (in kHz)
+    std::ifstream freqFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+    if (freqFile.is_open())
+    {
+        uint64_t freqKHz = 0;
+        freqFile >> freqKHz;
+        if (!freqFile.fail())
+        {
+            counters.cpuFreqMHz = freqKHz / 1000;
+            return;
+        }
+    }
+
+    // Fallback: try cpuinfo_cur_freq
+    std::ifstream cpuInfoFreq("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq");
+    if (cpuInfoFreq.is_open())
+    {
+        uint64_t freqKHz = 0;
+        cpuInfoFreq >> freqKHz;
+        if (!cpuInfoFreq.fail())
+        {
+            counters.cpuFreqMHz = freqKHz / 1000;
+        }
     }
 }
 

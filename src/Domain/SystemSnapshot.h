@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Domain
@@ -43,6 +44,16 @@ struct SystemSnapshot
     // System info
     uint64_t uptimeSeconds = 0;
     int coreCount = 0;
+    std::string hostname;
+    std::string cpuModel;
+
+    // Load average (1, 5, 15 minute) - Linux only
+    double loadAvg1 = 0.0;
+    double loadAvg5 = 0.0;
+    double loadAvg15 = 0.0;
+
+    // CPU frequency in MHz
+    uint64_t cpuFreqMHz = 0;
 };
 
 } // namespace Domain

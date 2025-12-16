@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "UI/Theme.h"
+#include "UserConfig.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -18,6 +19,19 @@ void ShellLayer::onAttach()
 {
     spdlog::info("ShellLayer attached");
 
+    // Load user configuration
+    auto& config = UserConfig::get();
+    config.load();
+
+    // Apply config to theme (must be after UILayer loads themes)
+    config.applyToApplication();
+
+    // Restore panel visibility from config
+    const auto& settings = config.settings();
+    m_ShowProcesses = settings.showProcesses;
+    m_ShowMetrics = settings.showMetrics;
+    m_ShowDetails = settings.showDetails;
+
     // Configure ImGui for docking
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -31,6 +45,18 @@ void ShellLayer::onAttach()
 
 void ShellLayer::onDetach()
 {
+    // Save user configuration
+    auto& config = UserConfig::get();
+    config.captureFromApplication();
+
+    // Save panel visibility
+    auto& settings = config.settings();
+    settings.showProcesses = m_ShowProcesses;
+    settings.showMetrics = m_ShowMetrics;
+    settings.showDetails = m_ShowDetails;
+
+    config.save();
+
     m_SystemMetricsPanel.onDetach();
     m_ProcessesPanel.onDetach();
     spdlog::info("ShellLayer detached");
@@ -110,16 +136,6 @@ void ShellLayer::onRender()
         m_ProcessDetailsPanel.render(&m_ShowDetails);
     }
 
-    // Optional demo windows
-    if (m_ShowImGuiDemo)
-    {
-        ImGui::ShowDemoWindow(&m_ShowImGuiDemo);
-    }
-    if (m_ShowImPlotDemo)
-    {
-        ImPlot::ShowDemoWindow(&m_ShowImPlotDemo);
-    }
-
     renderStatusBar();
 }
 
@@ -129,8 +145,9 @@ void ShellLayer::setupDockspace()
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
     // Account for menu bar at top and status bar at bottom
-    constexpr float menuBarHeight = 19.0F;
-    constexpr float statusBarHeight = 22.0F;
+    // Calculate heights dynamically based on font size for proper scaling
+    float menuBarHeight = ImGui::GetFrameHeight();
+    float statusBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + menuBarHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - menuBarHeight - statusBarHeight));
@@ -156,6 +173,11 @@ void ShellLayer::setupDockspace()
 
 void ShellLayer::renderMenuBar()
 {
+    // Increase vertical padding for menu items to center text better
+    float menuBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.y * 2.0F;
+    float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
+
     if (ImGui::BeginMainMenuBar())
     {
         if (ImGui::BeginMenu("File"))
@@ -174,19 +196,19 @@ void ShellLayer::renderMenuBar()
             ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
             ImGui::Separator();
 
-            // Theme submenu
+            // Theme submenu (dynamically loaded from TOML files)
             if (ImGui::BeginMenu("Theme"))
             {
                 auto& theme = UI::Theme::get();
-                auto currentTheme = theme.currentTheme();
+                const auto& themes = theme.discoveredThemes();
+                auto currentIndex = theme.currentThemeIndex();
 
-                for (size_t i = 0; i < static_cast<size_t>(UI::ThemeId::Count); ++i)
+                for (std::size_t i = 0; i < themes.size(); ++i)
                 {
-                    auto themeId = static_cast<UI::ThemeId>(i);
-                    bool selected = (currentTheme == themeId);
-                    if (ImGui::MenuItem(theme.themeName(themeId).data(), nullptr, selected))
+                    bool selected = (currentIndex == i);
+                    if (ImGui::MenuItem(themes[i].name.c_str(), nullptr, selected))
                     {
-                        theme.setTheme(themeId);
+                        theme.setTheme(i);
                     }
                 }
                 ImGui::EndMenu();
@@ -198,7 +220,7 @@ void ShellLayer::renderMenuBar()
                 auto& theme = UI::Theme::get();
                 auto currentSize = theme.currentFontSize();
 
-                for (size_t i = 0; i < static_cast<size_t>(UI::FontSize::Count); ++i)
+                for (std::size_t i = 0; i < static_cast<std::size_t>(UI::FontSize::Count); ++i)
                 {
                     auto fontSize = static_cast<UI::FontSize>(i);
                     const auto& cfg = theme.fontConfig(fontSize);
@@ -224,20 +246,6 @@ void ShellLayer::renderMenuBar()
                 ImGui::EndMenu();
             }
 
-            if (ImGui::MenuItem("Dark Mode", nullptr, &m_DarkMode))
-            {
-                if (m_DarkMode)
-                {
-                    ImGui::StyleColorsDark();
-                }
-                else
-                {
-                    ImGui::StyleColorsLight();
-                }
-            }
-            ImGui::Separator();
-            ImGui::MenuItem("ImGui Demo", nullptr, &m_ShowImGuiDemo);
-            ImGui::MenuItem("ImPlot Demo", nullptr, &m_ShowImPlotDemo);
             ImGui::EndMenu();
         }
 
@@ -261,12 +269,14 @@ void ShellLayer::renderMenuBar()
 
         ImGui::EndMainMenuBar();
     }
+    ImGui::PopStyleVar();
 }
 
 void ShellLayer::renderStatusBar()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    constexpr float statusBarHeight = 22.0F;
+    // Calculate height dynamically based on font size for proper scaling
+    float statusBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, statusBarHeight));
@@ -276,9 +286,15 @@ void ShellLayer::renderStatusBar()
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav |
                                    ImGuiWindowFlags_NoDocking;
 
+    // Use theme colors for status bar
+    const auto& theme = UI::Theme::get();
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme.scheme().statusBarBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().border);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 2.0F));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F);  // Show top border
+    // Center text vertically within the status bar
+    float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, verticalPadding));
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
@@ -292,6 +308,7 @@ void ShellLayer::renderStatusBar()
     }
     ImGui::End();
     ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
 }
 
 } // namespace App

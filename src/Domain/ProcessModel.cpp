@@ -2,22 +2,63 @@
 
 #include <spdlog/spdlog.h>
 
+#include <fstream>
 #include <functional>
 
 namespace Domain
 {
+
+namespace
+{
+
+/// Read total system memory (platform-specific)
+[[nodiscard]] uint64_t readSystemTotalMemory()
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus) != 0)
+    {
+        return memStatus.ullTotalPhys;
+    }
+    return 0;
+#else
+    std::ifstream meminfo("/proc/meminfo");
+    std::string line;
+    while (std::getline(meminfo, line))
+    {
+        if (line.starts_with("MemTotal:"))
+        {
+            uint64_t kb = 0;
+            if (sscanf(line.c_str(), "MemTotal: %lu kB", &kb) == 1)
+            {
+                return kb * 1024ULL;
+            }
+        }
+    }
+    return 0;
+#endif
+}
+
+} // namespace
 
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_Probe(std::move(probe))
 {
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
+        m_TicksPerSecond = m_Probe->ticksPerSecond();
+        m_SystemTotalMemory = readSystemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: "
-                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}",
+                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}",
                      m_Capabilities.hasIoCounters,
                      m_Capabilities.hasThreadCount,
                      m_Capabilities.hasUserSystemTime,
-                     m_Capabilities.hasStartTime);
+                     m_Capabilities.hasStartTime,
+                     m_Capabilities.hasUser);
+        spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
+                      m_TicksPerSecond,
+                      static_cast<double>(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
     }
 }
 
@@ -71,7 +112,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
 
         // Compute snapshot with deltas
-        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta));
+        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond));
 
         // Store for next iteration
         newPrevCounters[key] = current;
@@ -102,17 +143,35 @@ const Platform::ProcessCapabilities& ProcessModel::capabilities() const
 
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
                                               const Platform::ProcessCounters* previous,
-                                              uint64_t totalCpuDelta) const
+                                              uint64_t totalCpuDelta,
+                                              uint64_t systemTotalMemory,
+                                              long ticksPerSecond) const
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
     snapshot.parentPid = current.parentPid;
     snapshot.name = current.name;
+    snapshot.command = current.command;
+    snapshot.user = current.user;
     snapshot.displayState = translateState(current.state);
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.threadCount = current.threadCount;
+    snapshot.nice = current.nice;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
+
+    // Calculate memory percentage
+    if (systemTotalMemory > 0)
+    {
+        snapshot.memoryPercent = (static_cast<double>(current.rssBytes) / static_cast<double>(systemTotalMemory)) * 100.0;
+    }
+
+    // Calculate cumulative CPU time in seconds
+    if (ticksPerSecond > 0)
+    {
+        uint64_t totalTicks = current.userTime + current.systemTime;
+        snapshot.cpuTimeSeconds = static_cast<double>(totalTicks) / static_cast<double>(ticksPerSecond);
+    }
 
     // Compute CPU% from deltas
     // CPU% = (processCpuDelta / totalCpuDelta) * 100 * numCores
@@ -128,10 +187,6 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.cpuPercent = (static_cast<double>(processDelta) / static_cast<double>(totalCpuDelta)) * 100.0;
         }
     }
-
-    // Compute I/O rates (bytes per second) if available
-    // Note: This would need time delta; for now just store raw values
-    // TODO: Add proper I/O rate calculation with time delta
 
     return snapshot;
 }

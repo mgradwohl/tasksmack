@@ -13,6 +13,7 @@
 #include <winternl.h>
 // clang-format on
 
+#include <array>
 #include <chrono>
 #include <vector>
 
@@ -78,7 +79,51 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
     SYSTEM_INFO sysInfo{};
     GetSystemInfo(&sysInfo);
     m_NumCores = static_cast<int>(sysInfo.dwNumberOfProcessors);
-    spdlog::debug("WindowsSystemProbe initialized with {} cores", m_NumCores);
+
+    // Get hostname
+    std::array<char, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
+    DWORD bufferSize = static_cast<DWORD>(hostBuffer.size());
+    if (GetComputerNameA(hostBuffer.data(), &bufferSize) != 0)
+    {
+        m_Hostname = hostBuffer.data();
+    }
+    else
+    {
+        m_Hostname = "unknown";
+    }
+
+    // Get CPU model from registry
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        std::array<char, 256> cpuBuffer{};
+        DWORD cpuBufferSize = static_cast<DWORD>(cpuBuffer.size());
+        DWORD type = 0;
+        if (RegQueryValueExA(hKey, "ProcessorNameString", nullptr, &type,
+                             reinterpret_cast<LPBYTE>(cpuBuffer.data()), &cpuBufferSize) == ERROR_SUCCESS)
+        {
+            m_CpuModel = cpuBuffer.data();
+            // Trim leading/trailing whitespace
+            while (!m_CpuModel.empty() && m_CpuModel[0] == ' ')
+            {
+                m_CpuModel.erase(0, 1);
+            }
+            while (!m_CpuModel.empty() && m_CpuModel.back() == ' ')
+            {
+                m_CpuModel.pop_back();
+            }
+        }
+        RegCloseKey(hKey);
+    }
+    if (m_CpuModel.empty())
+    {
+        m_CpuModel = "Unknown CPU";
+    }
+
+    spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}",
+                  m_NumCores, m_Hostname, m_CpuModel);
 }
 
 SystemCounters WindowsSystemProbe::read()
@@ -88,6 +133,8 @@ SystemCounters WindowsSystemProbe::read()
     readCpuCounters(counters);
     readMemoryCounters(counters);
     readUptime(counters);
+    readStaticInfo(counters);
+    readCpuFreq(counters);
 
     return counters;
 }
@@ -222,15 +269,46 @@ void WindowsSystemProbe::readUptime(SystemCounters& counters) const
     counters.bootTimestamp = static_cast<uint64_t>(nowEpoch) - counters.uptimeSeconds;
 }
 
+void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
+{
+    counters.hostname = m_Hostname;
+    counters.cpuModel = m_CpuModel;
+    counters.cpuCoreCount = m_NumCores;
+}
+
+void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
+{
+    // Read CPU frequency from registry (in MHz)
+    // This is the base frequency; current frequency requires more complex APIs
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD mhz = 0;
+        DWORD dataSize = sizeof(mhz);
+        DWORD type = 0;
+        if (RegQueryValueExA(hKey, "~MHz", nullptr, &type,
+                             reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
+        {
+            counters.cpuFreqMHz = static_cast<double>(mhz);
+        }
+        RegCloseKey(hKey);
+    }
+    // Load average is not available on Windows (leave at 0)
+}
+
 SystemCapabilities WindowsSystemProbe::capabilities() const
 {
     return SystemCapabilities{
-        .hasPerCoreCpu = true, // Via NtQuerySystemInformation
+        .hasPerCoreCpu = true,     // Via NtQuerySystemInformation
         .hasMemoryAvailable = true,
         .hasSwap = true,
         .hasUptime = true,
-        .hasIoWait = false, // Windows doesn't expose iowait
-        .hasSteal = false,  // Windows doesn't expose steal time
+        .hasIoWait = false,   // Windows doesn't expose iowait
+        .hasSteal = false,    // Windows doesn't expose steal time
+        .hasLoadAvg = false,  // Windows doesn't have load average
+        .hasCpuFreq = true,   // From registry ~MHz
     };
 }
 

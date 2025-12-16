@@ -38,11 +38,6 @@ class ShellLayer : public Core::Layer
     bool m_ShowProcesses = true;
     bool m_ShowMetrics = true;
     bool m_ShowDetails = true;
-    bool m_ShowImGuiDemo = false;
-    bool m_ShowImPlotDemo = false;
-
-    // Theme
-    bool m_DarkMode = false;
 
     // Frame timing
     float m_FrameTime = 0.0F;

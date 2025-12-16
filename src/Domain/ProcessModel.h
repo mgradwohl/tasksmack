@@ -49,6 +49,8 @@ class ProcessModel
     // Previous counters for delta calculation (keyed by uniqueKey)
     std::unordered_map<uint64_t, Platform::ProcessCounters> m_PrevCounters;
     uint64_t m_PrevTotalCpuTime = 0;
+    uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
+    long m_TicksPerSecond = 100;      // For cpuTimeSeconds calculation
 
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
@@ -60,7 +62,11 @@ class ProcessModel
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, uint64_t totalCpuTime);
 
     [[nodiscard]] ProcessSnapshot
-    computeSnapshot(const Platform::ProcessCounters& current, const Platform::ProcessCounters* previous, uint64_t totalCpuDelta) const;
+    computeSnapshot(const Platform::ProcessCounters& current,
+                    const Platform::ProcessCounters* previous,
+                    uint64_t totalCpuDelta,
+                    uint64_t systemTotalMemory,
+                    long ticksPerSecond) const;
 
     [[nodiscard]] static uint64_t makeUniqueKey(int32_t pid, uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

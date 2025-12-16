@@ -33,6 +33,12 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse /proc/[pid]/statm for memory info
     void parseProcessStatm(int32_t pid, ProcessCounters& counters) const;
 
+    /// Parse /proc/[pid]/status for owner (UID) info
+    void parseProcessStatus(int32_t pid, ProcessCounters& counters) const;
+
+    /// Parse /proc/[pid]/cmdline for full command line
+    void parseProcessCmdline(int32_t pid, ProcessCounters& counters) const;
+
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
 };

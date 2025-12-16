@@ -14,6 +14,7 @@ A modern C++23 project template with clang toolchain, CMake Presets, Google Test
 - **GNUInstallDirs** for portable installation paths
 - **Google Test** for unit testing
 - **spdlog** for logging (via FetchContent)
+- **toml++** for configuration files (via FetchContent)
 - **clang-tidy** and **clang-format** integration
 - **VS Code** tasks, launch configs, and clangd support
 - **Cross-platform** support for Linux and Windows

@@ -295,7 +295,7 @@ void ProcessDetailsPanel::renderHistoryGraphs()
     // CPU History Plot
     const auto& theme = UI::Theme::get();
     ImGui::Text("CPU Usage");
-    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 150)))
+    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "%", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
@@ -317,7 +317,7 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
     // Memory History Plot
     ImGui::Text("Memory Usage (RSS)");
-    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 150)))
+    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "MB", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
 
@@ -441,9 +441,9 @@ void ProcessDetailsPanel::renderActions()
     // Kill (SIGKILL) - forceful
     if (m_ActionCapabilities.canKill)
     {
-        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().buttonDanger);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().buttonDangerHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().buttonDangerActive);
+        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().dangerButton);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().dangerButtonHovered);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().dangerButtonActive);
         if (ImGui::Button("Kill (SIGKILL)", ImVec2(180, 0)))
         {
             m_ConfirmAction = "kill";

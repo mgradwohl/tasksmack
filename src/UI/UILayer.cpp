@@ -147,6 +147,10 @@ void UILayer::onAttach()
     // Pre-bake fonts for all size presets
     loadAllFonts();
 
+    // Load themes from TOML files
+    auto themesDir = getExecutableDir() / "assets" / "themes";
+    Theme::get().loadThemes(themesDir);
+
     // Style - start with dark base, then apply theme colors
     ImGui::StyleColorsDark();
     Theme::get().applyImGuiStyle();

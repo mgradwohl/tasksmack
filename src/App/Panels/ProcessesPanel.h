@@ -5,6 +5,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -55,6 +56,9 @@ class ProcessesPanel : public Panel
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     int32_t m_SelectedPid = -1;
+
+    // Search/filter state
+    std::array<char, 256> m_SearchBuffer{};
 };
 
 } // namespace App

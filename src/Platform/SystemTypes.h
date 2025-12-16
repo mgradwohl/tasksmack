@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Platform
@@ -56,6 +57,19 @@ struct SystemCounters
 
     uint64_t uptimeSeconds = 0;
     uint64_t bootTimestamp = 0; // Unix epoch
+
+    // Load average (1, 5, 15 minute)
+    double loadAvg1 = 0.0;
+    double loadAvg5 = 0.0;
+    double loadAvg15 = 0.0;
+
+    // CPU frequency in MHz (current, may vary per-core)
+    uint64_t cpuFreqMHz = 0;
+
+    // Static system info (populated once)
+    std::string hostname;
+    std::string cpuModel;
+    int cpuCoreCount = 0;
 };
 
 /// Reports what this platform's system probe supports.
@@ -67,6 +81,8 @@ struct SystemCapabilities
     bool hasUptime = false;
     bool hasIoWait = false;
     bool hasSteal = false;
+    bool hasLoadAvg = false;
+    bool hasCpuFreq = false;
 };
 
 } // namespace Platform

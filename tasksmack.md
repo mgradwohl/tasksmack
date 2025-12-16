@@ -237,3 +237,92 @@ Each platform implements the same probe interfaces; automated tests ensure contr
 - Profiling: Tracy (optional but useful early)
 
 This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
+
+## Future Features (btop++ Inspired)
+
+Features observed in btop++ that could enhance TaskSmack. Organized by effort and priority.
+
+### Medium Effort (Days)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Network Panel** | Per-interface throughput (bytes/sec up/down), total bandwidth | New `INetworkProbe` reading `/proc/net/dev` (Linux), `GetIfTable2` (Windows) |
+| **Disk Panel** | Per-device I/O rates, read/write activity | New `IDiskProbe` reading `/proc/diskstats` (Linux), `GetDiskPerformance` (Windows) |
+| **Process Tree View** | Hierarchical view showing parent-child relationships | Already have `parentPid`; add collapsible tree rendering in UI |
+| **Per-Process I/O Rates** | Read/write bytes per second for each process | Requires `/proc/[pid]/io` (may need elevated privileges on Linux) |
+| **Column Visibility Toggles** | User-configurable visible columns with persistence | Add to config file and Settings dialog |
+
+### Higher Effort (Weeks)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Temperature Sensors** | CPU, GPU, NVMe temperatures | Linux: hwmon/sysfs, lm-sensors; Windows: WMI, vendor SDKs |
+| **Power/Battery Stats** | Power consumption, battery state | Linux: `/sys/class/power_supply`; Windows: `GetSystemPowerStatus` |
+| **GPU Stats** | GPU utilization, memory, temperature | NVML for NVIDIA, ROCm for AMD, vendor-specific |
+| **Process Environment & Arguments** | Full command line and environment variables | `/proc/[pid]/cmdline`, `/proc/[pid]/environ` |
+| **Signal Sending** | Send arbitrary signals to processes | Linux: `kill()`, Windows: `TerminateProcess`, `GenerateConsoleCtrlEvent` |
+| **Priority Adjustment** | Change process nice/priority values | Linux: `setpriority()`, Windows: `SetPriorityClass` |
+
+### UI Polish Features
+
+| Feature | Description |
+|---------|-------------|
+| **Customizable Colors** | Color scheme customization beyond themes |
+| **Mouse-Only Mode** | Full functionality without keyboard |
+| **Keyboard Navigation** | Vim-style or arrow key process selection |
+| **Mini-Mode/Compact View** | Condensed view showing key metrics only |
+| **Panel Arrangement** | User-configurable panel layout and sizing |
+| **Metric Alerts** | Visual/audio alerts when thresholds exceeded |
+
+### Research Required
+
+| Feature | Notes |
+|---------|-------|
+| **Firewall Rules** | Very platform-specific; may not be worth the complexity |
+| **Container Awareness** | Docker/podman container grouping; requires container runtime APIs |
+| **Service Management** | systemd on Linux, SCM on Windows; complex permissions |
+
+## Future Features (htop Inspired)
+
+Features observed in htop that could enhance TaskSmack.
+
+### Quick Wins (Implemented)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **MEM% Column** | ✅ Done | Memory as percentage of total system RAM |
+| **TIME+ Column** | ✅ Done | CPU time formatted as H:MM:SS.cc |
+| **Command Column** | ✅ Done | Full command line from `/proc/[pid]/cmdline` |
+| **Task Summary** | ✅ Done | "N processes, M running" in panel header |
+| **VIRT Column** | ✅ Done | Virtual memory size |
+
+### Low Effort (Hours)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **NI (Nice) Column** | Display process nice value (-20 to 19) | Already captured in probe; add column to ProcessesPanel |
+| **SHR Column** | Shared memory size | Linux: field from `/proc/[pid]/statm`; Windows: working set counters |
+| **State Color Coding** | Color-code process states (R=green, S=gray, D=yellow, Z=red) | Add ImGui color push/pop in state column rendering |
+| **Thread Count Column** | Number of threads per process | Already in ProcessCounters where supported |
+
+### Medium Effort (Days)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Process Tree View (F5)** | Collapsible parent-child hierarchy | Use `parentPid` to build tree; indent children in table |
+| **Incremental Search** | Filter processes as you type without search box focus | Global keyboard input handling in panel |
+| **Sort Indicator** | Visual arrow showing sort column and direction | ImGui table sorting specs already provide this |
+| **Process Details Panel** | Expanded view showing environment, open files, connections | Modal or split panel; multiple `/proc/[pid]/*` reads |
+
+### Higher Effort (Weeks)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **I/O Tab/View** | Dedicated I/O view showing read/write rates | Requires elevated privileges on Linux for `/proc/[pid]/io` |
+| **Keyboard Shortcuts** | F-key shortcuts (F1=Help, F2=Setup, F5=Tree, F9=Kill, F10=Quit) | Global key handler in ShellLayer |
+| **Setup Dialog (F2)** | Configure columns, colors, meters, layout | Persist to config file; apply changes live |
+| **Help Screen (F1)** | Built-in help overlay explaining columns and shortcuts | Modal window with keyboard shortcut reference |
+| **Strace Integration** | Attach strace to selected process | Linux only; spawn `strace -p <pid>` in terminal |
+| **Lsof Integration** | Show open files for selected process | Linux: spawn `lsof -p <pid>`; Windows: Handle enumeration |
+
+
