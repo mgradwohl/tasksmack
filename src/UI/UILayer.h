@@ -25,6 +25,7 @@ class UILayer : public Core::Layer
   private:
     void beginFrame();
     void endFrame();
+    void loadAllFonts();
 };
 
 } // namespace UI

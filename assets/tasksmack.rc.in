@@ -1,0 +1,52 @@
+// TaskSmack Windows Resource File
+// This file is configured by CMake - do not edit directly!
+// Edit assets/tasksmack.rc.in instead.
+
+#include <windows.h>
+
+// Note: The application manifest (app.manifest) is embedded via CMake's
+// CMAKE_EXE_LINKER_FLAGS or automatically by the linker, not here.
+// This avoids duplicate resource errors.
+
+// Application icon - ID 1 is the default icon displayed in Explorer
+// Windows will automatically pick the appropriate size from the ICO file
+// To generate tasksmack.ico from tasksmack.svg, run:
+//   pwsh tools/generate-icons.ps1
+#cmakedefine TASKSMACK_HAS_ICON
+#ifdef TASKSMACK_HAS_ICON
+IDI_ICON1 ICON "@CMAKE_SOURCE_DIR@/assets/icons/tasksmack.ico"
+#endif
+
+// Version information - populated by CMake from project version
+VS_VERSION_INFO VERSIONINFO
+    FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+    PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+    FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+    FILEFLAGS       VS_FF_DEBUG
+#else
+    FILEFLAGS       0
+#endif
+    FILEOS          VOS_NT_WINDOWS32
+    FILETYPE        VFT_APP
+    FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"  // US English, Unicode
+        BEGIN
+            VALUE "CompanyName",      "TaskSmack"
+            VALUE "FileDescription",  "TaskSmack - System Monitor"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
+            VALUE "InternalName",     "TaskSmack"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "TaskSmack.exe"
+            VALUE "ProductName",      "TaskSmack"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0  // US English, Unicode
+    END
+END

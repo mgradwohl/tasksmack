@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
 
@@ -77,6 +78,58 @@ UILayer::UILayer() : Layer("UILayer")
 
 UILayer::~UILayer() = default;
 
+void UILayer::loadAllFonts()
+{
+    auto& theme = Theme::get();
+    ImGuiIO& imguiIO = ImGui::GetIO();
+
+    // Build font path relative to executable directory
+    auto exeDir = getExecutableDir();
+    auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
+    auto fontBoldPath = (exeDir / "assets" / "fonts" / "Inter-Bold.ttf").string();
+
+    spdlog::info("Pre-baking fonts for all {} size presets", static_cast<int>(FontSize::Count));
+
+    // Load fonts for all size presets into a single atlas
+    for (size_t i = 0; i < static_cast<size_t>(FontSize::Count); ++i)
+    {
+        auto size = static_cast<FontSize>(i);
+        const auto& fontCfg = theme.fontConfig(size);
+
+        const float fontSizeRegular = pointsToPixels(fontCfg.regularPt);
+        const float fontSizeLarge = pointsToPixels(fontCfg.largePt);
+
+        spdlog::debug("Loading {} fonts: {}pt = {:.1f}px, {}pt = {:.1f}px",
+                      fontCfg.name,
+                      fontCfg.regularPt,
+                      fontSizeRegular,
+                      fontCfg.largePt,
+                      fontSizeLarge);
+
+        ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular);
+        if (fontRegular == nullptr)
+        {
+            spdlog::warn("Could not load Inter font from {}, using default", fontPath);
+            ImFontConfig defaultFontConfig;
+            defaultFontConfig.SizePixels = fontSizeRegular;
+            fontRegular = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
+        }
+
+        ImFont* fontLarge = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge);
+        if (fontLarge == nullptr)
+        {
+            ImFontConfig defaultFontConfig;
+            defaultFontConfig.SizePixels = fontSizeLarge;
+            fontLarge = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
+        }
+
+        // Register with theme for instant switching
+        theme.registerFonts(size, fontRegular, fontLarge);
+    }
+
+    spdlog::info("Pre-baked {} fonts into atlas", imguiIO.Fonts->Fonts.Size);
+}
+
 void UILayer::onAttach()
 {
     spdlog::info("Initializing ImGui");
@@ -91,47 +144,12 @@ void UILayer::onAttach()
     imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
 
-    // Load Inter font (TTF) at multiple sizes for flexibility
-    // Font sizes in typographic points (1pt = 1/72 inch)
-    constexpr float FONT_SIZE_REGULAR_PT = 8.0F; // standard body text
-    constexpr float FONT_SIZE_LARGE_PT = 10.0F;  // headings
+    // Pre-bake fonts for all size presets
+    loadAllFonts();
 
-    const float fontSizeRegular = pointsToPixels(FONT_SIZE_REGULAR_PT);
-    const float fontSizeLarge = pointsToPixels(FONT_SIZE_LARGE_PT);
-
-    spdlog::info("Font sizes: {}pt = {:.1f}px, {}pt = {:.1f}px", FONT_SIZE_REGULAR_PT, fontSizeRegular, FONT_SIZE_LARGE_PT, fontSizeLarge);
-
-    // Build font path relative to executable directory
-    auto exeDir = getExecutableDir();
-    auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
-    auto fontBoldPath = (exeDir / "assets" / "fonts" / "Inter-Bold.ttf").string();
-
-    spdlog::info("Loading fonts from: {}", exeDir.string());
-
-    // Try to load Inter font from assets directory
-    ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular);
-    if (fontRegular != nullptr)
-    {
-        spdlog::info("Loaded Inter-Regular.ttf at {:.1f}px ({}pt)", fontSizeRegular, FONT_SIZE_REGULAR_PT);
-        // Also load bold variant
-        ImFont* fontBold = imguiIO.Fonts->AddFontFromFileTTF(fontBoldPath.c_str(), fontSizeRegular);
-        if (fontBold != nullptr)
-        {
-            spdlog::info("Loaded Inter-Bold.ttf at {:.1f}px ({}pt)", fontSizeRegular, FONT_SIZE_REGULAR_PT);
-        }
-        // Load a larger size variant
-        imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge);
-    }
-    else
-    {
-        spdlog::warn("Could not load Inter font from {}, falling back to default", fontPath);
-        ImFontConfig fontConfig;
-        fontConfig.SizePixels = fontSizeRegular;
-        imguiIO.Fonts->AddFontDefault(&fontConfig);
-    }
-
-    // Style
-    ImGui::StyleColorsLight();
+    // Style - start with dark base, then apply theme colors
+    ImGui::StyleColorsDark();
+    Theme::get().applyImGuiStyle();
 
     // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
     ImGuiStyle& style = ImGui::GetStyle();
@@ -161,7 +179,7 @@ void UILayer::onDetach()
 
 void UILayer::onUpdate([[maybe_unused]] float deltaTime)
 {
-    // UI logic updates can go here
+    // No font rebuild needed - fonts are pre-baked at all sizes
 }
 
 void UILayer::onRender()
@@ -183,6 +201,13 @@ void UILayer::beginFrame()
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
+    // Push the current font size - this applies to all ImGui rendering this frame
+    ImFont* font = Theme::get().regularFont();
+    if (font != nullptr)
+    {
+        ImGui::PushFont(font);
+    }
+
     // Clear screen with ImGui's window background color (follows theme)
     const ImVec4& bgColor = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
     glClearColor(bgColor.x, bgColor.y, bgColor.z, bgColor.w);
@@ -191,6 +216,13 @@ void UILayer::beginFrame()
 
 void UILayer::endFrame()
 {
+    // Pop the font we pushed in beginFrame()
+    ImFont* font = Theme::get().regularFont();
+    if (font != nullptr)
+    {
+        ImGui::PopFont();
+    }
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 

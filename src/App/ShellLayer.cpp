@@ -1,6 +1,7 @@
 #include "ShellLayer.h"
 
 #include "Core/Application.h"
+#include "UI/Theme.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -74,6 +75,20 @@ void ShellLayer::onUpdate(float deltaTime)
         }
     }
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, deltaTime);
+
+    // Handle keyboard shortcuts for font size
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
+        {
+            UI::Theme::get().increaseFontSize();
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))
+        {
+            UI::Theme::get().decreaseFontSize();
+        }
+    }
 }
 
 void ShellLayer::onRender()
@@ -158,6 +173,57 @@ void ShellLayer::renderMenuBar()
             ImGui::MenuItem("System Metrics", nullptr, &m_ShowMetrics);
             ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
             ImGui::Separator();
+
+            // Theme submenu
+            if (ImGui::BeginMenu("Theme"))
+            {
+                auto& theme = UI::Theme::get();
+                auto currentTheme = theme.currentTheme();
+
+                for (size_t i = 0; i < static_cast<size_t>(UI::ThemeId::Count); ++i)
+                {
+                    auto themeId = static_cast<UI::ThemeId>(i);
+                    bool selected = (currentTheme == themeId);
+                    if (ImGui::MenuItem(theme.themeName(themeId).data(), nullptr, selected))
+                    {
+                        theme.setTheme(themeId);
+                    }
+                }
+                ImGui::EndMenu();
+            }
+
+            // Font size submenu
+            if (ImGui::BeginMenu("Font Size"))
+            {
+                auto& theme = UI::Theme::get();
+                auto currentSize = theme.currentFontSize();
+
+                for (size_t i = 0; i < static_cast<size_t>(UI::FontSize::Count); ++i)
+                {
+                    auto fontSize = static_cast<UI::FontSize>(i);
+                    const auto& cfg = theme.fontConfig(fontSize);
+                    bool selected = (currentSize == fontSize);
+                    if (ImGui::MenuItem(cfg.name.data(), nullptr, selected))
+                    {
+                        theme.setFontSize(fontSize);
+                    }
+                }
+
+                ImGui::Separator();
+
+                // Quick adjust shortcuts
+                if (ImGui::MenuItem("Increase", "Ctrl++"))
+                {
+                    theme.increaseFontSize();
+                }
+                if (ImGui::MenuItem("Decrease", "Ctrl+-"))
+                {
+                    theme.decreaseFontSize();
+                }
+
+                ImGui::EndMenu();
+            }
+
             if (ImGui::MenuItem("Dark Mode", nullptr, &m_DarkMode))
             {
                 if (m_DarkMode)

@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "Platform/Factory.h"
+#include "UI/Theme.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -64,14 +65,16 @@ void ProcessDetailsPanel::render(bool* open)
 
     if (m_SelectedPid == -1)
     {
-        ImGui::TextColored(ImVec4(0.6F, 0.6F, 0.6F, 1.0F), "Select a process from the Processes panel to view details");
+        const auto& theme = UI::Theme::get();
+        ImGui::TextColored(theme.scheme().textMuted, "Select a process from the Processes panel to view details");
         ImGui::End();
         return;
     }
 
     if (!m_HasSnapshot)
     {
-        ImGui::TextColored(ImVec4(1.0F, 0.6F, 0.3F, 1.0F), "Process %d not found (may have exited)", m_SelectedPid);
+        const auto& theme = UI::Theme::get();
+        ImGui::TextColored(theme.scheme().textWarning, "Process %d not found (may have exited)", m_SelectedPid);
         ImGui::End();
         return;
     }
@@ -128,6 +131,8 @@ void ProcessDetailsPanel::setSelectedPid(int32_t pid)
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
+    const auto& theme = UI::Theme::get();
+
     ImGui::Text("Process Information");
     ImGui::Spacing();
 
@@ -139,41 +144,41 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // PID
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "PID");
+        ImGui::TextColored(theme.scheme().textMuted, "PID");
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.pid);
 
         // Parent PID
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "Parent PID");
+        ImGui::TextColored(theme.scheme().textMuted, "Parent PID");
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.parentPid);
 
         // Name
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "Name");
+        ImGui::TextColored(theme.scheme().textMuted, "Name");
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(proc.name.c_str());
 
         // Status (color-coded)
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "Status");
+        ImGui::TextColored(theme.scheme().textMuted, "Status");
         ImGui::TableNextColumn();
-        ImVec4 statusColor(1.0F, 1.0F, 1.0F, 1.0F);
+        ImVec4 statusColor = theme.scheme().textInfo;
         if (proc.displayState == "Running")
         {
-            statusColor = ImVec4(0.3F, 1.0F, 0.3F, 1.0F);
+            statusColor = theme.scheme().statusRunning;
         }
         else if (proc.displayState == "Zombie")
         {
-            statusColor = ImVec4(1.0F, 0.3F, 0.3F, 1.0F);
+            statusColor = theme.scheme().textError;
         }
         else if (proc.displayState == "Stopped")
         {
-            statusColor = ImVec4(1.0F, 0.8F, 0.3F, 1.0F);
+            statusColor = theme.scheme().statusStopped;
         }
         ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 
@@ -182,7 +187,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "Threads");
+            ImGui::TextColored(theme.scheme().textMuted, "Threads");
             ImGui::TableNextColumn();
             ImGui::Text("%d", proc.threadCount);
         }
@@ -288,6 +293,7 @@ void ProcessDetailsPanel::renderHistoryGraphs()
     }
 
     // CPU History Plot
+    const auto& theme = UI::Theme::get();
     ImGui::Text("CPU Usage");
     if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 150)))
     {
@@ -296,7 +302,7 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
         if (cpuCount > 0)
         {
-            ImPlot::SetNextLineStyle(ImVec4(0.3F, 0.7F, 1.0F, 1.0F), 2.0F);
+            ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
             ImPlot::PlotLine("CPU", timeData.data(), cpuData.data(), static_cast<int>(cpuCount));
         }
         else
@@ -317,7 +323,7 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
         if (memCount > 0)
         {
-            ImPlot::SetNextLineStyle(ImVec4(1.0F, 0.5F, 0.3F, 1.0F), 2.0F);
+            ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
             ImPlot::PlotLine("Memory", timeData.data(), memData.data(), static_cast<int>(memCount));
         }
         else
@@ -331,22 +337,24 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
 void ProcessDetailsPanel::renderActions()
 {
+    const auto& theme = UI::Theme::get();
+
     ImGui::Text("Process Actions");
     ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.7F, 0.7F, 0.7F, 1.0F), "Target: %s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
+    ImGui::TextColored(theme.scheme().textMuted, "Target: %s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
     // Warning text
-    ImGui::TextColored(ImVec4(1.0F, 0.8F, 0.3F, 1.0F), "Warning: These actions affect the running process!");
+    ImGui::TextColored(theme.scheme().textWarning, "Warning: These actions affect the running process!");
     ImGui::Spacing();
 
     // Action result feedback
     if (!m_LastActionResult.empty())
     {
         bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
-        ImVec4 color = isError ? ImVec4(1.0F, 0.3F, 0.3F, 1.0F) : ImVec4(0.3F, 1.0F, 0.3F, 1.0F);
+        ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
         ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
         ImGui::Spacing();
     }
@@ -433,9 +441,9 @@ void ProcessDetailsPanel::renderActions()
     // Kill (SIGKILL) - forceful
     if (m_ActionCapabilities.canKill)
     {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7F, 0.2F, 0.2F, 1.0F));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9F, 0.3F, 0.3F, 1.0F));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.5F, 0.1F, 0.1F, 1.0F));
+        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().buttonDanger);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().buttonDangerHovered);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().buttonDangerActive);
         if (ImGui::Button("Kill (SIGKILL)", ImVec2(180, 0)))
         {
             m_ConfirmAction = "kill";

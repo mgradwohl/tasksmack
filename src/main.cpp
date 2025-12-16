@@ -21,7 +21,7 @@
 #endif
 #include <cstdio>
 
-auto main() -> int
+auto runApp() -> int
 {
 // Required on Windows to see console output when launching from an IDE or debugger
 #if defined(_WIN32) && !defined(NDEBUG)
@@ -73,3 +73,18 @@ auto main() -> int
 
     return 0;
 }
+
+// Entry points
+#ifdef _WIN32
+// Windows GUI application entry point
+auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/) -> int
+{
+    return runApp();
+}
+#else
+// Standard entry point for Linux/macOS
+auto main() -> int
+{
+    return runApp();
+}
+#endif

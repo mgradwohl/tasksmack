@@ -1,6 +1,7 @@
 #include "ProcessesPanel.h"
 
 #include "Platform/Factory.h"
+#include "UI/Theme.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -65,7 +66,8 @@ void ProcessesPanel::render(bool* open)
 
     if (!m_ProcessModel)
     {
-        ImGui::TextColored(ImVec4(1.0F, 0.3F, 0.3F, 1.0F), "Process model not initialized");
+        const auto& theme = UI::Theme::get();
+        ImGui::TextColored(theme.scheme().textError, "Process model not initialized");
         ImGui::End();
         return;
     }
@@ -77,8 +79,9 @@ void ProcessesPanel::render(bool* open)
     // Show sampler status
     if (m_Sampler && m_Sampler->isRunning())
     {
+        const auto& theme = UI::Theme::get();
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.3F, 1.0F, 0.3F, 1.0F), "(sampling)");
+        ImGui::TextColored(theme.scheme().statusRunning, "(sampling)");
     }
 
     ImGui::Separator();

@@ -1,20 +1,17 @@
-# TODO this script needs to be updated from GnotePad to TaskSmack
-# TODO TaskSmack also needs a desktop file and icon
-
 #!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PREFIX="${PREFIX:-${ROOT_DIR}/packaging/dist/install}"
-BINARY_PATH="${PREFIX}/bin/GnotePad"
-DESKTOP_SRC="${PREFIX}/share/applications/app.gnotepad.GnotePad.desktop"
-ICON_SRC="${PREFIX}/share/icons/hicolor/scalable/apps/app.gnotepad.GnotePad.svg"
-DESKTOP_DST="${HOME}/.local/share/applications/app.gnotepad.GnotePad.desktop"
-ICON_DST="${HOME}/.local/share/icons/hicolor/scalable/apps/app.gnotepad.GnotePad.svg"
+BINARY_PATH="${PREFIX}/bin/TaskSmack"
+DESKTOP_SRC="${PREFIX}/share/applications/app.tasksmack.TaskSmack.desktop"
+ICON_SRC="${PREFIX}/share/icons/hicolor/scalable/apps/app.tasksmack.TaskSmack.svg"
+DESKTOP_DST="${HOME}/.local/share/applications/app.tasksmack.TaskSmack.desktop"
+ICON_DST="${HOME}/.local/share/icons/hicolor/scalable/apps/app.tasksmack.TaskSmack.svg"
 HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
 INDEX_FILE="${HICOLOR_DIR}/index.theme"
 
-if [[ ! -x "${ROOT_DIR}/build/optimized/GnotePad" ]]; then
+if [[ ! -x "${ROOT_DIR}/build/optimized/TaskSmack" ]]; then
     echo "Missing optimized build at ${ROOT_DIR}/build/optimized. Run the optimized build first." >&2
     exit 1
 fi
@@ -77,4 +74,4 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache "${HICOLOR_DIR}" || true
 fi
 
-echo "Installed to ${PREFIX} and registered launcher entry app.gnotepad.GnotePad"
+echo "Installed to ${PREFIX} and registered launcher entry app.tasksmack.TaskSmack"

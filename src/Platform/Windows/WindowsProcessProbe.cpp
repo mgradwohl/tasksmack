@@ -108,7 +108,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
         // Get detailed info (CPU times, memory) - may fail for protected processes
         // Ignore return value - we still want to include process even if details fail
-        (void)getProcessDetails(pe32.th32ProcessID, counters);
+        (void) getProcessDetails(pe32.th32ProcessID, counters);
 
         results.push_back(std::move(counters));
     } while (Process32NextW(hSnapshot, &pe32) != 0);
@@ -122,8 +122,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters) const
 {
     // Open process with limited access - some system processes won't allow full access
-    HANDLE hProcess =
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
 
     if (hProcess == nullptr)
     {
@@ -153,8 +152,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
 
-    if (GetProcessMemoryInfo(hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
-                             sizeof(pmc)) != 0)
+    if (GetProcessMemoryInfo(hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.WorkingSetSize;
         counters.virtualBytes = pmc.PrivateUsage;

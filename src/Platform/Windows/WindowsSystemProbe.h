@@ -18,6 +18,7 @@ class WindowsSystemProbe : public ISystemProbe
 
   private:
     void readCpuCounters(SystemCounters& counters) const;
+    void readPerCoreCpuCounters(SystemCounters& counters) const;
     void readMemoryCounters(SystemCounters& counters) const;
     void readUptime(SystemCounters& counters) const;
 

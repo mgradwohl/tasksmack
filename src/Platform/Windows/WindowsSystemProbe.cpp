@@ -10,10 +10,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winternl.h>
 // clang-format on
 
 #include <chrono>
-#include <thread>
+#include <vector>
 
 namespace Platform
 {
@@ -30,10 +31,49 @@ namespace
     return uli.QuadPart;
 }
 
+// NtQuerySystemInformation function pointer type
+using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG SystemInformationClass,
+                                                     PVOID SystemInformation,
+                                                     ULONG SystemInformationLength,
+                                                     PULONG ReturnLength);
+
+// System information class for per-processor performance
+constexpr ULONG SystemProcessorPerformanceInformation = 8;
+
+// Per-processor performance information structure
+// This matches the undocumented SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION
+struct ProcessorPerformanceInfo
+{
+    LARGE_INTEGER IdleTime;
+    LARGE_INTEGER KernelTime; // Includes idle time
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER DpcTime;
+    LARGE_INTEGER InterruptTime;
+    ULONG InterruptCount;
+};
+
+/// Get NtQuerySystemInformation function from ntdll.dll (lazy init)
+[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformation()
+{
+    static NtQuerySystemInformationFn fn = nullptr;
+    static bool initialized = false;
+
+    if (!initialized)
+    {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll != nullptr)
+        {
+            // NOLINTNEXTLINE(clang-diagnostic-cast-function-type-mismatch)
+            fn = reinterpret_cast<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
+        }
+        initialized = true;
+    }
+    return fn;
+}
+
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe()
-    : m_NumCores(0)
+WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
 {
     SYSTEM_INFO sysInfo{};
     GetSystemInfo(&sysInfo);
@@ -54,6 +94,7 @@ SystemCounters WindowsSystemProbe::read()
 
 void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
 {
+    // First, get total CPU via GetSystemTimes (always works)
     FILETIME ftIdle{};
     FILETIME ftKernel{};
     FILETIME ftUser{};
@@ -79,11 +120,63 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
     counters.cpuTotal.idle = idle;
     counters.cpuTotal.system = system;
     counters.cpuTotal.user = user;
-    // Windows doesn't provide nice, iowait, irq, softirq, steal, guest
-    // Leave them at 0
 
-    // Per-core CPU times are not easily available without PDH or WMI
-    // Leave cpuPerCore empty for now
+    // Now get per-core CPU via NtQuerySystemInformation
+    readPerCoreCpuCounters(counters);
+}
+
+void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
+{
+    auto ntQuery = getNtQuerySystemInformation();
+    if (ntQuery == nullptr)
+    {
+        spdlog::warn("NtQuerySystemInformation not available, per-core CPU disabled");
+        return;
+    }
+
+    // Allocate buffer for all processors
+    std::vector<ProcessorPerformanceInfo> perfInfo(static_cast<size_t>(m_NumCores));
+    ULONG returnLength = 0;
+
+    NTSTATUS status = ntQuery(SystemProcessorPerformanceInformation,
+                              perfInfo.data(),
+                              static_cast<ULONG>(perfInfo.size() * sizeof(ProcessorPerformanceInfo)),
+                              &returnLength);
+
+    if (status != 0) // STATUS_SUCCESS = 0
+    {
+        spdlog::error("NtQuerySystemInformation failed: 0x{:08X}", static_cast<unsigned>(status));
+        return;
+    }
+
+    // Calculate actual number of cores returned
+    size_t coresReturned = returnLength / sizeof(ProcessorPerformanceInfo);
+    counters.cpuPerCore.reserve(coresReturned);
+
+    for (size_t i = 0; i < coresReturned; ++i)
+    {
+        const auto& info = perfInfo[i];
+
+        CpuCounters core{};
+        // KernelTime includes idle, so subtract to get actual kernel/system time
+        uint64_t kernelTicks = static_cast<uint64_t>(info.KernelTime.QuadPart);
+        uint64_t idleTicks = static_cast<uint64_t>(info.IdleTime.QuadPart);
+        uint64_t userTicks = static_cast<uint64_t>(info.UserTime.QuadPart);
+
+        core.idle = idleTicks;
+        core.system = kernelTicks - idleTicks; // Actual kernel time
+        core.user = userTicks;
+
+        // DPC and interrupt time are included in kernel time, but we can expose them
+        // as irq/softirq for more detail if desired
+        core.irq = static_cast<uint64_t>(info.InterruptTime.QuadPart);
+        // DpcTime is deferred procedure calls (similar to softirq on Linux)
+        core.softirq = static_cast<uint64_t>(info.DpcTime.QuadPart);
+
+        counters.cpuPerCore.push_back(core);
+    }
+
+    spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
 void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
@@ -125,15 +218,14 @@ void WindowsSystemProbe::readUptime(SystemCounters& counters) const
 
     // Calculate boot timestamp
     auto now = std::chrono::system_clock::now();
-    auto nowEpoch =
-        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     counters.bootTimestamp = static_cast<uint64_t>(nowEpoch) - counters.uptimeSeconds;
 }
 
 SystemCapabilities WindowsSystemProbe::capabilities() const
 {
     return SystemCapabilities{
-        .hasPerCoreCpu = false, // Would need PDH/WMI for per-core
+        .hasPerCoreCpu = true, // Via NtQuerySystemInformation
         .hasMemoryAvailable = true,
         .hasSwap = true,
         .hasUptime = true,

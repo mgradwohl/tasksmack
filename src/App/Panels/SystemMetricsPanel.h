@@ -2,6 +2,9 @@
 
 #include "App/Panel.h"
 #include "Domain/SystemModel.h"
+#include "UI/Theme.h"
+
+#include <implot.h>
 
 #include <memory>
 #include <thread>
@@ -46,6 +49,19 @@ class SystemMetricsPanel : public Panel
 
     // Display options
     bool m_ShowPerCore = false;
+
+    // Heatmap colormap (cached to avoid recreating every frame)
+    ImPlotColormap m_HeatmapColormap = -1;
+    UI::ThemeId m_LastThemeId = UI::ThemeId::ArcticFire;
+
+    // Cached layout values (recalculated one frame after font changes)
+    UI::FontSize m_LastFontSize = UI::FontSize::Medium;
+    float m_OverviewLabelWidth = 0.0F;
+    float m_PerCoreLabelWidth = 0.0F;
+    size_t m_LastCoreCount = 0;
+    bool m_LayoutDirty = true; // Start dirty to calculate on first frame
+
+    void updateCachedLayout();
 };
 
 } // namespace App

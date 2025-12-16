@@ -263,7 +263,6 @@ target_include_directories(imgui_lib
 )
 target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33)
 target_compile_definitions(imgui_lib PUBLIC
-    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
     IMGUI_IMPL_OPENGL_LOADER_GLAD2
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
@@ -306,6 +305,7 @@ set(TASKSMACK_SOURCES
     src/Core/Application.cpp
     src/Core/Window.cpp
     src/UI/UILayer.cpp
+    src/UI/Theme.cpp
     src/App/ShellLayer.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
@@ -417,10 +417,52 @@ if(CLANG_FORMAT_EXE)
     )
 endif()
 
-add_executable(TaskSmack
+# Windows resource file (icon, version info, manifest)
+if(WIN32)
+    set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
+    set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
+    set(TASKSMACK_ICO_FILE ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico)
+    
+    if(EXISTS ${TASKSMACK_RC_IN})
+        # Check if ICO file exists and set the define for configure_file
+        if(EXISTS ${TASKSMACK_ICO_FILE})
+            set(TASKSMACK_HAS_ICON TRUE)
+            message(STATUS "Including application icon: ${TASKSMACK_ICO_FILE}")
+        else()
+            set(TASKSMACK_HAS_ICON FALSE)
+            message(STATUS "Icon file not found (run tools/generate-icons.ps1 to create): ${TASKSMACK_ICO_FILE}")
+        endif()
+        
+        # Configure the RC file with version info
+        configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
+        list(APPEND TASKSMACK_SOURCES ${TASKSMACK_RC_OUT})
+        message(STATUS "Configured Windows resource file with version ${PROJECT_VERSION}")
+    else()
+        message(WARNING "Windows resource template not found: ${TASKSMACK_RC_IN}")
+    endif()
+    
+    # Configure and use our custom manifest for DPI awareness and Windows compatibility
+    set(TASKSMACK_MANIFEST_IN ${CMAKE_SOURCE_DIR}/assets/app.manifest.in)
+    set(TASKSMACK_MANIFEST_OUT ${CMAKE_BINARY_DIR}/app.manifest)
+    if(EXISTS ${TASKSMACK_MANIFEST_IN})
+        configure_file(${TASKSMACK_MANIFEST_IN} ${TASKSMACK_MANIFEST_OUT} @ONLY)
+        message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
+    else()
+        message(WARNING "Application manifest template not found: ${TASKSMACK_MANIFEST_IN}")
+    endif()
+endif()
+
+add_executable(TaskSmack WIN32
     ${TASKSMACK_SOURCES}
     ${TASKSMACK_HEADERS}
 )
+
+# Embed custom manifest on Windows (for DPI awareness and OS compatibility)
+if(WIN32 AND EXISTS ${CMAKE_BINARY_DIR}/app.manifest)
+    target_link_options(TaskSmack PRIVATE
+        "LINKER:/MANIFESTINPUT:${CMAKE_BINARY_DIR}/app.manifest"
+    )
+endif()
 
 target_compile_features(TaskSmack PRIVATE cxx_std_23)
 

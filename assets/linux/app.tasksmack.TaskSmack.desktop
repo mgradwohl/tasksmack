@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TaskSmack
+GenericName=System Monitor
+Comment=Modern system monitor and task manager
+Exec=TaskSmack
+Icon=app.tasksmack.TaskSmack
+Terminal=false
+Categories=System;Monitor;
+Keywords=system;monitor;task;manager;cpu;memory;process;
+StartupNotify=true
+StartupWMClass=TaskSmack
