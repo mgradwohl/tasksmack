@@ -63,9 +63,12 @@ jobs:
     - uses: actions/checkout@v6
 
     - name: Install Python dependencies for GLAD
+      shell: pwsh
       run: |
-        python3 -m pip install --upgrade pip jinja2
-        python3 -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
+        # Use the default Python on windows-latest (Python 3.14)
+        python -m pip install --upgrade pip jinja2
+        python -c "import sys; print(f'Python: {sys.executable}')"
+        python -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
     
     - name: Install LLVM
       run: choco install llvm ninja ccache -y
