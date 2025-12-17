@@ -6,20 +6,24 @@ Cross-platform system monitor (C++23 / Clang 21+ / OpenGL / ImGui). Strict layer
 
 ## Quick Reference
 
+**Build/Test/Tools**: See [README.md](../README.md) sections:
+- Build commands → "Getting Started" and "Build Types"  
+- Prerequisites → "Requirements"
+- Formatting/linting → "Code Quality Tools"
+
+**Essential commands:**
 ```bash
-# Build (Windows)          # Build (Linux)
-cmake --preset win-debug   cmake --preset debug
-cmake --build --preset win-debug  cmake --build --preset debug
+# Format before commit (REQUIRED)
+./tools/clang-format.sh        # Linux
+pwsh tools/clang-format.ps1    # Windows
 
-# Test
-ctest --preset win-debug   # or: ctest --preset debug
+# Lint regularly
+./tools/clang-tidy.sh debug    # Linux
+pwsh tools/clang-tidy.ps1 debug # Windows
 
-# Format & Lint (before commit)
-pwsh tools/clang-format.ps1    # or: ./tools/clang-format.sh
-pwsh tools/clang-tidy.ps1      # or: ./tools/clang-tidy.sh
-
-# Check prerequisites
-pwsh tools/check-prereqs.ps1   # or: ./tools/check-prereqs.sh
+# Test after changes
+ctest --preset debug            # Linux
+ctest --preset win-debug        # Windows
 ```
 
 ## Architecture (Critical)
@@ -126,6 +130,45 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
 
+### Rule of 5 / RAII Compliance
+- **Default behavior**: If a class needs no special resource management, use compiler-generated defaults
+- **Rule of 5**: If you define/delete any of: destructor, copy constructor, copy assignment, move constructor, move assignment → define or delete all five
+- **RAII**: Acquire resources in constructor, release in destructor. Never use manual `new`/`delete` in application code
+- **Smart pointers**: Use `std::unique_ptr` for exclusive ownership, `std::shared_ptr` for shared ownership
+- **Example violating Rule of 5**:
+  ```cpp
+  // BAD: Custom destructor but compiler-generated copy ops (double-free risk)
+  class Resource {
+      int* data;
+  public:
+      Resource() : data(new int[100]) {}
+      ~Resource() { delete[] data; }
+      // Missing: copy/move constructors and assignment operators
+  };
+  ```
+- **Example following Rule of 5**:
+  ```cpp
+  // GOOD: All five explicitly handled
+  class Resource {
+      std::unique_ptr<int[]> data;
+  public:
+      Resource() : data(std::make_unique<int[]>(100)) {}
+      // Compiler-generated destructor, copy/move ops work correctly
+      // Or explicitly delete copy ops if non-copyable:
+      Resource(const Resource&) = delete;
+      Resource& operator=(const Resource&) = delete;
+      Resource(Resource&&) = default;
+      Resource& operator=(Resource&&) = default;
+  };
+  ```
+
+### Exception Safety
+- **Prefer RAII** over manual cleanup (destructors run automatically during stack unwinding)
+- **Constructors**: Use member initializer lists; if allocation can throw, ensure no leaks
+- **No-throw operations**: Mark with `noexcept` (destructors, move constructors, swap)
+- **Resource acquisition**: Use smart pointers or standard containers; avoid bare `new`
+- **clang-tidy checks**: `bugprone-exception-escape` warns about exceptions escaping `noexcept` functions
+
 ### Math Expression Clarity
 - Always add parentheses to clarify operator precedence in math expressions
 - Example: `a + (b * c)` instead of `a + b * c`
@@ -135,6 +178,16 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - Use `#ifdef X` instead of `#if defined(X)` for simple checks
 - Use `#ifndef X` instead of `#if !defined(X)`
 - Compound conditions like `#if defined(X) && !defined(Y)` stay as-is
+
+### Avoiding Common clang-tidy Warnings
+- **`cppcoreguidelines-pro-type-member-init`**: Initialize all member variables in constructor initializer list or with in-class defaults
+- **`cppcoreguidelines-pro-type-reinterpret-cast`**: Avoid `reinterpret_cast`; use type-safe alternatives
+- **`cppcoreguidelines-owning-memory`**: Use smart pointers; avoid raw `new`/`delete`
+- **`modernize-use-override`**: Always use `override` keyword on virtual function overrides
+- **`modernize-use-nullptr`**: Use `nullptr` instead of `NULL` or `0` for pointers
+- **`readability-const-return-type`**: Don't return `const` by value (prevents move optimization)
+- **`performance-unnecessary-copy-initialization`**: Use `const&` or `&&` to avoid copies
+- **`bugprone-unchecked-optional-access`**: Check `std::optional` with `has_value()` before accessing
 
 ## Testing
 
@@ -181,6 +234,10 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Ignoring clang-tidy warnings (CI will fail)
 - ❌ Committing without running clang-format
 - ❌ Adding dependencies without `SYSTEM` keyword in FetchContent
+- ❌ Violating Rule of 5 (custom destructor without handling copy/move)
+- ❌ Using raw `new`/`delete` instead of smart pointers
+- ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
+- ❌ Missing `override` keyword on virtual function overrides
 
 ## Engineering Workflow
 
@@ -190,82 +247,11 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - **GLAD dependency:** Requires Python 3 + jinja2 at build time for OpenGL loader generation
 
 ---
-*Extended reference below. For detailed patterns, see linked docs above.*
+*For comprehensive build instructions, prerequisites, tools, and project structure, see [README.md](../README.md).*
+
+*For PR process and contribution workflow, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
 ---
-
-## Extended Reference
-
-### Build Commands (Full)
-
-```bash
-# Linux presets
-cmake --preset debug|relwithdebinfo|release|optimized|coverage|asan-ubsan|tsan
-cmake --build --preset <name>
-
-# Windows presets  
-cmake --preset win-debug|win-relwithdebinfo|win-release|win-optimized|win-coverage
-cmake --build --preset <name>
-```
-
-### Project Structure
-
-```
-src/
-├── Core/           # Application loop, Window, Layer base
-├── UI/             # ImGui/OpenGL integration (UILayer)
-├── App/            # ShellLayer + Panels/
-├── Domain/         # ProcessModel, SystemModel, BackgroundSampler, History<T,N>
-└── Platform/       # IProcessProbe, ISystemProbe, Linux/ implementations
-
-tests/
-├── Domain/         # test_ProcessModel.cpp, test_SystemModel.cpp, etc.
-└── Mocks/          # MockProbes.h (shared test mocks)
-```
-
-### ImGui Patterns
-
-- Panels inherit `Panel` base class with `onAttach()`, `onDetach()`, `onUpdate()`, `render()`
-- Use `ImGui::BeginTable()` with `ImGuiTableFlags_Sortable` for data grids
-- ShellLayer manages panel visibility and docking via `setupDockspace()`
-
-### Concurrency
-
-```cpp
-// Background sampler pattern
-std::jthread m_SamplerThread;
-std::atomic<bool> m_Running{false};
-std::mutex m_CallbackMutex;
-
-void samplerLoop(std::stop_token stopToken) {
-    while (!stopToken.stop_requested()) {
-        auto data = m_Probe->enumerate();
-        { std::lock_guard lock(m_CallbackMutex); if (m_Callback) m_Callback(data); }
-        std::this_thread::sleep_for(m_Config.interval);
-    }
-}
-```
-
-### Adding Dependencies
-
-```cmake
-FetchContent_Declare(mylib
-    GIT_REPOSITORY https://github.com/example/mylib.git
-    GIT_TAG v1.0.0
-    SYSTEM  # Suppress warnings from third-party code
-)
-FetchContent_MakeAvailable(mylib)
-```
-
-Update: `CMakeLists.txt`, `README.md`, `.clang-tidy` exclusions if needed.
-
-### Code Review Checklist
-
-1. Layer boundaries respected (Platform=raw counters, Domain=computation, UI=rendering)
-2. Thread safety: `std::shared_mutex` for models, `std::atomic` for flags
-3. Modern C++23: `std::string::contains()`, `std::ranges`, `std::format`
-4. Include order correct, `GLFW_INCLUDE_NONE` present
-5. Tests use mocks, `EXPECT_DOUBLE_EQ` for floats
 
 ## Code Review Instructions
 
@@ -275,14 +261,20 @@ When performing a code review on this project:
 
 2. **Memory Safety**: Check for potential memory issues - prefer smart pointers, RAII, avoid raw `new`/`delete`
 
-3. **Thread Safety**: Verify proper mutex usage, check for race conditions, ensure `std::atomic` is used correctly
+3. **Rule of 5**: Verify classes with custom destructors properly handle copy/move operations (define or delete all five)
 
-4. **Architecture Boundaries**: Verify layer dependencies are correct:
+4. **Exception Safety**: Check RAII compliance, `noexcept` on move/swap/destructors, no resource leaks on exception paths
+
+5. **Thread Safety**: Verify proper mutex usage, check for race conditions, ensure `std::atomic` is used correctly
+
+6. **Architecture Boundaries**: Verify layer dependencies are correct:
    - Platform probes should return raw counters, not computed values
    - Domain should not depend on UI, Core, or graphics libraries  
    - UI should not call Platform probes directly
    - All OpenGL calls should be in UI/Core layers only
 
-5. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_camelCase members)
+7. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_camelCase members)
 
-6. **Include Order**: Verify includes follow project standard (matching header → project → third-party → stdlib)
+8. **Include Order**: Verify includes follow project standard (matching header → project → third-party → stdlib)
+
+9. **clang-tidy Compliance**: Check for warnings that indicate common issues (uninitialized members, missing `override`, unnecessary copies)

@@ -6,60 +6,34 @@ Thank you for your interest in contributing!
 
 ### Prerequisites
 
-**Linux:**
-```bash
-# Ubuntu/Debian (with LLVM APT repository)
-sudo apt install clang-21 lld-21 cmake ninja-build python3 python3-jinja2
+See [README.md](README.md#requirements) for detailed prerequisites and minimum versions.
 
-# Or use a recent clang version (21+) available on your system
-```
-
-**Windows:**
-1. Install LLVM from https://releases.llvm.org/
-2. Set `LLVM_ROOT` environment variable to the LLVM installation path
-3. Install CMake and Ninja
-4. Install Python 3 (`winget install Python.Python.3.12`) and jinja2 (`pip install jinja2`)
-5. (Optional) Install vcpkg for package management
+**Quick summary:**
+- Clang 21+ (C++23 compiler)
+- CMake 3.28+, Ninja
+- Python 3 with jinja2 (for GLAD OpenGL loader)
+- lld, ccache (recommended)
+- clang-tidy, clang-format
 
 ### Verify Prerequisites
 
-Run the prerequisite checker to verify all required tools are installed with correct versions:
+Run the prerequisite checker to verify all required tools:
 
 ```bash
 ./tools/check-prereqs.sh    # Linux
 .\tools\check-prereqs.ps1   # Windows
 ```
 
-The script checks for:
-| Tool | Minimum Version | Purpose |
-|------|-----------------|---------|
-| clang/clang++ | 21+ | C++23 compiler |
-| cmake | 3.28+ | Build system |
-| ninja | any | Build backend |
-| lld | any | Fast linker |
-| ccache | 4.9.1+ | Compiler cache |
-| clang-tidy | any | Static analysis |
-| clang-format | any | Code formatting |
-| llvm-profdata | any | Coverage (optional) |
-| llvm-cov | any | Coverage (optional) |
-| python3 | 3.0+ | GLAD OpenGL loader generation |
-| jinja2 | any | GLAD template engine |
-
-**Common fixes:**
-- **jinja2 not found:** Run `pip install jinja2` (or `pip install --user jinja2` if no admin rights)
-- **LLVM_ROOT not set (Windows):** Add to environment variables or run `Devshell-Updated.ps1`
-- **Wrong clang version:** Ensure LLVM 21+ is in PATH before older versions
+See [README.md](README.md#requirements) for the complete list of tools, minimum versions, and common fixes.
 
 ### Building
 
-```bash
-# Linux
-./tools/configure.sh debug
-./tools/build.sh debug
+See [README.md](README.md#step-5-build-and-run) for detailed build instructions and all available presets.
 
-# Windows (PowerShell)
-.\tools\configure.ps1 debug
-.\tools\build.ps1 debug
+```bash
+# Quick start
+cmake --preset debug        # or win-debug on Windows
+cmake --build --preset debug
 ```
 
 ### Running Tests
@@ -69,6 +43,14 @@ ctest --test-dir build/debug --output-on-failure
 ```
 
 ## Code Style
+
+We follow strict C++23 coding standards. See [.github/copilot-instructions.md](.github/copilot-instructions.md#coding-standards) for comprehensive guidelines including:
+- Naming conventions
+- Include order requirements  
+- Modern C++ feature usage
+- Rule of 5 compliance
+- RAII and exception safety
+- Common clang-tidy warning avoidance
 
 ### Formatting
 
@@ -94,28 +76,7 @@ Run clang-tidy regularly:
 .\tools\clang-tidy.ps1 debug   # Windows
 ```
 
-### Include Guidelines
-
-**Include order:**
-1. Matching header (for `.cpp` files)
-2. Project headers (alphabetical)
-3. Third-party headers (alphabetical)
-4. Standard library headers (alphabetical)
-
-Separate each group with a blank line.
-
-**Example:**
-```cpp
-#include "MyClass.h"
-
-#include "src/utils/Helper.h"
-
-#include <spdlog/spdlog.h>
-
-#include <memory>
-#include <string>
-#include <vector>
-```
+See [.github/copilot-instructions.md](.github/copilot-instructions.md#avoiding-common-clang-tidy-warnings) for guidance on avoiding common warnings.
 
 ## Pull Request Process
 

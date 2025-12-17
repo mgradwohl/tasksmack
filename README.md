@@ -459,6 +459,8 @@ Some checks are disabled in `.clang-tidy` due to false positives or excessive no
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
+**Coding standards**: See [.github/copilot-instructions.md](.github/copilot-instructions.md) for comprehensive C++23 coding standards, including Rule of 5, RAII, and clang-tidy warning avoidance.
+
 - Use the **issue templates** for bug reports and feature requests
 - PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
