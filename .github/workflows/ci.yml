@@ -62,10 +62,15 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
     - name: Install Python dependencies for GLAD
       run: |
-        python3 -m pip install --upgrade pip jinja2
-        python3 -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
+        python -m pip install --upgrade pip jinja2
+        python -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
     
     - name: Install LLVM
       run: choco install llvm ninja ccache -y
