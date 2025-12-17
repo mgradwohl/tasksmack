@@ -63,7 +63,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14'
           cache: 'pip'
 
       - name: Install Python dependencies for GLAD
@@ -355,4 +355,3 @@ jobs:
         run: |
           echo "Sanitizer detected issues. Failing the job."
           exit 1
-````
