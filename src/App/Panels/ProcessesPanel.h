@@ -76,9 +76,6 @@ class ProcessesPanel : public Panel
     // Search/filter state
     std::array<char, 256> m_SearchBuffer{};
 
-    /// Render the column visibility context menu
-    void renderColumnChooserMenu();
-
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 };

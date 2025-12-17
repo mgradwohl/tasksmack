@@ -154,9 +154,12 @@ void UserConfig::load()
             {
                 auto col = static_cast<ProcessColumn>(i);
                 const auto info = getColumnInfo(col);
-                if (auto val = cols->get(info.configKey)->value<bool>())
+                if (auto* node = cols->get(info.configKey); node != nullptr)
                 {
-                    m_Settings.processColumns.setVisible(col, *val);
+                    if (auto val = node->value<bool>())
+                    {
+                        m_Settings.processColumns.setVisible(col, *val);
+                    }
                 }
             }
         }

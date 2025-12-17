@@ -46,9 +46,12 @@ struct ColorScheme
     ImVec4 textInfo{};    // Informational text
 
     // Status colors for process states
-    ImVec4 statusRunning{};  // Running/Active
-    ImVec4 statusStopped{};  // Stopped/Terminated
-    ImVec4 statusSleeping{}; // Sleeping/Waiting
+    ImVec4 statusRunning{};   // R - Running/Active (green)
+    ImVec4 statusSleeping{};  // S - Sleeping/Interruptible (gray/muted)
+    ImVec4 statusDiskSleep{}; // D - Disk sleep/Uninterruptible (yellow/orange)
+    ImVec4 statusZombie{};    // Z - Zombie/Defunct (red)
+    ImVec4 statusStopped{};   // T - Stopped/Traced (purple/magenta)
+    ImVec4 statusIdle{};      // I - Idle kernel thread (gray)
 
     // Chart line colors (for specific metrics)
     ImVec4 chartCpu{};    // CPU usage line

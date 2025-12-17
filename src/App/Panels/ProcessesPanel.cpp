@@ -85,55 +85,6 @@ int ProcessesPanel::visibleColumnCount() const
     return count;
 }
 
-void ProcessesPanel::renderColumnChooserMenu()
-{
-    if (ImGui::BeginPopup("ColumnChooser"))
-    {
-        ImGui::TextDisabled("Show Columns");
-        ImGui::Separator();
-
-        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
-        {
-            auto col = static_cast<ProcessColumn>(i);
-            const auto info = getColumnInfo(col);
-
-            if (!info.canHide)
-            {
-                // Show disabled checkbox for non-hideable columns
-                bool alwaysTrue = true;
-                ImGui::BeginDisabled();
-                ImGui::Checkbox(std::string(info.name).c_str(), &alwaysTrue);
-                ImGui::EndDisabled();
-            }
-            else
-            {
-                bool visible = m_ColumnSettings.isVisible(col);
-                if (ImGui::Checkbox(std::string(info.name).c_str(), &visible))
-                {
-                    m_ColumnSettings.setVisible(col, visible);
-                    // Save immediately on change
-                    UserConfig::get().settings().processColumns = m_ColumnSettings;
-                }
-            }
-
-            // Tooltip with description
-            if (ImGui::IsItemHovered() && !info.description.empty())
-            {
-                ImGui::SetTooltip("%s", std::string(info.description).c_str());
-            }
-        }
-
-        ImGui::Separator();
-        if (ImGui::Button("Reset to Defaults"))
-        {
-            m_ColumnSettings = ProcessColumnSettings{}; // Reset to defaults
-            UserConfig::get().settings().processColumns = m_ColumnSettings;
-        }
-
-        ImGui::EndPopup();
-    }
-}
-
 void ProcessesPanel::render(bool* open)
 {
     if (!ImGui::Begin("Processes", open))
@@ -244,18 +195,6 @@ void ProcessesPanel::render(bool* open)
         ImGui::TextColored(theme.scheme().statusRunning, "(sampling)");
     }
 
-    // Column chooser button (right-aligned)
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Columns...").x - ImGui::GetStyle().FramePadding.x * 2.0F);
-    if (ImGui::SmallButton("Columns..."))
-    {
-        ImGui::OpenPopup("ColumnChooser");
-    }
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("Choose which columns to display");
-    }
-    renderColumnChooserMenu();
-
     ImGui::Separator();
 
     // Always create all columns with stable IDs (using enum value as ID)
@@ -266,7 +205,7 @@ void ProcessesPanel::render(bool* open)
                           totalColumns,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_ContextMenuInBody | ImGuiTableFlags_Hideable))
+                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -277,13 +216,13 @@ void ProcessesPanel::render(bool* open)
             const auto info = getColumnInfo(col);
             ImGuiTableColumnFlags flags = ImGuiTableColumnFlags_None;
 
-            // Hide columns that user has disabled (Disabled flag hides them completely)
+            // Set default visibility from settings (ImGui will manage the actual state)
             if (!m_ColumnSettings.isVisible(col))
             {
-                flags |= ImGuiTableColumnFlags_Disabled;
+                flags |= ImGuiTableColumnFlags_DefaultHide;
             }
 
-            // PID column cannot be hidden
+            // PID and Name columns cannot be hidden
             if (!info.canHide)
             {
                 flags |= ImGuiTableColumnFlags_NoHide;
@@ -295,10 +234,9 @@ void ProcessesPanel::render(bool* open)
                 flags |= ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending;
             }
 
-            // Command column stretches (width = 0), others have fixed width
+            // Command column stretches, others have initial width (all can be resized/auto-fitted)
             if (info.defaultWidth > 0.0F)
             {
-                flags |= ImGuiTableColumnFlags_WidthFixed;
                 // Use enum value as user_id for stable column identification
                 ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, info.defaultWidth, static_cast<ImGuiID>(col));
             }
@@ -347,6 +285,8 @@ void ProcessesPanel::render(bool* open)
                                           return compare(procA.virtualBytes, procB.virtualBytes);
                                       case ProcessColumn::Resident:
                                           return compare(procA.memoryBytes, procB.memoryBytes);
+                                      case ProcessColumn::Shared:
+                                          return compare(procA.sharedBytes, procB.sharedBytes);
                                       case ProcessColumn::CpuTime:
                                           return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
                                       case ProcessColumn::State:
@@ -448,6 +388,24 @@ void ProcessesPanel::render(bool* open)
                     break;
                 }
 
+                case ProcessColumn::Shared:
+                {
+                    double shrMB = static_cast<double>(proc.sharedBytes) / (1024.0 * 1024.0);
+                    if (shrMB >= 1024.0)
+                    {
+                        ImGui::Text("%.1fG", shrMB / 1024.0);
+                    }
+                    else if (shrMB >= 1.0)
+                    {
+                        ImGui::Text("%.0fM", shrMB);
+                    }
+                    else
+                    {
+                        ImGui::Text("%.0fK", static_cast<double>(proc.sharedBytes) / 1024.0);
+                    }
+                    break;
+                }
+
                 case ProcessColumn::CpuTime:
                 {
                     auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
@@ -470,7 +428,39 @@ void ProcessesPanel::render(bool* open)
                 case ProcessColumn::State:
                 {
                     char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+                    const auto& scheme = UI::Theme::get().scheme();
+
+                    // Color based on process state
+                    ImVec4 stateColor;
+                    switch (stateChar)
+                    {
+                    case 'R': // Running
+                        stateColor = scheme.statusRunning;
+                        break;
+                    case 'S': // Sleeping (interruptible)
+                        stateColor = scheme.statusSleeping;
+                        break;
+                    case 'D': // Disk sleep (uninterruptible)
+                        stateColor = scheme.statusDiskSleep;
+                        break;
+                    case 'Z': // Zombie
+                        stateColor = scheme.statusZombie;
+                        break;
+                    case 'T': // Stopped/Traced
+                    case 't': // Tracing stop
+                        stateColor = scheme.statusStopped;
+                        break;
+                    case 'I': // Idle kernel thread
+                        stateColor = scheme.statusIdle;
+                        break;
+                    default:
+                        stateColor = scheme.statusSleeping; // Default to muted
+                        break;
+                    }
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
                     ImGui::Text("%c", stateChar);
+                    ImGui::PopStyleColor();
                     break;
                 }
 
@@ -513,6 +503,24 @@ void ProcessesPanel::render(bool* open)
                     break;
                 }
             }
+        }
+
+        // Sync column visibility from ImGui back to our settings
+        // This captures changes made via the right-click context menu
+        bool settingsChanged = false;
+        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        {
+            auto col = static_cast<ProcessColumn>(i);
+            bool isEnabled = (ImGui::TableGetColumnFlags(static_cast<int>(i)) & ImGuiTableColumnFlags_IsEnabled) != 0;
+            if (m_ColumnSettings.isVisible(col) != isEnabled)
+            {
+                m_ColumnSettings.setVisible(col, isEnabled);
+                settingsChanged = true;
+            }
+        }
+        if (settingsChanged)
+        {
+            UserConfig::get().settings().processColumns = m_ColumnSettings;
         }
 
         ImGui::EndTable();

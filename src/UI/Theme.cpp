@@ -44,9 +44,12 @@ void Theme::loadDefaultFallbackTheme()
     fallback.textSuccess = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
     fallback.textInfo = blue;
 
-    fallback.statusRunning = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
-    fallback.statusStopped = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
-    fallback.statusSleeping = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
+    fallback.statusRunning = ImVec4(0.0F, 0.9F, 0.4F, 1.0F);   // Green
+    fallback.statusSleeping = ImVec4(0.6F, 0.6F, 0.6F, 1.0F);  // Gray
+    fallback.statusDiskSleep = ImVec4(1.0F, 0.7F, 0.0F, 1.0F); // Orange
+    fallback.statusZombie = ImVec4(1.0F, 0.2F, 0.2F, 1.0F);    // Red
+    fallback.statusStopped = ImVec4(0.7F, 0.3F, 0.8F, 1.0F);   // Purple
+    fallback.statusIdle = ImVec4(0.5F, 0.5F, 0.5F, 1.0F);      // Dark gray
 
     fallback.chartCpu = blue;
     fallback.chartMemory = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);

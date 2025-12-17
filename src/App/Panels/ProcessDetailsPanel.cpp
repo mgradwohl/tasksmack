@@ -162,23 +162,47 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(proc.name.c_str());
 
-        // Status (color-coded)
+        // User (if available)
+        if (!proc.user.empty())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(theme.scheme().textMuted, "User");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(proc.user.c_str());
+        }
+
+        // Status (color-coded based on state character)
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::TextColored(theme.scheme().textMuted, "Status");
         ImGui::TableNextColumn();
-        ImVec4 statusColor = theme.scheme().textInfo;
-        if (proc.displayState == "Running")
+        char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+        ImVec4 statusColor;
+        switch (stateChar)
         {
+        case 'R': // Running
             statusColor = theme.scheme().statusRunning;
-        }
-        else if (proc.displayState == "Zombie")
-        {
-            statusColor = theme.scheme().textError;
-        }
-        else if (proc.displayState == "Stopped")
-        {
+            break;
+        case 'S': // Sleeping
+            statusColor = theme.scheme().statusSleeping;
+            break;
+        case 'D': // Disk sleep
+            statusColor = theme.scheme().statusDiskSleep;
+            break;
+        case 'Z': // Zombie
+            statusColor = theme.scheme().statusZombie;
+            break;
+        case 'T': // Stopped/Traced
+        case 't':
             statusColor = theme.scheme().statusStopped;
+            break;
+        case 'I': // Idle
+            statusColor = theme.scheme().statusIdle;
+            break;
+        default:
+            statusColor = theme.scheme().statusSleeping;
+            break;
         }
         ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 
@@ -192,7 +216,24 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             ImGui::Text("%d", proc.threadCount);
         }
 
+        // Nice/Priority
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(theme.scheme().textMuted, "Nice");
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", proc.nice);
+
         ImGui::EndTable();
+    }
+
+    // Command line (separate section for long text with wrapping)
+    if (!proc.command.empty())
+    {
+        ImGui::Spacing();
+        ImGui::TextColored(theme.scheme().textMuted, "Command Line:");
+        ImGui::Indent();
+        ImGui::TextWrapped("%s", proc.command.c_str());
+        ImGui::Unindent();
     }
 }
 
@@ -203,18 +244,28 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
     // CPU usage with progress bar
     ImGui::Text("CPU:");
-    ImGui::SameLine(80.0F);
+    ImGui::SameLine(120.0F);
     float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
     cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
     char cpuOverlay[32];
     snprintf(cpuOverlay, sizeof(cpuOverlay), "%.1f%%", proc.cpuPercent);
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), cpuOverlay);
 
-    // Memory usage
+    // Memory usage with progress bar
+    ImGui::Text("Memory:");
+    ImGui::SameLine(120.0F);
+    float memFraction = static_cast<float>(proc.memoryPercent) / 100.0F;
+    memFraction = (memFraction > 1.0F) ? 1.0F : memFraction;
+    char memOverlay[32];
+    snprintf(memOverlay, sizeof(memOverlay), "%.1f%%", proc.memoryPercent);
+    ImGui::ProgressBar(memFraction, ImVec2(-1, 0), memOverlay);
+
+    // Memory details
     double memoryMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
     double virtualMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
+    double sharedMB = static_cast<double>(proc.sharedBytes) / (1024.0 * 1024.0);
 
-    ImGui::Text("Memory (RSS):");
+    ImGui::Text("Resident (RSS):");
     ImGui::SameLine(120.0F);
     if (memoryMB >= 1024.0)
     {
@@ -225,7 +276,18 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         ImGui::Text("%.1f MB", memoryMB);
     }
 
-    ImGui::Text("Virtual Memory:");
+    ImGui::Text("Shared (SHR):");
+    ImGui::SameLine(120.0F);
+    if (sharedMB >= 1024.0)
+    {
+        ImGui::Text("%.2f GB", sharedMB / 1024.0);
+    }
+    else
+    {
+        ImGui::Text("%.1f MB", sharedMB);
+    }
+
+    ImGui::Text("Virtual (VIRT):");
     ImGui::SameLine(120.0F);
     if (virtualMB >= 1024.0)
     {
@@ -234,6 +296,24 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     else
     {
         ImGui::Text("%.1f MB", virtualMB);
+    }
+
+    // CPU Time (cumulative)
+    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
+    int hours = totalSeconds / 3600;
+    int minutes = (totalSeconds % 3600) / 60;
+    int seconds = totalSeconds % 60;
+    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
+
+    ImGui::Text("CPU Time:");
+    ImGui::SameLine(120.0F);
+    if (hours > 0)
+    {
+        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+    }
+    else
+    {
+        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
     }
 }
 

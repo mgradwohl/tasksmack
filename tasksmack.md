@@ -267,12 +267,15 @@ Features observed in btop++ that could enhance TaskSmack. Organized by effort an
 
 | Feature | Description |
 |---------|-------------|
+| **Column Tooltips** | Show column descriptions on header hover using ImGui tooltip API |
 | **Customizable Colors** | Color scheme customization beyond themes |
 | **Mouse-Only Mode** | Full functionality without keyboard |
 | **Keyboard Navigation** | Vim-style or arrow key process selection |
 | **Mini-Mode/Compact View** | Condensed view showing key metrics only |
 | **Panel Arrangement** | User-configurable panel layout and sizing |
 | **Metric Alerts** | Visual/audio alerts when thresholds exceeded |
+| **FreeType Font Rendering** | Use FreeType as an alternative font rasterizer instead of ImGui's default stb_truetype. Provides sharper, more native-looking text at small sizes (12-16px), especially for Windows UI fonts like Segoe UI. Better hinting control with flags like `LightHinting`, `MonoHinting` (pixel-snappy), `LoadColor` (for color emoji). Use `ImGuiFreeType::BuildFontAtlas()` instead of `io.Fonts->Build()`. Tradeoffs: adds FreeType dependency, slightly different look requiring tuning, minor startup cost for font building. Include `misc/freetype/imgui_freetype.cpp` from ImGui sources. |
+| **Unified Settings File** | Consolidate ImGui's INI persistence into the TOML config file. Set `io.IniFilename = nullptr` to disable auto-save, use `LoadIniSettingsFromMemory()`/`SaveIniSettingsToMemory()` to embed ImGui state as a string under `[ui.imgui]`. Save when `WantSaveIniSettings` flips or on app exit. Covers window positions/sizes, docking layouts, table settings. |
 
 ### Research Required
 
@@ -303,8 +306,8 @@ Features observed in htop that could enhance TaskSmack.
 
 | Feature | Description | Implementation Notes |
 |---------|-------------|---------------------|
-| **SHR Column** | Shared memory size | Linux: field from `/proc/[pid]/statm`; Windows: working set counters |
-| **State Color Coding** | Color-code process states (R=green, S=gray, D=yellow, Z=red) | Add ImGui color push/pop in state column rendering |
+| **SHR Column** | ✅ Done | Shared memory size (Linux: `/proc/[pid]/statm`, Windows: WorkingSet - PrivateUsage) |
+| **State Color Coding** | ✅ Done | Color-code process states based on theme (R=running, S=sleeping, D=disk sleep, Z=zombie, T=stopped, I=idle) |
 
 ### Medium Effort (Days)
 
@@ -313,7 +316,7 @@ Features observed in htop that could enhance TaskSmack.
 | **Process Tree View (F5)** | Collapsible parent-child hierarchy | Use `parentPid` to build tree; indent children in table |
 | **Incremental Search** | Filter processes as you type without search box focus | Global keyboard input handling in panel |
 | **Sort Indicator** | Visual arrow showing sort column and direction | ImGui table sorting specs already provide this |
-| **Process Details Panel** | Expanded view showing environment, open files, connections | Modal or split panel; multiple `/proc/[pid]/*` reads |
+| **Process Details Panel** | ⏳ Partial | Shows PID, Name, Status, User, Command, PPID, Threads, Nice, CPU%, MEM%, RES, VIRT, SHR, CPU Time. Missing: environment, open files, connections |
 
 ### Higher Effort (Weeks)
 
@@ -341,6 +344,7 @@ Additional columns observed in Windows Task Manager that could enhance TaskSmack
 | MEM % | Memory as percentage of total RAM |
 | RES | Resident memory (physical RAM) |
 | VIRT | Virtual memory size |
+| SHR | Shared memory size |
 | TIME+ | Cumulative CPU time |
 | S (State) | Process state |
 | PPID | Parent process ID |
@@ -354,7 +358,6 @@ Additional columns observed in Windows Task Manager that could enhance TaskSmack
 |--------|-------------|---------------------|
 | **I/O Read** | Read bytes per second | Linux: `/proc/[pid]/io` (needs root); Windows: `GetProcessIoCounters` |
 | **I/O Write** | Write bytes per second | Same as I/O Read |
-| **SHR** | Shared memory size | Linux: `/proc/[pid]/statm`; Windows: working set counters |
 | **Start Time** | When the process started | Already in probe (`startTimeTicks`), need UI column |
 
 ### Higher Effort (Weeks)

@@ -262,6 +262,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
         counters.rssBytes = pmc.WorkingSetSize;
         counters.virtualBytes = pmc.PrivateUsage;
+        // Shared memory is approximately WorkingSetSize minus private usage
+        // This represents memory shared with other processes (DLLs, memory-mapped files, etc.)
+        if (pmc.WorkingSetSize > pmc.PrivateUsage)
+        {
+            counters.sharedBytes = pmc.WorkingSetSize - pmc.PrivateUsage;
+        }
     }
 
     // Get I/O counters

@@ -17,6 +17,7 @@ enum class ProcessColumn : uint8_t
     MemPercent,
     Virtual,
     Resident,
+    Shared,
     CpuTime,
     State,
     Name,
@@ -58,6 +59,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {"VIRT", "virtual", 80.0F, false, true, "Virtual memory size"},
         // RES
         {"RES", "resident", 80.0F, true, true, "Resident memory (physical RAM used)"},
+        // SHR
+        {"SHR", "shared", 70.0F, false, true, "Shared memory size"},
         // TIME+
         {"TIME+", "cpu_time", 85.0F, true, true, "Cumulative CPU time (H:MM:SS.cc)"},
         // State
