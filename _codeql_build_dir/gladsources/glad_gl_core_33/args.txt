@@ -1,1 +1,0 @@
---out-path /home/runner/work/tasksmack/tasksmack/_codeql_build_dir/gladsources/glad_gl_core_33 --api gl:core=3.3 --reproducible c --loader
