@@ -462,6 +462,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 - Use the **issue templates** for bug reports and feature requests
 - PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
+- For GitHub Copilot users, see [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) for best practices
 
 ## License
 

@@ -2,7 +2,7 @@
 
 Cross-platform system monitor (C++23 / Clang 21+ / OpenGL / ImGui). Strict layered architecture: **Platform → Domain → UI**.
 
-> **Related Docs:** [README.md](../README.md) (build/tools), [tasksmack.md](../tasksmack.md) (architecture vision), [process.md](../process.md) (implementation details), [CONTRIBUTING.md](../CONTRIBUTING.md) (PR process), [TODO.md](../TODO.md) (backlog)
+> **Related Docs:** [README.md](../README.md) (build/tools), [tasksmack.md](../tasksmack.md) (architecture vision), [process.md](../process.md) (implementation details), [CONTRIBUTING.md](../CONTRIBUTING.md) (PR process), [TODO.md](../TODO.md) (backlog), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
 
 ## Quick Reference
 

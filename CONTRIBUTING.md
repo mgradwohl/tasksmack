@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing!
 
+> **Using GitHub Copilot?** See [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) for tips on writing effective issues and working with Copilot on this repository.
+
 ## Development Setup
 
 ### Prerequisites
