@@ -9,188 +9,192 @@ on:
 jobs:
   validate-environment:
     runs-on: ubuntu-24.04
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-      with:
-        install-clang-format: 'true'
-        install-clang-tidy: 'true'
-        install-coverage-tools: 'true'
-    
-    - name: Validate prerequisites
-      run: ./tools/check-prereqs.sh
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          install-clang-format: 'true'
+          install-clang-tidy: 'true'
+          install-coverage-tools: 'true'
+
+      - name: Validate prerequisites
+        run: ./tools/check-prereqs.sh
 
   build-linux:
     needs: validate-environment
     runs-on: ubuntu-24.04
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-    
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: linux-debug
-        max-size: 500M
-    
-    - name: Configure
-      run: cmake --preset debug
-    
-    - name: Build
-      run: cmake --build --preset debug
-    
-    - name: Test
-      run: ctest --preset debug -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
-    
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v6
-      with:
-        name: linux-test-results
-        path: build/debug/test-results.xml
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-debug
+          max-size: 500M
+
+      - name: Configure
+        run: cmake --preset debug
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Test
+        run: ctest --preset debug -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-test-results
+          path: build/debug/test-results.xml
 
   build-windows:
     needs: validate-environment
     runs-on: windows-latest
-    
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Install Python dependencies for GLAD
-      shell: pwsh
-      run: |
-        # Use the default Python on windows-latest (Python 3.14)
-        python -m pip install --upgrade pip jinja2
-        python -c "import sys; print(f'Python: {sys.executable}')"
-        python -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
-    
-    - name: Install LLVM
-      run: choco install llvm ninja ccache -y
-    
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: windows-debug
-        max-size: 500M
+      # Pin the Python that will be used for GLAD (and install jinja2 into it).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
 
-    - name: Configure
-      env:
-        LLVM_ROOT: C:\Program Files\LLVM
-      run: cmake --preset win-debug
-    
-    - name: Build
-      env:
-        LLVM_ROOT: C:\Program Files\LLVM
-      run: cmake --build --preset win-debug
-    
-    - name: Test
-      run: ctest --preset win-debug -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
-    
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v6
-      with:
-        name: windows-test-results
-        path: build/win-debug/test-results.xml
+      - name: Install Python dependencies for GLAD
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+          python -c "import sys; print('Python:', sys.executable)"
+          python -c "import jinja2; print('jinja2:', jinja2.__version__)"
+
+      - name: Install LLVM / Ninja / ccache
+        shell: pwsh
+        run: choco install llvm ninja ccache -y
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-debug
+          max-size: 500M
+
+      - name: Configure
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: |
+          cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-debug
+
+      - name: Test
+        shell: pwsh
+        run: ctest --preset win-debug -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-results
+          path: build/win-debug/test-results.xml
 
   format-check:
     needs: validate-environment
     runs-on: ubuntu-24.04
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-      with:
-        install-clang-format: 'true'
-        install-ninja: 'false'
-        install-ccache: 'false'
-    
-    - name: Check formatting
-      run: ./tools/check-format.sh
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          install-clang-format: 'true'
+          install-ninja: 'false'
+          install-ccache: 'false'
+
+      - name: Check formatting
+        run: ./tools/check-format.sh
 
   static-analysis:
     needs: validate-environment
     runs-on: ubuntu-24.04
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-      with:
-        install-clang-tidy: 'true'
-    
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: linux-tidy
-        max-size: 500M
-    
-    - name: Run clang-tidy
-      run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
-    
-    - name: Upload clang-tidy results
-      if: always()
-      uses: actions/upload-artifact@v6
-      with:
-        name: clang-tidy-results
-        path: clang-tidy-output.txt
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          install-clang-tidy: 'true'
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-tidy
+          max-size: 500M
+
+      - name: Run clang-tidy
+        run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+
+      - name: Upload clang-tidy results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-tidy-results
+          path: clang-tidy-output.txt
 
   coverage:
     needs: validate-environment
     runs-on: ubuntu-24.04
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-      with:
-        install-coverage-tools: 'true'
-    
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: linux-coverage
-        max-size: 500M
-    
-    - name: Generate coverage report
-      run: |
-        ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
-    
-    - name: Add coverage summary to workflow summary
-      if: always()
-      run: |
-        echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Extract coverage summary from the output
-        if [ -f coverage-output.txt ]; then
-          echo "### Coverage Summary" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          # Extract the summary table from llvm-cov report output
-          sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          install-coverage-tools: 'true'
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-coverage
+          max-size: 500M
+
+      - name: Generate coverage report
+        run: |
+          ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
+
+      - name: Add coverage summary to workflow summary
+        if: always()
+        run: |
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
-        else
-          echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
-        fi
-    
-    - name: Upload coverage report
-      if: always()
-      uses: actions/upload-artifact@v6
-      with:
-        name: coverage-report
-        path: coverage/
+
+          if [ -f coverage-output.txt ]; then
+            echo "### Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: coverage/
 
   sanitizers:
     needs: validate-environment
@@ -199,159 +203,155 @@ jobs:
       fail-fast: false
       matrix:
         preset: [asan-ubsan, tsan]
-    
     steps:
-    - uses: actions/checkout@v6
-    
-    - name: Setup LLVM
-      uses: ./.github/actions/setup-llvm
-    
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
-      with:
-        key: linux-${{ matrix.preset }}
-        max-size: 500M
-    
-    - name: Configure
-      run: cmake --preset ${{ matrix.preset }}
-    
-    - name: Build
-      run: cmake --build --preset ${{ matrix.preset }}
-    
-    - name: Create output directories
-      run: |
-        mkdir -p sanitizer-logs
-        mkdir -p sanitizer-reports
-    
-    - name: Test with sanitizers
-      id: sanitizer-test
-      continue-on-error: true
-      run: |
-        ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
-        echo "test_result=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-    
-    - name: Generate HTML report
-      if: always()
-      run: |
-        cat > sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <title>${{ matrix.preset }} Sanitizer Report</title>
-            <style>
-                body {
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                    line-height: 1.6;
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }
-                .header {
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    padding: 30px;
-                    border-radius: 8px;
-                    margin-bottom: 20px;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                }
-                .header h1 {
-                    margin: 0 0 10px 0;
-                    font-size: 2em;
-                }
-                .header .timestamp {
-                    opacity: 0.9;
-                    font-size: 0.9em;
-                }
-                .content {
-                    background: white;
-                    padding: 30px;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }
-                pre {
-                    background-color: #1e1e1e;
-                    color: #d4d4d4;
-                    padding: 20px;
-                    border-radius: 6px;
-                    overflow-x: auto;
-                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                    font-size: 14px;
-                    line-height: 1.5;
-                    white-space: pre-wrap;
-                    word-wrap: break-word;
-                }
-                .error {
-                    color: #f48771;
-                    font-weight: bold;
-                }
-                .warning {
-                    color: #dcdcaa;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>${{ matrix.preset }} Sanitizer Report</h1>
-                <div class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</div>
-            </div>
-            <div class="content">
-                <h2>Test Output</h2>
-                <pre>
-        EOF
-        
-        # Append the log content with HTML escaping
-        if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
-          sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' sanitizer-logs/${{ matrix.preset }}.log >> sanitizer-reports/${{ matrix.preset }}.html
-        else
-          echo "No log file found" >> sanitizer-reports/${{ matrix.preset }}.html
-        fi
-        
-        cat >> sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
-                </pre>
-            </div>
-        </body>
-        </html>
-        EOF
-    
-    - name: Add sanitizer summary to workflow summary
-      if: always()
-      run: |
-        echo "## ${{ matrix.preset }} Sanitizer Results" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ steps.sanitizer-test.outputs.test_result }}" = "0" ]; then
-          echo "✅ **Status:** PASSED - No issues detected" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **Status:** FAILED - Issues detected" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Issue Summary" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          # Extract error summaries from the log
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-${{ matrix.preset }}
+          max-size: 500M
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Create output directories
+        run: |
+          mkdir -p sanitizer-logs
+          mkdir -p sanitizer-reports
+
+      - name: Test with sanitizers
+        id: sanitizer-test
+        continue-on-error: true
+        run: |
+          ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
+          echo "test_result=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Generate HTML report
+        if: always()
+        run: |
+          cat > sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <meta charset="UTF-8">
+              <title>${{ matrix.preset }} Sanitizer Report</title>
+              <style>
+                  body {
+                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                      line-height: 1.6;
+                      max-width: 1200px;
+                      margin: 0 auto;
+                      padding: 20px;
+                      background-color: #f5f5f5;
+                  }
+                  .header {
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      padding: 30px;
+                      border-radius: 8px;
+                      margin-bottom: 20px;
+                      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                  }
+                  .header h1 {
+                      margin: 0 0 10px 0;
+                      font-size: 2em;
+                  }
+                  .header .timestamp {
+                      opacity: 0.9;
+                      font-size: 0.9em;
+                  }
+                  .content {
+                      background: white;
+                      padding: 30px;
+                      border-radius: 8px;
+                      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                  }
+                  pre {
+                      background-color: #1e1e1e;
+                      color: #d4d4d4;
+                      padding: 20px;
+                      border-radius: 6px;
+                      overflow-x: auto;
+                      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                      font-size: 14px;
+                      line-height: 1.5;
+                      white-space: pre-wrap;
+                      word-wrap: break-word;
+                  }
+                  .error {
+                      color: #f48771;
+                      font-weight: bold;
+                  }
+                  .warning {
+                      color: #dcdcaa;
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>${{ matrix.preset }} Sanitizer Report</h1>
+                  <div class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</div>
+              </div>
+              <div class="content">
+                  <h2>Test Output</h2>
+                  <pre>
+          EOF
+
           if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
-            # Look for common sanitizer error patterns
-            grep -E "(ERROR|SUMMARY):" sanitizer-logs/${{ matrix.preset }}.log | head -20 >> $GITHUB_STEP_SUMMARY || echo "No specific error patterns found" >> $GITHUB_STEP_SUMMARY
+            sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' sanitizer-logs/${{ matrix.preset }}.log >> sanitizer-reports/${{ matrix.preset }}.html
+          else
+            echo "No log file found" >> sanitizer-reports/${{ matrix.preset }}.html
           fi
-          
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Full report available in artifacts: \`sanitizer-reports/${{ matrix.preset }}.html\`" >> $GITHUB_STEP_SUMMARY
-    
-    - name: Upload sanitizer logs and reports
-      if: always()
-      uses: actions/upload-artifact@v6
-      with:
-        name: ${{ matrix.preset }}-report
-        path: |
-          sanitizer-logs/${{ matrix.preset }}.log
-          sanitizer-reports/${{ matrix.preset }}.html
-    
-    - name: Fail job if sanitizer found issues
-      if: steps.sanitizer-test.outputs.test_result != '0'
-      run: |
-        echo "Sanitizer detected issues. Failing the job."
-        exit 1
+
+          cat >> sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
+                  </pre>
+              </div>
+          </body>
+          </html>
+          EOF
+
+      - name: Add sanitizer summary to workflow summary
+        if: always()
+        run: |
+          echo "## ${{ matrix.preset }} Sanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.sanitizer-test.outputs.test_result }}" = "0" ]; then
+            echo "✅ **Status:** PASSED - No issues detected" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status:** FAILED - Issues detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Issue Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
+            if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
+              grep -E "(ERROR|SUMMARY):" sanitizer-logs/${{ matrix.preset }}.log | head -20 >> $GITHUB_STEP_SUMMARY || echo "No specific error patterns found" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Full report available in artifacts: \`sanitizer-reports/${{ matrix.preset }}.html\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload sanitizer logs and reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.preset }}-report
+          path: |
+            sanitizer-logs/${{ matrix.preset }}.log
+            sanitizer-reports/${{ matrix.preset }}.html
+
+      - name: Fail job if sanitizer found issues
+        if: steps.sanitizer-test.outputs.test_result != '0'
+        run: |
+          echo "Sanitizer detected issues. Failing the job."
+          exit 1
