@@ -39,6 +39,27 @@ endforeach()
 
 include(GoogleTest)
 
+# Platform-specific test sources
+if(WIN32)
+    set(PLATFORM_TEST_SOURCES
+        # Windows platform tests would go here
+    )
+    set(PLATFORM_SRC_UNDER_TEST
+        # Windows platform sources under test
+    )
+else()
+    set(PLATFORM_TEST_SOURCES
+        Platform/test_LinuxProcessProbe.cpp
+        Platform/test_LinuxSystemProbe.cpp
+        Platform/test_LinuxProcessActions.cpp
+    )
+    set(PLATFORM_SRC_UNDER_TEST
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+    )
+endif()
+
 # Test executable with all test sources
 add_executable(TaskSmack_tests
     test_main.cpp
@@ -46,10 +67,12 @@ add_executable(TaskSmack_tests
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
+    ${PLATFORM_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${PLATFORM_SRC_UNDER_TEST}
 )
 
 target_include_directories(TaskSmack_tests PRIVATE
