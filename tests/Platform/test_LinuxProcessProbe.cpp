@@ -222,9 +222,9 @@ TEST(LinuxProcessProbeTest, StateIsValid)
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
 
-    // Valid Linux process states: R, S, D, Z, T, t, W, X, x, K, W, P, I
+    // Valid Linux process states: R, S, D, Z, T, t, W, X, x, K, P, I
     // 'I' is Idle kernel thread (since Linux 4.14)
-    const std::string validStates = "RSDZTtWXxKWPI?";
+    const std::string validStates = "RSDZTtWXxKPI?";
 
     for (const auto& proc : processes)
     {
