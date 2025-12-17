@@ -1,0 +1,5 @@
+if(EXISTS "/home/runner/work/tasksmack/tasksmack/_codeql_build_dir/tests/TaskSmack_tests[1]_tests.cmake")
+  include("/home/runner/work/tasksmack/tasksmack/_codeql_build_dir/tests/TaskSmack_tests[1]_tests.cmake")
+else()
+  add_test(TaskSmack_tests_NOT_BUILT TaskSmack_tests_NOT_BUILT)
+endif()
