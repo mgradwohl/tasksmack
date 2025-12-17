@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <fstream>
 #include <functional>
 
 namespace Domain
