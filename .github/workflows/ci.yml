@@ -62,14 +62,12 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-
     - name: Install Python dependencies for GLAD
+      shell: pwsh
       run: |
+        # Use the default Python on windows-latest (Python 3.14)
         python -m pip install --upgrade pip jinja2
+        python -c "import sys; print(f'Python: {sys.executable}')"
         python -c "import jinja2; print(f'jinja2 {jinja2.__version__} installed')"
     
     - name: Install LLVM
