@@ -10,8 +10,61 @@
 #include <glad/gl.h>
 // clang-format on
 
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+
+#include <windows.h>
+#endif
+
 namespace Core
 {
+
+#ifdef _WIN32
+// Set window icon from embedded resource on Windows
+// This sets both the small icon (title bar, Alt+Tab) and large icon (taskbar)
+static void setWindowIconFromResource(GLFWwindow* window)
+{
+    HWND hwnd = glfwGetWin32Window(window);
+    if (hwnd == nullptr)
+    {
+        spdlog::warn("Failed to get Win32 window handle for icon");
+        return;
+    }
+
+    // Get the module handle for this executable
+    HINSTANCE hInstance = GetModuleHandle(nullptr);
+
+    // Load small icon (16x16) for title bar and Alt+Tab
+    // MAKEINTRESOURCE(1) refers to IDI_ICON1 (resource ID 1) defined in the .rc file
+    HICON hIconSmall = static_cast<HICON>(LoadImage(
+        hInstance, MAKEINTRESOURCE(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+
+    // Load large icon (32x32 or larger) for taskbar
+    HICON hIconBig = static_cast<HICON>(
+        LoadImage(hInstance, MAKEINTRESOURCE(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+
+    if (hIconSmall != nullptr)
+    {
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIconSmall));
+        spdlog::debug("Set small window icon ({}x{})", GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+    }
+    else
+    {
+        spdlog::warn("Failed to load small icon from resource");
+    }
+
+    if (hIconBig != nullptr)
+    {
+        SendMessage(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIconBig));
+        spdlog::debug("Set large window icon ({}x{})", GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    }
+    else
+    {
+        spdlog::warn("Failed to load large icon from resource");
+    }
+}
+#endif
 
 Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 {
@@ -63,6 +116,11 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
                                        self->m_Spec.Height = static_cast<uint32_t>(height);
                                        glViewport(0, 0, width, height);
                                    });
+
+#ifdef _WIN32
+    // Set window icon from embedded resource (title bar and taskbar)
+    setWindowIconFromResource(m_Handle);
+#endif
 }
 
 Window::~Window()

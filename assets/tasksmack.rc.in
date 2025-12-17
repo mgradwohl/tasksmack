@@ -14,7 +14,7 @@
 //   pwsh tools/generate-icons.ps1
 #cmakedefine TASKSMACK_HAS_ICON
 #ifdef TASKSMACK_HAS_ICON
-IDI_ICON1 ICON "@CMAKE_SOURCE_DIR@/assets/icons/tasksmack.ico"
+1 ICON "@CMAKE_SOURCE_DIR@/assets/icons/tasksmack.ico"
 #endif
 
 // Version information - populated by CMake from project version
