@@ -166,6 +166,47 @@ gh run download <run-id> -n asan-ubsan-report
 gh run download <run-id> -n tsan-report
 ```
 
+## Project Structure
+
+```
+.
+├── CMakeLists.txt          # Main build configuration
+├── CMakePresets.json       # CMake presets for all platforms/configs
+├── Devshell-Updated.ps1    # Windows dev environment setup
+├── setup.sh / setup.ps1    # Project renaming scripts (deleted after use)
+├── src/
+│   ├── main.cpp            # Application entry point
+│   └── version.h.in        # Version header template (generates version.h)
+├── tests/
+│   ├── CMakeLists.txt      # Test configuration
+│   └── test_main.cpp       # Example tests
+├── tools/
+│   ├── build.sh/ps1        # Build helper scripts
+│   ├── configure.sh/ps1    # Configure helper scripts
+│   ├── check-prereqs.sh/ps1 # Check prerequisite tools and versions
+│   ├── clang-tidy.sh/ps1   # Static analysis
+│   ├── clang-format.sh/ps1 # Code formatting
+│   ├── check-format.sh/ps1 # Format checking
+│   └── coverage.sh/ps1     # Code coverage reports
+├── dist/                   # CPack output (generated, gitignored)
+│   └── *.zip, *.tar.gz     # Distribution packages
+├── coverage/               # Coverage reports (generated, gitignored)
+│   └── index.html          # HTML coverage report
+├── .clang-format           # Formatting rules
+├── .clang-tidy             # Static analysis rules
+├── .clangd                 # clangd LSP configuration
+├── .github/
+│   ├── workflows/ci.yml    # CI/CD pipeline
+│   ├── ISSUE_TEMPLATE/     # Bug report and feature request templates
+│   ├── pull_request_template.md  # PR checklist
+│   └── dependabot.yml      # Automated dependency updates
+├── SECURITY.md             # Security policy and vulnerability reporting
+└── .vscode/
+    ├── tasks.json          # Build tasks (platform-aware)
+    ├── launch.json         # Debug configurations (platform-aware)
+    └── settings.json       # Editor settings
+```
+
 ### Security Issues
 
 For security vulnerabilities, please see [SECURITY.md](SECURITY.md) for responsible disclosure guidelines. **Do not** open public issues for security vulnerabilities.
