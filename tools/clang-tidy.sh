@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run clang-tidy on source files
+# Run clang-tidy on source files with parallel execution
 # Uses .clang-tidy configuration from project root
-# Usage: ./clang-tidy.sh [OPTIONS] [BUILD_TYPE]
+# Usage: ./clang-tidy.sh [OPTIONS] [BUILD_TYPE] [FILES...]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,21 +10,32 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # Defaults
 BUILD_TYPE="debug"
 VERBOSE=false
+JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+FILES=()
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE]
+Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE] [FILES...]
 
-Run clang-tidy static analysis on source files.
-Configures if needed, then runs clang-tidy via CMake target.
+Run clang-tidy static analysis on source files with parallel execution.
+Configures if needed, strips PCH flags, and runs clang-tidy on all source files.
 
 BUILD_TYPE:
   debug           Use debug build (default)
   relwithdebinfo  Use relwithdebinfo build
 
 Options:
-  -v, --verbose   Show verbose output
+  -v, --verbose   Show verbose output with per-file progress
+  -j, --jobs N    Number of parallel jobs (default: $JOBS)
   -h, --help      Show this help
+
+FILES:
+  Optional list of specific files to analyze (default: all src/*.cpp)
+
+Examples:
+  $(basename "$0")                          # Analyze all files
+  $(basename "$0") -v -j 8                  # Verbose with 8 jobs
+  $(basename "$0") src/Domain/ProcessModel.cpp  # Analyze specific file
 EOF
     exit 0
 }
@@ -33,13 +44,28 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
+        -j|--jobs) JOBS="$2"; shift 2 ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
+        *.cpp|*.h) FILES+=("$1"); shift ;;
         *) echo "Error: Unknown argument: $1" >&2; usage ;;
     esac
 done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
+COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+CONFIG_FILE="${PROJECT_ROOT}/.clang-tidy"
+
+# Find clang-tidy
+CLANG_TIDY=$(command -v clang-tidy 2>/dev/null || echo "")
+if [[ -z "$CLANG_TIDY" ]]; then
+    echo "Error: clang-tidy not found in PATH" >&2
+    exit 1
+fi
+
+if $VERBOSE; then
+    echo "Using clang-tidy: $CLANG_TIDY"
+fi
 
 # Configure if needed (using CMake presets)
 if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
@@ -47,9 +73,92 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     cmake --preset "$BUILD_TYPE"
 fi
 
-if $VERBOSE; then
-    echo "Running clang-tidy for $BUILD_TYPE build..."
+# Ensure compile_commands.json exists
+if [[ ! -f "$COMPILE_COMMANDS" ]]; then
+    echo "Building to generate compile_commands.json..."
+    cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Copy compile_commands.json and run clang-tidy
-cmake --build "$BUILD_DIR" --target copy-compile-commands run-clang-tidy
+# Strip PCH flags from compile_commands.json (clang-tidy doesn't handle them well)
+if $VERBOSE; then
+    echo "Stripping PCH flags from compile_commands.json..."
+fi
+sed -i.bak \
+    -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
+    -e 's/-Xclang -emit-pch//g' \
+    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+    -e 's/-Winvalid-pch//g' \
+    -e 's/-fpch-instantiate-templates//g' \
+    -e 's/@[^ ]*\.modmap//g' \
+    -e 's/-fmodule-output=[^ ]*//g' \
+    "$COMPILE_COMMANDS"
+rm -f "${COMPILE_COMMANDS}.bak"
+
+# Determine files to analyze
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    # Get all source files from project, excluding other-platform files
+    mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+        ! -path "*/Platform/Windows/*" 2>/dev/null)
+else
+    SOURCE_FILES=()
+    for f in "${FILES[@]}"; do
+        if [[ "$f" = /* ]]; then
+            SOURCE_FILES+=("$f")
+        else
+            SOURCE_FILES+=("${PROJECT_ROOT}/$f")
+        fi
+    done
+fi
+
+if [[ ${#SOURCE_FILES[@]} -eq 0 ]]; then
+    echo "No source files found to analyze."
+    exit 0
+fi
+
+if $VERBOSE; then
+    echo "Running clang-tidy on ${#SOURCE_FILES[@]} files with $JOBS parallel jobs..."
+    echo ""
+fi
+
+# Function to run clang-tidy on a single file
+run_clang_tidy() {
+    local file="$1"
+    local verbose="$2"
+    local relative_path="${file#${PROJECT_ROOT}/}"
+    
+    if [[ "$verbose" == "true" ]]; then
+        echo "  Analyzing: $relative_path"
+    fi
+    
+    "$CLANG_TIDY" \
+        --config-file="$CONFIG_FILE" \
+        -p "$BUILD_DIR" \
+        --extra-arg=-std=c++23 \
+        --extra-arg=-Wno-unknown-warning-option \
+        "$file" 2>&1
+}
+export -f run_clang_tidy
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT
+
+# Run clang-tidy in parallel
+HAS_ERRORS=0
+if command -v parallel &>/dev/null; then
+    # Use GNU parallel if available
+    if ! printf '%s\n' "${SOURCE_FILES[@]}" | parallel -j "$JOBS" run_clang_tidy {} "$VERBOSE"; then
+        HAS_ERRORS=1
+    fi
+else
+    # Fall back to xargs
+    if ! printf '%s\0' "${SOURCE_FILES[@]}" | xargs -0 -P "$JOBS" -I {} bash -c 'run_clang_tidy "$@"' _ {} "$VERBOSE"; then
+        HAS_ERRORS=1
+    fi
+fi
+
+echo ""
+if [[ $HAS_ERRORS -ne 0 ]]; then
+    echo "clang-tidy found issues."
+    exit 1
+else
+    echo "clang-tidy completed successfully."
+    exit 0
+fi

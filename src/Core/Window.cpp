@@ -21,9 +21,11 @@ namespace Core
 {
 
 #ifdef _WIN32
+namespace
+{
 // Set window icon from embedded resource on Windows
 // This sets both the small icon (title bar, Alt+Tab) and large icon (taskbar)
-static void setWindowIconFromResource(GLFWwindow* window)
+void setWindowIconFromResource(GLFWwindow* window)
 {
     HWND hwnd = glfwGetWin32Window(window);
     if (hwnd == nullptr)
@@ -64,6 +66,7 @@ static void setWindowIconFromResource(GLFWwindow* window)
         spdlog::warn("Failed to load large icon from resource");
     }
 }
+} // namespace
 #endif
 
 Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))

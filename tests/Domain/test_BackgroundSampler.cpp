@@ -11,7 +11,6 @@
 
 #include "Domain/BackgroundSampler.h"
 #include "Mocks/MockProbes.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -19,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>

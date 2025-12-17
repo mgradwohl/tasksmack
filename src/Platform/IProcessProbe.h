@@ -33,6 +33,10 @@ class IProcessProbe
 
     /// Clock ticks per second (e.g., sysconf(_SC_CLK_TCK) on Linux).
     [[nodiscard]] virtual long ticksPerSecond() const = 0;
+
+    /// Total system memory in bytes.
+    /// Used for calculating per-process memory%.
+    [[nodiscard]] virtual uint64_t systemTotalMemory() const = 0;
 };
 
 } // namespace Platform

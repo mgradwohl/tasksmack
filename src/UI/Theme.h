@@ -20,10 +20,13 @@ enum class FontSize : std::uint8_t
     Medium,     // 8pt / 10pt (default)
     Large,      // 10pt / 12pt
     ExtraLarge, // 12pt / 14pt
+    Huge,       // 14pt / 16pt
+    EvenHuger,  // 16pt / 18pt
     Count
 };
 
 /// Color scheme definition with heatmap gradient and accent colors
+// NOLINTBEGIN(readability-redundant-member-init) - explicit {} init preferred for clarity
 struct ColorScheme
 {
     std::string name;
@@ -128,6 +131,7 @@ struct ColorScheme
     ImVec4 navWindowingDimBg{};
     ImVec4 modalWindowDimBg{};
 };
+// NOLINTEND(readability-redundant-member-init)
 
 /// Information about a discovered theme
 struct DiscoveredTheme

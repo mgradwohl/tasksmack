@@ -117,6 +117,14 @@ void UserConfig::load()
             {
                 m_Settings.fontSize = UI::FontSize::ExtraLarge;
             }
+            else if (*fontSizeStr == "huge")
+            {
+                m_Settings.fontSize = UI::FontSize::Huge;
+            }
+            else if (*fontSizeStr == "even-huger")
+            {
+                m_Settings.fontSize = UI::FontSize::EvenHuger;
+            }
         }
 
         // Panel visibility
@@ -202,6 +210,12 @@ void UserConfig::save() const
         break;
     case UI::FontSize::ExtraLarge:
         fontSizeStr = "extra-large";
+        break;
+    case UI::FontSize::Huge:
+        fontSizeStr = "huge";
+        break;
+    case UI::FontSize::EvenHuger:
+        fontSizeStr = "even-huger";
         break;
     default:
         fontSizeStr = "medium";

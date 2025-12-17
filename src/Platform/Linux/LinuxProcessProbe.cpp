@@ -342,4 +342,31 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     return user + nice + system + idle + iowait + irq + softirq + steal;
 }
 
+uint64_t LinuxProcessProbe::systemTotalMemory() const
+{
+    std::ifstream meminfo("/proc/meminfo");
+    if (!meminfo.is_open())
+    {
+        spdlog::error("Failed to open /proc/meminfo");
+        return 0;
+    }
+
+    std::string line;
+    while (std::getline(meminfo, line))
+    {
+        if (line.starts_with("MemTotal:"))
+        {
+            uint64_t kb = 0;
+            // NOLINTNEXTLINE(cert-err34-c) - sscanf return value checked
+            if (sscanf(line.c_str(), "MemTotal: %lu kB", &kb) == 1)
+            {
+                return kb * 1024ULL;
+            }
+        }
+    }
+
+    spdlog::warn("MemTotal not found in /proc/meminfo");
+    return 0;
+}
+
 } // namespace Platform

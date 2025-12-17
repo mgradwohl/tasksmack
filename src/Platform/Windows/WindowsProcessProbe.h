@@ -22,6 +22,7 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] ProcessCapabilities capabilities() const override;
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
+    [[nodiscard]] uint64_t systemTotalMemory() const override;
 
   private:
     /// Get detailed info for a single process

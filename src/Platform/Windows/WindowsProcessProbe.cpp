@@ -167,6 +167,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         return results;
     }
 
+    // NOLINTBEGIN(cppcoreguidelines-avoid-do-while) - idiomatic Win32 Process32First/Next pattern
     do
     {
         ProcessCounters counters{};
@@ -181,6 +182,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
         results.push_back(std::move(counters));
     } while (Process32NextW(hSnapshot, &pe32) != 0);
+    // NOLINTEND(cppcoreguidelines-avoid-do-while)
 
     CloseHandle(hSnapshot);
 
@@ -321,6 +323,18 @@ long WindowsProcessProbe::ticksPerSecond() const
     // Windows FILETIME uses 100-nanosecond intervals
     // 10,000,000 ticks per second
     return 10'000'000L;
+}
+
+uint64_t WindowsProcessProbe::systemTotalMemory() const
+{
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus) != 0)
+    {
+        return memStatus.ullTotalPhys;
+    }
+    spdlog::error("GlobalMemoryStatusEx failed: {}", GetLastError());
+    return 0;
 }
 
 } // namespace Platform

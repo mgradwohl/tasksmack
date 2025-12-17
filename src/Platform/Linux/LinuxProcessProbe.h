@@ -22,6 +22,7 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] ProcessCapabilities capabilities() const override;
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
+    [[nodiscard]] uint64_t systemTotalMemory() const override;
 
   private:
     long m_TicksPerSecond;

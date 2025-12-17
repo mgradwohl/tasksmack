@@ -2,45 +2,10 @@
 
 #include <spdlog/spdlog.h>
 
-#include <fstream>
 #include <functional>
 
 namespace Domain
 {
-
-namespace
-{
-
-/// Read total system memory (platform-specific)
-[[nodiscard]] uint64_t readSystemTotalMemory()
-{
-#ifdef _WIN32
-    MEMORYSTATUSEX memStatus{};
-    memStatus.dwLength = sizeof(memStatus);
-    if (GlobalMemoryStatusEx(&memStatus) != 0)
-    {
-        return memStatus.ullTotalPhys;
-    }
-    return 0;
-#else
-    std::ifstream meminfo("/proc/meminfo");
-    std::string line;
-    while (std::getline(meminfo, line))
-    {
-        if (line.starts_with("MemTotal:"))
-        {
-            uint64_t kb = 0;
-            if (sscanf(line.c_str(), "MemTotal: %lu kB", &kb) == 1)
-            {
-                return kb * 1024ULL;
-            }
-        }
-    }
-    return 0;
-#endif
-}
-
-} // namespace
 
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_Probe(std::move(probe))
 {
@@ -48,7 +13,7 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
     {
         m_Capabilities = m_Probe->capabilities();
         m_TicksPerSecond = m_Probe->ticksPerSecond();
-        m_SystemTotalMemory = readSystemTotalMemory();
+        m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: "
                      "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}",
                      m_Capabilities.hasIoCounters,

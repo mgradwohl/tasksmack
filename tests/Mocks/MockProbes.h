@@ -69,6 +69,16 @@ class MockProcessProbe : public Platform::IProcessProbe
         return m_TicksPerSecond;
     }
 
+    [[nodiscard]] uint64_t systemTotalMemory() const override
+    {
+        return m_SystemTotalMemory;
+    }
+
+    void setSystemTotalMemory(uint64_t bytes)
+    {
+        m_SystemTotalMemory = bytes;
+    }
+
     /// Get number of times enumerate() was called (thread-safe).
     [[nodiscard]] int enumerateCount() const
     {
@@ -84,6 +94,7 @@ class MockProcessProbe : public Platform::IProcessProbe
   private:
     std::vector<Platform::ProcessCounters> m_Counters;
     uint64_t m_TotalCpuTime = 0;
+    uint64_t m_SystemTotalMemory = 8ULL * 1024 * 1024 * 1024; // Default 8 GB
     Platform::ProcessCapabilities m_Capabilities;
     long m_TicksPerSecond = 100; // Standard HZ value
     std::atomic<int> m_EnumerateCount{0};

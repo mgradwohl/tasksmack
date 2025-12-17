@@ -21,6 +21,9 @@
 #endif
 #include <cstdio>
 
+namespace
+{
+
 auto runApp() -> int
 {
 // Required on Windows to see console output when launching from an IDE or debugger
@@ -73,6 +76,8 @@ auto runApp() -> int
 
     return 0;
 }
+
+} // namespace
 
 // Entry points
 #ifdef _WIN32

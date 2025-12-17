@@ -188,6 +188,8 @@ void Theme::initializeFontSizes()
     m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Huge)] = {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::EvenHuger)] = {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -422,7 +424,7 @@ auto Theme::largeFont() const -> ImFont*
 
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
 {
-    m_Fonts[static_cast<std::size_t>(size)] = {regular, large};
+    m_Fonts[static_cast<std::size_t>(size)] = {.regular = regular, .large = large};
 }
 
 } // namespace UI

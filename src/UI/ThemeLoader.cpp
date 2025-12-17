@@ -31,15 +31,18 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     unsigned int a = 255; // Default to fully opaque
 
     // Parse RGB components
-    std::from_chars(hex.data(), hex.data() + 2, r, 16);     // NOLINT(bugprone-not-null-terminated-result)
-    std::from_chars(hex.data() + 2, hex.data() + 4, g, 16); // NOLINT(bugprone-not-null-terminated-result)
-    std::from_chars(hex.data() + 4, hex.data() + 6, b, 16); // NOLINT(bugprone-not-null-terminated-result)
+    // NOLINTBEGIN(bugprone-not-null-terminated-result,bugprone-suspicious-stringview-data-usage)
+    // std::from_chars takes (first, last) pointer range - null termination not needed
+    std::from_chars(hex.data(), hex.data() + 2, r, 16);
+    std::from_chars(hex.data() + 2, hex.data() + 4, g, 16);
+    std::from_chars(hex.data() + 4, hex.data() + 6, b, 16);
 
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
     {
         std::from_chars(hex.data() + 6, hex.data() + 8, a, 16);
     }
+    // NOLINTEND(bugprone-not-null-terminated-result,bugprone-suspicious-stringview-data-usage)
 
     constexpr float MAX_COMPONENT = 255.0F;
     return {static_cast<float>(r) / MAX_COMPONENT,
