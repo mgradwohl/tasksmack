@@ -13,6 +13,12 @@ class WindowsSystemProbe : public ISystemProbe
 {
   public:
     WindowsSystemProbe();
+    ~WindowsSystemProbe() override = default;
+
+    WindowsSystemProbe(const WindowsSystemProbe&) = delete;
+    WindowsSystemProbe& operator=(const WindowsSystemProbe&) = delete;
+    WindowsSystemProbe(WindowsSystemProbe&&) = default;
+    WindowsSystemProbe& operator=(WindowsSystemProbe&&) = default;
 
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;

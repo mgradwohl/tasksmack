@@ -126,6 +126,11 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
 
+### Math Expression Clarity
+- Always add parentheses to clarify operator precedence in math expressions
+- Example: `a + (b * c)` instead of `a + b * c`
+- This improves readability and avoids `readability-math-missing-parentheses` warnings
+
 ### Preprocessor Directives
 - Use `#ifdef X` instead of `#if defined(X)` for simple checks
 - Use `#ifndef X` instead of `#if !defined(X)`

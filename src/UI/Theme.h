@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -13,7 +14,7 @@ namespace UI
 {
 
 /// Font size presets
-enum class FontSize
+enum class FontSize : std::uint8_t
 {
     Small = 0,  // 6pt / 8pt
     Medium,     // 8pt / 10pt (default)
@@ -239,6 +240,8 @@ class Theme
 
     Theme(const Theme&) = delete;
     auto operator=(const Theme&) -> Theme& = delete;
+    Theme(Theme&&) = delete;
+    auto operator=(Theme&&) -> Theme& = delete;
 
     std::vector<DiscoveredTheme> m_DiscoveredThemes;
     std::vector<ColorScheme> m_LoadedSchemes;
