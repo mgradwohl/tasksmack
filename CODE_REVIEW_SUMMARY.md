@@ -3,7 +3,7 @@
 **Project:** TaskSmack - Cross-Platform System Monitor  
 **Review Date:** 2025-12-17  
 **Reviewer:** GitHub Copilot Workspace  
-**Scope:** Complete codebase review including /src, /tests, /tools, /.github, /.vscode
+**Scope:** Complete codebase review including /src, /tests, /tools, /.github, /.vscode, CMake build system
 
 ---
 
@@ -18,12 +18,14 @@ TaskSmack is a well-structured C++23 cross-platform system monitor with excellen
 - Excellent CI/CD setup with sanitizers, coverage, and static analysis
 - Well-documented architecture and development process
 - Strong separation of concerns
+- Professional CMake configuration with presets
 
 ⚠️ **Areas for Improvement:**
 - Some disabled clang-tidy checks should be re-enabled
 - Error handling could be more robust in some areas
 - Windows implementation needs verification
 - Integration tests are missing
+- CMake build system has opportunities for improvement (22 issues identified)
 - Some documentation gaps
 
 ---
@@ -34,10 +36,11 @@ TaskSmack is a well-structured C++23 cross-platform system monitor with excellen
 |--------|-------|
 | **Total Source Files** | 50+ C++ files |
 | **Total Lines of Code** | ~8,000 LOC |
-| **Issues Identified** | 50+ |
+| **CMake Files Reviewed** | 3 (CMakeLists.txt, CMakePresets.json, tests/CMakeLists.txt) |
+| **Issues Identified** | 70+ (including 22 CMake issues) |
 | **Critical Issues** | 0 |
-| **Important Issues** | 18 |
-| **Enhancement Suggestions** | 32+ |
+| **Important Issues** | 27 (including 9 CMake) |
+| **Enhancement Suggestions** | 43+ (including 13 CMake) |
 | **Test Coverage** | Good (Domain layer well tested) |
 | **Documentation Quality** | Excellent |
 
@@ -132,7 +135,61 @@ Outstanding documentation:
 
 **Justification:** The TODO.md already acknowledges some should be re-enabled. These checks catch real bugs and improve code quality.
 
-### 2. Source Code Issues
+### 2. CMake Build System
+
+**Assessment: ⭐⭐⭐⭐☆ (Very Good)**
+
+The CMake configuration is professional and well-structured, but has room for improvement.
+
+**Strengths:**
+- Excellent use of CMake Presets for cross-platform configuration
+- Proper dependency management via FetchContent
+- Platform-specific handling is mostly clean
+- Good integration with tooling (clang-tidy, clang-format, coverage)
+- Precompiled headers for build performance
+- Comprehensive warning configuration
+
+**Issues Identified (22 total):**
+- 🟡 **Important (9):**
+  - CMake policy CMP0169 set to OLD (should be temporary)
+  - Duplicate `find_package(OpenGL)` calls
+  - Hard-coded LLVM tool paths (brittle)
+  - Windows resource file handling could be more robust
+  - Platform-specific source construction is scattered
+  - CMakePresets.json hardcodes x86-64-v3 (excludes older CPUs)
+  - GLFW version compatibility checking needed
+  - Tests don't link required platform libraries
+  - FetchContent cache default inconsistent between CMakeLists and presets
+
+- 🟢 **Nice to have (13):**
+  - Better documentation of CMake 3.28 requirement
+  - Make FETCHCONTENT_TRY_FIND_PACKAGE_MODE configurable
+  - Improve error messages when jinja2 missing
+  - Move PCH configuration to separate file
+  - Enhanced CPack configuration (descriptions, icons, dependencies)
+  - Add install rules for assets (fonts, themes)
+  - Add PCH for test files
+  - More detailed preset descriptions
+  - Better spdlog target validation
+  - ImGui/ImPlot static/shared library option
+  - Configurable warning flag additions
+  - Consistent test executable naming
+
+**Key Recommendations:**
+1. Remove duplicate `find_package(OpenGL)` call
+2. Improve LLVM tool finding (use package or multi-version search)
+3. Document or migrate CMP0169 OLD policy
+4. Add microarchitecture compatibility preset or make configurable
+5. Validate jinja2 installation during CMake configure
+
+**Examples of Good Practices:**
+- Platform-aware presets with inheritance
+- SYSTEM keyword on FetchContent dependencies
+- Warning suppression function (`tasksmack_apply_default_warnings`)
+- Conditional PCH enabling
+- Custom targets for clang-tidy with PCH flag stripping
+
+### 3. Source Code Issues
 
 **High Priority:**
 1. **Error handling in main.cpp** - Check `freopen_s` return values
@@ -149,7 +206,7 @@ Outstanding documentation:
 - Layer separation is excellent
 - Domain models are properly isolated
 
-### 3. Test Coverage
+### 4. Test Coverage
 
 **Well Covered:**
 - Domain layer CPU calculation
@@ -166,7 +223,7 @@ Outstanding documentation:
 
 **Recommendation:** Add integration test suite that runs actual application.
 
-### 4. Tool Scripts
+### 5. Tool Scripts
 
 **Strengths:**
 - Platform-aware (Linux/Windows variants)
@@ -178,7 +235,7 @@ Outstanding documentation:
 - Ensure consistent error code propagation
 - Symmetric platform exclusions (Linux/Windows)
 
-### 5. CI/CD Pipeline
+### 6. CI/CD Pipeline
 
 **Excellent Setup:**
 - Multi-platform builds (Linux, Windows)
@@ -193,7 +250,7 @@ Outstanding documentation:
 - Better sanitizer failure reporting (annotations)
 - Automated dependency updates beyond GitHub Actions
 
-### 6. VS Code Integration
+### 7. VS Code Integration
 
 **Very Good:**
 - Tasks for all build types
@@ -206,7 +263,7 @@ Outstanding documentation:
 - LLVM_ROOT path assumption on Windows
 - Could benefit from workspace recommendations verification
 
-### 7. Security
+### 8. Security
 
 **Good Foundation:**
 - Sanitizers catch memory issues
@@ -274,23 +331,27 @@ The codebase is remarkably clean for an active development project:
 - Some disabled clang-tidy checks (with documented reasons)
 - Username cache thread safety issue
 - Magic numbers in a few places
+- CMake policy CMP0169 set to OLD (temporary workaround)
 
 **Well-Managed:**
 - Architecture is clean and documented
 - No "quick hacks" or workarounds
 - Dependencies are pinned and managed
 - Test coverage is good
+- Build system is professional
 
 **Debt Prevention:**
 - CI prevents most debt accumulation
 - Code review process (PR template)
 - Static analysis catches issues early
+- CMake presets enforce consistent builds
 
 **Debt Reduction Plan:**
 - Re-enable clang-tidy checks incrementally
 - Add integration tests
 - Complete Windows implementation
 - Add EditorConfig and pre-commit hooks
+- Clean up CMake duplications and improve portability
 
 ---
 
@@ -306,21 +367,31 @@ None identified. Codebase is in good shape.
    - TODO.md already calls this out
    - Estimated effort: 4-8 hours
 
-2. **Fix thread safety in LinuxProcessProbe username cache**
+2. **Fix CMake duplicate OpenGL find_package**
+   - Remove duplicate call (line 230)
+   - Estimated effort: 5 minutes
+
+3. **Fix thread safety in LinuxProcessProbe username cache**
    - Potential race condition
    - Simple fix: make it an instance member
    - Estimated effort: 1 hour
 
-3. **Add error handling for `freopen_s` in main.cpp**
+4. **Improve LLVM tool finding in CMake**
+   - Replace hard-coded paths with proper package search
+   - Supports multiple LLVM versions
+   - Estimated effort: 1-2 hours
+
+5. **Add error handling for `freopen_s` in main.cpp**
    - Improves robustness on Windows
    - Estimated effort: 30 minutes
 
-4. **Validate config file values**
+6. **Validate config file values**
    - Prevents crashes from invalid configs
    - Estimated effort: 2-4 hours
 
-5. **Add integration tests**
+7. **Add integration tests**
    - Major gap in testing strategy
+   - Estimated effort: 1-2 days
    - Estimated effort: 1-2 days
 
 ### 🟢 Medium Priority (Next Month)

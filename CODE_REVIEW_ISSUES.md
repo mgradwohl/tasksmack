@@ -865,7 +865,451 @@ Already in TODO.md - good candidate for quick win.
 
 ---
 
-## Build System Issues
+## Build System Issues (CMake)
+
+### 🟡 Issue: CMake policy CMP0169 set to OLD should be documented
+**File:** `CMakeLists.txt`  
+**Line:** 4  
+**Category:** Build System / Maintainability
+
+**Problem:**
+```cmake
+# Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
+cmake_policy(SET CMP0169 OLD)
+```
+
+Setting policies to OLD is discouraged as it prevents adoption of modern CMake practices. This should be temporary.
+
+**Recommendation:**
+1. Document why OLD is needed (imgui/implot don't have CMakeLists.txt)
+2. Add TODO comment to migrate to NEW behavior when possible
+3. Consider alternative: Create wrapper CMakeLists.txt for imgui/implot instead
+
+**Example:**
+```cmake
+# TODO: Migrate to CMP0169 NEW when imgui/implot provide CMakeLists.txt
+# or when we create wrapper CMakeLists.txt for these dependencies.
+# CMP0169: Allow FetchContent_Populate for dependencies without CMakeLists.txt
+cmake_policy(SET CMP0169 OLD)
+```
+
+---
+
+### 🟡 Issue: Duplicate OpenGL find_package calls
+**File:** `CMakeLists.txt`  
+**Lines:** 170, 230  
+**Category:** Build System / Code Quality
+
+**Problem:**
+```cmake
+find_package(OpenGL REQUIRED)  # Line 170
+# ... 60 lines later ...
+find_package(OpenGL REQUIRED)  # Line 230
+```
+
+OpenGL is found twice unnecessarily.
+
+**Recommendation:**
+Remove one of the duplicate calls. Keep the first one (line 170) as it's closer to other dependency declarations.
+
+---
+
+### 🟡 Issue: Hard-coded LLVM paths should use better search strategy
+**File:** `CMakeLists.txt`  
+**Lines:** 118-124, 126-132  
+**Category:** Build System / Portability
+
+**Problem:**
+```cmake
+find_program(CLANG_TIDY_EXE NAMES clang-tidy
+    HINTS
+        "/usr/lib/llvm-21/bin"
+        "$ENV{LLVM_ROOT}/bin"
+        "$ENV{ProgramFiles}/LLVM/bin"
+        "C:/Program Files/LLVM/bin"
+)
+```
+
+Hard-coded paths are brittle and don't scale to multiple LLVM versions or custom installations.
+
+**Recommendation:**
+Use CMake's package finding:
+```cmake
+# Try to find LLVM package first (provides better version control)
+find_package(LLVM QUIET)
+if(LLVM_FOUND)
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy HINTS ${LLVM_TOOLS_BINARY_DIR})
+    find_program(CLANG_FORMAT_EXE NAMES clang-format HINTS ${LLVM_TOOLS_BINARY_DIR})
+else()
+    # Fallback to PATH search with common hints
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy-21 clang-tidy-20)
+    find_program(CLANG_FORMAT_EXE NAMES clang-format clang-format-21 clang-format-20)
+endif()
+```
+
+---
+
+### 🟢 Issue: No validation of CMake version features used
+**File:** `CMakeLists.txt`  
+**Line:** 1  
+**Category:** Build System / Documentation
+
+**Problem:**
+```cmake
+cmake_minimum_required(VERSION 3.28)
+```
+
+CMake 3.28 is very recent (December 2023). The project should document which features require 3.28.
+
+**Recommendation:**
+Add comment explaining why 3.28 is required:
+```cmake
+# Requires CMake 3.28 for:
+# - Enhanced FetchContent features (DOWNLOAD_EXTRACT_TIMESTAMP)
+# - Improved SYSTEM target property propagation
+# - C++23 module support preparation
+cmake_minimum_required(VERSION 3.28)
+```
+
+Or consider lowering requirement if features aren't actually used.
+
+---
+
+### 🟢 Issue: FETCHCONTENT_TRY_FIND_PACKAGE_MODE always set to ALWAYS
+**File:** `CMakeLists.txt`  
+**Line:** 168  
+**Category:** Build System / Performance
+
+**Problem:**
+```cmake
+set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE ALWAYS)
+```
+
+This makes sense for system packages but may slow down builds when dependencies are always fetched.
+
+**Recommendation:**
+Make this configurable:
+```cmake
+# Try system packages first, then fetch if not found
+# Set to NEVER to always fetch (useful for reproducible builds)
+set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE ALWAYS CACHE STRING 
+    "FetchContent package search mode (ALWAYS, NEVER)")
+```
+
+---
+
+### 🟡 Issue: Windows resource file configuration doesn't fail gracefully
+**File:** `CMakeLists.txt`  
+**Lines:** 433-454  
+**Category:** Build System / Robustness
+
+**Problem:**
+If the RC template or manifest template is missing, only a warning is shown but the build continues. This could lead to confusing runtime behavior.
+
+**Recommendation:**
+Consider making these required or provide better defaults:
+```cmake
+if(WIN32)
+    set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
+    if(NOT EXISTS ${TASKSMACK_RC_IN})
+        message(FATAL_ERROR "Windows resource template not found: ${TASKSMACK_RC_IN}\n"
+                           "This is required for Windows builds.")
+    endif()
+    # ... rest of RC configuration
+endif()
+```
+
+Or document clearly that these are optional.
+
+---
+
+### 🟢 Issue: Custom target dependencies could be more explicit
+**File:** `CMakeLists.txt`  
+**Line:** 419  
+**Category:** Build System / Maintainability
+
+**Problem:**
+```cmake
+add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
+```
+
+While correct, the dependency on `glad_gl_core_33` is implicit knowledge (needed for generated headers).
+
+**Recommendation:**
+Add comment:
+```cmake
+# Dependencies:
+# - generate-clang-tidy-compile-commands: strips PCH flags
+# - copy-compile-commands: ensures compile_commands.json is in source root
+# - glad_gl_core_33: ensures GLAD headers are generated before analysis
+add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
+```
+
+---
+
+### 🟡 Issue: Platform-specific source list construction is error-prone
+**File:** `CMakeLists.txt`  
+**Lines:** 330-344  
+**Category:** Build System / Maintainability
+
+**Problem:**
+Platform-specific sources are added with `list(APPEND ...)` which is scattered through the file:
+
+```cmake
+if(UNIX AND NOT APPLE)
+    list(APPEND TASKSMACK_SOURCES
+        src/Platform/Linux/LinuxProcessProbe.cpp
+        # ...
+    )
+elseif(WIN32)
+    list(APPEND TASKSMACK_SOURCES
+        src/Platform/Windows/WindowsProcessProbe.cpp
+        # ...
+    )
+endif()
+```
+
+**Recommendation:**
+Use platform-specific variables for clarity:
+```cmake
+# Platform-specific sources
+set(PLATFORM_SOURCES_LINUX
+    src/Platform/Linux/LinuxProcessProbe.cpp
+    src/Platform/Linux/LinuxProcessActions.cpp
+    src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/Factory.cpp
+)
+
+set(PLATFORM_SOURCES_WINDOWS
+    src/Platform/Windows/WindowsProcessProbe.cpp
+    src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsSystemProbe.cpp
+    src/Platform/Windows/Factory.cpp
+)
+
+if(UNIX AND NOT APPLE)
+    list(APPEND TASKSMACK_SOURCES ${PLATFORM_SOURCES_LINUX})
+elseif(WIN32)
+    list(APPEND TASKSMACK_SOURCES ${PLATFORM_SOURCES_WINDOWS})
+else()
+    message(WARNING "Platform sources not defined for ${CMAKE_SYSTEM_NAME}")
+endif()
+```
+
+Better for readability and makes it easier to add macOS later.
+
+---
+
+### 🟢 Issue: spdlog configuration could use target properties instead of global defines
+**File:** `CMakeLists.txt`  
+**Lines:** 191-196  
+**Category:** Build System / Best Practices
+
+**Problem:**
+```cmake
+if(TARGET spdlog_header_only)
+    target_compile_definitions(spdlog_header_only INTERFACE 
+        SPDLOG_USE_STD_FORMAT 
+        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+endif()
+```
+
+The check for `if(TARGET ...)` suggests uncertainty about which target exists.
+
+**Recommendation:**
+Be explicit about which spdlog target is used:
+```cmake
+# We explicitly request header-only spdlog
+if(NOT TARGET spdlog_header_only)
+    message(FATAL_ERROR "Expected spdlog_header_only target not found")
+endif()
+
+target_compile_definitions(spdlog_header_only INTERFACE 
+    SPDLOG_USE_STD_FORMAT 
+    $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+```
+
+---
+
+### 🟡 Issue: GLFW configuration should check version compatibility
+**File:** `CMakeLists.txt`  
+**Lines:** 210-226  
+**Category:** Build System / Robustness
+
+**Problem:**
+```cmake
+find_package(glfw3 3.4 QUIET)
+```
+
+If system GLFW is found but incompatible, the build might fail in confusing ways.
+
+**Recommendation:**
+Add version check and clearer messaging:
+```cmake
+find_package(glfw3 3.4 QUIET)
+if(glfw3_FOUND)
+    message(STATUS "Using system GLFW ${glfw3_VERSION}")
+else()
+    message(STATUS "System GLFW not found or incompatible, fetching GLFW 3.4")
+    # ... FetchContent logic
+endif()
+```
+
+---
+
+### 🟢 Issue: ImGui/ImPlot as static libraries could be configurable
+**File:** `CMakeLists.txt`  
+**Lines:** 257-278, 290-301  
+**Category:** Build System / Flexibility
+
+**Problem:**
+ImGui and ImPlot are always built as STATIC libraries:
+```cmake
+add_library(imgui_lib STATIC ...)
+add_library(implot_lib STATIC ...)
+```
+
+Some users might prefer shared libraries to reduce link times.
+
+**Recommendation:**
+Make it configurable:
+```cmake
+option(TASKSMACK_IMGUI_STATIC "Build ImGui as static library" ON)
+
+if(TASKSMACK_IMGUI_STATIC)
+    add_library(imgui_lib STATIC ...)
+else()
+    add_library(imgui_lib SHARED ...)
+endif()
+```
+
+---
+
+### 🟡 Issue: PCH includes should be in a separate cmake file
+**File:** `CMakeLists.txt`  
+**Lines:** 482-499  
+**Category:** Build System / Maintainability
+
+**Problem:**
+PCH list is inline in main CMakeLists.txt. As the list grows, it clutters the main file.
+
+**Recommendation:**
+Move to separate file:
+```cmake
+# cmake/PrecompiledHeaders.cmake
+set(TASKSMACK_PCH_HEADERS
+    # GL headers first
+    <glad/gl.h>
+    # Standard library
+    <string>
+    <vector>
+    # ... etc
+)
+```
+
+Then in main CMakeLists.txt:
+```cmake
+if(TASKSMACK_ENABLE_PCH)
+    include(cmake/PrecompiledHeaders.cmake)
+    target_precompile_headers(TaskSmack PRIVATE ${TASKSMACK_PCH_HEADERS})
+endif()
+```
+
+---
+
+### 🟢 Issue: No CMake option to disable specific warnings
+**File:** `CMakeLists.txt`  
+**Lines:** 69-116  
+**Category:** Build System / Developer Experience
+
+**Problem:**
+The warning function is all-or-nothing via `TASKSMACK_ENABLE_WARNINGS`. Developers can't selectively disable specific warnings that are too noisy on their system.
+
+**Recommendation:**
+Add option for additional warning flags:
+```cmake
+set(TASKSMACK_EXTRA_WARNING_FLAGS "" CACHE STRING 
+    "Additional warning flags (e.g., -Wno-shadow for specific cases)")
+
+function(tasksmack_apply_default_warnings target_name)
+    # ... existing code ...
+    
+    if(TASKSMACK_EXTRA_WARNING_FLAGS)
+        target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
+    endif()
+endfunction()
+```
+
+---
+
+### 🟢 Issue: CPack configuration is minimal
+**File:** `CMakeLists.txt`  
+**Lines:** 560-596  
+**Category:** Build System / Packaging
+
+**Problem:**
+CPack configuration lacks several useful fields:
+- No package description
+- No homepage URL
+- No icon/logo configuration
+- Platform-specific options are minimal
+
+**Recommendation:**
+Enhance CPack configuration:
+```cmake
+set(CPACK_PACKAGE_DESCRIPTION "TaskSmack - Modern cross-platform system monitor")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mgradwohl/tasksmack")
+set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
+
+# Debian-specific
+if(DPKG_PROGRAM)
+    set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6")
+endif()
+
+# Windows-specific
+if(WIN32)
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\TaskSmack.exe")
+    set(CPACK_NSIS_DISPLAY_NAME "TaskSmack")
+    set(CPACK_NSIS_HELP_LINK "https://github.com/mgradwohl/tasksmack")
+    set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/mgradwohl/tasksmack")
+endif()
+```
+
+---
+
+### 🟢 Issue: No install rules for assets
+**File:** `CMakeLists.txt`  
+**Lines:** 547-552  
+**Category:** Build System / Packaging
+
+**Problem:**
+Assets (fonts, themes) are copied to build directory but not installed:
+```cmake
+install(TARGETS TaskSmack
+    BUNDLE DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    # ... but no install for assets
+)
+```
+
+**Recommendation:**
+Add install rules for assets:
+```cmake
+install(TARGETS TaskSmack ...)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/assets)
+    
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/themes
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}/assets)
+```
+
+And update application to search in install location too.
+
+---
 
 ### 🟢 Issue: No precompiled header for test files
 **File:** `tests/CMakeLists.txt`  
@@ -877,11 +1321,13 @@ Tests include many headers (gtest, domain headers, mocks) but don't use PCH.
 **Recommendation:**
 Add test-specific PCH:
 ```cmake
-target_precompile_headers(TaskSmackTests PRIVATE
-    <gtest/gtest.h>
-    <memory>
-    <vector>
-)
+if(TASKSMACK_ENABLE_PCH)
+    target_precompile_headers(TaskSmack_tests PRIVATE
+        <gtest/gtest.h>
+        <memory>
+        <vector>
+    )
+endif()
 ```
 
 ---
@@ -896,14 +1342,151 @@ GLAD generation fails with cryptic error if jinja2 is not installed. Should chec
 **Recommendation:**
 Add early check:
 ```cmake
+# Early check for GLAD requirements
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import jinja2"
     RESULT_VARIABLE JINJA2_CHECK
+    OUTPUT_QUIET ERROR_QUIET
 )
 if(NOT JINJA2_CHECK EQUAL 0)
-    message(FATAL_ERROR "Python jinja2 module not found. Install with: pip install jinja2")
+    message(FATAL_ERROR 
+        "Python jinja2 module not found. Required for GLAD generation.\n"
+        "Install with: pip install jinja2")
 endif()
+```
+
+---
+
+### 🟢 Issue: Test executable name inconsistent with main executable
+**File:** `tests/CMakeLists.txt`  
+**Line:** 43  
+**Category:** Build System / Consistency
+
+**Problem:**
+```cmake
+add_executable(TaskSmack_tests ...)
+```
+
+Main executable is `TaskSmack`, tests are `TaskSmack_tests` (underscore vs no separator).
+
+**Recommendation:**
+Use consistent naming:
+```cmake
+add_executable(TaskSmackTests ...)
+```
+
+Matches the pattern from `tasksmack_apply_default_warnings()`.
+
+---
+
+### 🟢 Issue: Tests don't link to required libraries
+**File:** `tests/CMakeLists.txt`  
+**Lines:** 60-63  
+**Category:** Build System / Correctness
+
+**Problem:**
+Tests only link to `gtest_main` and `spdlog`, but they include Platform headers which might require system libraries (e.g., X11 on Linux).
+
+**Current:**
+```cmake
+target_link_libraries(TaskSmack_tests PRIVATE
+    gtest_main
+    spdlog::spdlog_header_only
+)
+```
+
+**Recommendation:**
+Add conditional platform libraries:
+```cmake
+target_link_libraries(TaskSmack_tests PRIVATE
+    gtest_main
+    spdlog::spdlog_header_only
+)
+
+# Platform-specific libs if tests use Platform code
+if(UNIX AND NOT APPLE)
+    target_link_libraries(TaskSmack_tests PRIVATE X11::X11)
+endif()
+```
+
+---
+
+### 🟡 Issue: CMakePresets.json hardcodes x86-64-v3 microarchitecture
+**File:** `CMakePresets.json`  
+**Lines:** 107, 190  
+**Category:** Build System / Portability
+
+**Problem:**
+```json
+"CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
+```
+
+`-march=x86-64-v3` requires AVX2 (Haswell 2013+). Older CPUs will crash with "Illegal instruction".
+
+**Recommendation:**
+1. Document this requirement in README
+2. Add preset for broader compatibility:
+```json
+{
+    "name": "release-compatible",
+    "description": "Release build compatible with older CPUs (x86-64-v2)",
+    "inherits": "linux-base",
+    "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v2"
+    }
+}
+```
+
+3. Or make microarchitecture configurable:
+```cmake
+set(TASKSMACK_MARCH "x86-64-v3" CACHE STRING "Target microarchitecture (native, x86-64-v3, x86-64-v2)")
+```
+
+---
+
+### 🟢 Issue: FetchContent cache enabled by default in presets
+**File:** `CMakePresets.json`  
+**Line:** 19  
+**Category:** Build System / Developer Experience
+
+**Problem:**
+```json
+"TASKSMACK_ENABLE_FETCHCONTENT_CACHE": "ON"
+```
+
+This is ON by default in all presets, which changes build behavior from CMakeLists.txt default (OFF).
+
+**Recommendation:**
+Either:
+1. Make CMakeLists.txt default match preset default (change to ON), or
+2. Remove from presets to use CMakeLists.txt default, or
+3. Document the difference and reasoning
+
+---
+
+### 🟢 Issue: Preset descriptions could be more detailed
+**File:** `CMakePresets.json`  
+**Category:** Build System / Documentation
+
+**Problem:**
+Some preset descriptions are very brief:
+```json
+"description": "Debug build with full debugging information"
+```
+
+**Recommendation:**
+Add more detail about what makes each preset special:
+```json
+{
+    "name": "debug",
+    "description": "Debug build: no optimization, full debug symbols, trivial-auto-var-init for catching uninitialized variables"
+},
+{
+    "name": "coverage",
+    "description": "Coverage build: debug symbols, profile instrumentation for llvm-cov, PCH disabled for accurate line mapping"
+}
 ```
 
 ---
@@ -1032,12 +1615,12 @@ Add guidance:
 
 ## Summary Statistics
 
-**Total Issues Identified:** 50+
+**Total Issues Identified:** 70+
 
 **By Priority:**
 - 🔴 Critical: 0
-- 🟡 Important: 18
-- 🟢 Nice to have: 32+
+- 🟡 Important: 27 (includes 9 CMake issues)
+- 🟢 Nice to have: 43+ (includes 13 CMake issues)
 
 **By Category:**
 - Code Quality: 15
@@ -1045,18 +1628,22 @@ Add guidance:
 - Documentation: 8
 - Security: 3
 - Performance: 3
-- Build System: 2
+- Build System / CMake: 22
 - CI/CD: 5
 - Architecture: 3
 - Developer Experience: 10+
 - Platform Support: 2
 
+**CMake/Build System Issues Breakdown:**
+- 🟡 Important: 9 (policy settings, duplicate calls, hard-coded paths, resource handling, platform sources)
+- 🟢 Nice to have: 13 (documentation, configurability, maintainability improvements)
+
 **Top 5 Recommendations by Impact:**
 1. Re-enable `misc-const-correctness` clang-tidy check
 2. Add integration tests
-3. Improve error handling in main.cpp and config loading
-4. Add EditorConfig and pre-commit hooks
-5. Complete Windows implementation and testing
+3. Fix CMake duplicate OpenGL find_package and improve LLVM tool finding
+4. Improve error handling in main.cpp and config loading
+5. Add EditorConfig and pre-commit hooks
 
 ---
 
