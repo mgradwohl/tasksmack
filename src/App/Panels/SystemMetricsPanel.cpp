@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <format>
 
 namespace App
 {
@@ -447,10 +448,11 @@ void SystemMetricsPanel::renderOverview()
 
         // Overlay text (consistent with other bars)
         {
-            const std::string breakdownOverlay = std::string("U ") + UI::Format::percentCompact(snap.cpuTotal.userPercent) + "  S " +
-                                                 UI::Format::percentCompact(snap.cpuTotal.systemPercent) + "  IO " +
-                                                 UI::Format::percentCompact(snap.cpuTotal.iowaitPercent) + "  I " +
-                                                 UI::Format::percentCompact(snap.cpuTotal.idlePercent);
+            const std::string breakdownOverlay = std::format("U {}  S {}  IO {}  I {}",
+                                                             UI::Format::percentCompact(snap.cpuTotal.userPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.systemPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.iowaitPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.idlePercent));
 
             // Reserve space for the bar (so we can draw overlay text based on item rect).
             ImGui::Dummy(ImVec2(barWidth, barHeight));
