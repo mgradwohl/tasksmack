@@ -394,7 +394,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         if (residentW > 0.0F)
         {
-            const ImDrawFlags flags = (residentW + otherW >= size.x) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft;
+            const ImDrawFlags flags = (otherW <= 0.0F) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft;
             drawList->AddRectFilled(ImVec2(x, startPos.y), ImVec2(x + residentW, endPos.y), residentCol, rounding, flags);
             x += residentW;
         }
