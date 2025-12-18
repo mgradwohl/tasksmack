@@ -11,7 +11,7 @@ namespace UI::Format
 
 [[nodiscard]] inline auto percentToInt(double percent) -> int
 {
-    const double clamped = std::clamp(percent, 0.0, 1000.0);
+    const double clamped = std::max(percent, 0.0);
     return static_cast<int>(std::lround(clamped));
 }
 
