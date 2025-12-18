@@ -285,7 +285,7 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
         DWORD type = 0;
         if (RegQueryValueExA(hKey, "~MHz", nullptr, &type, reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
         {
-            counters.cpuFreqMHz = static_cast<double>(mhz);
+            counters.cpuFreqMHz = static_cast<uint64_t>(mhz);
         }
         RegCloseKey(hKey);
     }
