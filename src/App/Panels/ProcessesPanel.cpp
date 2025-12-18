@@ -335,7 +335,46 @@ void ProcessesPanel::render(bool* open)
             ImGui::TableNextColumn();
             {
                 char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+
+                // Simplified 3-state palette: running / sleeping / stopped
+                ImVec4 color{};
+                bool useColor = false;
+
+                switch (stateChar)
+                {
+                case 'R': // running
+                    color = ImVec4(0.2f, 0.9f, 0.2f, 1.0f);
+                    useColor = true;
+                    break;
+                case 'S': // interruptible sleep
+                case 'D': // uninterruptible sleep (disk)
+                case 'I': // idle
+                    color = ImVec4(0.95f, 0.8f, 0.2f, 1.0f);
+                    useColor = true;
+                    break;
+                case 'T': // stopped
+                case 't': // traced
+                case 'Z': // zombie
+                case 'X': // dead
+                case '?': // unknown
+                    color = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
+                    useColor = true;
+                    break;
+                default:
+                    break;
+                }
+
+                if (useColor)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Text, color);
+                }
+
                 ImGui::Text("%c", stateChar);
+
+                if (useColor)
+                {
+                    ImGui::PopStyleColor();
+                }
             }
 
             // Column 8: Name
