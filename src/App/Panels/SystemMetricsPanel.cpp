@@ -655,16 +655,6 @@ void SystemMetricsPanel::renderMemorySection()
     ImGui::Spacing();
 
     // Memory details
-    auto formatBytesWithUnit = [](uint64_t bytes, const UI::Format::ByteUnit unit) -> std::string
-    {
-        const double value = static_cast<double>(bytes) / unit.scale;
-        if (unit.decimals == 1)
-        {
-            return std::format("{:.1f} {}", value, unit.suffix);
-        }
-        return std::format("{:.0f} {}", value, unit.suffix);
-    };
-
     auto formatSizeForBar = [](uint64_t usedBytes, uint64_t totalBytes, double percent) -> std::string
     {
         return UI::Format::bytesUsedTotalPercentCompact(usedBytes, totalBytes, percent);
@@ -763,8 +753,8 @@ void SystemMetricsPanel::renderMemorySection()
         const std::string usedLabel =
             UI::Format::bytesUsedTotalPercentCompact(snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent);
         ImGui::Text("Used: %s", usedLabel.c_str());
-        ImGui::Text("Cached: %s (%s)", formatBytesWithUnit(cachedBytes, unit).c_str(), UI::Format::percentCompact(cachedPercent).c_str());
-        ImGui::Text("Available: %s (%s)", formatBytesWithUnit(otherBytes, unit).c_str(), UI::Format::percentCompact(otherPercent).c_str());
+        ImGui::Text("Cached: %s (%s)", UI::Format::formatBytesWithUnit(cachedBytes, unit).c_str(), UI::Format::percentCompact(cachedPercent).c_str());
+        ImGui::Text("Available: %s (%s)", UI::Format::formatBytesWithUnit(otherBytes, unit).c_str(), UI::Format::percentCompact(otherPercent).c_str());
         ImGui::EndTooltip();
     }
 
