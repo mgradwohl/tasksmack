@@ -1,5 +1,7 @@
 #include "ProcessesPanel.h"
 
+#include "App/ProcessColumnConfig.h"
+#include "App/UserConfig.h"
 #include "Platform/Factory.h"
 #include "UI/Theme.h"
 
@@ -33,6 +35,9 @@ ProcessesPanel::~ProcessesPanel()
 
 void ProcessesPanel::onAttach()
 {
+    // Load column settings from user config
+    m_ColumnSettings = UserConfig::get().settings().processColumns;
+
     // Create process model (no probe - we'll feed it from sampler)
     m_ProcessModel = std::make_unique<Domain::ProcessModel>(nullptr);
 
@@ -51,6 +56,9 @@ void ProcessesPanel::onAttach()
 
 void ProcessesPanel::onDetach()
 {
+    // Save column settings to user config
+    UserConfig::get().settings().processColumns = m_ColumnSettings;
+
     if (m_Sampler)
     {
         m_Sampler->stop();
@@ -62,6 +70,19 @@ void ProcessesPanel::onDetach()
 void ProcessesPanel::onUpdate(float /* deltaTime */)
 {
     // No longer needed - background sampler handles refresh
+}
+
+int ProcessesPanel::visibleColumnCount() const
+{
+    int count = 0;
+    for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+    {
+        if (m_ColumnSettings.isVisible(static_cast<ProcessColumn>(i)))
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 void ProcessesPanel::render(bool* open)
@@ -177,29 +198,59 @@ void ProcessesPanel::render(bool* open)
 
     ImGui::Separator();
 
+    // Always create all columns with stable IDs (using enum value as ID)
+    // Hidden columns use ImGuiTableColumnFlags_Disabled
+    constexpr int totalColumns = static_cast<int>(ProcessColumn::Count);
+
     if (ImGui::BeginTable("ProcessTable",
-                          10,
+                          totalColumns,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_Hideable))
+                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
-        ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed, 60.0F);
-        ImGui::TableSetupColumn("User", ImGuiTableColumnFlags_WidthFixed, 80.0F);
-        ImGui::TableSetupColumn("CPU %",
-                                ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed |
-                                    ImGuiTableColumnFlags_PreferSortDescending,
-                                55.0F);
-        ImGui::TableSetupColumn("MEM %", ImGuiTableColumnFlags_WidthFixed, 55.0F);
-        ImGui::TableSetupColumn("VIRT", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0F);
-        ImGui::TableSetupColumn("RES", ImGuiTableColumnFlags_WidthFixed, 80.0F);
-        ImGui::TableSetupColumn("TIME+", ImGuiTableColumnFlags_WidthFixed, 80.0F);
-        ImGui::TableSetupColumn("S", ImGuiTableColumnFlags_WidthFixed, 25.0F); // State (single char)
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 120.0F);
-        ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_WidthStretch);
+
+        // Setup ALL columns with stable IDs - use enum value as user_id for stable identification
+        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        {
+            auto col = static_cast<ProcessColumn>(i);
+            const auto info = getColumnInfo(col);
+            ImGuiTableColumnFlags flags = ImGuiTableColumnFlags_None;
+
+            // Set default visibility from settings (ImGui will manage the actual state)
+            if (!m_ColumnSettings.isVisible(col))
+            {
+                flags |= ImGuiTableColumnFlags_DefaultHide;
+            }
+
+            // PID and Name columns cannot be hidden
+            if (!info.canHide)
+            {
+                flags |= ImGuiTableColumnFlags_NoHide;
+            }
+
+            // Default sort on CPU%
+            if (col == ProcessColumn::CpuPercent)
+            {
+                flags |= ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending;
+            }
+
+            // Command column stretches, others have initial width (all can be resized/auto-fitted)
+            if (info.defaultWidth > 0.0F)
+            {
+                // Use enum value as user_id for stable column identification
+                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, info.defaultWidth, static_cast<ImGuiID>(col));
+            }
+            else
+            {
+                flags |= ImGuiTableColumnFlags_WidthStretch;
+                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, 0.0F, static_cast<ImGuiID>(col));
+            }
+        }
+
         ImGui::TableHeadersRow();
 
-        // Handle sorting on filtered indices
+        // Handle sorting
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
         {
             if (sortSpecs->SpecsCount > 0)
@@ -207,8 +258,11 @@ void ProcessesPanel::render(bool* open)
                 const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
                 const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
 
+                // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+                auto sortCol = static_cast<ProcessColumn>(spec.ColumnUserID);
+
                 std::ranges::sort(filteredIndices,
-                                  [&currentSnapshots, &spec, ascending](size_t a, size_t b)
+                                  [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                                   {
                                       const auto& procA = currentSnapshots[a];
                                       const auto& procB = currentSnapshots[b];
@@ -218,27 +272,35 @@ void ProcessesPanel::render(bool* open)
                                           return ascending ? (lhs < rhs) : (rhs < lhs);
                                       };
 
-                                      switch (spec.ColumnIndex)
+                                      switch (sortCol)
                                       {
-                                      case 0: // PID
+                                      case ProcessColumn::PID:
                                           return compare(procA.pid, procB.pid);
-                                      case 1: // User
+                                      case ProcessColumn::User:
                                           return compare(procA.user, procB.user);
-                                      case 2: // CPU %
+                                      case ProcessColumn::CpuPercent:
                                           return compare(procA.cpuPercent, procB.cpuPercent);
-                                      case 3: // MEM %
+                                      case ProcessColumn::MemPercent:
                                           return compare(procA.memoryPercent, procB.memoryPercent);
-                                      case 4: // VIRT
+                                      case ProcessColumn::Virtual:
                                           return compare(procA.virtualBytes, procB.virtualBytes);
-                                      case 5: // RES
+                                      case ProcessColumn::Resident:
                                           return compare(procA.memoryBytes, procB.memoryBytes);
-                                      case 6: // TIME+
+                                      case ProcessColumn::Shared:
+                                          return compare(procA.sharedBytes, procB.sharedBytes);
+                                      case ProcessColumn::CpuTime:
                                           return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
-                                      case 7: // S (State)
+                                      case ProcessColumn::State:
                                           return compare(procA.displayState, procB.displayState);
-                                      case 8: // Name
+                                      case ProcessColumn::Name:
                                           return compare(procA.name, procB.name);
-                                      case 9: // Command
+                                      case ProcessColumn::PPID:
+                                          return compare(procA.parentPid, procB.parentPid);
+                                      case ProcessColumn::Nice:
+                                          return compare(procA.nice, procB.nice);
+                                      case ProcessColumn::Threads:
+                                          return compare(procA.threadCount, procB.threadCount);
+                                      case ProcessColumn::Command:
                                           return compare(procA.command, procB.command);
                                       default:
                                           return false;
@@ -247,141 +309,219 @@ void ProcessesPanel::render(bool* open)
             }
         }
 
-        // Render process rows in sorted order
+        // Render process rows
         for (size_t idx : filteredIndices)
         {
             const auto& proc = currentSnapshots[idx];
 
             ImGui::TableNextRow();
 
-            // Column 0: PID (selectable)
-            ImGui::TableNextColumn();
-            const bool isSelected = (m_SelectedPid == proc.pid);
-            char label[32];
-            snprintf(label, sizeof(label), "%d", proc.pid);
-
-            if (ImGui::Selectable(label, isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+            // Render all columns - ImGui handles hidden columns automatically
+            for (size_t colIdx = 0; colIdx < static_cast<size_t>(ProcessColumn::Count); ++colIdx)
             {
-                m_SelectedPid = proc.pid;
+                auto col = static_cast<ProcessColumn>(colIdx);
+                if (!ImGui::TableSetColumnIndex(static_cast<int>(colIdx)))
+                {
+                    continue; // Column is hidden or clipped
+                }
+
+                // PID column is always the selectable
+                if (col == ProcessColumn::PID)
+                {
+                    const bool isSelected = (m_SelectedPid == proc.pid);
+                    char label[32];
+                    snprintf(label, sizeof(label), "%d", proc.pid);
+
+                    if (ImGui::Selectable(label, isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    {
+                        m_SelectedPid = proc.pid;
+                    }
+                    continue;
+                }
+
+                switch (col)
+                {
+                case ProcessColumn::User:
+                    ImGui::TextUnformatted(proc.user.c_str());
+                    break;
+
+                case ProcessColumn::CpuPercent:
+                    ImGui::Text("%.1f", proc.cpuPercent);
+                    break;
+
+                case ProcessColumn::MemPercent:
+                    ImGui::Text("%.1f", proc.memoryPercent);
+                    break;
+
+                case ProcessColumn::Virtual:
+                {
+                    double virtMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
+                    if (virtMB >= 1024.0)
+                    {
+                        ImGui::Text("%.1fG", virtMB / 1024.0);
+                    }
+                    else if (virtMB >= 1.0)
+                    {
+                        ImGui::Text("%.0fM", virtMB);
+                    }
+                    else
+                    {
+                        ImGui::Text("%.0fK", static_cast<double>(proc.virtualBytes) / 1024.0);
+                    }
+                    break;
+                }
+
+                case ProcessColumn::Resident:
+                {
+                    double resMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
+                    if (resMB >= 1024.0)
+                    {
+                        ImGui::Text("%.1fG", resMB / 1024.0);
+                    }
+                    else if (resMB >= 1.0)
+                    {
+                        ImGui::Text("%.0fM", resMB);
+                    }
+                    else
+                    {
+                        ImGui::Text("%.0fK", static_cast<double>(proc.memoryBytes) / 1024.0);
+                    }
+                    break;
+                }
+
+                case ProcessColumn::Shared:
+                {
+                    double shrMB = static_cast<double>(proc.sharedBytes) / (1024.0 * 1024.0);
+                    if (shrMB >= 1024.0)
+                    {
+                        ImGui::Text("%.1fG", shrMB / 1024.0);
+                    }
+                    else if (shrMB >= 1.0)
+                    {
+                        ImGui::Text("%.0fM", shrMB);
+                    }
+                    else
+                    {
+                        ImGui::Text("%.0fK", static_cast<double>(proc.sharedBytes) / 1024.0);
+                    }
+                    break;
+                }
+
+                case ProcessColumn::CpuTime:
+                {
+                    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
+                    int hours = totalSeconds / 3600;
+                    int minutes = (totalSeconds % 3600) / 60;
+                    int seconds = totalSeconds % 60;
+                    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
+
+                    if (hours > 0)
+                    {
+                        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+                    }
+                    else
+                    {
+                        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
+                    }
+                    break;
+                }
+
+                case ProcessColumn::State:
+                {
+                    char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+                    const auto& scheme = UI::Theme::get().scheme();
+
+                    // Color based on process state
+                    ImVec4 stateColor;
+                    switch (stateChar)
+                    {
+                    case 'R': // Running
+                        stateColor = scheme.statusRunning;
+                        break;
+                    case 'S': // Sleeping (interruptible)
+                        stateColor = scheme.statusSleeping;
+                        break;
+                    case 'D': // Disk sleep (uninterruptible)
+                        stateColor = scheme.statusDiskSleep;
+                        break;
+                    case 'Z': // Zombie
+                        stateColor = scheme.statusZombie;
+                        break;
+                    case 'T': // Stopped/Traced
+                    case 't': // Tracing stop
+                        stateColor = scheme.statusStopped;
+                        break;
+                    case 'I': // Idle kernel thread
+                        stateColor = scheme.statusIdle;
+                        break;
+                    default:
+                        stateColor = scheme.statusSleeping; // Default to muted
+                        break;
+                    }
+
+                    ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
+                    ImGui::Text("%c", stateChar);
+                    ImGui::PopStyleColor();
+                    break;
+                }
+
+                case ProcessColumn::Name:
+                    ImGui::TextUnformatted(proc.name.c_str());
+                    break;
+
+                case ProcessColumn::PPID:
+                    ImGui::Text("%d", proc.parentPid);
+                    break;
+
+                case ProcessColumn::Nice:
+                    ImGui::Text("%d", proc.nice);
+                    break;
+
+                case ProcessColumn::Threads:
+                    if (proc.threadCount > 0)
+                    {
+                        ImGui::Text("%d", proc.threadCount);
+                    }
+                    else
+                    {
+                        ImGui::TextUnformatted("-");
+                    }
+                    break;
+
+                case ProcessColumn::Command:
+                    if (!proc.command.empty())
+                    {
+                        ImGui::TextUnformatted(proc.command.c_str());
+                    }
+                    else
+                    {
+                        // Show name in brackets if no command line available
+                        ImGui::Text("[%s]", proc.name.c_str());
+                    }
+                    break;
+
+                default:
+                    break;
+                }
             }
+        }
 
-            // Column 1: User
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(proc.user.c_str());
-
-            // Column 2: CPU%
-            ImGui::TableNextColumn();
-            ImGui::Text("%.1f", proc.cpuPercent);
-
-            // Column 3: MEM%
-            ImGui::TableNextColumn();
-            ImGui::Text("%.1f", proc.memoryPercent);
-
-            // Column 4: VIRT (virtual memory)
-            ImGui::TableNextColumn();
+        // Sync column visibility from ImGui back to our settings
+        // This captures changes made via the right-click context menu
+        bool settingsChanged = false;
+        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        {
+            auto col = static_cast<ProcessColumn>(i);
+            bool isEnabled = (ImGui::TableGetColumnFlags(static_cast<int>(i)) & ImGuiTableColumnFlags_IsEnabled) != 0;
+            if (m_ColumnSettings.isVisible(col) != isEnabled)
             {
-                double virtMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
-                if (virtMB >= 1024.0)
-                {
-                    ImGui::Text("%.1fG", virtMB / 1024.0);
-                }
-                else if (virtMB >= 1.0)
-                {
-                    ImGui::Text("%.0fM", virtMB);
-                }
-                else
-                {
-                    ImGui::Text("%.0fK", static_cast<double>(proc.virtualBytes) / 1024.0);
-                }
+                m_ColumnSettings.setVisible(col, isEnabled);
+                settingsChanged = true;
             }
-
-            // Column 5: RES (resident memory)
-            ImGui::TableNextColumn();
-            {
-                double resMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
-                if (resMB >= 1024.0)
-                {
-                    ImGui::Text("%.1fG", resMB / 1024.0);
-                }
-                else if (resMB >= 1.0)
-                {
-                    ImGui::Text("%.0fM", resMB);
-                }
-                else
-                {
-                    ImGui::Text("%.0fK", static_cast<double>(proc.memoryBytes) / 1024.0);
-                }
-            }
-
-            // Column 6: TIME+ (CPU time as H:MM:SS.cc or MM:SS.cc)
-            ImGui::TableNextColumn();
-            {
-                auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
-                int hours = totalSeconds / 3600;
-                int minutes = (totalSeconds % 3600) / 60;
-                int seconds = totalSeconds % 60;
-                int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
-
-                if (hours > 0)
-                {
-                    ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
-                }
-                else
-                {
-                    ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
-                }
-            }
-
-            // Column 7: S (state as single char with color)
-            ImGui::TableNextColumn();
-            {
-                char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-
-                // Choose color based on process state
-                ImVec4 stateColor = theme.scheme().textMuted; // Default
-                if (proc.displayState == "Running")
-                {
-                    stateColor = theme.scheme().statusRunning;
-                }
-                else if (proc.displayState == "Sleeping")
-                {
-                    stateColor = theme.scheme().statusSleeping;
-                }
-                else if (proc.displayState == "Disk Sleep")
-                {
-                    stateColor = theme.scheme().statusDiskSleep;
-                }
-                else if (proc.displayState == "Zombie")
-                {
-                    stateColor = theme.scheme().statusZombie;
-                }
-                else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
-                {
-                    stateColor = theme.scheme().statusStopped;
-                }
-                else if (proc.displayState == "Idle")
-                {
-                    stateColor = theme.scheme().statusIdle;
-                }
-
-                ImGui::TextColored(stateColor, "%c", stateChar);
-            }
-
-            // Column 8: Name
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(proc.name.c_str());
-
-            // Column 9: Command
-            ImGui::TableNextColumn();
-            if (!proc.command.empty())
-            {
-                ImGui::TextUnformatted(proc.command.c_str());
-            }
-            else
-            {
-                // Show name in brackets if no command line available
-                ImGui::Text("[%s]", proc.name.c_str());
-            }
+        }
+        if (settingsChanged)
+        {
+            UserConfig::get().settings().processColumns = m_ColumnSettings;
         }
 
         ImGui::EndTable();
