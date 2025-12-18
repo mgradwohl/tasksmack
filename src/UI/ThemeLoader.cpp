@@ -4,12 +4,21 @@
 
 #include <algorithm>
 #include <charconv>
-#include <fstream>
 
 #include <toml++/toml.hpp>
 
 namespace UI
 {
+
+namespace
+{
+
+[[nodiscard]] auto errorColor() -> ImVec4
+{
+    return Theme::get().scheme().textError;
+}
+
+} // namespace
 
 auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
 {
@@ -23,7 +32,7 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     if (hex.size() != 6 && hex.size() != 8)
     {
         spdlog::warn("Invalid hex color: {} (expected 6 or 8 digits)", hex);
-        return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error color
+        return errorColor();
     }
 
     unsigned int r = 0;
@@ -77,7 +86,7 @@ auto parseColorNode(const toml::node& node) -> ImVec4
     }
 
     spdlog::warn("Invalid color node type");
-    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error
+    return errorColor();
 }
 
 /// Parse color from node_view (returned by at_path)
@@ -104,11 +113,11 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
     }
 
     spdlog::warn("Invalid color node type");
-    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error
+    return errorColor();
 }
 
 /// Get a color from a table, with default fallback
-auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor = ImVec4(1.0F, 0.0F, 1.0F, 1.0F)) -> ImVec4
+auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor = errorColor()) -> ImVec4
 {
     if (auto node = tbl.at_path(key))
     {
