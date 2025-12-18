@@ -735,8 +735,12 @@ void SystemMetricsPanel::renderMemorySection()
         const std::string usedLabel =
             UI::Format::bytesUsedTotalPercentCompact(snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent);
         ImGui::Text("Used: %s", usedLabel.c_str());
-        ImGui::Text("Cached: %s (%s)", UI::Format::formatBytesWithUnit(cachedBytes, unit).c_str(), UI::Format::percentCompact(cachedPercent).c_str());
-        ImGui::Text("Available: %s (%s)", UI::Format::formatBytesWithUnit(otherBytes, unit).c_str(), UI::Format::percentCompact(otherPercent).c_str());
+        ImGui::Text("Cached: %s (%s)",
+                    UI::Format::formatBytesWithUnit(cachedBytes, unit).c_str(),
+                    UI::Format::percentCompact(cachedPercent).c_str());
+        ImGui::Text("Available: %s (%s)",
+                    UI::Format::formatBytesWithUnit(otherBytes, unit).c_str(),
+                    UI::Format::percentCompact(otherPercent).c_str());
         ImGui::EndTooltip();
     }
 

@@ -386,8 +386,9 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     {
         const UI::Format::ByteUnit unit = UI::Format::unitForTotalBytes(totalVirtualBytes);
         ImGui::BeginTooltip();
-        ImGui::Text(
-            "RSS: %s (%s)", UI::Format::formatBytesWithUnit(proc.memoryBytes, unit).c_str(), UI::Format::percentCompact(proc.memoryPercent).c_str());
+        ImGui::Text("RSS: %s (%s)",
+                    UI::Format::formatBytesWithUnit(proc.memoryBytes, unit).c_str(),
+                    UI::Format::percentCompact(proc.memoryPercent).c_str());
         ImGui::Text("VIRT: %s", UI::Format::formatBytesWithUnit(totalVirtualBytes, unit).c_str());
         ImGui::EndTooltip();
     }

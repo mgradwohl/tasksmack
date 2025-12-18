@@ -42,18 +42,30 @@ include(GoogleTest)
 # Platform-specific test sources
 if(WIN32)
     set(PLATFORM_TEST_SOURCES
-        # Windows platform tests would go here
+        Platform/test_ProcessProbeContract.cpp
+        Platform/test_SystemProbeContract.cpp
+        Platform/test_ProcessActionsContract.cpp
+        Platform/test_WindowsProcessProbe.cpp
+        Platform/test_WindowsSystemProbe.cpp
+        Platform/test_WindowsProcessActions.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
-        # Windows platform sources under test
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
     )
 else()
     set(PLATFORM_TEST_SOURCES
+        Platform/test_ProcessProbeContract.cpp
+        Platform/test_SystemProbeContract.cpp
+        Platform/test_ProcessActionsContract.cpp
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
