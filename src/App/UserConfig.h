@@ -46,6 +46,11 @@ class UserConfig
     /// Get the singleton instance
     static auto get() -> UserConfig&;
 
+    UserConfig(const UserConfig&) = delete;
+    auto operator=(const UserConfig&) -> UserConfig& = delete;
+    UserConfig(UserConfig&&) = delete;
+    auto operator=(UserConfig&&) -> UserConfig& = delete;
+
     /// Load settings from config file (call on startup)
     void load();
 
@@ -79,11 +84,6 @@ class UserConfig
   private:
     UserConfig();
     ~UserConfig() = default;
-
-    UserConfig(const UserConfig&) = delete;
-    auto operator=(const UserConfig&) -> UserConfig& = delete;
-    UserConfig(UserConfig&&) = delete;
-    auto operator=(UserConfig&&) -> UserConfig& = delete;
 
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;

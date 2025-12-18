@@ -9,6 +9,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 
 #include <dirent.h>
@@ -365,10 +366,24 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
     {
         if (line.starts_with("MemTotal:"))
         {
-            uint64_t kb = 0;
-            // NOLINTNEXTLINE(cert-err34-c) - sscanf return value checked
-            if (sscanf(line.c_str(), "MemTotal: %lu kB", &kb) == 1)
+            const auto colonPos = line.find(':');
+            if (colonPos == std::string::npos)
             {
+                continue;
+            }
+
+            const char* begin = line.data() + colonPos + 1;
+            const char* const end = line.data() + line.size();
+            while (begin < end && (*begin == ' ' || *begin == '\t'))
+            {
+                ++begin;
+            }
+
+            uint64_t kb = 0;
+            const auto [ptr, ec] = std::from_chars(begin, end, kb);
+            if (ec == std::errc())
+            {
+                (void) ptr;
                 return kb * 1024ULL;
             }
         }

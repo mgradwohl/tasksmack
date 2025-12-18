@@ -146,8 +146,8 @@ struct DiscoveredTheme
 struct FontSizeConfig
 {
     std::string_view name;
-    float regularPt; // Body text
-    float largePt;   // Headings
+    float regularPt = 0.0F; // Body text
+    float largePt = 0.0F;   // Headings
 };
 
 /// Global theme manager - provides access to color schemes and font settings
@@ -156,6 +156,11 @@ class Theme
   public:
     /// Get the singleton instance
     static auto get() -> Theme&;
+
+    Theme(const Theme&) = delete;
+    auto operator=(const Theme&) -> Theme& = delete;
+    Theme(Theme&&) = delete;
+    auto operator=(Theme&&) -> Theme& = delete;
 
     /// Initialize themes by loading from TOML files
     /// @param themesDir Path to themes directory (e.g., "assets/themes")
@@ -241,11 +246,6 @@ class Theme
   private:
     Theme();
     ~Theme() = default;
-
-    Theme(const Theme&) = delete;
-    auto operator=(const Theme&) -> Theme& = delete;
-    Theme(Theme&&) = delete;
-    auto operator=(Theme&&) -> Theme& = delete;
 
     std::vector<DiscoveredTheme> m_DiscoveredThemes;
     std::vector<ColorScheme> m_LoadedSchemes;

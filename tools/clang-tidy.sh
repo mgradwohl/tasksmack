@@ -7,6 +7,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+escape_regex() {
+    # Escape characters that are special in ERE.
+    # We intentionally keep '/' unescaped on POSIX.
+    printf '%s' "$1" | sed -e 's/[][(){}.^$+*?|\\]/\\&/g'
+}
+
 # Defaults
 BUILD_TYPE="debug"
 VERBOSE=false
@@ -66,6 +72,15 @@ fi
 if $VERBOSE; then
     echo "Using clang-tidy: $CLANG_TIDY"
 fi
+
+# Limit header diagnostics to project headers.
+# Note: clang-tidy requires --header-filter to be set when using --exclude-header-filter.
+PROJECT_ROOT_REGEX="$(escape_regex "$PROJECT_ROOT")"
+HEADER_FILTER_REGEX="^${PROJECT_ROOT_REGEX}/(src|tests)/"
+
+# Exclude generated/build trees and the other platform's folder.
+# gladsources is generated under build/<preset>/gladsources.
+EXCLUDE_HEADER_FILTER_REGEX="^${PROJECT_ROOT_REGEX}/(build|dist|coverage|\.cache)/|^${PROJECT_ROOT_REGEX}/src/Platform/Windows/|^${PROJECT_ROOT_REGEX}/.*/gladsources/"
 
 # Configure if needed (using CMake presets)
 if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
@@ -132,13 +147,15 @@ run_clang_tidy() {
     
     "$CLANG_TIDY" \
         --config-file="$CONFIG_FILE" \
+        --header-filter="$HEADER_FILTER_REGEX" \
+        --exclude-header-filter="$EXCLUDE_HEADER_FILTER_REGEX" \
         -p "$BUILD_DIR" \
         --extra-arg=-std=c++23 \
         --extra-arg=-Wno-unknown-warning-option \
         "$file" 2>&1
 }
 export -f run_clang_tidy
-export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX
 
 # Run clang-tidy in parallel
 HAS_ERRORS=0
