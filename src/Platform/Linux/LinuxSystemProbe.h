@@ -13,12 +13,6 @@ class LinuxSystemProbe : public ISystemProbe
 {
   public:
     LinuxSystemProbe();
-    ~LinuxSystemProbe() override = default;
-
-    LinuxSystemProbe(const LinuxSystemProbe&) = delete;
-    LinuxSystemProbe& operator=(const LinuxSystemProbe&) = delete;
-    LinuxSystemProbe(LinuxSystemProbe&&) = default;
-    LinuxSystemProbe& operator=(LinuxSystemProbe&&) = default;
 
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;

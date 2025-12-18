@@ -238,119 +238,91 @@ Each platform implements the same probe interfaces; automated tests ensure contr
 
 This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
 
-## Future Features
+## Future Features (btop++ Inspired)
 
-This section consolidates all feature ideas from various sources, organized by effort level and value. Each feature includes its source reference.
+Features observed in btop++ that could enhance TaskSmack. Organized by effort and priority.
 
-### Quick Wins (Hours - High Value)
+### Medium Effort (Days)
 
-| Feature | Description | Source | Implementation Notes |
-|---------|-------------|--------|---------------------|
-| **Column Tooltips** | Show column descriptions on header hover | btop++ | Use ImGui tooltip API |
-| **Sort Indicator** | Visual arrow showing sort column and direction | htop | ImGui table sorting specs already provide this |
-| **Start Time Column** | When the process started | Task Manager | Already in probe (`startTimeTicks`), need UI column |
-| **Incremental Search** | Filter processes as you type without search box focus | htop | Global keyboard input handling in panel |
-| **EditorConfig** | Ensures consistent editor settings (indentation, line endings, charset) across all editors | Development | 5 min - prevents CRLF/LF diffs |
-| **Hardening flags** | Security compiler flags (`-fstack-protector-strong`, `-D_FORTIFY_SOURCE=2`, `-fPIE`, CFI) | Development | 15 min - protect against buffer overflows and ROP attacks |
-| **Pre-commit hooks** | Automatically run clang-format and other checks before each commit | Development | 30 min - catch issues before CI |
-| **GitHub Release workflow** | Automatically creates releases with pre-built binaries when you push a version tag | Development | 1 hr - streamlines release process |
-| **Changelog generation** | Conventional commit messages combined with automated changelog generation | Development | 1 hr - professional release notes via git-cliff |
-| **`std::expected` examples** | Modern, type-safe alternative to exceptions or error codes for recoverable errors | Development | 1 hr - idiomatic C++23 error handling |
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Network Panel** | Per-interface throughput (bytes/sec up/down), total bandwidth | New `INetworkProbe` reading `/proc/net/dev` (Linux), `GetIfTable2` (Windows) |
+| **Disk Panel** | Per-device I/O rates, read/write activity | New `IDiskProbe` reading `/proc/diskstats` (Linux), `GetDiskPerformance` (Windows) |
+| **Process Tree View** | Hierarchical view showing parent-child relationships | Already have `parentPid`; add collapsible tree rendering in UI |
+| **Per-Process I/O Rates** | Read/write bytes per second for each process | Requires `/proc/[pid]/io` (may need elevated privileges on Linux) |
+| **Column Visibility Toggles** | User-configurable visible columns with persistence | Add to config file and Settings dialog |
 
-### Low Effort (Days - Medium Value)
+### Higher Effort (Weeks)
 
-| Feature | Description | Source | Implementation Notes |
-|---------|-------------|--------|---------------------|
-| **Process Tree View** | Hierarchical view showing parent-child relationships | btop++, htop | Already have `parentPid`; add collapsible tree rendering in UI |
-| **Process Details Panel** | Shows detailed process information (environment, open files, connections) | htop | Currently partial - missing environment, open files, connections |
-| **Keyboard Navigation** | Vim-style or arrow key process selection | btop++ | Enhance UI input handling |
-| **Mouse-Only Mode** | Full functionality without keyboard | btop++ | Ensure all features accessible via mouse |
-| **Mini-Mode/Compact View** | Condensed view showing key metrics only | btop++ | Alternative layout preset |
-| **Panel Arrangement** | User-configurable panel layout and sizing | btop++ | Save/restore layout to config |
-| **Customizable Colors** | Color scheme customization beyond themes | btop++ | Extend theming system |
-| **Dev container** | `.devcontainer/` configuration enables instant development environments | Development | 2-3 hrs - VS Code and GitHub Codespaces support |
-| **Benchmark framework** | Google Benchmark integration for performance measurement | Development | 1-2 hrs - track performance regressions |
-| **Compile-time metrics** | Use `-ftime-trace` to identify slow headers | Development | Built into Clang |
-| **Unity builds** | `CMAKE_UNITY_BUILD` for faster full rebuilds | Development | Single CMake variable |
-| **`std::mdspan` examples** | Multi-dimensional array views for scientific computing | Development | Fully supported in Clang 22 |
-| **`std::ranges` pipelines** | Modern iteration patterns with range adaptors | Development | Fully supported in Clang 22 |
-| **License scanning** | REUSE compliance for clear license information | Development | REUSE tool via pip |
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Temperature Sensors** | CPU, GPU, NVMe temperatures | Linux: hwmon/sysfs, lm-sensors; Windows: WMI, vendor SDKs |
+| **Power/Battery Stats** | Power consumption, battery state | Linux: `/sys/class/power_supply`; Windows: `GetSystemPowerStatus` |
+| **GPU Stats** | GPU utilization, memory, temperature | NVML for NVIDIA, ROCm for AMD, vendor-specific |
+| **Process Environment & Arguments** | Full command line and environment variables | `/proc/[pid]/cmdline`, `/proc/[pid]/environ` |
+| **Signal Sending** | Send arbitrary signals to processes | Linux: `kill()`, Windows: `TerminateProcess`, `GenerateConsoleCtrlEvent` |
+| **Priority Adjustment** | Change process nice/priority values | Linux: `setpriority()`, Windows: `SetPriorityClass` |
 
-### Medium Effort (Weeks - High Value)
+### UI Polish Features
 
-| Feature | Description | Source | Implementation Notes |
-|---------|-------------|--------|---------------------|
-| **Network Panel** | Per-interface throughput (bytes/sec up/down), total bandwidth | btop++ | New `INetworkProbe` reading `/proc/net/dev` (Linux), `GetIfTable2` (Windows) |
-| **Disk Panel** | Per-device I/O rates, read/write activity | btop++ | New `IDiskProbe` reading `/proc/diskstats` (Linux), `GetDiskPerformance` (Windows) |
-| **Per-Process I/O Rates** | Read/write bytes per second for each process | btop++, Task Manager | Requires `/proc/[pid]/io` (elevated privileges on Linux), `GetProcessIoCounters` (Windows) |
-| **I/O Tab/View** | Dedicated I/O view showing read/write rates | htop | Requires elevated privileges on Linux for `/proc/[pid]/io` |
-| **Keyboard Shortcuts** | F-key shortcuts (F1=Help, F2=Setup, F5=Tree, F9=Kill, F10=Quit) | htop | Global key handler in ShellLayer |
-| **Setup Dialog (F2)** | Configure columns, colors, meters, layout | htop | Persist to config file; apply changes live |
-| **Help Screen (F1)** | Built-in help overlay explaining columns and shortcuts | htop | Modal window with keyboard shortcut reference |
-| **Metric Alerts** | Visual/audio alerts when thresholds exceeded | btop++ | Configurable threshold monitoring |
-| **FreeType Font Rendering** | Sharper text rendering at small sizes using FreeType | btop++ | Better hinting control; adds FreeType dependency |
-| **Unified Settings File** | Consolidate ImGui's INI persistence into TOML config | btop++ | Set `io.IniFilename = nullptr`, embed ImGui state in TOML |
-| **Fuzzing** | libFuzzer integration for automated bug finding | Development | 2 hrs - coverage-guided fuzzing |
-| **Property-based testing** | rapidcheck for declarative test properties | Development | Available via FetchContent |
-| **Dependency scanning** | `osv-scanner` for scanning C++ dependencies for vulnerabilities | Development | Standalone binary |
-| **Include-what-you-use** | More reliable than clang-tidy's `misc-include-cleaner` | Development | Separate tool from LLVM |
-| **SBOM generation** | Software Bill of Materials for supply chain security compliance | Development | Tools: syft, cyclonedx-cli |
-| **Cross-compilation presets** | CMake presets for ARM64 and WebAssembly targets | Development | ARM64: needs cross-compiler; WASM: Emscripten SDK |
+| Feature | Description |
+|---------|-------------|
+| **Customizable Colors** | Color scheme customization beyond themes |
+| **Mouse-Only Mode** | Full functionality without keyboard |
+| **Keyboard Navigation** | Vim-style or arrow key process selection |
+| **Mini-Mode/Compact View** | Condensed view showing key metrics only |
+| **Panel Arrangement** | User-configurable panel layout and sizing |
+| **Metric Alerts** | Visual/audio alerts when thresholds exceeded |
 
-### Higher Effort (Months - High Value)
+### Research Required
 
-| Feature | Description | Source | Implementation Notes |
-|---------|-------------|--------|---------------------|
-| **Temperature Sensors** | CPU, GPU, NVMe temperatures | btop++ | Linux: hwmon/sysfs, lm-sensors; Windows: WMI, vendor SDKs |
-| **Power/Battery Stats** | Power consumption, battery state | btop++ | Linux: `/sys/class/power_supply`; Windows: `GetSystemPowerStatus` |
-| **GPU Stats** | GPU utilization, memory, temperature | btop++, Task Manager | NVML for NVIDIA, ROCm for AMD, D3DKMT (Windows), DRM (Linux) |
-| **Process Environment & Arguments** | Full command line and environment variables | btop++ | `/proc/[pid]/cmdline`, `/proc/[pid]/environ` |
-| **Signal Sending** | Send arbitrary signals to processes | btop++ | Linux: `kill()`, Windows: `TerminateProcess`, `GenerateConsoleCtrlEvent` |
-| **Priority Adjustment** | Change process nice/priority values | btop++ | Linux: `setpriority()`, Windows: `SetPriorityClass` |
-| **Strace Integration** | Attach strace to selected process | htop | Linux only; spawn `strace -p <pid>` in terminal |
-| **Lsof Integration** | Show open files for selected process | htop | Linux: spawn `lsof -p <pid>`; Windows: Handle enumeration |
-| **Publisher Column** | Software publisher/vendor information | Task Manager | Windows: PE version info from `GetFileVersionInfo`; Linux: N/A |
-| **Type Column** | Process type (App, Background, Windows process) | Task Manager | Windows-specific classification |
-| **Status Column** | Suspended, Efficiency mode, etc. | Task Manager | Windows: `NtQueryInformationProcess`; Linux: cgroups |
-| **Per-Process Disk I/O** | Disk I/O rate per process | Task Manager | Requires ETW (Windows) or eBPF (Linux) |
-| **Per-Process Network** | Network usage per process | Task Manager | Windows: ETW or `GetPerTcpConnectionEStats`; Linux: netstat/ss parsing |
-| **GPU Engine Column** | Which GPU engine is in use | Task Manager | Very Windows/vendor specific |
-| **Power Usage Column** | Process power consumption | Task Manager | Windows: `PROCESS_POWER_THROTTLING_STATE`; Linux: powercap |
-| **Performance profiling** | Add perf/Instruments support, PGO builds | Development | Profile-guided optimization |
+| Feature | Notes |
+|---------|-------|
+| **Firewall Rules** | Very platform-specific; may not be worth the complexity |
+| **Container Awareness** | Docker/podman container grouping; requires container runtime APIs |
+| **Service Management** | systemd on Linux, SCM on Windows; complex permissions |
 
-### Research Required (Value TBD)
+## Future Features (htop Inspired)
 
-| Feature | Source | Notes |
+Features observed in htop that could enhance TaskSmack.
+
+### Quick Wins (Implemented)
+
+| Feature | Status | Notes |
 |---------|--------|-------|
-| **Firewall Rules** | btop++ | Very platform-specific; may not be worth the complexity |
-| **Container Awareness** | btop++ | Docker/podman container grouping; requires container runtime APIs |
-| **Service Management** | btop++ | systemd on Linux, SCM on Windows; complex permissions |
-| **Handles Column** | Task Manager | Open handles (Windows) / file descriptors (Linux) |
-| **GDI Objects Column** | Task Manager | Windows-specific (GDI handle count) |
-| **Peak Working Set Column** | Task Manager | Historical peak memory usage |
-| **Page Faults Column** | Task Manager | Memory page fault counts |
-| **Base Priority Column** | Task Manager | Windows thread priority class |
-| **CPU Affinity Column** | Task Manager | Which CPU cores the process can use |
-| **Mutation testing** | Development | **Blocked.** Mull requires LLVM 14-17. Clang 22 needs newer mull support |
-| **C++20/23 module support** | Development | **Blocked.** `import std;` requires custom-built libc++; clangd support incomplete. Revisit late 2026 |
-| **`std::generator` examples** | Development | **Partial support.** libc++ `std::generator` is experimental; may need `-fexperimental-library` |
+| **MEM% Column** | ✅ Done | Memory as percentage of total system RAM |
+| **TIME+ Column** | ✅ Done | CPU time formatted as H:MM:SS.cc |
+| **Command Column** | ✅ Done | Full command line from `/proc/[pid]/cmdline` |
+| **Task Summary** | ✅ Done | "N processes, M running" in panel header |
+| **VIRT Column** | ✅ Done | Virtual memory size |
 
-### Completed Features
+### Low Effort (Hours)
 
-| Feature | Source | Notes |
-|---------|--------|-------|
-| **MEM% Column** | htop | Memory as percentage of total system RAM |
-| **TIME+ Column** | htop | CPU time formatted as H:MM:SS.cc |
-| **Command Column** | htop | Full command line from `/proc/[pid]/cmdline` |
-| **Task Summary** | htop | "N processes, M running" in panel header |
-| **VIRT Column** | htop | Virtual memory size |
-| **NI (Nice) Column** | htop | Process nice value (-20 to 19) |
-| **Thread Count Column** | htop | Number of threads per process |
-| **PPID Column** | htop | Parent process ID |
-| **SHR Column** | htop | Shared memory size |
-| **State Color Coding** | htop | Color-code process states based on theme |
-| **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
-| **Version header generation** | Development | Auto-generating `version.h` header from CMake |
-| **`std::print` adoption** | Development | Type-safe, format-string-based output |
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **NI (Nice) Column** | Display process nice value (-20 to 19) | Already captured in probe; add column to ProcessesPanel |
+| **SHR Column** | Shared memory size | Linux: field from `/proc/[pid]/statm`; Windows: working set counters |
+| **State Color Coding** | Color-code process states (R=green, S=gray, D=yellow, Z=red) | Add ImGui color push/pop in state column rendering |
+| **Thread Count Column** | Number of threads per process | Already in ProcessCounters where supported |
+
+### Medium Effort (Days)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **Process Tree View (F5)** | Collapsible parent-child hierarchy | Use `parentPid` to build tree; indent children in table |
+| **Incremental Search** | Filter processes as you type without search box focus | Global keyboard input handling in panel |
+| **Sort Indicator** | Visual arrow showing sort column and direction | ImGui table sorting specs already provide this |
+| **Process Details Panel** | Expanded view showing environment, open files, connections | Modal or split panel; multiple `/proc/[pid]/*` reads |
+
+### Higher Effort (Weeks)
+
+| Feature | Description | Implementation Notes |
+|---------|-------------|---------------------|
+| **I/O Tab/View** | Dedicated I/O view showing read/write rates | Requires elevated privileges on Linux for `/proc/[pid]/io` |
+| **Keyboard Shortcuts** | F-key shortcuts (F1=Help, F2=Setup, F5=Tree, F9=Kill, F10=Quit) | Global key handler in ShellLayer |
+| **Setup Dialog (F2)** | Configure columns, colors, meters, layout | Persist to config file; apply changes live |
+| **Help Screen (F1)** | Built-in help overlay explaining columns and shortcuts | Modal window with keyboard shortcut reference |
+| **Strace Integration** | Attach strace to selected process | Linux only; spawn `strace -p <pid>` in terminal |
+| **Lsof Integration** | Show open files for selected process | Linux: spawn `lsof -p <pid>`; Windows: Handle enumeration |
 
 

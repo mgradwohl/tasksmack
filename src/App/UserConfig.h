@@ -1,6 +1,5 @@
 #pragma once
 
-#include "App/ProcessColumnConfig.h"
 #include "UI/Theme.h"
 
 #include <filesystem>
@@ -22,9 +21,6 @@ struct UserSettings
     bool showProcesses = true;
     bool showMetrics = true;
     bool showDetails = true;
-
-    // Process panel column visibility
-    ProcessColumnSettings processColumns;
 
     // Window state (optional, for future use)
     int windowWidth = 1280;
@@ -82,8 +78,6 @@ class UserConfig
 
     UserConfig(const UserConfig&) = delete;
     auto operator=(const UserConfig&) -> UserConfig& = delete;
-    UserConfig(UserConfig&&) = delete;
-    auto operator=(UserConfig&&) -> UserConfig& = delete;
 
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;

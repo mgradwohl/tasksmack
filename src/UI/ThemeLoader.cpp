@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <fstream>
 
 #include <toml++/toml.hpp>
 
@@ -22,7 +23,7 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     if (hex.size() != 6 && hex.size() != 8)
     {
         spdlog::warn("Invalid hex color: {} (expected 6 or 8 digits)", hex);
-        return {1.0F, 0.0F, 1.0F, 1.0F}; // Magenta = error color
+        return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error color
     }
 
     unsigned int r = 0;
@@ -31,8 +32,6 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     unsigned int a = 255; // Default to fully opaque
 
     // Parse RGB components
-    // NOLINTBEGIN(bugprone-not-null-terminated-result,bugprone-suspicious-stringview-data-usage)
-    // std::from_chars takes (first, last) pointer range - null termination not needed
     std::from_chars(hex.data(), hex.data() + 2, r, 16);
     std::from_chars(hex.data() + 2, hex.data() + 4, g, 16);
     std::from_chars(hex.data() + 4, hex.data() + 6, b, 16);
@@ -42,13 +41,12 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     {
         std::from_chars(hex.data() + 6, hex.data() + 8, a, 16);
     }
-    // NOLINTEND(bugprone-not-null-terminated-result,bugprone-suspicious-stringview-data-usage)
 
     constexpr float MAX_COMPONENT = 255.0F;
-    return {static_cast<float>(r) / MAX_COMPONENT,
-            static_cast<float>(g) / MAX_COMPONENT,
-            static_cast<float>(b) / MAX_COMPONENT,
-            static_cast<float>(a) / MAX_COMPONENT};
+    return ImVec4(static_cast<float>(r) / MAX_COMPONENT,
+                  static_cast<float>(g) / MAX_COMPONENT,
+                  static_cast<float>(b) / MAX_COMPONENT,
+                  static_cast<float>(a) / MAX_COMPONENT);
 }
 
 namespace
@@ -71,7 +69,7 @@ auto parseColorNode(const toml::node& node) -> ImVec4
             auto g = arr->get(1)->value_or(0.0);
             auto b = arr->get(2)->value_or(0.0);
             auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-            return {static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a)};
+            return ImVec4(static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a));
         }
     }
 
@@ -97,13 +95,13 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
                 auto g = arr->get(1)->value_or(0.0);
                 auto b = arr->get(2)->value_or(0.0);
                 auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-                return {static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a)};
+                return ImVec4(static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a));
             }
         }
     }
 
     spdlog::warn("Invalid color node type");
-    return {1.0F, 0.0F, 1.0F, 1.0F}; // Magenta = error
+    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Magenta = error
 }
 
 /// Get a color from a table, with default fallback
@@ -119,7 +117,7 @@ auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor 
 /// Load a color array (like heatmap gradient or accent colors)
 template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
-    if (const auto* const arr = tbl.at_path(key).as_array())
+    if (auto arr = tbl.at_path(key).as_array())
     {
         for (std::size_t i = 0; i < std::min(N, arr->size()); ++i)
         {
@@ -168,7 +166,7 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
         info.id = path.stem().string(); // filename without extension
 
         // Read meta section
-        if (auto* meta = tbl["meta"].as_table())
+        if (auto meta = tbl["meta"].as_table())
         {
             info.name = meta->get("name")->value_or(info.id);
             info.description = meta->get("description")->value_or("");
@@ -195,7 +193,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         ColorScheme scheme;
 
         // Meta
-        if (auto* meta = tbl["meta"].as_table())
+        if (auto meta = tbl["meta"].as_table())
         {
             scheme.name = meta->get("name")->value_or("Unknown");
         }
@@ -218,13 +216,10 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.textSuccess = getColor(tbl, "semantic.text_success");
         scheme.textInfo = getColor(tbl, "semantic.text_info");
 
-        // Status colors for process states
+        // Status colors
         scheme.statusRunning = getColor(tbl, "status.running");
-        scheme.statusSleeping = getColor(tbl, "status.sleeping");
-        scheme.statusDiskSleep = getColor(tbl, "status.disk_sleep");
-        scheme.statusZombie = getColor(tbl, "status.zombie");
         scheme.statusStopped = getColor(tbl, "status.stopped");
-        scheme.statusIdle = getColor(tbl, "status.idle");
+        scheme.statusSleeping = getColor(tbl, "status.sleeping");
 
         // Chart colors
         scheme.chartCpu = getColor(tbl, "charts.cpu");

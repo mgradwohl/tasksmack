@@ -22,8 +22,7 @@ struct ProcessSnapshot
     double cpuTimeSeconds = 0.0; // Cumulative CPU time (user + system)
     uint64_t memoryBytes = 0;    // RSS
     uint64_t virtualBytes = 0;
-    uint64_t sharedBytes = 0; // Shared memory
-    int32_t nice = 0;         // Nice value
+    int32_t nice = 0; // Nice value
 
     // Optional (0 if not supported)
     double ioReadBytesPerSec = 0.0;

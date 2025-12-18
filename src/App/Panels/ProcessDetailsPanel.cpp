@@ -7,9 +7,7 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <array>
-#include <string>
 
 namespace App
 {
@@ -146,65 +144,41 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // PID
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("PID");
+        ImGui::TextColored(theme.scheme().textMuted, "PID");
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.pid);
 
         // Parent PID
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Parent PID");
+        ImGui::TextColored(theme.scheme().textMuted, "Parent PID");
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.parentPid);
 
         // Name
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Name");
+        ImGui::TextColored(theme.scheme().textMuted, "Name");
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(proc.name.c_str());
 
-        // User (if available)
-        if (!proc.user.empty())
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("User");
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(proc.user.c_str());
-        }
-
-        // Status (color-coded based on state character)
+        // Status (color-coded)
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Status");
+        ImGui::TextColored(theme.scheme().textMuted, "Status");
         ImGui::TableNextColumn();
-        char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-        ImVec4 statusColor;
-        switch (stateChar)
+        ImVec4 statusColor = theme.scheme().textInfo;
+        if (proc.displayState == "Running")
         {
-        case 'R': // Running
             statusColor = theme.scheme().statusRunning;
-            break;
-        case 'S': // Sleeping
-            statusColor = theme.scheme().statusSleeping;
-            break;
-        case 'D': // Disk sleep
-            statusColor = theme.scheme().statusDiskSleep;
-            break;
-        case 'Z': // Zombie
-            statusColor = theme.scheme().statusZombie;
-            break;
-        case 'T': // Stopped/Traced
-        case 't':
+        }
+        else if (proc.displayState == "Zombie")
+        {
+            statusColor = theme.scheme().textError;
+        }
+        else if (proc.displayState == "Stopped")
+        {
             statusColor = theme.scheme().statusStopped;
-            break;
-        case 'I': // Idle
-            statusColor = theme.scheme().statusIdle;
-            break;
-        default:
-            statusColor = theme.scheme().statusSleeping;
-            break;
         }
         ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 
@@ -213,167 +187,53 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::Text("Threads");
+            ImGui::TextColored(theme.scheme().textMuted, "Threads");
             ImGui::TableNextColumn();
             ImGui::Text("%d", proc.threadCount);
         }
 
-        // Nice/Priority
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Nice");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.nice);
-
         ImGui::EndTable();
-    }
-
-    // Command line (separate section for long text with wrapping)
-    if (!proc.command.empty())
-    {
-        ImGui::Spacing();
-        ImGui::Text("Command Line:");
-        ImGui::Indent();
-        ImGui::TextWrapped("%s", proc.command.c_str());
-        ImGui::Unindent();
     }
 }
 
 void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc)
 {
-    const auto& theme = UI::Theme::get();
-
     ImGui::Text("Resource Usage");
     ImGui::Spacing();
 
     // CPU usage with progress bar
     ImGui::Text("CPU:");
-    ImGui::SameLine(120.0F);
+    ImGui::SameLine(80.0F);
     float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
     cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
     char cpuOverlay[32];
     snprintf(cpuOverlay, sizeof(cpuOverlay), "%.1f%%", proc.cpuPercent);
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), cpuOverlay);
 
-    // Memory usage with progress bar
-    ImGui::Text("Memory:");
-    ImGui::SameLine(120.0F);
-    float memFraction = static_cast<float>(proc.memoryPercent) / 100.0F;
-    memFraction = (memFraction > 1.0F) ? 1.0F : memFraction;
-    char memOverlay[32];
-    snprintf(memOverlay, sizeof(memOverlay), "%.1f%%", proc.memoryPercent);
-    ImGui::ProgressBar(memFraction, ImVec2(-1, 0), memOverlay);
-
-    // Memory details with stacked horizontal bar
-    double residentMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
+    // Memory usage
+    double memoryMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
     double virtualMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
-    double sharedMB = static_cast<double>(proc.sharedBytes) / (1024.0 * 1024.0);
 
-    ImGui::Spacing();
-    ImGui::Text("Memory Breakdown:");
-
-    // Stacked bar showing RSS vs Shared vs Virtual
-    // Virtual is the max, RSS is physical, Shared is part of RSS that's shared
-    if (virtualMB > 0)
-    {
-        float availWidth = ImGui::GetContentRegionAvail().x;
-        float barHeight = 24.0F;
-
-        ImVec2 barStart = ImGui::GetCursorScreenPos();
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-
-        // Calculate proportions (Virtual is the reference)
-        float virtFrac = 1.0F;
-        float rssFrac = static_cast<float>(residentMB / virtualMB);
-        float shrFrac = static_cast<float>(sharedMB / virtualMB);
-
-        // Clamp fractions
-        rssFrac = std::min(rssFrac, 1.0F);
-        shrFrac = std::min(shrFrac, rssFrac); // Shared can't exceed RSS
-
-        // Colors for memory segments
-        ImU32 virtColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.3F, 0.3F, 0.5F, 1.0F)); // Dark blue-gray
-        ImU32 rssColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);      // Theme memory color
-        ImU32 shrColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().progressLow);      // Theme low/green
-
-        // Draw Virtual (full background)
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * virtFrac), barStart.y + barHeight), virtColor);
-
-        // Draw RSS on top
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * rssFrac), barStart.y + barHeight), rssColor);
-
-        // Draw Shared (subset of RSS)
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * shrFrac), barStart.y + barHeight), shrColor);
-
-        // Border
-        drawList->AddRect(
-            barStart, ImVec2(barStart.x + availWidth, barStart.y + barHeight), ImGui::ColorConvertFloat4ToU32(theme.scheme().border));
-
-        // Reserve space for the bar
-        ImGui::Dummy(ImVec2(availWidth, barHeight));
-
-        // Legend with values
-        ImGui::Spacing();
-
-        // Helper to format memory size
-        auto formatMem = [](double mb) -> std::string
-        {
-            if (mb >= 1024.0)
-            {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "%.1f GB", mb / 1024.0);
-                return buf;
-            }
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%.1f MB", mb);
-            return buf;
-        };
-
-        // Legend row
-        ImVec4 shrColorVec = theme.scheme().progressLow;
-        ImVec4 rssColorVec = theme.scheme().chartMemory;
-        ImVec4 virtColorVec = ImVec4(0.3F, 0.3F, 0.5F, 1.0F);
-
-        ImGui::TextColored(shrColorVec, "Shared (SHR):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(sharedMB).c_str());
-        ImGui::SameLine(0.0F, 20.0F);
-
-        ImGui::TextColored(rssColorVec, "Resident (RSS):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(residentMB).c_str());
-        ImGui::SameLine(0.0F, 20.0F);
-
-        ImGui::TextColored(virtColorVec, "Virtual (VIRT):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(virtualMB).c_str());
-    }
-    else
-    {
-        // Fallback to text if no virtual memory info
-        ImGui::Text("Resident (RSS): %.1f MB", residentMB);
-        ImGui::Text("Shared (SHR): %.1f MB", sharedMB);
-        ImGui::Text("Virtual (VIRT): %.1f MB", virtualMB);
-    }
-
-    ImGui::Spacing();
-
-    // CPU Time (cumulative)
-    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
-    int hours = totalSeconds / 3600;
-    int minutes = (totalSeconds % 3600) / 60;
-    int seconds = totalSeconds % 60;
-    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
-
-    ImGui::Text("CPU Time:");
+    ImGui::Text("Memory (RSS):");
     ImGui::SameLine(120.0F);
-    if (hours > 0)
+    if (memoryMB >= 1024.0)
     {
-        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+        ImGui::Text("%.2f GB", memoryMB / 1024.0);
     }
     else
     {
-        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
+        ImGui::Text("%.1f MB", memoryMB);
+    }
+
+    ImGui::Text("Virtual Memory:");
+    ImGui::SameLine(120.0F);
+    if (virtualMB >= 1024.0)
+    {
+        ImGui::Text("%.2f GB", virtualMB / 1024.0);
+    }
+    else
+    {
+        ImGui::Text("%.1f MB", virtualMB);
     }
 }
 

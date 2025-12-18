@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -28,17 +27,9 @@ std::unordered_map<uid_t, std::string>& getUsernameCache()
     return cache;
 }
 
-/// Mutex to protect the username cache
-std::mutex& getUsernameCacheMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-
 /// Get username from UID, with caching
 [[nodiscard]] std::string getUsername(uid_t uid)
 {
-    std::lock_guard<std::mutex> lock(getUsernameCacheMutex());
     auto& cache = getUsernameCache();
     auto it = cache.find(uid);
     if (it != cache.end())
@@ -248,7 +239,6 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     {
         // statm gives more accurate RSS, update if available
         counters.rssBytes = resident * static_cast<uint64_t>(m_PageSize);
-        counters.sharedBytes = shared * static_cast<uint64_t>(m_PageSize);
     }
 }
 

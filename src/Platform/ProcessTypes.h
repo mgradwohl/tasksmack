@@ -27,7 +27,6 @@ struct ProcessCounters
     // Memory (bytes)
     uint64_t rssBytes = 0;
     uint64_t virtualBytes = 0;
-    uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
     // Optional fields (check capabilities)
     uint64_t readBytes = 0;

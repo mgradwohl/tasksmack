@@ -50,21 +50,6 @@ std::filesystem::path getExecutableDir()
     return std::filesystem::current_path();
 }
 
-#ifdef _WIN32
-// Get Windows Fonts directory path
-std::filesystem::path getWindowsFontsDir()
-{
-    std::wstring buffer(MAX_PATH, L'\0');
-    UINT len = GetWindowsDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
-    if (len > 0 && len < buffer.size())
-    {
-        buffer.resize(len);
-        return std::filesystem::path(buffer) / "Fonts";
-    }
-    return "C:\\Windows\\Fonts";
-}
-#endif
-
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -98,45 +83,12 @@ void UILayer::loadAllFonts()
     auto& theme = Theme::get();
     ImGuiIO& imguiIO = ImGui::GetIO();
 
-    // Build font paths
+    // Build font path relative to executable directory
     auto exeDir = getExecutableDir();
-    auto interFontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
+    auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
+    auto fontBoldPath = (exeDir / "assets" / "fonts" / "Inter-Bold.ttf").string();
 
-    // Determine which font to use: Segoe UI Variable (Windows) or Inter (fallback)
-    std::string fontPath;
-    std::string fontName;
-
-#ifdef _WIN32
-    // Try Segoe UI Variable first (modern Windows 11 variable font)
-    auto segoeVarPath = (getWindowsFontsDir() / "SegUIVar.ttf").string();
-    auto segoeRegularPath = (getWindowsFontsDir() / "segoeui.ttf").string();
-
-    if (std::filesystem::exists(segoeVarPath))
-    {
-        fontPath = segoeVarPath;
-        fontName = "Segoe UI Variable";
-        spdlog::info("Using system font: {} ({})", fontName, fontPath);
-    }
-    else if (std::filesystem::exists(segoeRegularPath))
-    {
-        fontPath = segoeRegularPath;
-        fontName = "Segoe UI";
-        spdlog::info("Using system font: {} ({})", fontName, fontPath);
-    }
-    else
-    {
-        fontPath = interFontPath;
-        fontName = "Inter";
-        spdlog::info("System font not found, using bundled: {}", fontName);
-    }
-#else
-    // Linux/other: use bundled Inter font
-    fontPath = interFontPath;
-    fontName = "Inter";
-    spdlog::info("Using bundled font: {}", fontName);
-#endif
-
-    spdlog::info("Pre-baking {} fonts for all {} size presets", fontName, static_cast<int>(FontSize::Count));
+    spdlog::info("Pre-baking fonts for all {} size presets", static_cast<int>(FontSize::Count));
 
     // Load fonts for all size presets into a single atlas
     for (size_t i = 0; i < static_cast<size_t>(FontSize::Count); ++i)
@@ -157,7 +109,7 @@ void UILayer::loadAllFonts()
         ImFont* fontRegular = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeRegular);
         if (fontRegular == nullptr)
         {
-            spdlog::warn("Could not load {} font from {}, using default", fontName, fontPath);
+            spdlog::warn("Could not load Inter font from {}, using default", fontPath);
             ImFontConfig defaultFontConfig;
             defaultFontConfig.SizePixels = fontSizeRegular;
             fontRegular = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);

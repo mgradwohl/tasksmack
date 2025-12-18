@@ -94,7 +94,7 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
 
     // Get CPU model from registry
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         std::array<char, 256> cpuBuffer{};
         DWORD cpuBufferSize = static_cast<DWORD>(cpuBuffer.size());
@@ -278,14 +278,14 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
     // Read CPU frequency from registry (in MHz)
     // This is the base frequency; current frequency requires more complex APIs
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         DWORD mhz = 0;
         DWORD dataSize = sizeof(mhz);
         DWORD type = 0;
         if (RegQueryValueExA(hKey, "~MHz", nullptr, &type, reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
         {
-            counters.cpuFreqMHz = static_cast<uint64_t>(mhz);
+            counters.cpuFreqMHz = static_cast<double>(mhz);
         }
         RegCloseKey(hKey);
     }

@@ -65,12 +65,9 @@ text_info = "#00E5FF"      # Electric Blue - informational text
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#76FF03"    # R - Neon Green - active/running
-sleeping = "#7E57C2"   # S - Muted purple - sleeping/interruptible
-disk_sleep = "#FFEA00" # D - Yellow - uninterruptible disk sleep
-zombie = "#FF1744"     # Z - Red - zombie/defunct
-stopped = "#E040FB"    # T - Magenta - stopped/traced
-idle = "#5C527F"       # I - Dark purple - idle kernel thread
+running = "#76FF03"    # Neon Green - active/running
+stopped = "#FF1744"    # Red - stopped/terminated
+sleeping = "#FFEA00"   # Yellow - sleeping/waiting
 
 # =============================================================================
 # CHART LINE COLORS

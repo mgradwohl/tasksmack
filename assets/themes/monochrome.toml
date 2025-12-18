@@ -67,12 +67,9 @@ text_info = "#66BB6A"      # Light green
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#4CAF50"    # R - Medium green - active/running
-sleeping = "#2E7D32"   # S - Dim green - sleeping/interruptible
-disk_sleep = "#81C784" # D - Bright green - uninterruptible disk sleep
-zombie = "#B9F6CA"     # Z - Bright glow - zombie/defunct (alert)
-stopped = "#66BB6A"    # T - Light green - stopped/traced
-idle = "#1B5E20"       # I - Very dim green - idle kernel thread
+running = "#4CAF50"    # Medium green - active/running
+stopped = "#B9F6CA"    # Bright glow - stopped (alert)
+sleeping = "#2E7D32"   # Dim green - sleeping
 
 # =============================================================================
 # CHART LINE COLORS

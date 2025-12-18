@@ -1,6 +1,5 @@
 #include "UserConfig.h"
 
-#include "App/ProcessColumnConfig.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -117,14 +116,6 @@ void UserConfig::load()
             {
                 m_Settings.fontSize = UI::FontSize::ExtraLarge;
             }
-            else if (*fontSizeStr == "huge")
-            {
-                m_Settings.fontSize = UI::FontSize::Huge;
-            }
-            else if (*fontSizeStr == "even-huger")
-            {
-                m_Settings.fontSize = UI::FontSize::EvenHuger;
-            }
         }
 
         // Panel visibility
@@ -153,23 +144,6 @@ void UserConfig::load()
         if (auto val = config["window"]["maximized"].value<bool>())
         {
             m_Settings.windowMaximized = *val;
-        }
-
-        // Process panel column visibility
-        if (auto* cols = config["process_columns"].as_table())
-        {
-            for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
-            {
-                auto col = static_cast<ProcessColumn>(i);
-                const auto info = getColumnInfo(col);
-                if (auto* node = cols->get(info.configKey); node != nullptr)
-                {
-                    if (auto val = node->value<bool>())
-                    {
-                        m_Settings.processColumns.setVisible(col, *val);
-                    }
-                }
-            }
         }
 
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
@@ -211,24 +185,9 @@ void UserConfig::save() const
     case UI::FontSize::ExtraLarge:
         fontSizeStr = "extra-large";
         break;
-    case UI::FontSize::Huge:
-        fontSizeStr = "huge";
-        break;
-    case UI::FontSize::EvenHuger:
-        fontSizeStr = "even-huger";
-        break;
     default:
         fontSizeStr = "medium";
         break;
-    }
-
-    // Build process columns table
-    auto processColumnsTable = toml::table{};
-    for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
-    {
-        auto col = static_cast<ProcessColumn>(i);
-        const auto info = getColumnInfo(col);
-        processColumnsTable.insert(std::string(info.configKey), m_Settings.processColumns.isVisible(col));
     }
 
     // Build TOML document
@@ -247,7 +206,6 @@ void UserConfig::save() const
              {"height", m_Settings.windowHeight},
              {"maximized", m_Settings.windowMaximized},
          }},
-        {"process_columns", processColumnsTable},
     };
 
     // Write to file
