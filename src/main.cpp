@@ -21,7 +21,7 @@
 #endif
 #include <cstdio>
 
-auto runApp() -> int
+static auto runApp() -> int
 {
 // Required on Windows to see console output when launching from an IDE or debugger
 #if defined(_WIN32) && !defined(NDEBUG)
