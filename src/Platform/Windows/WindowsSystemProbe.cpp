@@ -94,7 +94,7 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
 
     // Get CPU model from registry
     HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         std::array<char, 256> cpuBuffer{};
         DWORD cpuBufferSize = static_cast<DWORD>(cpuBuffer.size());
