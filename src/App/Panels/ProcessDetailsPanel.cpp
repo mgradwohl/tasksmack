@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "Platform/Factory.h"
+#include "UI/Format.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -59,7 +60,18 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
 
 void ProcessDetailsPanel::render(bool* open)
 {
-    if (!ImGui::Begin("Process Details", open))
+    std::string windowLabel;
+    if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
+    {
+        windowLabel = m_CachedSnapshot.name;
+        windowLabel += "###ProcessDetails";
+    }
+    else
+    {
+        windowLabel = "Process Details###ProcessDetails";
+    }
+
+    if (!ImGui::Begin(windowLabel.c_str(), open))
     {
         ImGui::End();
         return;
@@ -135,107 +147,133 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::Text("Process Information");
+    const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
+    ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
 
-    if (ImGui::BeginTable("BasicInfo", 2, ImGuiTableFlags_SizingStretchProp))
+    // Compact layout: two label/value pairs per row.
+    // Use fixed widths so columns don't jitter as values change (e.g., CPU time ticking).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float labelWidth = ImGui::CalcTextSize("CPU Time").x + (style.CellPadding.x * 2.0F) + 10.0F;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float spacingWidth = style.ItemSpacing.x * 3.0F;
+    const float remaining = std::max(0.0F, availWidth - (labelWidth * 2.0F) - spacingWidth);
+    const float valueWidth = remaining * 0.5F;
+
+    if (ImGui::BeginTable("BasicInfo",
+                          4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_SizingFixedFit))
     {
-        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Label1", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+        ImGui::TableSetupColumn("Value1", ImGuiTableColumnFlags_WidthFixed, valueWidth);
+        ImGui::TableSetupColumn("Label2", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+        ImGui::TableSetupColumn("Value2", ImGuiTableColumnFlags_WidthFixed, valueWidth);
 
-        // PID
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("PID");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.pid);
+        auto renderStatus = [&]()
+        {
+            const char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+            ImVec4 statusColor;
+            switch (stateChar)
+            {
+            case 'R': // Running
+                statusColor = theme.scheme().statusRunning;
+                break;
+            case 'S': // Sleeping
+                statusColor = theme.scheme().statusSleeping;
+                break;
+            case 'D': // Disk sleep
+                statusColor = theme.scheme().statusDiskSleep;
+                break;
+            case 'Z': // Zombie
+                statusColor = theme.scheme().statusZombie;
+                break;
+            case 'T': // Stopped/Traced
+            case 't':
+                statusColor = theme.scheme().statusStopped;
+                break;
+            case 'I': // Idle
+                statusColor = theme.scheme().statusIdle;
+                break;
+            default:
+                statusColor = theme.scheme().statusSleeping;
+                break;
+            }
+            ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
+        };
 
-        // Parent PID
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Parent PID");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.parentPid);
+        auto renderCpuTime = [&]()
+        {
+            const int totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
+            const int hours = totalSeconds / 3600;
+            const int minutes = (totalSeconds % 3600) / 60;
+            const int seconds = totalSeconds % 60;
+            const int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
 
-        // Name
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Name");
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(proc.name.c_str());
+            if (hours > 0)
+            {
+                ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+            }
+            else
+            {
+                ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
+            }
+        };
 
-        // User (if available)
+        int fieldIndex = 0;
+        auto addField = [&](const char* label, const auto& renderValue)
+        {
+            const int pairIndex = fieldIndex % 2;
+            if (pairIndex == 0)
+            {
+                ImGui::TableNextRow();
+            }
+
+            ImGui::TableSetColumnIndex(pairIndex * 2);
+            ImGui::TextUnformatted(label);
+            ImGui::TableSetColumnIndex((pairIndex * 2) + 1);
+            renderValue();
+            ++fieldIndex;
+        };
+
+        addField("PID", [&]() { ImGui::Text("%d", proc.pid); });
+        addField("Parent", [&]() { ImGui::Text("%d", proc.parentPid); });
+
+        addField("Name", [&]() { ImGui::TextUnformatted(proc.name.c_str()); });
         if (!proc.user.empty())
         {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("User");
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(proc.user.c_str());
+            addField("User", [&]() { ImGui::TextUnformatted(proc.user.c_str()); });
         }
-
-        // Status (color-coded based on state character)
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Status");
-        ImGui::TableNextColumn();
-        char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-        ImVec4 statusColor;
-        switch (stateChar)
+        else
         {
-        case 'R': // Running
-            statusColor = theme.scheme().statusRunning;
-            break;
-        case 'S': // Sleeping
-            statusColor = theme.scheme().statusSleeping;
-            break;
-        case 'D': // Disk sleep
-            statusColor = theme.scheme().statusDiskSleep;
-            break;
-        case 'Z': // Zombie
-            statusColor = theme.scheme().statusZombie;
-            break;
-        case 'T': // Stopped/Traced
-        case 't':
-            statusColor = theme.scheme().statusStopped;
-            break;
-        case 'I': // Idle
-            statusColor = theme.scheme().statusIdle;
-            break;
-        default:
-            statusColor = theme.scheme().statusSleeping;
-            break;
+            addField("Status", renderStatus);
         }
-        ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 
-        // Threads (if available)
+        if (proc.user.empty())
+        {
+            // Status already added above.
+        }
+        else
+        {
+            addField("Status", renderStatus);
+        }
+
         if (proc.threadCount > 0)
         {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("Threads");
-            ImGui::TableNextColumn();
-            ImGui::Text("%d", proc.threadCount);
+            addField("Threads", [&]() { ImGui::Text("%d", proc.threadCount); });
+        }
+        else
+        {
+            addField("Nice", [&]() { ImGui::Text("%d", proc.nice); });
         }
 
-        // Nice/Priority
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Nice");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.nice);
+        if (proc.threadCount > 0)
+        {
+            addField("Nice", [&]() { ImGui::Text("%d", proc.nice); });
+        }
+
+        addField("CPU Time", renderCpuTime);
 
         ImGui::EndTable();
-    }
-
-    // Command line (separate section for long text with wrapping)
-    if (!proc.command.empty())
-    {
-        ImGui::Spacing();
-        ImGui::Text("Command Line:");
-        ImGui::Indent();
-        ImGui::TextWrapped("%s", proc.command.c_str());
-        ImGui::Unindent();
     }
 }
 
@@ -252,7 +290,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
     cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
     char cpuOverlay[32];
-    snprintf(cpuOverlay, sizeof(cpuOverlay), "%.1f%%", proc.cpuPercent);
+    snprintf(cpuOverlay, sizeof(cpuOverlay), "%s", UI::Format::percentCompact(proc.cpuPercent).c_str());
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), cpuOverlay);
 
     // Memory usage with progress bar
@@ -261,7 +299,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     float memFraction = static_cast<float>(proc.memoryPercent) / 100.0F;
     memFraction = (memFraction > 1.0F) ? 1.0F : memFraction;
     char memOverlay[32];
-    snprintf(memOverlay, sizeof(memOverlay), "%.1f%%", proc.memoryPercent);
+    snprintf(memOverlay, sizeof(memOverlay), "%s", UI::Format::percentCompact(proc.memoryPercent).c_str());
     ImGui::ProgressBar(memFraction, ImVec2(-1, 0), memOverlay);
 
     // Memory details with stacked horizontal bar
@@ -280,6 +318,9 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         float barHeight = 24.0F;
 
         ImVec2 barStart = ImGui::GetCursorScreenPos();
+        const ImVec2 barSize(availWidth, barHeight);
+        ImGui::InvisibleButton("##ProcessMemoryBreakdownBar", barSize);
+
         ImDrawList* drawList = ImGui::GetWindowDrawList();
 
         // Calculate proportions (Virtual is the reference)
@@ -291,10 +332,10 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         rssFrac = std::min(rssFrac, 1.0F);
         shrFrac = std::min(shrFrac, rssFrac); // Shared can't exceed RSS
 
-        // Colors for memory segments
-        ImU32 virtColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.3F, 0.3F, 0.5F, 1.0F)); // Dark blue-gray
-        ImU32 rssColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);      // Theme memory color
-        ImU32 shrColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().progressLow);      // Theme low/green
+        // Colors for memory segments (use theme/ImGui primitives only)
+        const ImU32 virtColor = ImGui::GetColorU32(ImGuiCol_FrameBgActive);
+        const ImU32 rssColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);
+        const ImU32 shrColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartIo);
 
         // Draw Virtual (full background)
         drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * virtFrac), barStart.y + barHeight), virtColor);
@@ -308,12 +349,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         // Border
         drawList->AddRect(
             barStart, ImVec2(barStart.x + availWidth, barStart.y + barHeight), ImGui::ColorConvertFloat4ToU32(theme.scheme().border));
-
-        // Reserve space for the bar
-        ImGui::Dummy(ImVec2(availWidth, barHeight));
-
-        // Legend with values
-        ImGui::Spacing();
 
         // Helper to format memory size
         auto formatMem = [](double mb) -> std::string
@@ -329,24 +364,28 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             return buf;
         };
 
-        // Legend row
-        ImVec4 shrColorVec = theme.scheme().progressLow;
-        ImVec4 rssColorVec = theme.scheme().chartMemory;
-        ImVec4 virtColorVec = ImVec4(0.3F, 0.3F, 0.5F, 1.0F);
+        // Overlay summary (centered)
+        {
+            char overlay[96];
+            snprintf(overlay, sizeof(overlay), "RSS %s / VIRT %s", formatMem(residentMB).c_str(), formatMem(virtualMB).c_str());
 
-        ImGui::TextColored(shrColorVec, "Shared (SHR):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(sharedMB).c_str());
-        ImGui::SameLine(0.0F, 20.0F);
+            const ImVec2 textSize = ImGui::CalcTextSize(overlay);
+            const ImVec2 textPos(barStart.x + ((availWidth - textSize.x) * 0.5F), barStart.y + ((barHeight - textSize.y) * 0.5F));
+            const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
+            drawList->AddText(ImVec2(textPos.x + 1.0F, textPos.y + 1.0F), shadowCol, overlay);
+            drawList->AddText(textPos, textCol, overlay);
+        }
 
-        ImGui::TextColored(rssColorVec, "Resident (RSS):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(residentMB).c_str());
-        ImGui::SameLine(0.0F, 20.0F);
-
-        ImGui::TextColored(virtColorVec, "Virtual (VIRT):");
-        ImGui::SameLine();
-        ImGui::Text("%s", formatMem(virtualMB).c_str());
+        // Detailed legend in tooltip on hover
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(rssColor), "Resident (RSS): %s", formatMem(residentMB).c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(shrColor), "Shared (SHR): %s", formatMem(sharedMB).c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(virtColor), "Virtual (VIRT): %s", formatMem(virtualMB).c_str());
+            ImGui::EndTooltip();
+        }
     }
     else
     {
@@ -357,24 +396,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     }
 
     ImGui::Spacing();
-
-    // CPU Time (cumulative)
-    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
-    int hours = totalSeconds / 3600;
-    int minutes = (totalSeconds % 3600) / 60;
-    int seconds = totalSeconds % 60;
-    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
-
-    ImGui::Text("CPU Time:");
-    ImGui::SameLine(120.0F);
-    if (hours > 0)
-    {
-        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
-    }
-    else
-    {
-        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
-    }
 }
 
 void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
@@ -435,13 +456,18 @@ void ProcessDetailsPanel::renderHistoryGraphs()
     // CPU History Plot
     const auto& theme = UI::Theme::get();
     ImGui::Text("CPU Usage");
-    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
+    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "%", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
 
         if (cpuCount > 0)
         {
+            ImVec4 fillColor = theme.scheme().chartCpu;
+            fillColor.w = 0.3F;
+            ImPlot::SetNextFillStyle(fillColor);
+            ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuData.data(), static_cast<int>(cpuCount), 0.0);
+
             ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
             ImPlot::PlotLine("CPU", timeData.data(), cpuData.data(), static_cast<int>(cpuCount));
         }
@@ -457,12 +483,17 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
     // Memory History Plot
     ImGui::Text("Memory Usage (RSS)");
-    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
+    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "MB", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
 
         if (memCount > 0)
         {
+            ImVec4 fillColor = theme.scheme().chartMemory;
+            fillColor.w = 0.3F;
+            ImPlot::SetNextFillStyle(fillColor);
+            ImPlot::PlotShaded("##MemoryShaded", timeData.data(), memData.data(), static_cast<int>(memCount), 0.0);
+
             ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
             ImPlot::PlotLine("Memory", timeData.data(), memData.data(), static_cast<int>(memCount));
         }
@@ -479,8 +510,6 @@ void ProcessDetailsPanel::renderActions()
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::Text("Process Actions");
-    ImGui::Spacing();
     ImGui::TextColored(theme.scheme().textMuted, "Target: %s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
     ImGui::Spacing();
     ImGui::Separator();

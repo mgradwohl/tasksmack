@@ -58,6 +58,38 @@ std::vector<float> SystemModel::cpuHistory() const
     return result;
 }
 
+std::vector<float> SystemModel::cpuUserHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<float> result(m_CpuUserHistory.size());
+    m_CpuUserHistory.copyTo(result.data(), result.size());
+    return result;
+}
+
+std::vector<float> SystemModel::cpuSystemHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<float> result(m_CpuSystemHistory.size());
+    m_CpuSystemHistory.copyTo(result.data(), result.size());
+    return result;
+}
+
+std::vector<float> SystemModel::cpuIowaitHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<float> result(m_CpuIowaitHistory.size());
+    m_CpuIowaitHistory.copyTo(result.data(), result.size());
+    return result;
+}
+
+std::vector<float> SystemModel::cpuIdleHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<float> result(m_CpuIdleHistory.size());
+    m_CpuIdleHistory.copyTo(result.data(), result.size());
+    return result;
+}
+
 std::vector<float> SystemModel::memoryHistory() const
 {
     std::shared_lock lock(m_Mutex);
@@ -172,6 +204,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
     if (m_HasPrevious)
     {
         m_CpuHistory.push(static_cast<float>(snap.cpuTotal.totalPercent));
+        m_CpuUserHistory.push(static_cast<float>(snap.cpuTotal.userPercent));
+        m_CpuSystemHistory.push(static_cast<float>(snap.cpuTotal.systemPercent));
+        m_CpuIowaitHistory.push(static_cast<float>(snap.cpuTotal.iowaitPercent));
+        m_CpuIdleHistory.push(static_cast<float>(snap.cpuTotal.idlePercent));
         m_MemoryHistory.push(static_cast<float>(snap.memoryUsedPercent));
         m_SwapHistory.push(static_cast<float>(snap.swapUsedPercent));
 

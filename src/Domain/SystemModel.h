@@ -43,6 +43,10 @@ class SystemModel
     static constexpr size_t HISTORY_SIZE = 120; // 2 minutes at 1 Hz
 
     [[nodiscard]] std::vector<float> cpuHistory() const;
+    [[nodiscard]] std::vector<float> cpuUserHistory() const;
+    [[nodiscard]] std::vector<float> cpuSystemHistory() const;
+    [[nodiscard]] std::vector<float> cpuIowaitHistory() const;
+    [[nodiscard]] std::vector<float> cpuIdleHistory() const;
     [[nodiscard]] std::vector<float> memoryHistory() const;
     [[nodiscard]] std::vector<float> swapHistory() const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
@@ -60,6 +64,10 @@ class SystemModel
 
     // History buffers
     History<float, HISTORY_SIZE> m_CpuHistory;
+    History<float, HISTORY_SIZE> m_CpuUserHistory;
+    History<float, HISTORY_SIZE> m_CpuSystemHistory;
+    History<float, HISTORY_SIZE> m_CpuIowaitHistory;
+    History<float, HISTORY_SIZE> m_CpuIdleHistory;
     History<float, HISTORY_SIZE> m_MemoryHistory;
     History<float, HISTORY_SIZE> m_SwapHistory;
     std::vector<History<float, HISTORY_SIZE>> m_PerCoreHistory;
