@@ -230,7 +230,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
             ImGui::TableSetColumnIndex(pairIndex * 2);
             ImGui::TextUnformatted(label);
-            ImGui::TableSetColumnIndex((pairIndex * 2) + 1);
+            ImGui::TableSetColumnIndex(((pairIndex * 2) + 1));
             renderValue();
             ++fieldIndex;
         };
