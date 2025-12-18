@@ -5,7 +5,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cmath>
 
 namespace UI
 {
@@ -141,30 +140,37 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
         return; // Keep the fallback theme
     }
 
-    // Clear the fallback and load real themes
-    m_DiscoveredThemes.clear();
-    m_LoadedSchemes.clear();
+    // Load into temporary buffers so the existing (fallback) scheme remains available
+    // while parsing themes (useful for defaults/error colors).
+    std::vector<DiscoveredTheme> discoveredThemes;
+    std::vector<ColorScheme> loadedSchemes;
+    discoveredThemes.reserve(discovered.size());
+    loadedSchemes.reserve(discovered.size());
 
     for (auto& info : discovered)
     {
         if (auto scheme = ThemeLoader::loadTheme(info.path))
         {
-            m_DiscoveredThemes.push_back(DiscoveredTheme{
+            discoveredThemes.push_back(DiscoveredTheme{
                 .id = info.id,
                 .name = info.name,
                 .description = info.description,
                 .path = info.path,
             });
-            m_LoadedSchemes.push_back(std::move(*scheme));
+            loadedSchemes.push_back(std::move(*scheme));
         }
     }
 
-    if (m_LoadedSchemes.empty())
+    if (loadedSchemes.empty())
     {
         spdlog::error("Failed to load any themes, reverting to fallback");
         loadDefaultFallbackTheme();
         return;
     }
+
+    m_DiscoveredThemes = std::move(discoveredThemes);
+    m_LoadedSchemes = std::move(loadedSchemes);
+    m_CurrentThemeIndex = 0;
 
     // Set default theme (prefer arctic-fire if available)
     for (std::size_t i = 0; i < m_DiscoveredThemes.size(); ++i)
@@ -186,6 +192,8 @@ void Theme::initializeFontSizes()
     m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Huge)] = {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::EvenHuger)] = {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -228,7 +236,9 @@ void Theme::applyImGuiStyle() const
     style.Colors[ImGuiCol_ChildBg] = s.childBg;
     style.Colors[ImGuiCol_PopupBg] = s.popupBg;
     style.Colors[ImGuiCol_Border] = s.border;
-    style.Colors[ImGuiCol_BorderShadow] = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+    auto borderShadow = s.border;
+    borderShadow.w = 0.0F;
+    style.Colors[ImGuiCol_BorderShadow] = borderShadow;
     style.Colors[ImGuiCol_FrameBg] = s.frameBg;
     style.Colors[ImGuiCol_FrameBgHovered] = s.frameBgHovered;
     style.Colors[ImGuiCol_FrameBgActive] = s.frameBgActive;

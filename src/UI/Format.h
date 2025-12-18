@@ -79,4 +79,14 @@ struct ByteUnit
     return std::format("{} {}", usedTotal, percentCompact(percent));
 }
 
+[[nodiscard]] inline auto formatBytesWithUnit(uint64_t bytes, const ByteUnit& unit) -> std::string
+{
+    const double value = static_cast<double>(bytes) / unit.scale;
+    if (unit.decimals == 1)
+    {
+        return std::format("{:.1f} {}", value, unit.suffix);
+    }
+    return std::format("{:.0f} {}", value, unit.suffix);
+}
+
 } // namespace UI::Format

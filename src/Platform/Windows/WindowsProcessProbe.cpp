@@ -13,8 +13,10 @@
 #include <psapi.h>
 #include <sddl.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 // clang-format on
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -139,6 +141,57 @@ namespace
     return {};
 }
 
+using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+// Some Windows SDK versions omit VM_COUNTERS and/or the ProcessVmCounters enum value from public headers.
+// Define what we need locally for compatibility.
+struct TaskSmackVmCounters
+{
+    SIZE_T peakVirtualSize = 0;
+    SIZE_T virtualSize = 0;
+    ULONG pageFaultCount = 0;
+    SIZE_T peakWorkingSetSize = 0;
+    SIZE_T workingSetSize = 0;
+    SIZE_T quotaPeakPagedPoolUsage = 0;
+    SIZE_T quotaPagedPoolUsage = 0;
+    SIZE_T quotaPeakNonPagedPoolUsage = 0;
+    SIZE_T quotaNonPagedPoolUsage = 0;
+    SIZE_T pagefileUsage = 0;
+    SIZE_T peakPagefileUsage = 0;
+};
+
+constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLASS>(3);
+
+[[nodiscard]] auto queryProcessVirtualSizeBytes(HANDLE hProcess) -> std::optional<uint64_t>
+{
+    if (hProcess == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    auto* fn = reinterpret_cast<NtQueryInformationProcessFn>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    if (fn == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    TaskSmackVmCounters vm{};
+    ULONG returnLen = 0;
+    const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, static_cast<ULONG>(sizeof(vm)), &returnLen);
+    if (status < 0)
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<uint64_t>(vm.virtualSize);
+}
+
 } // namespace
 
 WindowsProcessProbe::WindowsProcessProbe()
@@ -261,7 +314,21 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (GetProcessMemoryInfo(hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.WorkingSetSize;
-        counters.virtualBytes = pmc.PrivateUsage;
+
+        if (auto virtualSizeBytes = queryProcessVirtualSizeBytes(hProcess))
+        {
+            counters.virtualBytes = *virtualSizeBytes;
+        }
+        else if (pmc.PagefileUsage != 0)
+        {
+            // Fallback: commit charge (not virtual address space size, but avoids reporting RSS/Private bytes as VIRT).
+            counters.virtualBytes = pmc.PagefileUsage;
+        }
+        else
+        {
+            // Last resort: private bytes.
+            counters.virtualBytes = pmc.PrivateUsage;
+        }
     }
 
     // Get I/O counters

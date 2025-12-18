@@ -3,6 +3,7 @@
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -11,33 +12,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <format>
 
 namespace App
 {
 
 namespace
 {
-
-void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
-{
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
-
-    const ImVec2 rectMin = ImGui::GetItemRectMin();
-    const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + 1.0F, pos.y + 1.0F), shadowCol, text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
-}
 
 int hoveredIndexFromPlotX(double mouseX, size_t count)
 {
@@ -51,6 +32,27 @@ int hoveredIndexFromPlotX(double mouseX, size_t count)
     const double raw = clampedX - minX;
     const long idx = std::lround(raw);
     return std::clamp(static_cast<int>(idx), 0, static_cast<int>(count - 1));
+}
+
+void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
+                             bool showTime,
+                             int timeSec,
+                             double userPercent,
+                             double systemPercent,
+                             double iowaitPercent,
+                             double idlePercent)
+{
+    ImGui::BeginTooltip();
+    if (showTime)
+    {
+        ImGui::Text("t: %ds", timeSec);
+        ImGui::Separator();
+    }
+    ImGui::TextColored(scheme.cpuUser, "User: %s", UI::Format::percentCompact(userPercent).c_str());
+    ImGui::TextColored(scheme.cpuSystem, "System: %s", UI::Format::percentCompact(systemPercent).c_str());
+    ImGui::TextColored(scheme.cpuIowait, "I/O Wait: %s", UI::Format::percentCompact(iowaitPercent).c_str());
+    ImGui::TextColored(scheme.cpuIdle, "Idle: %s", UI::Format::percentCompact(idlePercent).c_str());
+    ImGui::EndTooltip();
 }
 
 } // namespace
@@ -248,13 +250,12 @@ void SystemMetricsPanel::renderOverview()
     ImGui::Text("CPU Usage:");
     ImGui::SameLine(m_OverviewLabelWidth);
     float cpuFraction = static_cast<float>(snap.cpuTotal.totalPercent) / 100.0F;
-    char cpuOverlay[32];
-    snprintf(cpuOverlay, sizeof(cpuOverlay), "%s", UI::Format::percentCompact(snap.cpuTotal.totalPercent).c_str());
+    const std::string cpuOverlay = UI::Format::percentCompact(snap.cpuTotal.totalPercent);
     ImVec4 cpuColor = theme.progressColor(snap.cpuTotal.totalPercent);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, cpuColor);
     // Use custom overlay text (suppress ImGui's default percent overlay)
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), "");
-    drawRightAlignedOverlayText(cpuOverlay);
+    UI::Widgets::drawRightAlignedOverlayText(cpuOverlay.c_str());
     ImGui::PopStyleColor();
 
     // CPU History Graph
@@ -320,13 +321,13 @@ void SystemMetricsPanel::renderOverview()
                     if (idx >= 0)
                     {
                         const size_t si = static_cast<size_t>(idx);
-                        ImGui::BeginTooltip();
-                        ImGui::Text("t: %ds", idx - static_cast<int>(n - 1));
-                        ImGui::Text("U: %s", UI::Format::percentCompact(static_cast<double>(cpuUserHist[si])).c_str());
-                        ImGui::Text("S: %s", UI::Format::percentCompact(static_cast<double>(cpuSystemHist[si])).c_str());
-                        ImGui::Text("IO: %s", UI::Format::percentCompact(static_cast<double>(cpuIowaitHist[si])).c_str());
-                        ImGui::Text("I: %s", UI::Format::percentCompact(static_cast<double>(cpuIdleHist[si])).c_str());
-                        ImGui::EndTooltip();
+                        showCpuBreakdownTooltip(theme.scheme(),
+                                                true,
+                                                idx - static_cast<int>(n - 1),
+                                                static_cast<double>(cpuUserHist[si]),
+                                                static_cast<double>(cpuSystemHist[si]),
+                                                static_cast<double>(cpuIowaitHist[si]),
+                                                static_cast<double>(cpuIdleHist[si]));
                     }
                 }
             }
@@ -427,36 +428,27 @@ void SystemMetricsPanel::renderOverview()
 
         // Overlay text (consistent with other bars)
         {
-            char breakdownOverlay[96];
-            snprintf(breakdownOverlay,
-                     sizeof(breakdownOverlay),
-                     "U %.1f%%  S %.1f%%  IO %.1f%%  I %.1f%%",
-                     snap.cpuTotal.userPercent,
-                     snap.cpuTotal.systemPercent,
-                     snap.cpuTotal.iowaitPercent,
-                     snap.cpuTotal.idlePercent);
+            const std::string breakdownOverlay = std::format("U {}  S {}  IO {}  I {}",
+                                                             UI::Format::percentCompact(snap.cpuTotal.userPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.systemPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.iowaitPercent),
+                                                             UI::Format::percentCompact(snap.cpuTotal.idlePercent));
 
-            const ImVec2 textSize = ImGui::CalcTextSize(breakdownOverlay);
-            const float pad = 8.0F;
-            const ImVec2 textPos((barStart.x + barWidth - pad - textSize.x), barStart.y + ((barHeight - textSize.y) * 0.5F));
-            const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-            drawList->AddText(ImVec2(textPos.x + 1.0F, textPos.y + 1.0F), shadowCol, breakdownOverlay);
-            drawList->AddText(textPos, textCol, breakdownOverlay);
+            // Reserve space for the bar (so we can draw overlay text based on item rect).
+            ImGui::Dummy(ImVec2(barWidth, barHeight));
+            UI::Widgets::drawRightAlignedOverlayText(breakdownOverlay.c_str());
         }
-
-        // Reserve space for the bar
-        ImGui::Dummy(ImVec2(barWidth, barHeight));
 
         // Tooltip on hover with breakdown details
         if (ImGui::IsItemHovered())
         {
-            ImGui::BeginTooltip();
-            ImGui::TextColored(theme.scheme().cpuUser, "User: %s", UI::Format::percentCompact(snap.cpuTotal.userPercent).c_str());
-            ImGui::TextColored(theme.scheme().cpuSystem, "System: %s", UI::Format::percentCompact(snap.cpuTotal.systemPercent).c_str());
-            ImGui::TextColored(theme.scheme().cpuIowait, "I/O Wait: %s", UI::Format::percentCompact(snap.cpuTotal.iowaitPercent).c_str());
-            ImGui::TextColored(theme.scheme().cpuIdle, "Idle: %s", UI::Format::percentCompact(snap.cpuTotal.idlePercent).c_str());
-            ImGui::EndTooltip();
+            showCpuBreakdownTooltip(theme.scheme(),
+                                    false,
+                                    0,
+                                    snap.cpuTotal.userPercent,
+                                    snap.cpuTotal.systemPercent,
+                                    snap.cpuTotal.iowaitPercent,
+                                    snap.cpuTotal.idlePercent);
         }
     }
 
@@ -483,7 +475,7 @@ void SystemMetricsPanel::renderOverview()
     ImVec4 memColor = theme.progressColor(snap.memoryUsedPercent);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, memColor);
     ImGui::ProgressBar(memFraction, ImVec2(-1, 0), "");
-    drawRightAlignedOverlayText(memOverlay.c_str());
+    UI::Widgets::drawRightAlignedOverlayText(memOverlay.c_str());
     ImGui::PopStyleColor();
 
     // Swap usage bar (if available) with themed color
@@ -498,7 +490,7 @@ void SystemMetricsPanel::renderOverview()
         ImVec4 swapColor = theme.progressColor(snap.swapUsedPercent);
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, swapColor);
         ImGui::ProgressBar(swapFraction, ImVec2(-1, 0), "");
-        drawRightAlignedOverlayText(swapOverlay.c_str());
+        UI::Widgets::drawRightAlignedOverlayText(swapOverlay.c_str());
         ImGui::PopStyleColor();
     }
 }
@@ -548,18 +540,25 @@ void SystemMetricsPanel::renderCpuSection()
                 const int idx = hoveredIndexFromPlotX(mouse.x, n);
                 if (idx >= 0)
                 {
-                    ImGui::BeginTooltip();
-                    ImGui::Text("t: %ds", idx - static_cast<int>(n - 1));
-                    ImGui::Text("CPU: %s", UI::Format::percentCompact(static_cast<double>(cpuHist[static_cast<size_t>(idx)])).c_str());
+                    const int timeSec = idx - static_cast<int>(n - 1);
                     if (m == n)
                     {
                         const size_t si = static_cast<size_t>(idx);
-                        ImGui::Text("U: %s", UI::Format::percentCompact(static_cast<double>(cpuUserHist[si])).c_str());
-                        ImGui::Text("S: %s", UI::Format::percentCompact(static_cast<double>(cpuSystemHist[si])).c_str());
-                        ImGui::Text("IO: %s", UI::Format::percentCompact(static_cast<double>(cpuIowaitHist[si])).c_str());
-                        ImGui::Text("I: %s", UI::Format::percentCompact(static_cast<double>(cpuIdleHist[si])).c_str());
+                        showCpuBreakdownTooltip(theme.scheme(),
+                                                true,
+                                                timeSec,
+                                                static_cast<double>(cpuUserHist[si]),
+                                                static_cast<double>(cpuSystemHist[si]),
+                                                static_cast<double>(cpuIowaitHist[si]),
+                                                static_cast<double>(cpuIdleHist[si]));
                     }
-                    ImGui::EndTooltip();
+                    else
+                    {
+                        ImGui::BeginTooltip();
+                        ImGui::Text("t: %ds", timeSec);
+                        ImGui::Text("CPU: %s", UI::Format::percentCompact(static_cast<double>(cpuHist[static_cast<size_t>(idx)])).c_str());
+                        ImGui::EndTooltip();
+                    }
                 }
             }
         }
@@ -638,22 +637,6 @@ void SystemMetricsPanel::renderMemorySection()
     ImGui::Spacing();
 
     // Memory details
-    auto formatSize = [](uint64_t bytes) -> std::pair<double, const char*>
-    {
-        constexpr double GB = 1024.0 * 1024.0 * 1024.0;
-        constexpr double MB = 1024.0 * 1024.0;
-
-        double value = static_cast<double>(bytes);
-        if (value >= GB)
-        {
-            return {value / GB, "GB"};
-        }
-        return {value / MB, "MB"};
-    };
-
-    auto [availVal, availUnit] = formatSize(snap.memoryAvailableBytes);
-    auto [cachedVal, cachedUnit] = formatSize(snap.memoryCachedBytes);
-
     auto formatSizeForBar = [](uint64_t usedBytes, uint64_t totalBytes, double percent) -> std::string
     {
         return UI::Format::bytesUsedTotalPercentCompact(usedBytes, totalBytes, percent);
@@ -717,17 +700,8 @@ void SystemMetricsPanel::renderMemorySection()
             drawList->AddRectFilled(ImVec2(x, startPos.y), endPos, otherCol, rounding, ImDrawFlags_RoundCornersRight);
         }
 
-        // Overlay text (right-aligned for consistency)
-        if (overlayText != nullptr && overlayText[0] != '\0')
-        {
-            const ImVec2 textSize = ImGui::CalcTextSize(overlayText);
-            const float pad = 8.0F;
-            const ImVec2 textPos((endPos.x - pad - textSize.x), startPos.y + ((size.y - textSize.y) * 0.5F));
-            const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-            drawList->AddText(ImVec2(textPos.x + 1.0F, textPos.y + 1.0F), shadowCol, overlayText);
-            drawList->AddText(textPos, textCol, overlayText);
-        }
+        // Overlay text (consistent with other bars)
+        UI::Widgets::drawRightAlignedOverlayText(overlayText);
 
         // Restore cursor position to below the bar.
         ImGui::SetCursorScreenPos(ImVec2(startPos.x, endPos.y + ImGui::GetStyle().ItemInnerSpacing.y));
@@ -741,12 +715,28 @@ void SystemMetricsPanel::renderMemorySection()
     // Details in tooltip (keeps bars consistent across panels)
     if (ImGui::IsItemHovered())
     {
+        if (snap.memoryTotalBytes == 0)
+        {
+            return;
+        }
+
+        // Mirror stacked-bar clamping so tooltip numbers match segments.
+        const uint64_t totalBytes = snap.memoryTotalBytes;
+        const uint64_t usedBytes = std::min(snap.memoryUsedBytes, totalBytes);
+        const uint64_t remainingAfterUsed = totalBytes - usedBytes;
+        const uint64_t cachedBytes = std::min(snap.memoryCachedBytes, remainingAfterUsed);
+        const uint64_t otherBytes = remainingAfterUsed - cachedBytes;
+
+        const UI::Format::ByteUnit unit = UI::Format::unitForTotalBytes(totalBytes);
+        const double cachedPercent = (totalBytes > 0) ? (static_cast<double>(cachedBytes) / static_cast<double>(totalBytes) * 100.0) : 0.0;
+        const double otherPercent = (totalBytes > 0) ? (static_cast<double>(otherBytes) / static_cast<double>(totalBytes) * 100.0) : 0.0;
+
         ImGui::BeginTooltip();
         const std::string usedLabel =
             UI::Format::bytesUsedTotalPercentCompact(snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent);
         ImGui::Text("Used: %s", usedLabel.c_str());
-        ImGui::Text("Available: %.1f %s", availVal, availUnit);
-        ImGui::Text("Cached: %.1f %s", cachedVal, cachedUnit);
+        ImGui::Text("Cached: %s (%s)", UI::Format::formatBytesWithUnit(cachedBytes, unit).c_str(), UI::Format::percentCompact(cachedPercent).c_str());
+        ImGui::Text("Available: %s (%s)", UI::Format::formatBytesWithUnit(otherBytes, unit).c_str(), UI::Format::percentCompact(otherPercent).c_str());
         ImGui::EndTooltip();
     }
 
@@ -816,7 +806,7 @@ void SystemMetricsPanel::renderMemorySection()
             const ImVec4 swapColor = theme.progressColor(snap.swapUsedPercent);
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram, swapColor);
             ImGui::ProgressBar(swapFraction, ImVec2(-1, 0), "");
-            drawRightAlignedOverlayText(swapOverlay.c_str());
+            UI::Widgets::drawRightAlignedOverlayText(swapOverlay.c_str());
             ImGui::PopStyleColor();
         }
     }
@@ -866,8 +856,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                 double percent = snap.cpuPerCore[coreIdx].totalPercent;
                 float fraction = static_cast<float>(percent) / 100.0F;
 
-                char overlay[16];
-                snprintf(overlay, sizeof(overlay), "%5.1f%%", percent);
+                const std::string overlay = UI::Format::percentCompact(percent);
 
                 // Use theme color
                 ImVec4 color = theme.progressColor(percent);
@@ -880,7 +869,8 @@ void SystemMetricsPanel::renderPerCoreSection()
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + m_PerCoreLabelWidth - labelW);
                 ImGui::Text("%s", label);
                 ImGui::SameLine(0.0F, ImGui::GetStyle().ItemSpacing.x);
-                ImGui::ProgressBar(fraction, ImVec2(-1, 0), overlay);
+                ImGui::ProgressBar(fraction, ImVec2(-1, 0), "");
+                UI::Widgets::drawRightAlignedOverlayText(overlay.c_str());
 
                 ImGui::PopStyleColor();
             }

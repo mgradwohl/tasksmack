@@ -1,6 +1,6 @@
 # TaskSmack
 
-A modern C++23 project template with clang toolchain, CMake Presets, Google Test, and VS Code integration.
+A modern C++23 CMake project with clang toolchain, CMake Presets, Google Test, and VS Code integration.
 
 ## Features
 
@@ -21,46 +21,14 @@ A modern C++23 project template with clang toolchain, CMake Presets, Google Test
 
 ## Getting Started
 
-### Step 1: Create a New Repository from This Template
-
-1. Click the green **"Use this template"** button at the top of this page
-2. Select **"Create a new repository"**
-3. Name your repository (e.g., `AwesomeApp`)
-4. Click **"Create repository"**
-
-### Step 2: Clone Your New Repository
+### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-cd YOUR_REPO_NAME
+git clone https://github.com/mgradwohl/TaskSmack.git
+cd TaskSmack
 ```
 
-### Step 3: Run the Setup Script
-
-The setup script renames all placeholder names (`TaskSmack`, `TASKSMACK`, `tasksmack`) throughout the codebase to your project name:
-
-```bash
-# Linux/macOS
-./setup.sh --name "YourProjectName"
-
-# Windows (PowerShell)
-.\setup.ps1 -Name "YourProjectName"
-
-# Optional: include author name
-./setup.sh --name "YourProjectName" --author "Matt Gradwohl"
-```
-
-> **Note:** The setup script deletes itself after running - it's only needed once.
-
-### Step 4: Commit the Changes
-
-```bash
-git add -A
-git commit -m "Initial project setup"
-git push
-```
-
-### Step 5: Build and Run
+### Step 2: Build and Run
 
 Using CMake Presets (recommended):
 
@@ -81,7 +49,7 @@ List all available presets:
 cmake --list-presets
 ```
 
-### Step 6: Run Tests
+### Step 3: Run Tests
 
 ```bash
 # Linux
@@ -138,47 +106,6 @@ The script:
 - Adds LLVM and CMake to PATH
 
 > **Note:** You may need to update the paths in `Devshell-Updated.ps1` to match your Visual Studio installation.
-
-## Project Structure
-
-```
-.
-├── CMakeLists.txt          # Main build configuration
-├── CMakePresets.json       # CMake presets for all platforms/configs
-├── Devshell-Updated.ps1    # Windows dev environment setup
-├── setup.sh / setup.ps1    # Project renaming scripts (deleted after use)
-├── src/
-│   ├── main.cpp            # Application entry point
-│   └── version.h.in        # Version header template (generates version.h)
-├── tests/
-│   ├── CMakeLists.txt      # Test configuration
-│   └── test_main.cpp       # Example tests
-├── tools/
-│   ├── build.sh/ps1        # Build helper scripts
-│   ├── configure.sh/ps1    # Configure helper scripts
-│   ├── check-prereqs.sh/ps1 # Check prerequisite tools and versions
-│   ├── clang-tidy.sh/ps1   # Static analysis
-│   ├── clang-format.sh/ps1 # Code formatting
-│   ├── check-format.sh/ps1 # Format checking
-│   └── coverage.sh/ps1     # Code coverage reports
-├── dist/                   # CPack output (generated, gitignored)
-│   └── *.zip, *.tar.gz     # Distribution packages
-├── coverage/               # Coverage reports (generated, gitignored)
-│   └── index.html          # HTML coverage report
-├── .clang-format           # Formatting rules
-├── .clang-tidy             # Static analysis rules
-├── .clangd                 # clangd LSP configuration
-├── .github/
-│   ├── workflows/ci.yml    # CI/CD pipeline
-│   ├── ISSUE_TEMPLATE/     # Bug report and feature request templates
-│   ├── pull_request_template.md  # PR checklist
-│   └── dependabot.yml      # Automated dependency updates
-├── SECURITY.md             # Security policy and vulnerability reporting
-└── .vscode/
-    ├── tasks.json          # Build tasks (platform-aware)
-    ├── launch.json         # Debug configurations (platform-aware)
-    └── settings.json       # Editor settings
-```
 
 ## VS Code Integration
 
@@ -406,7 +333,7 @@ cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON -DTASKSMACK_FETCHC
 
 ## CI/CD
 
-This template includes a GitHub Actions workflow (`.github/workflows/ci.yml`) that automatically:
+This repository includes a GitHub Actions workflow (`.github/workflows/ci.yml`) that automatically:
 - Builds on Linux (Ubuntu 24.04) and Windows
 - Runs all tests
 - Runs sanitizers (ASan+UBSan, TSan) on Linux
@@ -418,9 +345,9 @@ This template includes a GitHub Actions workflow (`.github/workflows/ci.yml`) th
 
 ## Design Decisions
 
-This section documents intentional design choices to help template users understand why certain approaches were taken.
+This section documents intentional design choices to help contributors understand why certain approaches were taken.
 
-### What This Template Uses
+### What This Project Uses
 
 | Choice | Rationale |
 |--------|----------|
@@ -441,8 +368,8 @@ Some checks are disabled in `.clang-tidy` due to false positives or excessive no
 | `bugprone-easily-swappable-parameters` | Too opinionated for general use |
 | `modernize-use-trailing-return-type` | Style preference, not a correctness issue |
 | `readability-identifier-naming` | Conflicts with different naming conventions |
-| `readability-identifier-length` | Too restrictive for template code |
-| `readability-magic-numbers` | Too noisy for a template project |
+| `readability-identifier-length` | Too restrictive for this codebase |
+| `readability-magic-numbers` | Too noisy for this project |
 | `readability-implicit-bool-conversion` | Common C++ idiom |
 | `portability-avoid-pragma-once` | `#pragma once` is the project standard |
 
@@ -451,7 +378,7 @@ Some checks are disabled in `.clang-tidy` due to false positives or excessive no
 | Feature | Reason Not Included |
 |---------|---------------------|
 | **CMake toolchain files** | Presets provide complete build configurations already |
-| **install/export config** | This is an app template, not a library with downstream consumers |
+| **install/export config** | This is an application, not a library with downstream consumers |
 | **libc++** | Adds complexity; platform defaults work well and are more portable |
 | **CPM.cmake** | FetchContent is sufficient; CPM adds another dependency to manage |
 
