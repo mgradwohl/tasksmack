@@ -174,7 +174,7 @@ void ShellLayer::renderMenuBar()
 {
     // Increase vertical padding for menu items to center text better
     float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
-    float verticalPadding = ((menuBarHeight - ImGui::GetFontSize()) * 0.5F);
+    float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
 
     if (ImGui::BeginMainMenuBar())
@@ -224,7 +224,8 @@ void ShellLayer::renderMenuBar()
                     auto fontSize = static_cast<UI::FontSize>(i);
                     const auto& cfg = theme.fontConfig(fontSize);
                     bool selected = (currentSize == fontSize);
-                    if (ImGui::MenuItem(std::string(cfg.name).c_str(), nullptr, selected))
+                    const std::string label(cfg.name);
+                    if (ImGui::MenuItem(label.c_str(), nullptr, selected))
                     {
                         theme.setFontSize(fontSize);
                     }

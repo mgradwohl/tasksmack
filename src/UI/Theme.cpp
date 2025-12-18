@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace UI
 {
@@ -44,12 +45,9 @@ void Theme::loadDefaultFallbackTheme()
     fallback.textSuccess = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
     fallback.textInfo = blue;
 
-    fallback.statusRunning = ImVec4(0.0F, 0.9F, 0.4F, 1.0F);   // Green
-    fallback.statusSleeping = ImVec4(0.6F, 0.6F, 0.6F, 1.0F);  // Gray
-    fallback.statusDiskSleep = ImVec4(1.0F, 0.7F, 0.0F, 1.0F); // Orange
-    fallback.statusZombie = ImVec4(1.0F, 0.2F, 0.2F, 1.0F);    // Red
-    fallback.statusStopped = ImVec4(0.7F, 0.3F, 0.8F, 1.0F);   // Purple
-    fallback.statusIdle = ImVec4(0.5F, 0.5F, 0.5F, 1.0F);      // Dark gray
+    fallback.statusRunning = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
+    fallback.statusStopped = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
+    fallback.statusSleeping = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
 
     fallback.chartCpu = blue;
     fallback.chartMemory = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
@@ -188,8 +186,6 @@ void Theme::initializeFontSizes()
     m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
     m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Huge)] = {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::EvenHuger)] = {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -341,10 +337,10 @@ auto Theme::heatmapColor(double percent) const -> ImVec4
     const ImVec4& c2 = colors[idx + 1];
 
     const auto localTf = static_cast<float>(localT);
-    return {c1.x + ((c2.x - c1.x) * localTf),
-            c1.y + ((c2.y - c1.y) * localTf),
-            c1.z + ((c2.z - c1.z) * localTf),
-            c1.w + ((c2.w - c1.w) * localTf)};
+    return ImVec4(c1.x + ((c2.x - c1.x) * localTf),
+                  c1.y + ((c2.y - c1.y) * localTf),
+                  c1.z + ((c2.z - c1.z) * localTf),
+                  c1.w + ((c2.w - c1.w) * localTf));
 }
 
 auto Theme::progressColor(double percent) const -> ImVec4

@@ -23,7 +23,7 @@ struct UserSettings
     bool showMetrics = true;
     bool showDetails = true;
 
-    // Process panel column visibility
+    // Process table column visibility
     ProcessColumnSettings processColumns;
 
     // Window state (optional, for future use)

@@ -854,7 +854,8 @@ void SystemMetricsPanel::renderPerCoreSection()
             ImGui::TableNextRow();
             for (int col = 0; col < numCols; ++col)
             {
-                size_t coreIdx = (static_cast<size_t>(row) * static_cast<size_t>(numCols)) + static_cast<size_t>(col);
+                const auto numColsSizeT = static_cast<std::size_t>(numCols);
+                const auto coreIdx = (static_cast<std::size_t>(row) * numColsSizeT) + static_cast<std::size_t>(col);
                 if (coreIdx >= numCores)
                 {
                     break;

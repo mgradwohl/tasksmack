@@ -167,8 +167,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         return results;
     }
 
-    // NOLINTBEGIN(cppcoreguidelines-avoid-do-while) - idiomatic Win32 Process32First/Next pattern
-    do
+    for (BOOL hasEntry = TRUE; hasEntry != FALSE; hasEntry = Process32NextW(hSnapshot, &pe32))
     {
         ProcessCounters counters{};
         counters.pid = static_cast<int32_t>(pe32.th32ProcessID);
@@ -181,8 +180,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         (void) getProcessDetails(pe32.th32ProcessID, counters);
 
         results.push_back(std::move(counters));
-    } while (Process32NextW(hSnapshot, &pe32) != 0);
-    // NOLINTEND(cppcoreguidelines-avoid-do-while)
+    }
 
     CloseHandle(hSnapshot);
 
@@ -264,12 +262,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
         counters.rssBytes = pmc.WorkingSetSize;
         counters.virtualBytes = pmc.PrivateUsage;
-        // Shared memory is approximately WorkingSetSize minus private usage
-        // This represents memory shared with other processes (DLLs, memory-mapped files, etc.)
-        if (pmc.WorkingSetSize > pmc.PrivateUsage)
-        {
-            counters.sharedBytes = pmc.WorkingSetSize - pmc.PrivateUsage;
-        }
     }
 
     // Get I/O counters
@@ -333,6 +325,7 @@ uint64_t WindowsProcessProbe::systemTotalMemory() const
     {
         return memStatus.ullTotalPhys;
     }
+
     spdlog::error("GlobalMemoryStatusEx failed: {}", GetLastError());
     return 0;
 }

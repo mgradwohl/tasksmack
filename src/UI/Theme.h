@@ -20,13 +20,10 @@ enum class FontSize : std::uint8_t
     Medium,     // 8pt / 10pt (default)
     Large,      // 10pt / 12pt
     ExtraLarge, // 12pt / 14pt
-    Huge,       // 14pt / 16pt
-    EvenHuger,  // 16pt / 18pt
     Count
 };
 
 /// Color scheme definition with heatmap gradient and accent colors
-// NOLINTBEGIN(readability-redundant-member-init) - explicit {} init preferred for clarity
 struct ColorScheme
 {
     std::string name;
@@ -50,12 +47,12 @@ struct ColorScheme
     ImVec4 textInfo{};    // Informational text
 
     // Status colors for process states
-    ImVec4 statusRunning{};   // R - Running/Active (green)
-    ImVec4 statusSleeping{};  // S - Sleeping/Interruptible (gray/muted)
-    ImVec4 statusDiskSleep{}; // D - Disk sleep/Uninterruptible (yellow/orange)
-    ImVec4 statusZombie{};    // Z - Zombie/Defunct (red)
-    ImVec4 statusStopped{};   // T - Stopped/Traced (purple/magenta)
-    ImVec4 statusIdle{};      // I - Idle kernel thread (gray)
+    ImVec4 statusRunning{};   // Running/Active (R)
+    ImVec4 statusSleeping{};  // Sleeping/Waiting (S)
+    ImVec4 statusDiskSleep{}; // Uninterruptible I/O (D) - important diagnostic state
+    ImVec4 statusZombie{};    // Defunct/Zombie (Z) - important diagnostic state
+    ImVec4 statusStopped{};   // Stopped/Traced (T/t)
+    ImVec4 statusIdle{};      // Idle kernel thread (I)
 
     // Chart line colors (for specific metrics)
     ImVec4 chartCpu{};    // CPU usage line
@@ -131,7 +128,6 @@ struct ColorScheme
     ImVec4 navWindowingDimBg{};
     ImVec4 modalWindowDimBg{};
 };
-// NOLINTEND(readability-redundant-member-init)
 
 /// Information about a discovered theme
 struct DiscoveredTheme

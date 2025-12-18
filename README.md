@@ -28,16 +28,41 @@ A modern C++23 project template with clang toolchain, CMake Presets, Google Test
 3. Name your repository (e.g., `AwesomeApp`)
 4. Click **"Create repository"**
 
-### Step 2: Clone This Repository
+### Step 2: Clone Your New Repository
 
 ```bash
-git clone https://github.com/mgradwohl/TaskSmack.git
-cd TaskSmack
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
+cd YOUR_REPO_NAME
 ```
 
-### Step 4: Build and Run
+### Step 3: Run the Setup Script
 
-Using CMake Presets or vscode tasks:
+The setup script renames all placeholder names (`TaskSmack`, `TASKSMACK`, `tasksmack`) throughout the codebase to your project name:
+
+```bash
+# Linux/macOS
+./setup.sh --name "YourProjectName"
+
+# Windows (PowerShell)
+.\setup.ps1 -Name "YourProjectName"
+
+# Optional: include author name
+./setup.sh --name "YourProjectName" --author "Matt Gradwohl"
+```
+
+> **Note:** The setup script deletes itself after running - it's only needed once.
+
+### Step 4: Commit the Changes
+
+```bash
+git add -A
+git commit -m "Initial project setup"
+git push
+```
+
+### Step 5: Build and Run
+
+Using CMake Presets (recommended):
 
 ```bash
 # Linux
@@ -113,6 +138,47 @@ The script:
 - Adds LLVM and CMake to PATH
 
 > **Note:** You may need to update the paths in `Devshell-Updated.ps1` to match your Visual Studio installation.
+
+## Project Structure
+
+```
+.
+├── CMakeLists.txt          # Main build configuration
+├── CMakePresets.json       # CMake presets for all platforms/configs
+├── Devshell-Updated.ps1    # Windows dev environment setup
+├── setup.sh / setup.ps1    # Project renaming scripts (deleted after use)
+├── src/
+│   ├── main.cpp            # Application entry point
+│   └── version.h.in        # Version header template (generates version.h)
+├── tests/
+│   ├── CMakeLists.txt      # Test configuration
+│   └── test_main.cpp       # Example tests
+├── tools/
+│   ├── build.sh/ps1        # Build helper scripts
+│   ├── configure.sh/ps1    # Configure helper scripts
+│   ├── check-prereqs.sh/ps1 # Check prerequisite tools and versions
+│   ├── clang-tidy.sh/ps1   # Static analysis
+│   ├── clang-format.sh/ps1 # Code formatting
+│   ├── check-format.sh/ps1 # Format checking
+│   └── coverage.sh/ps1     # Code coverage reports
+├── dist/                   # CPack output (generated, gitignored)
+│   └── *.zip, *.tar.gz     # Distribution packages
+├── coverage/               # Coverage reports (generated, gitignored)
+│   └── index.html          # HTML coverage report
+├── .clang-format           # Formatting rules
+├── .clang-tidy             # Static analysis rules
+├── .clangd                 # clangd LSP configuration
+├── .github/
+│   ├── workflows/ci.yml    # CI/CD pipeline
+│   ├── ISSUE_TEMPLATE/     # Bug report and feature request templates
+│   ├── pull_request_template.md  # PR checklist
+│   └── dependabot.yml      # Automated dependency updates
+├── SECURITY.md             # Security policy and vulnerability reporting
+└── .vscode/
+    ├── tasks.json          # Build tasks (platform-aware)
+    ├── launch.json         # Debug configurations (platform-aware)
+    └── settings.json       # Editor settings
+```
 
 ## VS Code Integration
 
@@ -393,12 +459,9 @@ Some checks are disabled in `.clang-tidy` due to false positives or excessive no
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
-**Coding standards**: See [.github/copilot-instructions.md](.github/copilot-instructions.md) for comprehensive C++23 coding standards, including Rule of 5, RAII, and clang-tidy warning avoidance.
-
 - Use the **issue templates** for bug reports and feature requests
 - PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
-- For GitHub Copilot users, see [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) for best practices
 
 ## License
 
