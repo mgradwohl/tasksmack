@@ -243,33 +243,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             addField("User", [&]() { ImGui::TextUnformatted(proc.user.c_str()); });
         }
-        else
-        {
-            addField("Status", renderStatus);
-        }
 
-        if (proc.user.empty())
-        {
-            // Status already added above.
-        }
-        else
-        {
-            addField("Status", renderStatus);
-        }
+        addField("Status", renderStatus);
 
         if (proc.threadCount > 0)
         {
             addField("Threads", [&]() { ImGui::Text("%d", proc.threadCount); });
         }
-        else
-        {
-            addField("Nice", [&]() { ImGui::Text("%d", proc.nice); });
-        }
 
-        if (proc.threadCount > 0)
-        {
-            addField("Nice", [&]() { ImGui::Text("%d", proc.nice); });
-        }
+        addField("Nice", [&]() { ImGui::Text("%d", proc.nice); });
 
         addField("CPU Time", renderCpuTime);
 
