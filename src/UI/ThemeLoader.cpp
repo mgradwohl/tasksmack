@@ -69,7 +69,13 @@ auto parseColorNode(const toml::node& node) -> ImVec4
 {
     if (node.is_string())
     {
-        return ThemeLoader::hexToImVec4(*node.value<std::string>());
+        const auto str = node.value<std::string>();
+        if (str.has_value())
+        {
+            return ThemeLoader::hexToImVec4(*str);
+        }
+        spdlog::warn("Invalid color string node");
+        return errorColor();
     }
 
     if (node.is_array())
@@ -94,7 +100,13 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 {
     if (view.is_string())
     {
-        return ThemeLoader::hexToImVec4(*view.value<std::string>());
+        const auto str = view.value<std::string>();
+        if (str.has_value())
+        {
+            return ThemeLoader::hexToImVec4(*str);
+        }
+        spdlog::warn("Invalid color string node");
+        return errorColor();
     }
 
     if (view.is_array())

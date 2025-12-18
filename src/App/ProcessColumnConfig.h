@@ -48,33 +48,33 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     // clang-format off
     constexpr std::array<ProcessColumnInfo, static_cast<size_t>(ProcessColumn::Count)> infos = {{
         // PID - always visible
-        {"PID", "pid", 60.0F, true, false, "Process ID"},
+        {.name="PID", .configKey="pid", .defaultWidth=60.0F, .defaultVisible=true, .canHide=false, .description="Process ID"},
         // User
-        {"User", "user", 80.0F, true, true, "Process owner"},
+        {.name="User", .configKey="user", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Process owner"},
         // CPU%
-        {"CPU %", "cpu_percent", 55.0F, true, true, "CPU usage percentage"},
+        {.name="CPU %", .configKey="cpu_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="CPU usage percentage"},
         // MEM%
-        {"MEM %", "mem_percent", 55.0F, true, true, "Memory usage as percentage of total RAM"},
+        {.name="MEM %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
         // VIRT
-        {"VIRT", "virtual", 80.0F, false, true, "Virtual memory size"},
+        {.name="VIRT", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
         // RES
-        {"RES", "resident", 80.0F, true, true, "Resident memory (physical RAM used)"},
+        {.name="RES", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
         // SHR
-        {"SHR", "shared", 70.0F, false, true, "Shared memory size"},
+        {.name="SHR", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // TIME+
-        {"TIME+", "cpu_time", 85.0F, true, true, "Cumulative CPU time (H:MM:SS.cc)"},
+        {.name="TIME+", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS.cc)"},
         // State
-        {"S", "state", 25.0F, true, true, "Process state (R=Running, S=Sleeping, etc.)"},
+        {.name="S", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
         // Name
-        {"Name", "name", 120.0F, true, false, "Process name"},
+        {.name="Name", .configKey="name", .defaultWidth=120.0F, .defaultVisible=true, .canHide=false, .description="Process name"},
         // PPID
-        {"PPID", "ppid", 60.0F, false, true, "Parent process ID"},
+        {.name="PPID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Nice
-        {"NI", "nice", 35.0F, false, true, "Nice value (priority, -20 to 19)"},
+        {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
         // Threads
-        {"THR", "threads", 45.0F, false, true, "Thread count"},
+        {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Command
-        {"Command", "command", 0.0F, true, true, "Full command line (0 = stretch)"},
+        {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
     }};
     // clang-format on
 

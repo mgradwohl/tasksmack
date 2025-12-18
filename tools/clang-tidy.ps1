@@ -37,6 +37,15 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 
+# Limit header diagnostics to project headers.
+# Note: clang-tidy requires --header-filter to be set when using --exclude-header-filter.
+$ProjectRootRegex = [regex]::Escape($ProjectRoot)
+$HeaderFilterRegex = "^$ProjectRootRegex[\\/](src|tests)[\\/]"
+
+# Exclude generated/build trees and the other platform's folder.
+# gladsources is generated under build\<preset>\gladsources.
+$ExcludeHeaderFilterRegex = "^$ProjectRootRegex[\\/](build|dist|coverage|\.cache)[\\/]|^$ProjectRootRegex[\\/]src[\\/]Platform[\\/]Linux[\\/]|^$ProjectRootRegex.*[\\/]gladsources[\\/]"
+
 # Build directory
 $BuildDir = Join-Path $ProjectRoot "build\win-$BuildType"
 $CompileCommandsJson = Join-Path $BuildDir "compile_commands.json"
@@ -155,6 +164,8 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     
     $output = & $clangTidy `
         --config-file="$configFile" `
+        --header-filter="$using:HeaderFilterRegex" `
+        --exclude-header-filter="$using:ExcludeHeaderFilterRegex" `
         -p "$buildDir" `
         --extra-arg=-std=c++23 `
         --extra-arg=-Wno-unknown-warning-option `

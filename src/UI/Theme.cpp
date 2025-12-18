@@ -341,7 +341,7 @@ auto Theme::heatmapColor(double percent) const -> ImVec4
         idx = 3;
     }
 
-    const double localT = (t - static_cast<double>(idx) * STEP) / STEP;
+    const double localT = (t - (static_cast<double>(idx) * STEP)) / STEP;
 
     const ImVec4& c1 = colors[idx];
     const ImVec4& c2 = colors[idx + 1];
