@@ -1,5 +1,22 @@
 # CI Workflow Review Recommendations
 
+This document previously contained a detailed, per-issue writeup of CI workflow improvement recommendations.
+
+Those recommendations have been migrated to GitHub issues and are now tracked there as the source of truth:
+- https://github.com/mgradwohl/tasksmack/issues/48
+- https://github.com/mgradwohl/tasksmack/issues/49
+- https://github.com/mgradwohl/tasksmack/issues/50
+- https://github.com/mgradwohl/tasksmack/issues/51
+- https://github.com/mgradwohl/tasksmack/issues/52
+- https://github.com/mgradwohl/tasksmack/issues/53
+- https://github.com/mgradwohl/tasksmack/issues/54
+- https://github.com/mgradwohl/tasksmack/issues/55
+- https://github.com/mgradwohl/tasksmack/issues/56
+- https://github.com/mgradwohl/tasksmack/issues/57
+
+Quick search: https://github.com/mgradwohl/tasksmack/issues?q=is%3Aissue+%5BCI%5D
+# CI Workflow Review Recommendations
+
 This document contains recommendations for improving the CI workflow in `.github/workflows/ci.yml` based on a comprehensive review of the project documentation and current implementation.
 
 ## Summary

@@ -44,39 +44,31 @@ Conducted comprehensive review of all markdown documentation files and the CI wo
 
 ### 1. Detailed Analysis Document
 **File:** `CI_WORKFLOW_RECOMMENDATIONS.md`
-- Complete analysis of all 10 recommendations
-- Implementation code samples for each
-- Impact assessment
-- Cross-references to source documentation
-- Priority ordering
+- This content has been migrated to GitHub issues (see below)
 
 ### 2. Issue Creation Script
-**File:** `tools/create-ci-issues.sh`
-- Automated script to create all 10 GitHub issues
-- Pre-filled with detailed descriptions
-- Proper labeling (bug, enhancement, ci, security, etc.)
-- Ready to run with `gh` CLI
+**Status:** Historical automation script removed from docs (issues already exist)
 
 ### 3. This Summary
 **File:** `CI_REVIEW_SUMMARY.md`
 - Executive overview of findings
 - Quick reference for next steps
 
-## How to Create Issues
+## GitHub Issues
 
-### Option 1: Automated (Recommended)
-```bash
-# Ensure GitHub CLI is installed and authenticated
-gh auth login
+The CI recommendations are already tracked as GitHub issues:
+- https://github.com/mgradwohl/tasksmack/issues/48
+- https://github.com/mgradwohl/tasksmack/issues/49
+- https://github.com/mgradwohl/tasksmack/issues/50
+- https://github.com/mgradwohl/tasksmack/issues/51
+- https://github.com/mgradwohl/tasksmack/issues/52
+- https://github.com/mgradwohl/tasksmack/issues/53
+- https://github.com/mgradwohl/tasksmack/issues/54
+- https://github.com/mgradwohl/tasksmack/issues/55
+- https://github.com/mgradwohl/tasksmack/issues/56
+- https://github.com/mgradwohl/tasksmack/issues/57
 
-# Run the issue creation script
-./tools/create-ci-issues.sh
-```
-
-This will create all 10 issues in one command.
-
-### Option 2: Manual
-Review `CI_WORKFLOW_RECOMMENDATIONS.md` and create issues manually using the provided templates.
+Quick search: https://github.com/mgradwohl/tasksmack/issues?q=is%3Aissue+%5BCI%5D
 
 ## Workflow Strengths
 
@@ -125,11 +117,9 @@ Total estimated effort: **4-5 hours** for all improvements
 
 ## Next Steps
 
-1. ✅ Review this summary and detailed recommendations
-2. ⏳ Run `tools/create-ci-issues.sh` to create GitHub issues
-3. ⏳ Prioritize and assign issues
-4. ⏳ Consider creating a project board to track implementation
-5. ⏳ Start with high-priority issues (#1 and #7)
+1. ✅ Review this summary
+2. ⏳ Prioritize and assign the CI issues
+3. ⏳ Implement starting with the highest priority items
 
 ## Questions or Concerns?
 
