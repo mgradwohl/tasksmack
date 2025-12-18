@@ -240,6 +240,8 @@ class Theme
 
     Theme(const Theme&) = delete;
     auto operator=(const Theme&) -> Theme& = delete;
+    Theme(Theme&&) = delete;
+    auto operator=(Theme&&) -> Theme& = delete;
 
     std::vector<DiscoveredTheme> m_DiscoveredThemes;
     std::vector<ColorScheme> m_LoadedSchemes;
