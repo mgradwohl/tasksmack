@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <thread>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -32,7 +32,7 @@ namespace
 {
 [[nodiscard]] int32_t getCurrentPid()
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     return static_cast<int32_t>(GetCurrentProcessId());
 #else
     return static_cast<int32_t>(getpid());
