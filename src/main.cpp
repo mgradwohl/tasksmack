@@ -21,7 +21,9 @@
 #endif
 #include <cstdio>
 
-static auto runApp() -> int
+namespace
+{
+auto runApp() -> int
 {
 // Required on Windows to see console output when launching from an IDE or debugger
 #if defined(_WIN32) && !defined(NDEBUG)
@@ -73,6 +75,8 @@ static auto runApp() -> int
 
     return 0;
 }
+
+} // namespace
 
 // Entry points
 #ifdef _WIN32

@@ -146,6 +146,23 @@ void UserConfig::load()
             m_Settings.windowMaximized = *val;
         }
 
+        // Process panel column visibility
+        if (auto* cols = config["process_columns"].as_table())
+        {
+            for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+            {
+                auto col = static_cast<ProcessColumn>(i);
+                const auto info = getColumnInfo(col);
+                if (auto* node = cols->get(info.configKey); node != nullptr)
+                {
+                    if (auto val = node->value<bool>())
+                    {
+                        m_Settings.processColumns.setVisible(col, *val);
+                    }
+                }
+            }
+        }
+
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
     catch (const toml::parse_error& err)
@@ -190,6 +207,15 @@ void UserConfig::save() const
         break;
     }
 
+    // Build process columns table
+    auto processColumnsTable = toml::table{};
+    for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+    {
+        auto col = static_cast<ProcessColumn>(i);
+        const auto info = getColumnInfo(col);
+        processColumnsTable.insert(std::string(info.configKey), m_Settings.processColumns.isVisible(col));
+    }
+
     // Build TOML document
     auto config = toml::table{
         {"theme", toml::table{{"id", m_Settings.themeId}}},
@@ -206,6 +232,7 @@ void UserConfig::save() const
              {"height", m_Settings.windowHeight},
              {"maximized", m_Settings.windowMaximized},
          }},
+        {"process_columns", processColumnsTable},
     };
 
     // Write to file

@@ -121,6 +121,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.displayState = translateState(current.state);
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;
+    snapshot.sharedBytes = current.sharedBytes;
     snapshot.threadCount = current.threadCount;
     snapshot.nice = current.nice;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);

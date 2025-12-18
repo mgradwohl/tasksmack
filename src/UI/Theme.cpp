@@ -182,10 +182,10 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 void Theme::initializeFontSizes()
 {
     // Font size presets (regular/large point sizes)
-    m_FontSizes[static_cast<std::size_t>(FontSize::Small)] = {"Small", 6.0F, 8.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {"Medium", 8.0F, 10.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {"Large", 10.0F, 12.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {"Extra Large", 12.0F, 14.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Small)] = {.name = "Small", .regularPt = 6.0F, .largePt = 8.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
+    m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -337,8 +337,10 @@ auto Theme::heatmapColor(double percent) const -> ImVec4
     const ImVec4& c2 = colors[idx + 1];
 
     const auto localTf = static_cast<float>(localT);
-    return ImVec4(
-        c1.x + (c2.x - c1.x) * localTf, c1.y + (c2.y - c1.y) * localTf, c1.z + (c2.z - c1.z) * localTf, c1.w + (c2.w - c1.w) * localTf);
+    return ImVec4(c1.x + ((c2.x - c1.x) * localTf),
+                  c1.y + ((c2.y - c1.y) * localTf),
+                  c1.z + ((c2.z - c1.z) * localTf),
+                  c1.w + ((c2.w - c1.w) * localTf));
 }
 
 auto Theme::progressColor(double percent) const -> ImVec4
@@ -418,7 +420,7 @@ auto Theme::largeFont() const -> ImFont*
 
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
 {
-    m_Fonts[static_cast<std::size_t>(size)] = {regular, large};
+    m_Fonts[static_cast<std::size_t>(size)] = {.regular = regular, .large = large};
 }
 
 } // namespace UI

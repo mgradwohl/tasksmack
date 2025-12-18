@@ -173,7 +173,7 @@ void ShellLayer::setupDockspace()
 void ShellLayer::renderMenuBar()
 {
     // Increase vertical padding for menu items to center text better
-    float menuBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.y * 2.0F;
+    float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
     float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
 
@@ -224,7 +224,8 @@ void ShellLayer::renderMenuBar()
                     auto fontSize = static_cast<UI::FontSize>(i);
                     const auto& cfg = theme.fontConfig(fontSize);
                     bool selected = (currentSize == fontSize);
-                    if (ImGui::MenuItem(cfg.name.data(), nullptr, selected))
+                    const std::string label(cfg.name);
+                    if (ImGui::MenuItem(label.c_str(), nullptr, selected))
                     {
                         theme.setFontSize(fontSize);
                     }
@@ -275,7 +276,7 @@ void ShellLayer::renderStatusBar()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     // Calculate height dynamically based on font size for proper scaling
-    float statusBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
+    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, statusBarHeight));

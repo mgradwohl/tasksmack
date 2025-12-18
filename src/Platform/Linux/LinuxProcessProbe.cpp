@@ -248,6 +248,7 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     {
         // statm gives more accurate RSS, update if available
         counters.rssBytes = resident * static_cast<uint64_t>(m_PageSize);
+        counters.sharedBytes = shared * static_cast<uint64_t>(m_PageSize);
     }
 }
 

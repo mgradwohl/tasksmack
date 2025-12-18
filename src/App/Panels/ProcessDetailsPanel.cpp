@@ -8,7 +8,56 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstdio>
+#include <format>
+
+namespace
+{
+
+[[nodiscard]] auto formatBytes(uint64_t bytes) -> std::string
+{
+    constexpr double KIB = 1024.0;
+    constexpr double MIB = 1024.0 * 1024.0;
+    constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
+
+    const double value = static_cast<double>(bytes);
+    if (value >= GIB)
+    {
+        return std::format("{:.1f} GB", value / GIB);
+    }
+    if (value >= MIB)
+    {
+        return std::format("{:.1f} MB", value / MIB);
+    }
+    if (value >= KIB)
+    {
+        return std::format("{:.0f} KB", value / KIB);
+    }
+    return std::format("{} B", bytes);
+}
+
+[[nodiscard]] auto formatCpuTime(double seconds) -> std::string
+{
+    seconds = std::max(0.0, seconds);
+
+    const uint64_t totalMs = static_cast<uint64_t>(seconds * 1000.0);
+    const uint64_t hours = totalMs / (1000ULL * 60ULL * 60ULL);
+    const uint64_t minutes = (totalMs / (1000ULL * 60ULL)) % 60ULL;
+    const uint64_t secs = (totalMs / 1000ULL) % 60ULL;
+    const uint64_t centis = (totalMs / 10ULL) % 100ULL;
+
+    if (hours > 0)
+    {
+        return std::format("{}:{:02}:{:02}.{:02}", hours, minutes, secs, centis);
+    }
+
+    return std::format("{}:{:02}.{:02}", minutes, secs, centis);
+}
+
+} // namespace
 
 namespace App
 {
@@ -149,17 +198,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
 
-    // Compact layout: two label/value pairs per row.
-    // Use fixed widths so columns don't jitter as values change (e.g., CPU time ticking).
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float labelWidth = ImGui::CalcTextSize("CPU Time").x + (style.CellPadding.x * 2.0F) + 10.0F;
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float spacingWidth = style.ItemSpacing.x * 3.0F;
-    const float remaining = std::max(0.0F, availWidth - (labelWidth * 2.0F) - spacingWidth);
-    const float valueWidth = remaining * 0.5F;
-
     if (ImGui::BeginTable("BasicInfo",
-                          4,
+                          2,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
@@ -191,6 +231,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::TextColored(theme.scheme().textMuted, "Status");
         ImGui::TableNextColumn();
+
         ImVec4 statusColor = theme.scheme().textInfo;
         if (proc.displayState == "Running")
         {
@@ -217,7 +258,17 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             statusColor = theme.scheme().statusIdle;
         }
 
-        addField("Status", renderStatus);
+        ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
+
+        // User
+        if (!proc.user.empty())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextColored(theme.scheme().textMuted, "User");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(proc.user.c_str());
+        }
 
         if (proc.threadCount > 0)
         {
@@ -235,7 +286,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.nice);
 
-        addField("CPU Time", renderCpuTime);
+        // CPU Time
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(theme.scheme().textMuted, "CPU Time");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(formatCpuTime(proc.cpuTimeSeconds).c_str());
+
+        ImGui::EndTable();
+    }
 
     // Command line (separate section for long text with wrapping)
     if (!proc.command.empty())
@@ -250,6 +309,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
 void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc)
 {
+    const auto& theme = UI::Theme::get();
+
     ImGui::Text("Resource Usage");
     ImGui::Spacing();
 
@@ -262,91 +323,17 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     snprintf(cpuOverlay, sizeof(cpuOverlay), "%s", UI::Format::percentCompact(proc.cpuPercent).c_str());
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), cpuOverlay);
 
-    // Memory usage
-    double memoryMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
-    double virtualMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
-
     ImGui::Text("Memory (RSS):");
     ImGui::SameLine(120.0F);
-    if (memoryMB >= 1024.0)
-    {
-        float availWidth = ImGui::GetContentRegionAvail().x;
-        float barHeight = 24.0F;
+    ImGui::Text("%s (%s)", formatBytes(proc.memoryBytes).c_str(), UI::Format::percentCompact(proc.memoryPercent).c_str());
 
-        ImVec2 barStart = ImGui::GetCursorScreenPos();
-        const ImVec2 barSize(availWidth, barHeight);
-        ImGui::InvisibleButton("##ProcessMemoryBreakdownBar", barSize);
+    ImGui::Text("Virtual (VIRT):");
+    ImGui::SameLine(120.0F);
+    ImGui::TextUnformatted(formatBytes(proc.virtualBytes).c_str());
 
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-
-        // Calculate proportions (Virtual is the reference)
-        float virtFrac = 1.0F;
-        float rssFrac = static_cast<float>(residentMB / virtualMB);
-        float shrFrac = static_cast<float>(sharedMB / virtualMB);
-
-        // Clamp fractions
-        rssFrac = std::min(rssFrac, 1.0F);
-        shrFrac = std::min(shrFrac, rssFrac); // Shared can't exceed RSS
-
-        // Colors for memory segments (use theme/ImGui primitives only)
-        const ImU32 virtColor = ImGui::GetColorU32(ImGuiCol_FrameBgActive);
-        const ImU32 rssColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);
-        const ImU32 shrColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartIo);
-
-        // Draw Virtual (full background)
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * virtFrac), barStart.y + barHeight), virtColor);
-
-        // Draw RSS on top
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * rssFrac), barStart.y + barHeight), rssColor);
-
-        // Draw Shared (subset of RSS)
-        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * shrFrac), barStart.y + barHeight), shrColor);
-
-        // Border
-        drawList->AddRect(
-            barStart, ImVec2(barStart.x + availWidth, barStart.y + barHeight), ImGui::ColorConvertFloat4ToU32(theme.scheme().border));
-
-        // Helper to format memory size
-        auto formatMem = [](double mb) -> std::string
-        {
-            if (mb >= 1024.0)
-            {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "%.1f GB", mb / 1024.0);
-                return buf;
-            }
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%.1f MB", mb);
-            return buf;
-        };
-
-        // Overlay summary (centered)
-        {
-            char overlay[96];
-            snprintf(overlay, sizeof(overlay), "RSS %s / VIRT %s", formatMem(residentMB).c_str(), formatMem(virtualMB).c_str());
-
-            const ImVec2 textSize = ImGui::CalcTextSize(overlay);
-            const ImVec2 textPos(barStart.x + ((availWidth - textSize.x) * 0.5F), barStart.y + ((barHeight - textSize.y) * 0.5F));
-            const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-            drawList->AddText(ImVec2(textPos.x + 1.0F, textPos.y + 1.0F), shadowCol, overlay);
-            drawList->AddText(textPos, textCol, overlay);
-        }
-
-        // Detailed legend in tooltip on hover
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::BeginTooltip();
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(rssColor), "Resident (RSS): %s", formatMem(residentMB).c_str());
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(shrColor), "Shared (SHR): %s", formatMem(sharedMB).c_str());
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(virtColor), "Virtual (VIRT): %s", formatMem(virtualMB).c_str());
-            ImGui::EndTooltip();
-        }
-    }
-    else
-    {
-        ImGui::Text("%.1f MB", virtualMB);
-    }
+    ImGui::Text("CPU Time:");
+    ImGui::SameLine(120.0F);
+    ImGui::TextColored(theme.scheme().textMuted, "%s", formatCpuTime(proc.cpuTimeSeconds).c_str());
 
     ImGui::Spacing();
 }

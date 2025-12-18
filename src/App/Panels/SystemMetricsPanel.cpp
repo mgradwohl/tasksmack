@@ -417,7 +417,6 @@ void SystemMetricsPanel::renderOverview()
             drawList->AddRectFilled(ImVec2(barStart.x + xOffset, barStart.y),
                                     ImVec2(barStart.x + xOffset + iowaitWidth, barStart.y + barHeight),
                                     ImGui::ColorConvertFloat4ToU32(theme.scheme().cpuIowait));
-            xOffset += iowaitWidth;
         }
 
         // Draw frame border
@@ -855,7 +854,8 @@ void SystemMetricsPanel::renderPerCoreSection()
             ImGui::TableNextRow();
             for (int col = 0; col < numCols; ++col)
             {
-                size_t coreIdx = static_cast<size_t>(row * numCols + col);
+                const auto numColsSizeT = static_cast<std::size_t>(numCols);
+                const auto coreIdx = (static_cast<std::size_t>(row) * numColsSizeT) + static_cast<std::size_t>(col);
                 if (coreIdx >= numCores)
                 {
                     break;
@@ -911,7 +911,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                 // ImPlot heatmap expects row-major with (0,0) at top-left
                 // We want oldest time on left, newest on right
                 // And core 0 at top, highest core at bottom
-                heatmapData[core * historySize + t] = static_cast<double>(perCoreHist[core][t]);
+                heatmapData[(core * historySize) + t] = static_cast<double>(perCoreHist[core][t]);
             }
         }
 

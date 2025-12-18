@@ -31,15 +31,18 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     unsigned int b = 0;
     unsigned int a = 255; // Default to fully opaque
 
+    const std::string hexString(hex);
+    const char* hexData = hexString.data();
+
     // Parse RGB components
-    std::from_chars(hex.data(), hex.data() + 2, r, 16);
-    std::from_chars(hex.data() + 2, hex.data() + 4, g, 16);
-    std::from_chars(hex.data() + 4, hex.data() + 6, b, 16);
+    std::from_chars(hexData, hexData + 2, r, 16);
+    std::from_chars(hexData + 2, hexData + 4, g, 16);
+    std::from_chars(hexData + 4, hexData + 6, b, 16);
 
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
     {
-        std::from_chars(hex.data() + 6, hex.data() + 8, a, 16);
+        std::from_chars(hexData + 6, hexData + 8, a, 16);
     }
 
     constexpr float MAX_COMPONENT = 255.0F;
@@ -117,7 +120,7 @@ auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor 
 /// Load a color array (like heatmap gradient or accent colors)
 template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
-    if (auto arr = tbl.at_path(key).as_array())
+    if (const auto* arr = tbl.at_path(key).as_array())
     {
         for (std::size_t i = 0; i < std::min(N, arr->size()); ++i)
         {
@@ -166,7 +169,7 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
         info.id = path.stem().string(); // filename without extension
 
         // Read meta section
-        if (auto meta = tbl["meta"].as_table())
+        if (auto* meta = tbl["meta"].as_table())
         {
             info.name = meta->get("name")->value_or(info.id);
             info.description = meta->get("description")->value_or("");
@@ -193,7 +196,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         ColorScheme scheme;
 
         // Meta
-        if (auto meta = tbl["meta"].as_table())
+        if (auto* meta = tbl["meta"].as_table())
         {
             scheme.name = meta->get("name")->value_or("Unknown");
         }
