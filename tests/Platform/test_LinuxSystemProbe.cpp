@@ -22,9 +22,7 @@ namespace
 
 TEST(LinuxSystemProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({
-        LinuxSystemProbe probe;
-    });
+    EXPECT_NO_THROW({ LinuxSystemProbe probe; });
 }
 
 TEST(LinuxSystemProbeTest, CapabilitiesReportedCorrectly)
@@ -76,10 +74,9 @@ TEST(LinuxSystemProbeTest, CpuCountersAreReasonable)
     auto counters = probe.read();
 
     // Total should equal sum of components
-    uint64_t sum = counters.cpuTotal.user + counters.cpuTotal.nice + counters.cpuTotal.system +
-                   counters.cpuTotal.idle + counters.cpuTotal.iowait + counters.cpuTotal.irq +
-                   counters.cpuTotal.softirq + counters.cpuTotal.steal + counters.cpuTotal.guest +
-                   counters.cpuTotal.guestNice;
+    uint64_t sum = counters.cpuTotal.user + counters.cpuTotal.nice + counters.cpuTotal.system + counters.cpuTotal.idle +
+                   counters.cpuTotal.iowait + counters.cpuTotal.irq + counters.cpuTotal.softirq + counters.cpuTotal.steal +
+                   counters.cpuTotal.guest + counters.cpuTotal.guestNice;
     EXPECT_EQ(sum, counters.cpuTotal.total());
 
     // Active should exclude idle and iowait
@@ -276,7 +273,8 @@ TEST(LinuxSystemProbeTest, ConcurrentReads)
     std::atomic<int> successCount{0};
     std::atomic<bool> running{true};
 
-    auto readTask = [&]() {
+    auto readTask = [&]()
+    {
         while (running)
         {
             try

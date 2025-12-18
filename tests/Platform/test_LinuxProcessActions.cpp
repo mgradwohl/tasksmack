@@ -22,9 +22,7 @@ namespace
 
 TEST(LinuxProcessActionsTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({
-        LinuxProcessActions actions;
-    });
+    EXPECT_NO_THROW({ LinuxProcessActions actions; });
 }
 
 TEST(LinuxProcessActionsTest, CapabilitiesReportedCorrectly)
@@ -170,7 +168,8 @@ TEST(LinuxProcessActionsTest, ConcurrentActions)
     std::atomic<int> successCount{0};
     std::atomic<bool> running{true};
 
-    auto actionTask = [&]() {
+    auto actionTask = [&]()
+    {
         while (running)
         {
             try

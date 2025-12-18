@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <thread>
+
 #include <unistd.h>
 
 namespace Platform
@@ -24,9 +25,7 @@ namespace
 
 TEST(LinuxProcessProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({
-        LinuxProcessProbe probe;
-    });
+    EXPECT_NO_THROW({ LinuxProcessProbe probe; });
 }
 
 TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
@@ -106,9 +105,8 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     auto processes = probe.enumerate();
 
     pid_t ourPid = getpid();
-    auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) {
-        return p.pid == static_cast<int32_t>(ourPid);
-    });
+    auto it = std::find_if(
+        processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == static_cast<int32_t>(ourPid); });
 
     ASSERT_NE(it, processes.end()) << "Should find our own process (PID " << ourPid << ")";
 
@@ -128,9 +126,7 @@ TEST(LinuxProcessProbeTest, EnumerateFindsInitProcess)
     auto processes = probe.enumerate();
 
     // PID 1 should be init/systemd
-    auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) {
-        return p.pid == 1;
-    });
+    auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 1; });
 
     ASSERT_NE(it, processes.end()) << "Should find init process (PID 1)";
 
@@ -184,8 +180,7 @@ TEST(LinuxProcessProbeTest, MemoryValuesAreReasonable)
         // Note: Some processes may have very small or zero RSS/virtual (kernel threads)
         if (proc.rssBytes > 0 && proc.virtualBytes > 0)
         {
-            EXPECT_LE(proc.rssBytes, proc.virtualBytes)
-                << "Process " << proc.pid << " RSS should be <= virtual memory";
+            EXPECT_LE(proc.rssBytes, proc.virtualBytes) << "Process " << proc.pid << " RSS should be <= virtual memory";
         }
 
         // Virtual memory can be very large for some processes (Java, etc.)
@@ -200,8 +195,7 @@ TEST(LinuxProcessProbeTest, StartTimeTicksAreNonZero)
 
     for (const auto& proc : processes)
     {
-        EXPECT_GT(proc.startTimeTicks, 0ULL)
-            << "Process " << proc.pid << " should have non-zero start time";
+        EXPECT_GT(proc.startTimeTicks, 0ULL) << "Process " << proc.pid << " should have non-zero start time";
     }
 }
 
@@ -212,8 +206,7 @@ TEST(LinuxProcessProbeTest, ThreadCountsArePositive)
 
     for (const auto& proc : processes)
     {
-        EXPECT_GE(proc.threadCount, 1)
-            << "Process " << proc.pid << " should have at least 1 thread";
+        EXPECT_GE(proc.threadCount, 1) << "Process " << proc.pid << " should have at least 1 thread";
     }
 }
 
@@ -230,8 +223,7 @@ TEST(LinuxProcessProbeTest, StateIsValid)
     {
         // State is a char, not a string
         char state = proc.state;
-        EXPECT_NE(validStates.find(state), std::string::npos)
-            << "Process " << proc.pid << " has invalid state: " << state;
+        EXPECT_NE(validStates.find(state), std::string::npos) << "Process " << proc.pid << " has invalid state: " << state;
     }
 }
 
@@ -248,8 +240,8 @@ TEST(LinuxProcessProbeTest, MultipleEnumerationsAreConsistent)
 
     // Process counts might differ slightly due to short-lived processes,
     // but should be in the same ballpark
-    EXPECT_NEAR(static_cast<double>(processes1.size()), static_cast<double>(processes2.size()),
-                static_cast<double>(processes1.size()) * 0.2)
+    EXPECT_NEAR(
+        static_cast<double>(processes1.size()), static_cast<double>(processes2.size()), static_cast<double>(processes1.size()) * 0.2)
         << "Multiple enumerations should return similar process counts";
 }
 
@@ -258,11 +250,10 @@ TEST(LinuxProcessProbeTest, OwnProcessDataIsStable)
     LinuxProcessProbe probe;
     pid_t ourPid = getpid();
 
-    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes) {
-        auto it = std::find_if(processes.begin(), processes.end(),
-                                [ourPid](const ProcessCounters& p) {
-                                    return p.pid == static_cast<int32_t>(ourPid);
-                                });
+    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    {
+        auto it = std::find_if(
+            processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == static_cast<int32_t>(ourPid); });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -288,11 +279,10 @@ TEST(LinuxProcessProbeTest, CpuTimeIncreasesBetweenSamples)
     LinuxProcessProbe probe;
     pid_t ourPid = getpid();
 
-    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes) {
-        auto it = std::find_if(processes.begin(), processes.end(),
-                                [ourPid](const ProcessCounters& p) {
-                                    return p.pid == static_cast<int32_t>(ourPid);
-                                });
+    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    {
+        auto it = std::find_if(
+            processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == static_cast<int32_t>(ourPid); });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -328,7 +318,7 @@ TEST(LinuxProcessProbeTest, HandlesMissingProcesses)
         for (int i = 0; i < 10; ++i)
         {
             auto processes = probe.enumerate();
-            (void)processes; // Suppress unused variable warning
+            (void) processes; // Suppress unused variable warning
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
@@ -359,7 +349,8 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
     std::atomic<int> successCount{0};
     std::atomic<bool> running{true};
 
-    auto enumerateTask = [&]() {
+    auto enumerateTask = [&]()
+    {
         while (running)
         {
             try

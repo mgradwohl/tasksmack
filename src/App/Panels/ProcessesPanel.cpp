@@ -107,10 +107,12 @@ void ProcessesPanel::render(bool* open)
     // Search bar
     const auto& theme = UI::Theme::get();
     ImGui::SetNextItemWidth(200.0F);
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
     if (ImGui::InputTextWithHint("##search", "Filter by name...", m_SearchBuffer.data(), m_SearchBuffer.size()))
     {
         // Input changed - filter will be applied below
     }
+    ImGui::PopStyleColor();
 
     // Clear button
     ImGui::SameLine();
@@ -179,21 +181,20 @@ void ProcessesPanel::render(bool* open)
         }
     }
 
+    char summaryBuf[64];
     if (searchTerm.empty())
     {
-        ImGui::Text("%zu processes, %zu running", currentSnapshots.size(), runningCount);
+        snprintf(summaryBuf, sizeof(summaryBuf), "%zu processes, %zu running", currentSnapshots.size(), runningCount);
     }
     else
     {
-        ImGui::Text("%zu / %zu processes", filteredIndices.size(), currentSnapshots.size());
+        snprintf(summaryBuf, sizeof(summaryBuf), "%zu / %zu processes", filteredIndices.size(), currentSnapshots.size());
     }
 
-    // Show sampler status
-    if (m_Sampler && m_Sampler->isRunning())
-    {
-        ImGui::SameLine();
-        ImGui::TextColored(theme.scheme().statusRunning, "(sampling)");
-    }
+    const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const float textW = ImGui::CalcTextSize(summaryBuf).x;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW));
+    ImGui::TextUnformatted(summaryBuf);
 
     ImGui::Separator();
 
