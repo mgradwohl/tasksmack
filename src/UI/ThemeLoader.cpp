@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <optional>
 
 #include <toml++/toml.hpp>
 
@@ -129,13 +130,13 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 }
 
 /// Get a color from a table, with default fallback
-auto getColor(const toml::table& tbl, std::string_view key, ImVec4 defaultColor = errorColor()) -> ImVec4
+auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4> defaultColor = std::nullopt) -> ImVec4
 {
     if (auto node = tbl.at_path(key))
     {
         return parseColorView(node);
     }
-    return defaultColor;
+    return defaultColor.value_or(errorColor());
 }
 
 /// Load a color array (like heatmap gradient or accent colors)
