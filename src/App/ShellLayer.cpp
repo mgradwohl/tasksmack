@@ -119,8 +119,8 @@ void ShellLayer::onUpdate(float deltaTime)
 
 void ShellLayer::onRender()
 {
-    setupDockspace();
     renderMenuBar();
+    setupDockspace();
 
     // Render panels
     if (m_ShowProcesses)
@@ -144,13 +144,12 @@ void ShellLayer::setupDockspace()
     // Create a fullscreen dockspace
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Account for menu bar at top and status bar at bottom
-    // Calculate heights dynamically based on font size for proper scaling
-    float menuBarHeight = ImGui::GetFrameHeight();
-    float statusBarHeight = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
+    // Account for status bar at bottom. The main menu bar already adjusts the viewport work area.
+    // Calculate height dynamically based on font size for proper scaling
+    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + menuBarHeight));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - menuBarHeight - statusBarHeight));
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |

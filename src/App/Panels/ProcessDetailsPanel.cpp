@@ -1,6 +1,7 @@
 #include "ProcessDetailsPanel.h"
 
 #include "Platform/Factory.h"
+#include "UI/Format.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -57,7 +58,18 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
 
 void ProcessDetailsPanel::render(bool* open)
 {
-    if (!ImGui::Begin("Process Details", open))
+    std::string windowLabel;
+    if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
+    {
+        windowLabel = m_CachedSnapshot.name;
+        windowLabel += "###ProcessDetails";
+    }
+    else
+    {
+        windowLabel = "Process Details###ProcessDetails";
+    }
+
+    if (!ImGui::Begin(windowLabel.c_str(), open))
     {
         ImGui::End();
         return;
@@ -133,10 +145,22 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::Text("Process Information");
+    const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
+    ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
 
-    if (ImGui::BeginTable("BasicInfo", 2, ImGuiTableFlags_SizingStretchProp))
+    // Compact layout: two label/value pairs per row.
+    // Use fixed widths so columns don't jitter as values change (e.g., CPU time ticking).
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float labelWidth = ImGui::CalcTextSize("CPU Time").x + (style.CellPadding.x * 2.0F) + 10.0F;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float spacingWidth = style.ItemSpacing.x * 3.0F;
+    const float remaining = std::max(0.0F, availWidth - (labelWidth * 2.0F) - spacingWidth);
+    const float valueWidth = remaining * 0.5F;
+
+    if (ImGui::BeginTable("BasicInfo",
+                          4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
@@ -192,9 +216,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             statusColor = theme.scheme().statusIdle;
         }
-        ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 
-        // Threads (if available)
+        addField("Status", renderStatus);
+
         if (proc.threadCount > 0)
         {
             ImGui::TableNextRow();
@@ -211,8 +235,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.nice);
 
-        ImGui::EndTable();
-    }
+        addField("CPU Time", renderCpuTime);
 
     // Command line (separate section for long text with wrapping)
     if (!proc.command.empty())
@@ -236,7 +259,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
     cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
     char cpuOverlay[32];
-    snprintf(cpuOverlay, sizeof(cpuOverlay), "%.1f%%", proc.cpuPercent);
+    snprintf(cpuOverlay, sizeof(cpuOverlay), "%s", UI::Format::percentCompact(proc.cpuPercent).c_str());
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), cpuOverlay);
 
     // Memory usage
@@ -247,18 +270,78 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     ImGui::SameLine(120.0F);
     if (memoryMB >= 1024.0)
     {
-        ImGui::Text("%.2f GB", memoryMB / 1024.0);
-    }
-    else
-    {
-        ImGui::Text("%.1f MB", memoryMB);
-    }
+        float availWidth = ImGui::GetContentRegionAvail().x;
+        float barHeight = 24.0F;
 
-    ImGui::Text("Virtual Memory:");
-    ImGui::SameLine(120.0F);
-    if (virtualMB >= 1024.0)
-    {
-        ImGui::Text("%.2f GB", virtualMB / 1024.0);
+        ImVec2 barStart = ImGui::GetCursorScreenPos();
+        const ImVec2 barSize(availWidth, barHeight);
+        ImGui::InvisibleButton("##ProcessMemoryBreakdownBar", barSize);
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+        // Calculate proportions (Virtual is the reference)
+        float virtFrac = 1.0F;
+        float rssFrac = static_cast<float>(residentMB / virtualMB);
+        float shrFrac = static_cast<float>(sharedMB / virtualMB);
+
+        // Clamp fractions
+        rssFrac = std::min(rssFrac, 1.0F);
+        shrFrac = std::min(shrFrac, rssFrac); // Shared can't exceed RSS
+
+        // Colors for memory segments (use theme/ImGui primitives only)
+        const ImU32 virtColor = ImGui::GetColorU32(ImGuiCol_FrameBgActive);
+        const ImU32 rssColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);
+        const ImU32 shrColor = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartIo);
+
+        // Draw Virtual (full background)
+        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * virtFrac), barStart.y + barHeight), virtColor);
+
+        // Draw RSS on top
+        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * rssFrac), barStart.y + barHeight), rssColor);
+
+        // Draw Shared (subset of RSS)
+        drawList->AddRectFilled(barStart, ImVec2(barStart.x + (availWidth * shrFrac), barStart.y + barHeight), shrColor);
+
+        // Border
+        drawList->AddRect(
+            barStart, ImVec2(barStart.x + availWidth, barStart.y + barHeight), ImGui::ColorConvertFloat4ToU32(theme.scheme().border));
+
+        // Helper to format memory size
+        auto formatMem = [](double mb) -> std::string
+        {
+            if (mb >= 1024.0)
+            {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.1f GB", mb / 1024.0);
+                return buf;
+            }
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.1f MB", mb);
+            return buf;
+        };
+
+        // Overlay summary (centered)
+        {
+            char overlay[96];
+            snprintf(overlay, sizeof(overlay), "RSS %s / VIRT %s", formatMem(residentMB).c_str(), formatMem(virtualMB).c_str());
+
+            const ImVec2 textSize = ImGui::CalcTextSize(overlay);
+            const ImVec2 textPos(barStart.x + ((availWidth - textSize.x) * 0.5F), barStart.y + ((barHeight - textSize.y) * 0.5F));
+            const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+            const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
+            drawList->AddText(ImVec2(textPos.x + 1.0F, textPos.y + 1.0F), shadowCol, overlay);
+            drawList->AddText(textPos, textCol, overlay);
+        }
+
+        // Detailed legend in tooltip on hover
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(rssColor), "Resident (RSS): %s", formatMem(residentMB).c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(shrColor), "Shared (SHR): %s", formatMem(sharedMB).c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(virtColor), "Virtual (VIRT): %s", formatMem(virtualMB).c_str());
+            ImGui::EndTooltip();
+        }
     }
     else
     {
@@ -266,24 +349,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     }
 
     ImGui::Spacing();
-
-    // CPU Time (cumulative)
-    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
-    int hours = totalSeconds / 3600;
-    int minutes = (totalSeconds % 3600) / 60;
-    int seconds = totalSeconds % 60;
-    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
-
-    ImGui::Text("CPU Time:");
-    ImGui::SameLine(120.0F);
-    if (hours > 0)
-    {
-        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
-    }
-    else
-    {
-        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
-    }
 }
 
 void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
@@ -344,13 +409,18 @@ void ProcessDetailsPanel::renderHistoryGraphs()
     // CPU History Plot
     const auto& theme = UI::Theme::get();
     ImGui::Text("CPU Usage");
-    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
+    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "%", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
 
         if (cpuCount > 0)
         {
+            ImVec4 fillColor = theme.scheme().chartCpu;
+            fillColor.w = 0.3F;
+            ImPlot::SetNextFillStyle(fillColor);
+            ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuData.data(), static_cast<int>(cpuCount), 0.0);
+
             ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
             ImPlot::PlotLine("CPU", timeData.data(), cpuData.data(), static_cast<int>(cpuCount));
         }
@@ -366,12 +436,17 @@ void ProcessDetailsPanel::renderHistoryGraphs()
 
     // Memory History Plot
     ImGui::Text("Memory Usage (RSS)");
-    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 150), ImPlotFlags_NoLegend))
+    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
     {
         ImPlot::SetupAxes("Time (s)", "MB", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
 
         if (memCount > 0)
         {
+            ImVec4 fillColor = theme.scheme().chartMemory;
+            fillColor.w = 0.3F;
+            ImPlot::SetNextFillStyle(fillColor);
+            ImPlot::PlotShaded("##MemoryShaded", timeData.data(), memData.data(), static_cast<int>(memCount), 0.0);
+
             ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
             ImPlot::PlotLine("Memory", timeData.data(), memData.data(), static_cast<int>(memCount));
         }
@@ -388,8 +463,6 @@ void ProcessDetailsPanel::renderActions()
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::Text("Process Actions");
-    ImGui::Spacing();
     ImGui::TextColored(theme.scheme().textMuted, "Target: %s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
     ImGui::Spacing();
     ImGui::Separator();

@@ -176,7 +176,7 @@ active = "#2E592E"
 [ui.header]
 normal = "#1A2E1A"
 hovered = "#244224"
-active = "#388E3C"
+active = "#81C784AA"
 
 # =============================================================================
 # SEPARATOR COLORS
@@ -235,8 +235,8 @@ histogram_hovered = "#81C784"
 header_background = "#142414"
 border_strong = "#1F401F"
 border_light = "#142E14"
-row_background = "#00000000"      # Transparent
-row_background_alt = "#00330008"  # 08 = 3% alpha (green tint)
+row_background = "#00330008"      # 08 = 3% alpha (green tint)
+row_background_alt = "#00330030"  # 30 = 19% alpha (green tint)
 
 # =============================================================================
 # MISCELLANEOUS UI COLORS
