@@ -3,6 +3,7 @@
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -51,32 +52,6 @@ namespace
 
 namespace App
 {
-
-namespace
-{
-
-void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
-{
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
-
-    const ImVec2 rectMin = ImGui::GetItemRectMin();
-    const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + 1.0F, pos.y + 1.0F), shadowCol, text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
-}
-
-} // namespace
 
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
@@ -354,7 +329,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     const ImVec4 cpuColor = theme.progressColor(proc.cpuPercent);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, cpuColor);
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), "");
-    drawRightAlignedOverlayText(cpuOverlay.c_str());
+    UI::Widgets::drawRightAlignedOverlayText(cpuOverlay.c_str());
     ImGui::PopStyleColor();
 
     // Memory/VIRT stacked bar (Resident | Virtual remainder). Keep style consistent with other stacked bars.
@@ -405,7 +380,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         }
 
         // Overlay text (consistent with other bars)
-        drawRightAlignedOverlayText(overlayText);
+        UI::Widgets::drawRightAlignedOverlayText(overlayText);
 
         // Restore cursor position to below the bar.
         ImGui::SetCursorScreenPos(ImVec2(startPos.x, endPos.y + ImGui::GetStyle().ItemInnerSpacing.y));
