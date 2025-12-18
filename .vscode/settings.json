@@ -41,7 +41,7 @@
     ],
     // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
     // Windows: "C:\\Program Files\\LLVM\\bin\\clangd.exe"
-    "clang-format.executable": "${env:LLVM_ROOT}/bin/clang-format",
+    "clang-format.executable": "",
     "files.exclude": {
         "**/generated/**": true,
         "**/.cache/**": true
