@@ -204,7 +204,24 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             ImGui::Text("%d", proc.threadCount);
         }
 
+        // Nice/Priority
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(theme.scheme().textMuted, "Nice");
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", proc.nice);
+
         ImGui::EndTable();
+    }
+
+    // Command line (separate section for long text with wrapping)
+    if (!proc.command.empty())
+    {
+        ImGui::Spacing();
+        ImGui::TextColored(theme.scheme().textMuted, "Command Line:");
+        ImGui::Indent();
+        ImGui::TextWrapped("%s", proc.command.c_str());
+        ImGui::Unindent();
     }
 }
 
@@ -215,7 +232,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
     // CPU usage with progress bar
     ImGui::Text("CPU:");
-    ImGui::SameLine(80.0F);
+    ImGui::SameLine(120.0F);
     float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
     cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
     char cpuOverlay[32];
@@ -246,6 +263,26 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     else
     {
         ImGui::Text("%.1f MB", virtualMB);
+    }
+
+    ImGui::Spacing();
+
+    // CPU Time (cumulative)
+    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
+    int hours = totalSeconds / 3600;
+    int minutes = (totalSeconds % 3600) / 60;
+    int seconds = totalSeconds % 60;
+    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
+
+    ImGui::Text("CPU Time:");
+    ImGui::SameLine(120.0F);
+    if (hours > 0)
+    {
+        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
+    }
+    else
+    {
+        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
     }
 }
 
