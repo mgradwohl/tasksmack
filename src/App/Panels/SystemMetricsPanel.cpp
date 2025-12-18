@@ -3,6 +3,7 @@
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -18,27 +19,6 @@ namespace App
 
 namespace
 {
-
-void drawRightAlignedOverlayText(const char* text, float paddingX = 8.0F)
-{
-    if (text == nullptr || text[0] == '\0')
-    {
-        return;
-    }
-
-    const ImVec2 rectMin = ImGui::GetItemRectMin();
-    const ImVec2 rectMax = ImGui::GetItemRectMax();
-    const ImVec2 textSize = ImGui::CalcTextSize(text);
-
-    const float x = rectMax.x - paddingX - textSize.x;
-    const float y = rectMin.y + ((rectMax.y - rectMin.y - textSize.y) * 0.5F);
-    const ImVec2 pos(x, y);
-
-    const ImU32 shadowCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x + 1.0F, pos.y + 1.0F), shadowCol, text);
-    ImGui::GetWindowDrawList()->AddText(pos, textCol, text);
-}
 
 int hoveredIndexFromPlotX(double mouseX, size_t count)
 {
@@ -275,7 +255,7 @@ void SystemMetricsPanel::renderOverview()
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, cpuColor);
     // Use custom overlay text (suppress ImGui's default percent overlay)
     ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), "");
-    drawRightAlignedOverlayText(cpuOverlay.c_str());
+    UI::Widgets::drawRightAlignedOverlayText(cpuOverlay.c_str());
     ImGui::PopStyleColor();
 
     // CPU History Graph
@@ -456,7 +436,7 @@ void SystemMetricsPanel::renderOverview()
 
             // Reserve space for the bar (so we can draw overlay text based on item rect).
             ImGui::Dummy(ImVec2(barWidth, barHeight));
-            drawRightAlignedOverlayText(breakdownOverlay.c_str());
+            UI::Widgets::drawRightAlignedOverlayText(breakdownOverlay.c_str());
         }
 
         // Tooltip on hover with breakdown details
@@ -495,7 +475,7 @@ void SystemMetricsPanel::renderOverview()
     ImVec4 memColor = theme.progressColor(snap.memoryUsedPercent);
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, memColor);
     ImGui::ProgressBar(memFraction, ImVec2(-1, 0), "");
-    drawRightAlignedOverlayText(memOverlay.c_str());
+    UI::Widgets::drawRightAlignedOverlayText(memOverlay.c_str());
     ImGui::PopStyleColor();
 
     // Swap usage bar (if available) with themed color
@@ -510,7 +490,7 @@ void SystemMetricsPanel::renderOverview()
         ImVec4 swapColor = theme.progressColor(snap.swapUsedPercent);
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, swapColor);
         ImGui::ProgressBar(swapFraction, ImVec2(-1, 0), "");
-        drawRightAlignedOverlayText(swapOverlay.c_str());
+        UI::Widgets::drawRightAlignedOverlayText(swapOverlay.c_str());
         ImGui::PopStyleColor();
     }
 }
@@ -721,7 +701,7 @@ void SystemMetricsPanel::renderMemorySection()
         }
 
         // Overlay text (consistent with other bars)
-        drawRightAlignedOverlayText(overlayText);
+        UI::Widgets::drawRightAlignedOverlayText(overlayText);
 
         // Restore cursor position to below the bar.
         ImGui::SetCursorScreenPos(ImVec2(startPos.x, endPos.y + ImGui::GetStyle().ItemInnerSpacing.y));
@@ -826,7 +806,7 @@ void SystemMetricsPanel::renderMemorySection()
             const ImVec4 swapColor = theme.progressColor(snap.swapUsedPercent);
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram, swapColor);
             ImGui::ProgressBar(swapFraction, ImVec2(-1, 0), "");
-            drawRightAlignedOverlayText(swapOverlay.c_str());
+            UI::Widgets::drawRightAlignedOverlayText(swapOverlay.c_str());
             ImGui::PopStyleColor();
         }
     }
@@ -890,7 +870,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                 ImGui::Text("%s", label);
                 ImGui::SameLine(0.0F, ImGui::GetStyle().ItemSpacing.x);
                 ImGui::ProgressBar(fraction, ImVec2(-1, 0), "");
-                drawRightAlignedOverlayText(overlay.c_str());
+                UI::Widgets::drawRightAlignedOverlayText(overlay.c_str());
 
                 ImGui::PopStyleColor();
             }
