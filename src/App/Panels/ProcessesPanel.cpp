@@ -331,11 +331,39 @@ void ProcessesPanel::render(bool* open)
                 }
             }
 
-            // Column 7: S (state as single char)
+            // Column 7: S (state as single char with color)
             ImGui::TableNextColumn();
             {
                 char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-                ImGui::Text("%c", stateChar);
+
+                // Choose color based on process state
+                ImVec4 stateColor = theme.scheme().textMuted; // Default
+                if (proc.displayState == "Running")
+                {
+                    stateColor = theme.scheme().statusRunning;
+                }
+                else if (proc.displayState == "Sleeping")
+                {
+                    stateColor = theme.scheme().statusSleeping;
+                }
+                else if (proc.displayState == "Disk Sleep")
+                {
+                    stateColor = theme.scheme().statusDiskSleep;
+                }
+                else if (proc.displayState == "Zombie")
+                {
+                    stateColor = theme.scheme().statusZombie;
+                }
+                else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
+                {
+                    stateColor = theme.scheme().statusStopped;
+                }
+                else if (proc.displayState == "Idle")
+                {
+                    stateColor = theme.scheme().statusIdle;
+                }
+
+                ImGui::TextColored(stateColor, "%c", stateChar);
             }
 
             // Column 8: Name

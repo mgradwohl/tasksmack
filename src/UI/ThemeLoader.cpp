@@ -218,8 +218,11 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 
         // Status colors
         scheme.statusRunning = getColor(tbl, "status.running");
-        scheme.statusStopped = getColor(tbl, "status.stopped");
         scheme.statusSleeping = getColor(tbl, "status.sleeping");
+        scheme.statusDiskSleep = getColor(tbl, "status.disk_sleep");
+        scheme.statusZombie = getColor(tbl, "status.zombie");
+        scheme.statusStopped = getColor(tbl, "status.stopped");
+        scheme.statusIdle = getColor(tbl, "status.idle");
 
         // Chart colors
         scheme.chartCpu = getColor(tbl, "charts.cpu");
