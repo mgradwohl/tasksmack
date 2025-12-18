@@ -172,13 +172,25 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             statusColor = theme.scheme().statusRunning;
         }
+        else if (proc.displayState == "Sleeping")
+        {
+            statusColor = theme.scheme().statusSleeping;
+        }
+        else if (proc.displayState == "Disk Sleep")
+        {
+            statusColor = theme.scheme().statusDiskSleep;
+        }
         else if (proc.displayState == "Zombie")
         {
-            statusColor = theme.scheme().textError;
+            statusColor = theme.scheme().statusZombie;
         }
-        else if (proc.displayState == "Stopped")
+        else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
         {
             statusColor = theme.scheme().statusStopped;
+        }
+        else if (proc.displayState == "Idle")
+        {
+            statusColor = theme.scheme().statusIdle;
         }
         ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
 

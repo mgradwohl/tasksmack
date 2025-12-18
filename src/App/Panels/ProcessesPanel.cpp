@@ -331,50 +331,39 @@ void ProcessesPanel::render(bool* open)
                 }
             }
 
-            // Column 7: S (state as single char)
+            // Column 7: S (state as single char with color)
             ImGui::TableNextColumn();
             {
                 char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
 
-                // Simplified 3-state palette: running / sleeping / stopped
-                ImVec4 color{};
-                bool useColor = false;
-
-                switch (stateChar)
+                // Choose color based on process state
+                ImVec4 stateColor = theme.scheme().textMuted; // Default
+                if (proc.displayState == "Running")
                 {
-                case 'R': // running
-                    color = ImVec4(0.2f, 0.9f, 0.2f, 1.0f);
-                    useColor = true;
-                    break;
-                case 'S': // interruptible sleep
-                case 'D': // uninterruptible sleep (disk)
-                case 'I': // idle
-                    color = ImVec4(0.95f, 0.8f, 0.2f, 1.0f);
-                    useColor = true;
-                    break;
-                case 'T': // stopped
-                case 't': // traced
-                case 'Z': // zombie
-                case 'X': // dead
-                case '?': // unknown
-                    color = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
-                    useColor = true;
-                    break;
-                default:
-                    break;
+                    stateColor = theme.scheme().statusRunning;
+                }
+                else if (proc.displayState == "Sleeping")
+                {
+                    stateColor = theme.scheme().statusSleeping;
+                }
+                else if (proc.displayState == "Disk Sleep")
+                {
+                    stateColor = theme.scheme().statusDiskSleep;
+                }
+                else if (proc.displayState == "Zombie")
+                {
+                    stateColor = theme.scheme().statusZombie;
+                }
+                else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
+                {
+                    stateColor = theme.scheme().statusStopped;
+                }
+                else if (proc.displayState == "Idle")
+                {
+                    stateColor = theme.scheme().statusIdle;
                 }
 
-                if (useColor)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Text, color);
-                }
-
-                ImGui::Text("%c", stateChar);
-
-                if (useColor)
-                {
-                    ImGui::PopStyleColor();
-                }
+                ImGui::TextColored(stateColor, "%c", stateChar);
             }
 
             // Column 8: Name

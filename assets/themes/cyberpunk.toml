@@ -63,11 +63,16 @@ text_info = "#00E5FF"      # Electric Blue - informational text
 # =============================================================================
 # PROCESS STATUS COLORS
 # Colors for process states in the process list
+# Linux process states: R=Running, S=Sleeping, D=Disk sleep (uninterruptible I/O),
+# Z=Zombie (defunct), T=Stopped, I=Idle kernel thread
 # =============================================================================
 [status]
-running = "#76FF03"    # Neon Green - active/running
-stopped = "#FF1744"    # Red - stopped/terminated
-sleeping = "#FFEA00"   # Yellow - sleeping/waiting
+running = "#76FF03"    # Neon Green - active/running (R)
+sleeping = "#7C4DFF"   # Violet - sleeping (S)
+disk_sleep = "#FFEA00" # Electric Yellow - uninterruptible I/O (D) - diagnostic state
+zombie = "#FF1744"     # Red - defunct process (Z) - diagnostic state
+stopped = "#FF4081"    # Hot Pink - stopped/traced (T/t)
+idle = "#666680"       # Muted purple-gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
