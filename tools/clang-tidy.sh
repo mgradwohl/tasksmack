@@ -139,7 +139,7 @@ fi
 run_clang_tidy() {
     local file="$1"
     local verbose="$2"
-    local relative_path="${file#${PROJECT_ROOT}/}"
+    local relative_path="${file#"${PROJECT_ROOT}"/}"
 
     if [[ "$verbose" == "true" ]]; then
         echo "  Analyzing: $relative_path"

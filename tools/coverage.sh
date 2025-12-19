@@ -72,7 +72,7 @@ cmake --build --preset coverage
 # Step 2: Run tests to generate profraw data
 echo "==> Running tests..."
 cd "$BUILD_DIR"
-rm -f *.profraw default.profdata
+rm -f -- *.profraw default.profdata
 
 # Set profraw output location
 export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"

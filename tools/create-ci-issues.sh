@@ -13,7 +13,7 @@ echo "Prerequisites:"
 echo "  1. GitHub CLI must be installed (https://cli.github.com/)"
 echo "  2. You must be authenticated: gh auth login"
 echo ""
-read -p "Press Enter to continue or Ctrl+C to cancel..."
+read -r -p "Press Enter to continue or Ctrl+C to cancel..."
 
 # Issue 1: Fix Python Version
 echo "Creating Issue 1: Fix Python Version in Windows Build Job..."
