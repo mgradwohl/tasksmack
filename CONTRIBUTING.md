@@ -19,6 +19,12 @@ To avoid duplication and doc drift, these are the canonical docs:
 ```bash
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
+
+# Install Python dependencies (including pre-commit)
+pip install -r requirements.txt
+
+# Set up pre-commit hooks (recommended)
+pre-commit install
 ```
 
 ## Check Prerequisites
@@ -71,6 +77,57 @@ Install Python + jinja2:
 ```powershell
 winget install Python.Python.3.12
 pip install jinja2
+```
+
+## Pre-commit Hooks (Recommended)
+
+Pre-commit hooks automatically check your code before each commit, catching formatting and style issues early. This is **strongly recommended** to avoid CI failures.
+
+### Install
+
+```bash
+# Install pre-commit (one-time setup)
+pip install pre-commit
+
+# Install the git hooks (run from project root)
+pre-commit install
+```
+
+Or install from requirements.txt:
+
+```bash
+pip install -r requirements.txt
+pre-commit install
+```
+
+### Usage
+
+Once installed, pre-commit hooks run automatically on `git commit`. To run manually on all files:
+
+```bash
+pre-commit run --all-files
+```
+
+### What Gets Checked
+
+The hooks (configured in `.pre-commit-config.yaml`) include:
+
+- **clang-format**: C++ code formatting (uses project's `.clang-format`)
+- **trailing-whitespace**: Remove trailing whitespace
+- **end-of-file-fixer**: Ensure files end with a newline
+- **mixed-line-ending**: Normalize line endings to LF
+- **check-yaml**: Validate YAML syntax
+- **check-json**: Validate JSON syntax
+- **check-added-large-files**: Prevent large files (>500KB)
+- **check-merge-conflict**: Detect merge conflict markers
+- **shellcheck**: Lint shell scripts
+
+### Bypassing Hooks (Emergency Only)
+
+If you need to commit without running hooks (not recommended):
+
+```bash
+git commit --no-verify
 ```
 
 ## Build
@@ -367,10 +424,13 @@ gh run download <run-id> -n coverage-html-report
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run formatting (required)
-5. Run clang-tidy (recommended)
-6. Run tests
-7. Open a PR and follow the checklist in the PR template: [.github/pull_request_template.md](.github/pull_request_template.md)
+4. Run pre-commit checks: `pre-commit run --all-files` (if installed)
+5. Run formatting: `./tools/clang-format.sh` (Linux) or `pwsh tools/clang-format.ps1` (Windows)
+6. Run clang-tidy (recommended)
+7. Run tests
+8. Open a PR and follow the checklist in the PR template: [.github/pull_request_template.md](.github/pull_request_template.md)
+
+**Note:** If you installed pre-commit hooks (recommended), steps 4-5 run automatically on commit.
 
 ## Reporting Issues
 
