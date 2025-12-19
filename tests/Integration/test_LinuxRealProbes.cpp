@@ -109,8 +109,7 @@ TEST(LinuxRealProbesTest, ProcessProbeFindsOwnProcess)
             EXPECT_GT(proc.threadCount, 0) << "Own process should have at least 1 thread";
 
             // State should be Running or Sleeping
-            EXPECT_TRUE(proc.state == 'R' || proc.state == 'S')
-                << "Own process state should be R or S, got: " << proc.state;
+            EXPECT_TRUE(proc.state == 'R' || proc.state == 'S') << "Own process state should be R or S, got: " << proc.state;
 
             break;
         }
@@ -204,8 +203,7 @@ TEST(LinuxRealProbesTest, SystemProbeReturnsValidCpu)
     auto counters = probe.read();
 
     // CPU counters should be non-zero
-    auto total = counters.cpuTotal.user + counters.cpuTotal.nice +
-                 counters.cpuTotal.system + counters.cpuTotal.idle +
+    auto total = counters.cpuTotal.user + counters.cpuTotal.nice + counters.cpuTotal.system + counters.cpuTotal.idle +
                  counters.cpuTotal.iowait + counters.cpuTotal.steal;
 
     EXPECT_GT(total, 0ULL) << "CPU counters should have accumulated some time";
@@ -231,11 +229,9 @@ TEST(LinuxRealProbesTest, SystemProbeCpuCountersIncrease)
 
     auto counters2 = probe.read();
 
-    auto total1 = counters1.cpuTotal.user + counters1.cpuTotal.nice +
-                  counters1.cpuTotal.system + counters1.cpuTotal.idle;
+    auto total1 = counters1.cpuTotal.user + counters1.cpuTotal.nice + counters1.cpuTotal.system + counters1.cpuTotal.idle;
 
-    auto total2 = counters2.cpuTotal.user + counters2.cpuTotal.nice +
-                  counters2.cpuTotal.system + counters2.cpuTotal.idle;
+    auto total2 = counters2.cpuTotal.user + counters2.cpuTotal.nice + counters2.cpuTotal.system + counters2.cpuTotal.idle;
 
     EXPECT_GT(total2, total1) << "CPU counters should increase over time";
 }

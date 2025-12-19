@@ -770,10 +770,7 @@ TEST(ProcessModelTest, ProcessWithZeroStartTime)
 TEST(ProcessModelTest, BuilderPatternSimpleSetup)
 {
     auto probe = std::make_unique<MockProcessProbe>();
-    probe->withProcess(123, "test_process")
-        .withCpuTime(123, 1000, 500)
-        .withMemory(123, 4096 * 1024)
-        .withState(123, 'R');
+    probe->withProcess(123, "test_process").withCpuTime(123, 1000, 500).withMemory(123, 4096 * 1024).withState(123, 'R');
     probe->setTotalCpuTime(100000);
 
     Domain::ProcessModel model(std::move(probe));

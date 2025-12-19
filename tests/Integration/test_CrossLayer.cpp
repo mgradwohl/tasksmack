@@ -12,7 +12,13 @@
 #include <gtest/gtest.h>
 
 #include <thread>
+
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 // =============================================================================
 // ProcessModel + Real Platform Probe Integration
