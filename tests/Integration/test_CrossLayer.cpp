@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <thread>
+#include <unistd.h>
 
 // =============================================================================
 // ProcessModel + Real Platform Probe Integration

@@ -135,6 +135,10 @@ class MockProcessProbe : public Platform::IProcessProbe
                 return *this;
             }
         }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.threadCount = threadCount;
+        m_Counters.push_back(c);
         return *this;
     }
 
@@ -148,6 +152,10 @@ class MockProcessProbe : public Platform::IProcessProbe
                 return *this;
             }
         }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.parentPid = parentPid;
+        m_Counters.push_back(c);
         return *this;
     }
 
