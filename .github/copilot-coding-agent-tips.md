@@ -66,7 +66,7 @@ Avoid delegating these to Copilot alone:
 
 ## Context
 - Affected files: `src/Domain/ProcessModel.cpp`
-- Related docs: [process.md](../process.md)
+- Related docs: [tasksmack.md](../tasksmack.md)
 - Platform: Linux only / Windows only / Cross-platform
 
 ## Examples
@@ -123,6 +123,11 @@ See how htop displays SHR column: https://htop.dev/
 
 Canonical rules and checklists live in [.github/copilot-instructions.md](copilot-instructions.md).
 
+Contribution templates:
+
+- PR template: [.github/pull_request_template.md](pull_request_template.md)
+- Issue templates: [.github/ISSUE_TEMPLATE/](ISSUE_TEMPLATE/)
+
 ## Pull Request Review Process
 
 ### What Copilot Does
@@ -176,8 +181,7 @@ Copilot will read your feedback and update the PR.
 Copilot reads these files automatically:
 - `.github/copilot-instructions.md` - Architecture and coding standards
 - `README.md` - Project overview
-- `tasksmack.md` - Architecture overview
-- `process.md` - Process enumeration details
+- `tasksmack.md` - Architecture + process/metrics notes
 - `CONTRIBUTING.md` - Build/test/tools workflow
 - `completed-features.md` - Shipped features list
 
@@ -263,8 +267,7 @@ If Copilot's PR has clang-tidy warnings:
 |------|---------|
 | `.github/copilot-instructions.md` | Architecture, coding standards, patterns |
 | `README.md` | Project overview |
-| `tasksmack.md` | High-level architecture vision |
-| `process.md` | Process enumeration implementation details |
+| `tasksmack.md` | High-level architecture vision + process/metrics notes |
 | `CONTRIBUTING.md` | Build/test/tools workflow |
 | `completed-features.md` | Shipped features |
 | `.clang-format` | Code formatting rules |
@@ -296,7 +299,7 @@ Use these labels to help Copilot prioritize:
 - [GitHub Copilot Best Practices](https://docs.github.com/en/copilot/tutorials/coding-agent/get-the-best-results)
 - [TaskSmack Architecture](../tasksmack.md)
 - [TaskSmack Contributing Guide](../CONTRIBUTING.md)
-- [TaskSmack Process Implementation](../process.md)
+- [TaskSmack Process / Metrics Notes](../tasksmack.md)
 
 ---
 

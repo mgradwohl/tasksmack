@@ -2,7 +2,32 @@
 
 Cross-platform system monitor (C++23 / Clang 21+ / OpenGL / ImGui). Strict layered architecture: **Platform → Domain → UI**.
 
-> **Related Docs:** [README.md](../README.md) (project overview), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture vision), [process.md](../process.md) (implementation details), [completed-features.md](../completed-features.md) (shipped features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture + implementation notes), [completed-features.md](../completed-features.md) (shipped features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+
+## Documentation Map (Source of Truth)
+
+TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
+
+- **Users / project overview:** [README.md](../README.md)
+    - Keep this feature-focused. It should only include a small section pointing contributors to [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Contributors / engineering workflow (canonical):** [CONTRIBUTING.md](../CONTRIBUTING.md)
+    - Build/test/tools, prerequisites, formatting/linting, packaging, contributor workflow.
+    - If you change build/test/tooling, update this file.
+- **Architecture + engineering notes (canonical):** [tasksmack.md](../tasksmack.md)
+    - Platform → Domain → UI contract, design rationale, roadmap / engineering notes.
+- **Shipped features list (canonical):** [completed-features.md](../completed-features.md)
+    - Completed features should live here; other docs may link to it.
+- **Agent guidance:** [copilot-instructions.md](copilot-instructions.md) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
+    - Primarily for agents, but still useful to contributors.
+- **Security policy:** [SECURITY.md](../SECURITY.md)
+    - Responsible disclosure and reporting instructions.
+
+Contribution process helpers:
+
+- PR checklist: [.github/pull_request_template.md](pull_request_template.md)
+- Issue templates: [.github/ISSUE_TEMPLATE/](ISSUE_TEMPLATE/)
+
+If you need to add new documentation, keep it narrowly scoped and update the relevant file(s) above to link to it.
 
 ## Quick Reference
 
@@ -241,6 +266,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - When modifying project structure, scripts, clang configs, or CMake files → update `CONTRIBUTING.md` and this file
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
 - New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
+- When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
 - **GLAD dependency:** Requires Python 3 + jinja2 at build time for OpenGL loader generation
 
 ---

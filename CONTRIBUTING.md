@@ -5,9 +5,19 @@ Thanks for contributing!
 This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging). The project overview and architecture docs live elsewhere:
 
 - Architecture overview: [tasksmack.md](tasksmack.md)
-- Process/metrics implementation notes: [process.md](process.md)
+- Process/metrics implementation notes: [tasksmack.md](tasksmack.md)
 - Copilot usage + project coding standards: [.github/copilot-instructions.md](.github/copilot-instructions.md)
 - Copilot agent tips: [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md)
+
+## Documentation Map
+
+To avoid duplication and doc drift:
+
+- [README.md](README.md) is feature-focused for users (with a small contributor pointer to this file).
+- [CONTRIBUTING.md](CONTRIBUTING.md) is the canonical contributor + engineering workflow doc.
+- [tasksmack.md](tasksmack.md) is architecture + engineering notes.
+- [completed-features.md](completed-features.md) is the canonical shipped-features list.
+- [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) are primarily agent guidance (also useful to contributors).
 
 ## Quick Start
 
@@ -332,14 +342,14 @@ gh run download <run-id> -n coverage-html-report
 4. Run formatting (required)
 5. Run clang-tidy (recommended)
 6. Run tests
-7. Open a PR and follow the checklist in the PR template
+7. Open a PR and follow the checklist in the PR template: [.github/pull_request_template.md](.github/pull_request_template.md)
 
 ## Reporting Issues
 
 Please use the issue templates:
 
-- Bug Report
-- Feature Request
+- Bug Report: [.github/ISSUE_TEMPLATE/bug_report.md](.github/ISSUE_TEMPLATE/bug_report.md)
+- Feature Request: [.github/ISSUE_TEMPLATE/feature_request.md](.github/ISSUE_TEMPLATE/feature_request.md)
 
 ## Security Issues
 
