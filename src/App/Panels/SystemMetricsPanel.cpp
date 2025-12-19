@@ -983,9 +983,6 @@ void SystemMetricsPanel::renderPerCoreSection()
         }
 
         ImPlot::PopColormap();
-
-        // Simple description below the heatmap
-        ImGui::TextColored(theme.scheme().textMuted, "0-%zu (top to bottom)  |  Oldest (left) to Now (right)", coreCount - 1);
     }
     else
     {
