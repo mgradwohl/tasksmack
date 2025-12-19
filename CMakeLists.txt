@@ -250,7 +250,7 @@ execute_process(
     OUTPUT_QUIET ERROR_QUIET
 )
 if(NOT JINJA2_CHECK EQUAL 0)
-    message(FATAL_ERROR 
+    message(FATAL_ERROR
         "Python jinja2 module not found. Required for GLAD generation.\n"
         "Install with: pip install jinja2")
 endif()
