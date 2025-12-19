@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-release-package
+          max-size: 500M
+
+      - name: Configure
+        run: cmake --preset release
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        run: ctest --preset release -j $(nproc) --output-on-failure --timeout 60
+
+      - name: Package
+        run: |
+          cd build/release
+          cpack -G "TGZ;DEB"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-packages
+          path: dist/*
+          retention-days: 90
+
+  build-windows:
+    name: Build Windows Packages
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
+      - name: Install LLVM / Ninja / ccache
+        shell: pwsh
+        run: choco install llvm ninja ccache -y
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-release-package
+          max-size: 500M
+
+      - name: Configure
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: |
+          cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-release
+
+      - name: Test
+        shell: pwsh
+        run: ctest --preset win-release -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60
+
+      - name: Package
+        shell: pwsh
+        run: |
+          cd build/win-release
+          cpack -G "ZIP"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-packages
+          path: dist/*
+          retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@v6
+        with:
+          name: linux-packages
+          path: dist/
+
+      - name: Download Windows packages
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-packages
+          path: dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

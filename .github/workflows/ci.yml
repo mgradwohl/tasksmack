@@ -9,6 +9,7 @@ on:
 jobs:
   validate-environment:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
 
@@ -23,8 +24,8 @@ jobs:
         run: ./tools/check-prereqs.sh
 
   build-linux:
-    needs: validate-environment
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       matrix:
         build_type: [debug, release]
@@ -41,6 +42,13 @@ jobs:
           key: linux-${{ matrix.build_type }}
           max-size: 500M
 
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
+
       - name: Configure
         run: cmake --preset ${{ matrix.build_type }}
 
@@ -56,10 +64,11 @@ jobs:
         with:
           name: linux-${{ matrix.build_type }}-test-results
           path: build/${{ matrix.build_type }}/test-results.xml
+          retention-days: 30
 
   build-windows:
-    needs: validate-environment
     runs-on: windows-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         build_type: [debug, release]
@@ -92,6 +101,13 @@ jobs:
           key: windows-${{ matrix.build_type }}
           max-size: 500M
 
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
+
       - name: Configure
         shell: pwsh
         env:
@@ -115,10 +131,11 @@ jobs:
         with:
           name: windows-${{ matrix.build_type }}-test-results
           path: build/win-${{ matrix.build_type }}/test-results.xml
+          retention-days: 30
 
   format-check:
-    needs: validate-environment
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
 
@@ -133,8 +150,8 @@ jobs:
         run: ./tools/check-format.sh
 
   static-analysis:
-    needs: validate-environment
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -149,6 +166,13 @@ jobs:
           key: linux-tidy
           max-size: 500M
 
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
+
       - name: Run clang-tidy
         run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
 
@@ -158,10 +182,11 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
+          retention-days: 14
 
   coverage:
-    needs: validate-environment
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -175,6 +200,13 @@ jobs:
         with:
           key: linux-coverage
           max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
 
       - name: Generate coverage report
         run: |
@@ -233,10 +265,11 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
+          retention-days: 30
 
   sanitizers:
-    needs: validate-environment
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -252,6 +285,13 @@ jobs:
         with:
           key: linux-${{ matrix.preset }}
           max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -270,6 +310,13 @@ jobs:
         run: |
           ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
           echo "test_result=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Annotate sanitizer failures
+        if: steps.sanitizer-test.outputs.test_result != '0'
+        run: |
+          grep -n "ERROR:" sanitizer-logs/${{ matrix.preset }}.log | while IFS=: read -r line content; do
+            echo "::error file=sanitizer-logs/${{ matrix.preset }}.log,line=$line::$content"
+          done || true
 
       - name: Generate HTML report
         if: always()
@@ -387,6 +434,7 @@ jobs:
           path: |
             sanitizer-logs/${{ matrix.preset }}.log
             sanitizer-reports/${{ matrix.preset }}.html
+          retention-days: 14
 
       - name: Fail job if sanitizer found issues
         if: steps.sanitizer-test.outputs.test_result != '0'

@@ -66,6 +66,8 @@ if(TASKSMACK_ENABLE_COVERAGE)
     endif()
 endif()
 
+set(TASKSMACK_EXTRA_WARNING_FLAGS "" CACHE STRING "Additional warning flags")
+
 function(tasksmack_apply_default_warnings target_name)
     if(NOT TASKSMACK_ENABLE_WARNINGS)
         return()
@@ -105,6 +107,11 @@ function(tasksmack_apply_default_warnings target_name)
                 -Wmisleading-indentation
             )
         endif()
+        
+        # Apply extra warning flags if specified
+        if(TASKSMACK_EXTRA_WARNING_FLAGS)
+            target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
+        endif()
     elseif(MSVC)
         target_compile_options(${target_name} PRIVATE
             /W4
@@ -112,6 +119,11 @@ function(tasksmack_apply_default_warnings target_name)
             /EHsc
             $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:/WX>
         )
+        
+        # Apply extra warning flags if specified
+        if(TASKSMACK_EXTRA_WARNING_FLAGS)
+            target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
+        endif()
     endif()
 endfunction()
 
@@ -327,20 +339,26 @@ set(TASKSMACK_SOURCES
 )
 
 # Platform-specific sources
+set(PLATFORM_SOURCES_LINUX
+    src/Platform/Linux/LinuxProcessProbe.cpp
+    src/Platform/Linux/LinuxProcessActions.cpp
+    src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/Factory.cpp
+)
+
+set(PLATFORM_SOURCES_WINDOWS
+    src/Platform/Windows/WindowsProcessProbe.cpp
+    src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsSystemProbe.cpp
+    src/Platform/Windows/Factory.cpp
+)
+
 if(UNIX AND NOT APPLE)
-    list(APPEND TASKSMACK_SOURCES
-        src/Platform/Linux/LinuxProcessProbe.cpp
-        src/Platform/Linux/LinuxProcessActions.cpp
-        src/Platform/Linux/LinuxSystemProbe.cpp
-        src/Platform/Linux/Factory.cpp
-    )
+    list(APPEND TASKSMACK_SOURCES ${PLATFORM_SOURCES_LINUX})
 elseif(WIN32)
-    list(APPEND TASKSMACK_SOURCES
-        src/Platform/Windows/WindowsProcessProbe.cpp
-        src/Platform/Windows/WindowsProcessActions.cpp
-        src/Platform/Windows/WindowsSystemProbe.cpp
-        src/Platform/Windows/Factory.cpp
-    )
+    list(APPEND TASKSMACK_SOURCES ${PLATFORM_SOURCES_WINDOWS})
+else()
+    message(WARNING "Platform sources not defined for ${CMAKE_SYSTEM_NAME}")
 endif()
 
 set(TASKSMACK_HEADERS
@@ -414,7 +432,10 @@ if(CLANG_TIDY_EXE)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Running clang-tidy on project sources"
     )
-    # Depend on glad_gl_core_33 to ensure GLAD headers are generated before clang-tidy runs
+    # Dependencies:
+    # - generate-clang-tidy-compile-commands: strips PCH flags from compile_commands.json
+    # - copy-compile-commands: ensures compile_commands.json is in source root
+    # - glad_gl_core_33: ensures GLAD headers are generated before clang-tidy runs
     add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
 endif()
 

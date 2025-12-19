@@ -6,6 +6,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Source common functions
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+
+# Validate prerequisites early
+validate_coverage_prereqs || exit 1
+
 VERBOSE=false
 OPEN_REPORT=false
 
