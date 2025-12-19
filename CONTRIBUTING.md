@@ -17,7 +17,6 @@ To avoid duplication and doc drift, these are the canonical docs:
 ## Quick Start
 
 ```bash
-# Clone
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
 ```
@@ -34,9 +33,10 @@ If you just want a quick check of your environment, run:
 # Configure + build (Windows)
 ```cmake --preset win-debug
 cmake --build --preset win-debug
+```
 
 # Run tests
-ctest --preset win-debug
+```ctest --preset win-debug
 ```
 
 ### Linux Pre-Requisites
