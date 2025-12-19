@@ -55,6 +55,10 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
     )
+    set(INTEGRATION_TEST_SOURCES
+        Integration/test_CrossLayer.cpp
+        # Windows-specific integration tests would go here
+    )
 else()
     set(PLATFORM_TEST_SOURCES
         Platform/test_ProcessProbeContract.cpp
@@ -70,16 +74,21 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
     )
+    set(INTEGRATION_TEST_SOURCES
+        Integration/test_CrossLayer.cpp
+        Integration/test_LinuxRealProbes.cpp
+    )
 endif()
 
 # Test executable with all test sources
-add_executable(TaskSmack_tests
+add_executable(TaskSmackTests
     test_main.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
     ${PLATFORM_TEST_SOURCES}
+    ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
@@ -87,16 +96,43 @@ add_executable(TaskSmack_tests
     ${PLATFORM_SRC_UNDER_TEST}
 )
 
-target_include_directories(TaskSmack_tests PRIVATE
+target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
 )
 
-target_link_libraries(TaskSmack_tests PRIVATE
+target_link_libraries(TaskSmackTests PRIVATE
     gtest_main
     spdlog::spdlog_header_only
 )
 
-tasksmack_apply_default_warnings(TaskSmack_tests)
+# Platform-specific library linking
+if(UNIX AND NOT APPLE)
+    # Linux needs X11 for platform tests
+    find_package(X11 REQUIRED)
+    target_link_libraries(TaskSmackTests PRIVATE X11::X11)
+endif()
 
-gtest_discover_tests(TaskSmack_tests)
+if(WIN32)
+    # Windows needs additional system libraries
+    target_link_libraries(TaskSmackTests PRIVATE 
+        pdh
+        psapi
+        userenv
+    )
+endif()
+
+tasksmack_apply_default_warnings(TaskSmackTests)
+
+# Precompiled headers for tests (speeds up compilation)
+if(TASKSMACK_ENABLE_PCH)
+    target_precompile_headers(TaskSmackTests PRIVATE
+        <gtest/gtest.h>
+        <memory>
+        <vector>
+        <string>
+        <chrono>
+    )
+endif()
+
+gtest_discover_tests(TaskSmackTests)
