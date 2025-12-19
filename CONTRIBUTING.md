@@ -36,7 +36,8 @@ cmake --build --preset win-debug
 ```
 
 # Run tests
-```ctest --preset win-debug
+```bash
+ctest --preset win-debug
 ```
 
 ### Linux Pre-Requisites
