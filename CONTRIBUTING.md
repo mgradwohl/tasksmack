@@ -122,6 +122,32 @@ ctest --preset debug
 ctest --preset win-debug
 ```
 
+### Integration tests
+
+Integration tests live under `tests/Integration/` and are built into the main test target (so they run via the same `ctest --preset ...` commands). Some integration tests are OS-specific and are conditionally included/skipped depending on platform.
+
+In practice, `tests/Integration/` includes both cross-platform tests and Linux-only tests (e.g., tests that validate `/proc` parsing). Those Linux-only tests are excluded from Windows builds.
+
+To run only integration tests:
+
+```bash
+# Linux
+ctest --preset debug -R Integration
+
+# Windows
+ctest --preset win-debug -R Integration
+```
+
+### Writing tests (mocks)
+
+For unit tests that need process/system probe data, prefer the mocks in `tests/Mocks/MockProbes.h`. `MockProcessProbe` supports a fluent builder-style API:
+
+```cpp
+auto probe = std::make_unique<MockProcessProbe>();
+probe->withProcess(123, "test_process").withCpuTime(123, 1000, 500).withMemory(123, 4096 * 1024).withState(123, 'R');
+probe->setTotalCpuTime(100000);
+```
+
 ## VS Code
 
 Recommended extensions:
@@ -163,6 +189,8 @@ Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH
 ## Coverage
 
 Coverage reports are written to `coverage/` (gitignored).
+
+CI also publishes a coverage summary and may emit a warning if coverage is below the configured threshold.
 
 ```bash
 # Linux
@@ -294,6 +322,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 GitHub Actions builds on Linux (Ubuntu 24.04) and Windows and runs:
 
 - Build + tests
+- Build + tests for debug and release configurations
 - Sanitizers (Linux)
 - clang-format check
 - clang-tidy

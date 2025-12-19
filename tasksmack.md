@@ -33,93 +33,75 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
                                                      GLFW
 ```
 
-- Platform probes run on background threads, polling OS APIs and publishing raw counters.
-- Domain code transforms counters into immutable snapshots and maintains history buffers.
-- UI layers consume snapshots, render views through ImGui/ImPlot, and never call platform APIs directly.
-- The renderer owns every OpenGL call; the rest of the application remains graphics-agnostic.
+- Platform probes are stateless readers of OS counters.
+- Samplers (domain/app) poll probes on background threads and publish raw counters to models.
+- Domain code transforms counters into snapshots and maintains history.
+- UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
+- OpenGL usage is confined to Core/UI (GLFW + ImGui backends).
 
 ## Lessons from the Reference Architecture
 
 ### Core Library vs. Application Executable
 
-- Core library owns reusable infrastructure (app lifecycle, windowing, rendering integration).
-- Application executable stays thin, focusing on TaskSmack-specific logic and assets.
-- **Takeaway:** keep TaskSmack logic lightweight; move reusable systems into libraries.
+- In this repo today, TaskSmack is built as a single application target with layered modules under `src/`.
+- The long-term goal is still to keep the platform/domain math reusable and testable, even if it remains in one binary.
+- **Takeaway:** keep OS probes, domain math, and UI responsibilities separated so splitting into libraries later is low-risk.
 
 ### Layer-Based Composition
 
-- Layers expose `onAttach`, `onDetach`, `onUpdate(delta)`, `onRender`, `onEvent`.
-- Layers update sequentially; events propagate top-down until handled.
-- **Takeaway:** model TaskSmack panes (shell, processes, metrics) as layers managed by a stack.
+- Layers expose `onAttach`, `onDetach`, `onUpdate(delta)`, `onRender`, `onPostRender`.
+- Layers update/render sequentially; input is handled via ImGui input state.
+- **Takeaway:** model TaskSmack panes (processes, metrics, details) as panels, hosted/managed by a top-level shell layer on the layer stack.
 
 ### Window Owns OS Events, Application Routes Them
 
 - GLFW receives native callbacks.
-- Core translates them into internal events.
-- Application dispatches events through the layer stack.
-- **Takeaway:** isolate GLFW-specific code inside core; keep the rest of the system platform-agnostic.
-
-### Rendering Isolated Behind a Backend
-
-- Keep every OpenGL call in a renderer module to simplify ImGui integration and allow future backend swaps if needed.
+- Core registers callbacks to update window state (e.g., framebuffer size) and relies on `glfwPollEvents()`.
+- Application polls GLFW each frame; layers/panels react via ImGui input state rather than a custom event bus.
+- **Takeaway:** keep GLFW-specific window/input plumbing inside Core; keep the rest of the system platform-agnostic.
 
 ## Repository Layout
 
 ```
 TaskSmack/
   CMakeLists.txt
-  cmake/
-    Dependencies.cmake
-    Toolchains/
-  apps/
-    tasksmack/
-      CMakeLists.txt
-      assets/
-        fonts/
-        icons/
-      src/
-        Main.cpp
-        layers/
-          ShellLayer.*
-          ProcessLayer.*
-          MetricsLayer.*
-  libs/
-    core/
-    render/
-    ui/
-    domain/
-    platform/
-  third_party/
-    imgui/
-    implot/
-    glad/
+  CMakePresets.json
+  assets/
+  src/
+    App/
+    Core/
+    Domain/
+    Platform/
+    UI/
+    main.cpp
+  tests/
+  tools/
 ```
 
 ## Module Responsibilities
 
-### libs/core
+### src/Core
 
-- Owns the application loop, layer stack, and event dispatch.
+- Owns the application loop and layer stack.
 - Creates and manages the GLFW window (and thereby the OpenGL context).
 - Provides time utilities, logging bootstrap, and shutdown coordination.
 - Contains zero platform metrics code and only minimal OpenGL usage for context creation.
 
-### libs/render
-
-- Initializes the OpenGL context through GLFW and loads GL functions (glad or glbinding).
-- Defines frame lifecycle helpers (`beginFrame()`, `endFrame()`) and exposes frame metadata (DPI, framebuffer size).
-- Manages ImGui font/icon textures and shared GPU resources.
-- Every OpenGL call lives here; UI and domain code never touch `gl*` symbols.
-
-### libs/ui
+### src/UI
 
 - Configures Dear ImGui and ImPlot (contexts, styling, ini persistence).
 - Hooks the ImGui GLFW and OpenGL3 backends.
 - Hosts shared widgets, tables, and chart components.
 - Consumes immutable domain snapshots plus renderer-provided frame info.
-- Contains no direct OS or OpenGL calls outside the ImGui backends.
+- Contains no direct OS calls outside the ImGui backends.
 
-### libs/domain
+### src/App
+
+- Owns application panels and UI composition.
+- Wires Domain models/samplers into UI rendering.
+- Implements panel lifecycle (`onAttach`, `onDetach`, `render`).
+
+### src/Domain
 
 - Defines immutable snapshot types representing system state.
 - Implements history buffers with decimation (`History<T>` ring buffers).
@@ -127,43 +109,45 @@ TaskSmack/
 - Enforces a cross-platform metrics contract (CPU% semantics, PID reuse handling, delta-based rates).
 - Deterministic and unit-testable; no GLFW, OpenGL, or OS calls.
 
-### libs/platform
+### src/Platform
 
 - Declares probe interfaces (`IProcessProbe`, `ISystemProbe`, `INetworkProbe`, `IDiskProbe`, ...).
 - Provides platform implementations under `windows/` and `linux/`.
-- Runs sampler threads on cadences such as 250 ms and 1 s, emitting raw counters from OS APIs.
+- Provides stateless reads of raw counters from OS APIs.
 - Produces raw measurements only; domain transforms them into UI-ready data.
 
 ## Dependency Direction
 
 ```
-apps/tasksmack
-    ↓
-core → render → ui → domain
-                    ↑
-                 platform
-                    ↑
-                  OS APIs
+App/UI
+  ↓
+Core
+  ↓
+Domain
+  ↑
+Platform
+  ↑
+OS APIs
 ```
 
 Rules:
 - Domain depends on nothing else.
 - UI never calls platform APIs.
 - Platform never depends on UI or renderer.
-- OpenGL usage is confined to `libs/render`.
+- OpenGL usage is confined to Core/UI only.
 
 ## UI Layer Model
 
 - **ShellLayer:** docking root, main menu bar, global settings (refresh cadence, theme, column visibility), shared selection state.
-- **ProcessLayer:** ImGui tables for process list with sorting/filtering/search plus detailed panes backed by cached process data.
-- **MetricsLayer:** ImPlot timelines for CPU, memory, disk, and network histories using ring buffers and the latest snapshot.
-- **OverlayLayer (optional):** modals, toast notifications, debug overlays without cluttering core layers.
+- **ProcessesPanel:** process list with sorting and details selection.
+- **ProcessDetailsPanel:** detailed view for the currently selected process.
+- **SystemMetricsPanel:** plots and timelines backed by domain history.
 
 ## Sampling and Snapshot Pipeline
 
-1. **Sampler threads (platform)** poll OS APIs on fixed intervals (250 ms, 500 ms, 1 s tiers) to capture process tables and counters.
-2. **SnapshotBuilder (domain)** computes deltas, derives rates (CPU%, IO/s, Net/s), produces immutable snapshots keyed by PID + start time, and updates history buffers with decimation.
-3. **UI thread** reads the latest snapshot atomically and renders without blocking on sampling, keeping the interface responsive under load.
+1. **Sampler threads (domain/app)** poll probes on fixed intervals to capture process tables and counters.
+2. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
+3. **UI thread** reads the latest snapshots thread-safely (e.g., copy under a lock) and renders without blocking on sampling.
 
 ## Process Scalability Guidance
 
@@ -176,7 +160,7 @@ Rules:
 - GLFW handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
 - OpenGL core profile (3.3+) is recommended; only the renderer and ImGui backend issue GL calls.
 - ImGui integrations: `imgui_impl_glfw` for events and `imgui_impl_opengl3` for rendering.
-- GLFW callbacks feed the core event system before events reach the layer stack.
+- GLFW callbacks update window state; input is handled via ImGui input state.
 
 ## Platform Strategy
 
@@ -242,9 +226,11 @@ This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, d
 
 This section was originally captured in a now-removed `process.md` file as a detailed implementation plan.
 
+**Note:** this appendix is historical and is not guaranteed to match the current code. Treat the actual source in `src/Platform/`, `src/Domain/`, and `src/App/` as canonical.
+
 ### Design Philosophy
 
-Based on architectural review, we're using **probe interfaces** that collect **raw counters**, with
+This plan proposed using **probe interfaces** that collect **raw counters**, with the
 **domain layer** computing deltas and rates. This separates OS-specific code from math/logic, enabling:
 
 - Unit-testable domain calculations
@@ -346,7 +332,7 @@ std::unique_ptr<IProcessProbe> makeProcessProbe() {
 
 #### 5. Explicit Sampling Model
 
-Sampler runs on background thread at configured interval (e.g., 1 second):
+The proposed sampler runs on a background thread at a configured interval (e.g., 1 second):
 
 ```
 Sampler Thread                    Domain                      UI Thread
@@ -377,7 +363,7 @@ src/
 │   │   └── Factory.cpp
 │   └── Windows/
 │       ├── WindowsProcessProbe.h
-│       ├── WindowsProcessProbe.cpp  # (stub initially)
+│       ├── WindowsProcessProbe.cpp
 │       └── Factory.cpp
 ├── Domain/
 │   ├── ProcessSnapshot.h        # Immutable snapshot struct
@@ -539,7 +525,7 @@ private:
 ```cpp
 // In ProcessModel::computeSnapshot()
 
-// CPU% = (processCpuDelta / totalCpuDelta) * 100 * numCores
+// CPU% = (processCpuDelta / totalCpuDelta) * 100
 // where:
 //   processCpuDelta = (current.userTime + current.systemTime)
 //                   - (previous.userTime + previous.systemTime)
@@ -613,14 +599,17 @@ set(TASKSMACK_SOURCES
 
 ### Implementation Order
 
-1. **Create Platform types and interface** (`ProcessTypes.h`, `IProcessProbe.h`)
-2. **Create Domain snapshot and model** (`ProcessSnapshot.h`, `ProcessModel.h/cpp`)
-3. **Implement Linux probe** (`LinuxProcessProbe.cpp`)
-4. **Create factory** (`Factory.h`, `Linux/Factory.cpp`)
-5. **Integrate with ShellLayer** (add ProcessModel, wire up refresh)
-6. **Update CMakeLists.txt** (add new sources)
-7. **Build and test**
-8. **Add Windows stub** (returns empty vector, for cross-platform builds)
+1. **Pick an issue** (or create one) and clarify acceptance criteria.
+2. **Create a branch** for the work.
+3. **Create Platform types and interface** (`ProcessTypes.h`, `IProcessProbe.h`)
+4. **Create Domain snapshot and model** (`ProcessSnapshot.h`, `ProcessModel.h/cpp`)
+5. **Implement Linux probe** (`LinuxProcessProbe.cpp`)
+6. **Implement Windows probe** (`WindowsProcessProbe.cpp`)
+7. **Create factory for both platforms** (`Factory.h`, `Linux/Factory.cpp`, `Windows/Factory.cpp`)
+8. **Integrate with ShellLayer** (add ProcessModel, wire up refresh)
+9. **Update CMakeLists.txt** (add new sources and tests)
+10. **Write automated tests** (domain calculations + platform contract)
+11. **Build and test**
 
 ### Future Phases
 
