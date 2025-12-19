@@ -38,9 +38,6 @@ This project follows security best practices:
 
 ## Dependencies
 
-Third-party dependencies are fetched at build time:
-
-- **spdlog** - Logging library (MIT License)
-- **Google Test** - Testing framework (BSD-3-Clause License)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dependencies.
 
 We recommend regularly updating dependencies and running security scans on production builds.
