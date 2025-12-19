@@ -136,6 +136,7 @@ if $VERBOSE; then
 fi
 
 # Function to run clang-tidy on a single file
+# shellcheck disable=SC2317  # Function is called via GNU parallel/find -exec
 run_clang_tidy() {
     local file="$1"
     local verbose="$2"
