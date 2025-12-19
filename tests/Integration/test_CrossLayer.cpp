@@ -125,10 +125,10 @@ TEST(CrossLayerIntegrationTest, MultipleRefreshesMaintainConsistency)
         EXPECT_GT(count, 0);
         EXPECT_EQ(snaps.size(), static_cast<size_t>(count));
 
-        // All snapshots should have valid PIDs
+        // All snapshots should have valid PIDs (Windows allows PID 0 for system idle process)
         for (const auto& snap : snaps)
         {
-            EXPECT_GT(snap.pid, 0);
+            EXPECT_GE(snap.pid, 0);
             EXPECT_NE(snap.uniqueKey, 0);
         }
     }
