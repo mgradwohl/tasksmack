@@ -2,12 +2,6 @@
 
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and GLFW.
 
-## For Developers
-
-If you want to build TaskSmack from source, run tests, or contribute changes, start here:
-
-- Developer setup and workflows: [CONTRIBUTING.md](CONTRIBUTING.md)
-
 ## Features
 
 - Cross-platform (Windows + Linux)
@@ -18,20 +12,16 @@ If you want to build TaskSmack from source, run tests, or contribute changes, st
 - Configurable themes (TOML-based)
 - Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
 
-## Documentation
-
-- Contributor & developer guide (build/test/tools): [CONTRIBUTING.md](CONTRIBUTING.md)
-- Architecture overview: [tasksmack.md](tasksmack.md)
-- Process/metrics implementation notes: [process.md](process.md)
-- Security policy: [SECURITY.md](SECURITY.md)
-
-## Contributing
+## For Developers
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 - Use the **issue templates** for bug reports and feature requests
 - PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
+- Architecture overview: [tasksmack.md](tasksmack.md)
+- Process/metrics implementation notes: [process.md](process.md)
+- Security policy: [SECURITY.md](SECURITY.md)
 
 ## License
 
