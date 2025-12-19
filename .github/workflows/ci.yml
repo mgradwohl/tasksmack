@@ -237,10 +237,10 @@ jobs:
           if [ -f coverage-output.txt ]; then
             COVERAGE=$(grep "^TOTAL" coverage-output.txt | awk '{print $NF}' | sed 's/%//')
             THRESHOLD=80
-            
+
             echo "📊 Current coverage: ${COVERAGE}%"
             echo "🎯 Minimum threshold: ${THRESHOLD}%"
-            
+
             # Use awk for floating point comparison (bc might not be available)
             if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
               echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"

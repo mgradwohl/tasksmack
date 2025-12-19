@@ -16,7 +16,7 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
-    
+
   # Python dependencies (for GLAD/jinja2)
   - package-ecosystem: "pip"
     directory: "/"
