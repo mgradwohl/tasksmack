@@ -18,6 +18,7 @@
 
 - [ ] I have read the [CONTRIBUTING](../CONTRIBUTING.md) guidelines
 - [ ] My code follows the project's coding standards
+- [ ] I have run `pre-commit run --all-files` or installed pre-commit hooks
 - [ ] I have run `clang-format` on my changes
 - [ ] I have run `clang-tidy` and addressed any warnings
 - [ ] I have added tests that prove my fix/feature works
