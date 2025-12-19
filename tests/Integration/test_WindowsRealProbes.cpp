@@ -22,6 +22,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <tlhelp32.h>
 // clang-format on
 
 // =============================================================================
@@ -101,8 +102,7 @@ TEST(WindowsRealProbesTest, ProcessProbeFindsOwnProcess)
             // State should be Running or Unknown
             // Note: Windows doesn't have a zombie state like Unix; terminated processes
             // are cleaned up immediately or return access denied errors
-            EXPECT_TRUE(proc.state == 'R' || proc.state == '?')
-                << "Own process state should be R or ?, got: " << proc.state;
+            EXPECT_TRUE(proc.state == 'R' || proc.state == '?') << "Own process state should be R or ?, got: " << proc.state;
 
             // Should have user information
             EXPECT_FALSE(proc.user.empty()) << "Own process should have a username";
@@ -171,9 +171,9 @@ TEST(WindowsRealProbesTest, EnumerationIsConsistent)
     auto count2 = procs2.size();
 
     // Within 20% is reasonable (Windows processes can spawn/die frequently)
-    // Using floating-point to avoid truncation for small counts
     auto diff = static_cast<size_t>(std::abs(static_cast<int64_t>(count1) - static_cast<int64_t>(count2)));
-    auto maxDiff = std::max(size_t{1}, static_cast<size_t>(count1 * 0.2)); // At least 1, or 20%
+    // Use integer arithmetic to avoid floating-point conversion warnings
+    auto maxDiff = std::max(size_t{1}, count1 / 5); // At least 1, or 20%
 
     EXPECT_LE(diff, maxDiff) << "Process count between enumerations should be similar";
 }
@@ -268,7 +268,7 @@ TEST(WindowsRealProbesTest, SystemProbeUptimeIsPositive)
 
     // Boot timestamp should be reasonable (within the last year)
     auto now = std::chrono::system_clock::now();
-    auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    auto nowEpoch = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count());
     auto oneYearAgo = nowEpoch - (365ULL * 24 * 60 * 60);
 
     EXPECT_GT(counters.bootTimestamp, oneYearAgo) << "Boot timestamp should be recent";
@@ -405,7 +405,7 @@ TEST(WindowsRealProbesTest, ProcessActionsStopReturnsError)
     Platform::WindowsProcessActions actions;
 
     // Verify stop returns an error since it's not supported
-    auto result = actions.stop(GetCurrentProcessId());
+    auto result = actions.stop(static_cast<int32_t>(GetCurrentProcessId()));
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
 }
@@ -415,7 +415,7 @@ TEST(WindowsRealProbesTest, ProcessActionsResumeReturnsError)
     Platform::WindowsProcessActions actions;
 
     // Verify resume returns an error since it's not supported
-    auto result = actions.resume(GetCurrentProcessId());
+    auto result = actions.resume(static_cast<int32_t>(GetCurrentProcessId()));
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.errorMessage.empty());
 }
