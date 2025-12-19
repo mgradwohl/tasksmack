@@ -2,44 +2,26 @@
 
 Thanks for contributing!
 
-This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging). The project overview and architecture docs live elsewhere:
+This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging).
 
-- Architecture overview: [tasksmack.md](tasksmack.md)
-- Process/metrics implementation notes: [tasksmack.md](tasksmack.md)
-- Copilot usage + project coding standards: [.github/copilot-instructions.md](.github/copilot-instructions.md)
-- Copilot agent tips: [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md)
+## Documentation
 
-## Documentation Map
+To avoid duplication and doc drift, these are the canonical docs:
 
-To avoid duplication and doc drift:
-
-- [README.md](README.md) is feature-focused for users (with a small contributor pointer to this file).
-- [CONTRIBUTING.md](CONTRIBUTING.md) is the canonical contributor + engineering workflow doc.
-- [tasksmack.md](tasksmack.md) is architecture + engineering notes.
-- [completed-features.md](completed-features.md) is the canonical shipped-features list.
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) are primarily agent guidance (also useful to contributors).
+- [README.md](README.md): user-facing features (with a small contributor pointer to this file)
+- [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
+- [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
+- [completed-features.md](completed-features.md): canonical shipped-features list
+- [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
 
 ## Quick Start
 
 ```bash
-# Configure + build (Windows)
-cmake --preset win-debug
-cmake --build --preset win-debug
+# Clone
+git clone https://github.com/mgradwohl/tasksmack.git
+cd tasksmack
 
-# Run tests
-ctest --preset win-debug
-```
-
-```bash
-# Configure + build (Linux)
-cmake --preset debug
-cmake --build --preset debug
-
-# Run tests
-ctest --preset debug
-```
-
-## Prerequisites
+## Check Prerequisites
 
 If you just want a quick check of your environment, run:
 
@@ -48,7 +30,15 @@ If you just want a quick check of your environment, run:
 .\tools\check-prereqs.ps1   # Windows
 ```
 
-### Linux
+# Configure + build (Windows)
+```cmake --preset win-debug
+cmake --build --preset win-debug
+
+# Run tests
+ctest --preset win-debug
+```
+
+### Linux Pre-Requisites
 
 - Clang 21+ recommended
 - CMake 3.28+ (4.2.1+ recommended)
@@ -65,7 +55,7 @@ Example (Ubuntu/Debian):
 sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2
 ```
 
-### Windows
+### Windows Pre-Requisites
 
 - LLVM/Clang 21+ (includes clang-tidy, clang-format, lld, llvm-cov)
 - `LLVM_ROOT` environment variable set
@@ -80,16 +70,6 @@ Install Python + jinja2:
 winget install Python.Python.3.12
 pip install jinja2
 ```
-
-#### Windows Developer Environment (DevShell)
-
-For Windows builds, you typically want Visual Studio Developer Shell loaded and `LLVM_ROOT` set. Use:
-
-```powershell
-. .\Devshell-Updated.ps1
-```
-
-If it doesn’t match your Visual Studio install paths, update the script accordingly.
 
 ## Build
 
