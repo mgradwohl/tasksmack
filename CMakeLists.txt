@@ -241,6 +241,20 @@ set_target_properties(glfw PROPERTIES FOLDER "third_party")
 # OpenGL
 find_package(OpenGL REQUIRED)
 
+# Early check for GLAD requirements (Python3 + jinja2)
+# GLAD generation uses jinja2 templates and fails with cryptic errors if not installed
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} -c "import jinja2"
+    RESULT_VARIABLE JINJA2_CHECK
+    OUTPUT_QUIET ERROR_QUIET
+)
+if(NOT JINJA2_CHECK EQUAL 0)
+    message(FATAL_ERROR 
+        "Python jinja2 module not found. Required for GLAD generation.\n"
+        "Install with: pip install jinja2")
+endif()
+
 # GLAD
 FetchContent_Declare(
     glad
