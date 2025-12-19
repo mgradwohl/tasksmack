@@ -1,173 +1,361 @@
 # Contributing to TaskSmack
 
-Thank you for your interest in contributing!
+Thanks for contributing!
 
-> **Using GitHub Copilot?** See [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md) for tips on writing effective issues and working with Copilot on this repository.
+This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging). The project overview and architecture docs live elsewhere:
 
-## Development Setup
+- Architecture overview: [tasksmack.md](tasksmack.md)
+- Process/metrics implementation notes: [process.md](process.md)
+- Copilot usage + project coding standards: [.github/copilot-instructions.md](.github/copilot-instructions.md)
+- Copilot agent tips: [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md)
 
-### Prerequisites
+## Quick Start
 
-See [README.md](README.md#requirements) for detailed prerequisites and minimum versions.
+```bash
+# Configure + build (Windows)
+cmake --preset win-debug
+cmake --build --preset win-debug
 
-**Quick summary:**
-- Clang 21+ (C++23 compiler)
-- CMake 3.28+, Ninja
-- Python 3 with jinja2 (for GLAD OpenGL loader)
-- lld, ccache (recommended)
-- clang-tidy, clang-format
+# Run tests
+ctest --preset win-debug
+```
 
-### Verify Prerequisites
+```bash
+# Configure + build (Linux)
+cmake --preset debug
+cmake --build --preset debug
 
-Run the prerequisite checker to verify all required tools:
+# Run tests
+ctest --preset debug
+```
+
+## Prerequisites
+
+If you just want a quick check of your environment, run:
 
 ```bash
 ./tools/check-prereqs.sh    # Linux
 .\tools\check-prereqs.ps1   # Windows
 ```
 
-See [README.md](README.md#requirements) for the complete list of tools, minimum versions, and common fixes.
+### Linux
 
-### Building
+- Clang 21+ recommended
+- CMake 3.28+ (4.2.1+ recommended)
+- Ninja
+- lld (LLVM linker)
+- clang-tidy and clang-format
+- ccache 4.9.1+ (recommended for faster rebuilds)
+- llvm-profdata and llvm-cov (coverage)
+- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
 
-See [README.md](README.md#step-5-build-and-run) for detailed build instructions and all available presets.
+Example (Ubuntu/Debian):
 
 ```bash
-# Quick start
-cmake --preset debug        # or win-debug on Windows
+sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2
+```
+
+### Windows
+
+- LLVM/Clang 21+ (includes clang-tidy, clang-format, lld, llvm-cov)
+- `LLVM_ROOT` environment variable set
+- CMake 3.28+
+- Ninja
+- ccache 4.9.1+ (optional but recommended)
+- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+
+Install Python + jinja2:
+
+```powershell
+winget install Python.Python.3.12
+pip install jinja2
+```
+
+#### Windows Developer Environment (DevShell)
+
+For Windows builds, you typically want Visual Studio Developer Shell loaded and `LLVM_ROOT` set. Use:
+
+```powershell
+. .\Devshell-Updated.ps1
+```
+
+If it doesn’t match your Visual Studio install paths, update the script accordingly.
+
+## Build
+
+This repo uses CMake Presets; list them with:
+
+```bash
+cmake --list-presets
+```
+
+### Common Presets
+
+| Preset (Linux) | Preset (Windows) | Description |
+|----------------|------------------|-------------|
+| `debug` | `win-debug` | Debug symbols, no optimization, security hardening |
+| `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
+| `release` | `win-release` | Optimized, no debug symbols |
+| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped |
+| `coverage` | `win-coverage` | Debug + code coverage instrumentation |
+| `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
+| `tsan` | — | ThreadSanitizer (Linux only) |
+
+### Build Commands
+
+```bash
+# Linux
+cmake --preset debug
 cmake --build --preset debug
+
+# Windows
+cmake --preset win-debug
+cmake --build --preset win-debug
 ```
 
-### Running Tests
+### Running
+
+The application target is `TaskSmack`.
+
+- Windows: the binary is under `build/win-debug/bin/TaskSmack.exe` (or your selected preset)
+- Linux: the binary is under `build/debug/bin/TaskSmack` (or your selected preset)
+
+## Test
 
 ```bash
-ctest --test-dir build/debug --output-on-failure
+# Linux
+ctest --preset debug
+
+# Windows
+ctest --preset win-debug
 ```
 
-## Code Style
+## VS Code
 
-We follow strict C++23 coding standards. See [.github/copilot-instructions.md](.github/copilot-instructions.md#coding-standards) for comprehensive guidelines including:
-- Naming conventions
-- Include order requirements  
-- Modern C++ feature usage
-- Rule of 5 compliance
-- RAII and exception safety
-- Common clang-tidy warning avoidance
+Recommended extensions:
 
-### Formatting
+- clangd (LLVM)
+- CodeLLDB
+- CMake Tools
 
-This project uses clang-format with the configuration in `.clang-format`. Run before committing:
+Build tasks are preconfigured:
+
+- `Ctrl+Shift+B` runs the default Debug build
+- Command Palette → “Tasks: Run Task” for other presets and tools
+
+## Code Quality Tools
+
+### Formatting (required before PRs)
 
 ```bash
-./tools/clang-format.sh    # Linux
-.\tools\clang-format.ps1   # Windows
+./tools/clang-format.sh        # Linux
+pwsh tools/clang-format.ps1    # Windows
 ```
 
-To check without modifying:
+Check formatting (no changes):
+
 ```bash
-./tools/check-format.sh    # Linux
-.\tools\check-format.ps1   # Windows
+./tools/check-format.sh        # Linux
+pwsh tools/check-format.ps1    # Windows
 ```
 
 ### Static Analysis
 
-Run clang-tidy regularly:
-
 ```bash
-./tools/clang-tidy.sh debug    # Linux
-.\tools\clang-tidy.ps1 debug   # Windows
+./tools/clang-tidy.sh debug        # Linux
+pwsh tools/clang-tidy.ps1 debug    # Windows
 ```
 
-See [.github/copilot-instructions.md](.github/copilot-instructions.md#avoiding-common-clang-tidy-warnings) for guidance on avoiding common warnings.
+Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
+
+## Coverage
+
+Coverage reports are written to `coverage/` (gitignored).
+
+```bash
+./tools/coverage.sh            # Linux
+./tools/coverage.sh --open     # Linux
+
+pwsh tools/coverage.ps1        # Windows
+pwsh tools/coverage.ps1 -OpenReport
+```
+
+## Sanitizers (Linux only)
+
+AddressSanitizer + UndefinedBehaviorSanitizer:
+
+```bash
+cmake --preset asan-ubsan
+cmake --build --preset asan-ubsan
+ctest --preset asan-ubsan
+```
+
+ThreadSanitizer:
+
+```bash
+cmake --preset tsan
+cmake --build --preset tsan
+ctest --preset tsan
+```
+
+## Packaging (CPack)
+
+Create distributable archives/installers with CPack:
+
+```bash
+# Linux
+cmake --preset release
+cmake --build --preset release
+cpack --config build/release/CPackConfig.cmake -G ZIP
+
+# Windows
+cmake --preset win-release
+cmake --build --preset win-release
+cpack --config build/win-release/CPackConfig.cmake -G ZIP
+```
+
+Supported generators:
+
+| Generator | Platform | Output |
+|-----------|----------|--------|
+| `ZIP` | All | .zip archive |
+| `TGZ` | All | .tar.gz archive |
+| `DEB` | Linux | Debian .deb package |
+| `RPM` | Linux | Red Hat .rpm package |
+| `NSIS` | Windows | .exe installer |
+
+Packages are created in `dist/`.
+
+## Version Header
+
+The build auto-generates a `version.h` header at configure time with project version, build type, compiler info, and build timestamp.
+
+Usage:
+
+```cpp
+#include "version.h"
+
+spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
+spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
+```
+
+The header is generated to `build/<preset>/generated/version.h`.
+
+## Compiler Warnings
+
+The project enables a comprehensive warning set tuned for Clang on Windows and Linux.
+
+Key CMake options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable extra warnings |
+| `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
+
+To disable warnings-as-errors for local iteration:
+
+```bash
+cmake --preset debug -DTASKSMACK_WARNINGS_AS_ERRORS=OFF
+```
+
+## Build System Notes
+
+Some choices are intentional (to keep the build predictable across Windows/Linux):
+
+- CMake Presets are the source of truth for configurations
+- FetchContent is used for dependencies (prefer `SYSTEM` to reduce third-party warning noise)
+- Platform default C++ standard libraries are used (libstdc++ on Linux, MSVC STL on Windows)
+
+Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks is tracked in GitHub issues (#60, #61, #62, #63, #64).
+
+## Adding Dependencies
+
+Use CMake’s `FetchContent` for dependencies. Always use `SYSTEM` to suppress third-party warnings:
+
+```cmake
+FetchContent_Declare(
+    mylib
+    GIT_REPOSITORY https://github.com/example/mylib.git
+    GIT_TAG v1.0.0
+    SYSTEM
+)
+FetchContent_MakeAvailable(mylib)
+
+target_link_libraries(TaskSmack PRIVATE mylib)
+```
+
+### Optional: shared FetchContent cache
+
+Enable the shared cache to reuse downloads across presets:
+
+```bash
+cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
+cmake --preset win-debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
+```
+
+Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_BASE_DIR`.
+
+## CI/CD
+
+GitHub Actions builds on Linux (Ubuntu 24.04) and Windows and runs:
+
+- Build + tests
+- Sanitizers (Linux)
+- clang-format check
+- clang-tidy
+- Coverage (coverage preset)
+
+Dependabot updates GitHub Actions dependencies weekly.
+
+### CI Artifacts (GitHub UI)
+
+In Actions → workflow run → Artifacts, you may see:
+
+- `coverage-html-report`
+- `asan-ubsan-report`
+- `tsan-report`
+- `linux-test-results` / `windows-test-results`
+- `clang-tidy-results`
+
+### CI Artifacts (GitHub CLI)
+
+```bash
+gh run download <run-id> -n coverage-html-report
+```
 
 ## Pull Request Process
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+2. Create a feature branch
 3. Make your changes
-4. Run formatting: `./tools/clang-format.sh`
-5. Run static analysis: `./tools/clang-tidy.sh`
-6. Run tests: `ctest --test-dir build/debug`
-7. Commit your changes (`git commit -m 'Add amazing feature'`)
-8. Push to the branch (`git push origin feature/amazing-feature`)
-9. Open a Pull Request
-
-The **PR template** will guide you through the checklist. Please complete all applicable items before requesting review.
+4. Run formatting (required)
+5. Run clang-tidy (recommended)
+6. Run tests
+7. Open a PR and follow the checklist in the PR template
 
 ## Reporting Issues
 
-Please use the appropriate **issue template**:
-- **Bug Report** - For bugs and unexpected behavior
-- **Feature Request** - For new features and improvements
+Please use the issue templates:
 
-The templates will guide you to include all necessary information.
+- Bug Report
+- Feature Request
 
-## CI Workflow Reports
+## Security Issues
 
-The CI pipeline generates several reports that can help with debugging and code quality. Here's how to access them:
-
-### Using GitHub UI
-
-1. Go to the **Actions** tab in the repository
-2. Click on the workflow run you want to inspect
-3. Scroll to the bottom to find the **Artifacts** section
-4. Download any of these artifacts:
-   - `coverage-html-report` - Full HTML coverage report
-   - `asan-ubsan-report` - AddressSanitizer + UndefinedBehaviorSanitizer results
-   - `tsan-report` - ThreadSanitizer results
-   - `linux-test-results` / `windows-test-results` - Test results
-   - `clang-tidy-results` - Static analysis output
-
-### Using GitHub CLI
-
-```bash
-# Download specific artifacts by name
-gh run download <run-id> -n coverage-html-report
-gh run download <run-id> -n asan-ubsan-report
-gh run download <run-id> -n tsan-report
-```
+See [SECURITY.md](SECURITY.md) for responsible disclosure. Do not open public issues for security vulnerabilities.
 
 ## Project Structure
 
 ```
 .
-├── CMakeLists.txt          # Main build configuration
-├── CMakePresets.json       # CMake presets for all platforms/configs
-├── Devshell-Updated.ps1    # Windows dev environment setup
-├── setup.sh / setup.ps1    # Project renaming scripts (deleted after use)
+├── CMakeLists.txt
+├── CMakePresets.json
+├── Devshell-Updated.ps1
 ├── src/
-│   ├── main.cpp            # Application entry point
-│   └── version.h.in        # Version header template (generates version.h)
 ├── tests/
-│   ├── CMakeLists.txt      # Test configuration
-│   └── test_main.cpp       # Example tests
 ├── tools/
-│   ├── build.sh/ps1        # Build helper scripts
-│   ├── configure.sh/ps1    # Configure helper scripts
-│   ├── check-prereqs.sh/ps1 # Check prerequisite tools and versions
-│   ├── clang-tidy.sh/ps1   # Static analysis
-│   ├── clang-format.sh/ps1 # Code formatting
-│   ├── check-format.sh/ps1 # Format checking
-│   └── coverage.sh/ps1     # Code coverage reports
-├── dist/                   # CPack output (generated, gitignored)
-│   └── *.zip, *.tar.gz     # Distribution packages
-├── coverage/               # Coverage reports (generated, gitignored)
-│   └── index.html          # HTML coverage report
-├── .clang-format           # Formatting rules
-├── .clang-tidy             # Static analysis rules
-├── .clangd                 # clangd LSP configuration
+├── assets/
 ├── .github/
-│   ├── workflows/ci.yml    # CI/CD pipeline
-│   ├── ISSUE_TEMPLATE/     # Bug report and feature request templates
-│   ├── pull_request_template.md  # PR checklist
-│   └── dependabot.yml      # Automated dependency updates
-├── SECURITY.md             # Security policy and vulnerability reporting
 └── .vscode/
-    ├── tasks.json          # Build tasks (platform-aware)
-    ├── launch.json         # Debug configurations (platform-aware)
-    └── settings.json       # Editor settings
 ```
-
-### Security Issues
-
-For security vulnerabilities, please see [SECURITY.md](SECURITY.md) for responsible disclosure guidelines. **Do not** open public issues for security vulnerabilities.

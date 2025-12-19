@@ -16,7 +16,7 @@
 
 <!-- Mark completed items with an [x] -->
 
-- [ ] I have read the [CONTRIBUTING](CONTRIBUTING.md) guidelines
+- [ ] I have read the [CONTRIBUTING](../CONTRIBUTING.md) guidelines
 - [ ] My code follows the project's coding standards
 - [ ] I have run `clang-format` on my changes
 - [ ] I have run `clang-tidy` and addressed any warnings

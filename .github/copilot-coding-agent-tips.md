@@ -2,6 +2,8 @@
 
 This guide helps you get the best results when using GitHub Copilot coding agent with the TaskSmack repository.
 
+For repository rules (layer boundaries, coding standards, testing conventions), treat [.github/copilot-instructions.md](copilot-instructions.md) as the canonical reference.
+
 ## Quick Start
 
 GitHub Copilot coding agent can autonomously work on issues in this repository. It will:
@@ -119,58 +121,7 @@ See how htop displays SHR column: https://htop.dev/
 
 ## Repository-Specific Guidance
 
-### Architecture Rules (Critical)
-
-Copilot **must** respect these layer boundaries:
-
-```
-App (Panels) → UI → Core → Domain → Platform → OS APIs
-```
-
-**Rules:**
-1. Platform returns **raw counters**, Domain computes **deltas/rates**
-2. UI never calls Platform probes directly (use Domain models)
-3. All OpenGL calls confined to `Core/` and `UI/`
-4. Domain and Platform never depend on UI, Core, or graphics libraries
-
-**Copilot will automatically check** these rules before submitting PRs.
-
-### Code Style Enforcement
-
-Copilot is configured to:
-- ✅ Apply `.clang-format` rules (LLVM base, Allman braces)
-- ✅ Fix `.clang-tidy` warnings
-- ✅ Use modern C++23 features (`std::ranges`, `std::format`, `std::jthread`)
-- ✅ Follow naming conventions (PascalCase classes, camelCase functions, m_camelCase members)
-- ✅ Maintain include order (matching header → project → third-party → stdlib)
-
-**No manual formatting needed** - Copilot handles this automatically.
-
-### Testing Requirements
-
-Copilot will:
-1. Add tests when creating new features (follows existing Google Test patterns)
-2. Run tests before submitting PR (`ctest --preset debug`)
-3. Use mocks from `tests/Mocks/MockProbes.h` for Domain tests
-4. Use `EXPECT_DOUBLE_EQ` for floating-point comparisons
-
-### Build Validation
-
-Copilot runs these checks before submitting:
-```bash
-# Format check
-./tools/clang-format.sh
-
-# Build
-cmake --preset debug
-cmake --build --preset debug
-
-# Test
-ctest --preset debug
-
-# Static analysis
-./tools/clang-tidy.sh debug
-```
+Canonical rules and checklists live in [.github/copilot-instructions.md](copilot-instructions.md).
 
 ## Pull Request Review Process
 
@@ -224,11 +175,11 @@ Copilot will read your feedback and update the PR.
 
 Copilot reads these files automatically:
 - `.github/copilot-instructions.md` - Architecture and coding standards
-- `README.md` - Build and tool instructions
+- `README.md` - Project overview
 - `tasksmack.md` - Architecture overview
 - `process.md` - Process enumeration details
-- `CONTRIBUTING.md` - Development workflow
-- `TODO.md` - Known issues and roadmap
+- `CONTRIBUTING.md` - Build/test/tools workflow
+- `completed-features.md` - Shipped features list
 
 **You don't need to repeat this information in issues.**
 
@@ -269,77 +220,9 @@ If asking Copilot to optimize performance:
 - Benchmark before/after with Google Benchmark
 ```
 
-## Common Copilot Mistakes (and How to Avoid Them)
+## Common Copilot Mistakes
 
-### Mistake 1: Computing Rates in Platform Layer
-
-❌ **Wrong:**
-```cpp
-// Platform/Linux/LinuxProcessProbe.cpp
-double LinuxProcessProbe::getCpuPercent(int pid) {
-    // Platform computes final value - BAD!
-}
-```
-
-✅ **Right:**
-```cpp
-// Platform/Linux/LinuxProcessProbe.cpp
-ProcessCounters LinuxProcessProbe::readCounters(int pid) {
-    // Returns raw CPU ticks - GOOD!
-}
-
-// Domain/ProcessModel.cpp
-double ProcessModel::computeCpuPercent(const ProcessCounters& current, const ProcessCounters& previous) {
-    // Domain computes from deltas - GOOD!
-}
-```
-
-**Issue template to prevent this:**
-```markdown
-⚠️ Platform layer returns raw counters only. Domain layer computes rates/percentages.
-```
-
-### Mistake 2: Adding OpenGL Calls Outside Core/UI
-
-❌ **Wrong:**
-```cpp
-// Domain/ProcessModel.cpp
-void ProcessModel::render() {
-    glClear(GL_COLOR_BUFFER_BIT); // OpenGL in Domain - BAD!
-}
-```
-
-✅ **Right:**
-```cpp
-// UI/ProcessPanel.cpp (inherits from Layer)
-void ProcessPanel::render(bool* open) {
-    // ImGui rendering only - OpenGL handled by Core - GOOD!
-    ImGui::Begin("Processes", open);
-    for (const auto& proc : m_Model->snapshots()) {
-        // Render using ImGui API
-    }
-    ImGui::End();
-}
-```
-
-### Mistake 3: Ignoring PID Reuse
-
-❌ **Wrong:**
-```cpp
-// Domain/ProcessModel.cpp
-uint64_t key = static_cast<uint64_t>(pid); // PID alone - BAD!
-```
-
-✅ **Right:**
-```cpp
-// Domain/ProcessModel.cpp
-uint64_t key = makeUniqueKey(pid, startTime); // PID + start time - GOOD!
-```
-
-**Issue template to prevent this:**
-```markdown
-⚠️ Use `makeUniqueKey(pid, startTime)` to handle PID reuse correctly.
-```
+See the “Common Pitfalls” and “Architecture Rules” sections in [.github/copilot-instructions.md](copilot-instructions.md).
 
 ## Troubleshooting
 
@@ -379,11 +262,11 @@ If Copilot's PR has clang-tidy warnings:
 | File | Purpose |
 |------|---------|
 | `.github/copilot-instructions.md` | Architecture, coding standards, patterns |
-| `README.md` | Build instructions, project structure |
+| `README.md` | Project overview |
 | `tasksmack.md` | High-level architecture vision |
 | `process.md` | Process enumeration implementation details |
-| `CONTRIBUTING.md` | Development workflow, PR process |
-| `TODO.md` | Known issues, improvement ideas |
+| `CONTRIBUTING.md` | Build/test/tools workflow |
+| `completed-features.md` | Shipped features |
 | `.clang-format` | Code formatting rules |
 | `.clang-tidy` | Static analysis configuration |
 

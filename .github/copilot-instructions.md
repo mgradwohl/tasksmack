@@ -2,14 +2,11 @@
 
 Cross-platform system monitor (C++23 / Clang 21+ / OpenGL / ImGui). Strict layered architecture: **Platform → Domain → UI**.
 
-> **Related Docs:** [README.md](../README.md) (build/tools), [tasksmack.md](../tasksmack.md) (architecture vision), [process.md](../process.md) (implementation details), [CONTRIBUTING.md](../CONTRIBUTING.md) (PR process), [TODO.md](../TODO.md) (backlog), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture vision), [process.md](../process.md) (implementation details), [completed-features.md](../completed-features.md) (shipped features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
 
 ## Quick Reference
 
-**Build/Test/Tools**: See [README.md](../README.md) sections:
-- Build commands → "Getting Started" and "Build Types"  
-- Prerequisites → "Requirements"
-- Formatting/linting → "Code Quality Tools"
+**Build/Test/Tools**: See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 **Essential commands:**
 ```bash
@@ -241,13 +238,13 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 ## Engineering Workflow
 
-- When modifying project structure, scripts, clang configs, or CMake files → update `README.md` and this file
+- When modifying project structure, scripts, clang configs, or CMake files → update `CONTRIBUTING.md` and this file
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
-- New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `README.md`
+- New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
 - **GLAD dependency:** Requires Python 3 + jinja2 at build time for OpenGL loader generation
 
 ---
-*For comprehensive build instructions, prerequisites, tools, and project structure, see [README.md](../README.md).*
+*For comprehensive build instructions, prerequisites, tools, and project structure, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
 *For PR process and contribution workflow, see [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
