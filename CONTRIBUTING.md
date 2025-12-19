@@ -20,6 +20,7 @@ To avoid duplication and doc drift, these are the canonical docs:
 # Clone
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
+```
 
 ## Check Prerequisites
 
