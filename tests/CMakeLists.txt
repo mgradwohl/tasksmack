@@ -57,7 +57,7 @@ if(WIN32)
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
-        # Windows-specific integration tests would go here
+        Integration/test_WindowsRealProbes.cpp
     )
 else()
     set(PLATFORM_TEST_SOURCES

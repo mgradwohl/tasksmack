@@ -178,6 +178,67 @@ Rules:
 
 Each platform implements the same probe interfaces; automated tests ensure contract compliance.
 
+## Platform-Specific Capabilities and Limitations
+
+TaskSmack uses a capability-based system to handle platform differences gracefully. The UI automatically adapts based on what each OS provides.
+
+### Windows Capabilities
+
+**Supported:**
+- Per-core CPU metrics (via `NtQuerySystemInformation`)
+- Process enumeration with full details (PID, name, command line, user, memory, I/O counters)
+- Process CPU times (user + system)
+- Memory metrics (total, available, free, swap)
+- System uptime and boot timestamp
+- CPU base frequency (from registry)
+- Process priority (mapped to nice-like values: -20 to +19)
+- Process termination and killing
+- Thread counts per process
+
+**Not Supported (OS limitations):**
+- **I/O wait time** (`iowait`): Windows doesn't expose this metric; it's a Linux-specific concept
+- **Steal time** (`steal`): Only meaningful in virtualized environments with specific hypervisors
+- **Load average**: Windows has no equivalent to Unix load average (1/5/15 minute averages)
+- **Process stop/continue**: Windows doesn't have SIGSTOP/SIGCONT equivalents
+- **Shared memory per process**: Windows doesn't expose shared memory pages the same way Linux `/proc/[pid]/statm` does
+
+### Linux Capabilities
+
+**Supported:**
+- All Windows capabilities above, plus:
+- **I/O wait time** (`iowait`): Time spent waiting for I/O to complete
+- **Steal time** (`steal`): Time stolen by hypervisor for other VMs (virtualization-aware)
+- **Load average**: 1, 5, and 15 minute load averages from `/proc/loadavg`
+- **Process stop/continue**: Full signal support including SIGSTOP, SIGCONT
+- **Shared memory per process**: From `/proc/[pid]/statm`
+- **Process I/O counters**: Requires root access to `/proc/[pid]/io`
+
+**Limitations:**
+- Process I/O counters (`readBytes`, `writeBytes`) require root/elevated privileges to access `/proc/[pid]/io`
+
+### Capability Reporting
+
+Each probe reports its capabilities via the `capabilities()` method:
+
+```cpp
+// Example: Check what the current platform supports
+auto systemProbe = Platform::makeSystemProbe();
+auto caps = systemProbe->capabilities();
+
+if (caps.hasLoadAvg) {
+    // Display load average (Linux only)
+}
+
+if (caps.hasIoWait) {
+    // Display I/O wait percentage (Linux only)
+}
+```
+
+The UI uses these capabilities to:
+- Hide unavailable columns/metrics automatically
+- Show platform-appropriate tooltips and help text
+- Avoid attempting unsupported operations (e.g., process stop on Windows)
+
 ## Plugin Strategy (Deferred)
 
 - Use a C ABI surface (`extern "C"`) with versioned function tables and plain structs.
