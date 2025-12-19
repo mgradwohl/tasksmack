@@ -13,7 +13,7 @@ CompileFlags:
     - --system-header-prefix=spdlog/
     - --system-header-prefix=gtest/
     - --system-header-prefix=gmock/
-    
+
     # Standard system header paths (suppress warnings from OS/compiler headers)
     - --system-header-prefix=/usr/include/
     - --system-header-prefix=/usr/lib/
