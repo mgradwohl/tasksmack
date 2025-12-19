@@ -762,3 +762,60 @@ TEST(ProcessModelTest, ProcessWithZeroStartTime)
     // Should still work - uniqueKey based on hash of 0 is valid
     EXPECT_NE(snaps[0].uniqueKey, 0);
 }
+
+// =============================================================================
+// Builder Pattern Tests
+// =============================================================================
+
+TEST(ProcessModelTest, BuilderPatternSimpleSetup)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(123, "test_process")
+        .withCpuTime(123, 1000, 500)
+        .withMemory(123, 4096 * 1024)
+        .withState(123, 'R');
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 123);
+    EXPECT_EQ(snaps[0].name, "test_process");
+    EXPECT_EQ(snaps[0].displayState, "Running");
+    EXPECT_EQ(snaps[0].memoryBytes, 4096 * 1024);
+}
+
+TEST(ProcessModelTest, BuilderPatternMultipleProcesses)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "proc_a")
+        .withState(100, 'R')
+        .withProcess(200, "proc_b")
+        .withState(200, 'S')
+        .withProcess(300, "proc_c")
+        .withState(300, 'D');
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.processCount(), 3);
+}
+
+TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
+{
+    // Old style still works
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(123, "legacy_proc", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 123);
+    EXPECT_EQ(snaps[0].name, "legacy_proc");
+}

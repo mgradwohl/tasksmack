@@ -20,14 +20,138 @@ namespace TestMocks
 {
 
 // =============================================================================
+// Process Counter Helpers (forward declarations needed by MockProcessProbe)
+// =============================================================================
+
+/// Create a ProcessCounters struct with common test values.
+inline Platform::ProcessCounters makeProcessCounters(int32_t pid,
+                                                     const std::string& name,
+                                                     char state = 'R',
+                                                     uint64_t userTime = 100,
+                                                     uint64_t systemTime = 50,
+                                                     uint64_t startTimeTicks = 1000,
+                                                     uint64_t rssBytes = 1024 * 1024,
+                                                     int32_t parentPid = 1)
+{
+    Platform::ProcessCounters c;
+    c.pid = pid;
+    c.name = name;
+    c.state = state;
+    c.userTime = userTime;
+    c.systemTime = systemTime;
+    c.startTimeTicks = startTimeTicks;
+    c.rssBytes = rssBytes;
+    c.virtualBytes = rssBytes * 2;
+    c.threadCount = 1;
+    c.parentPid = parentPid;
+    return c;
+}
+
+// =============================================================================
 // Mock Process Probe
 // =============================================================================
 
 /// Mock implementation of IProcessProbe for testing.
 /// Allows controlled injection of process data and tracks call counts.
+/// Supports fluent builder API for convenient test setup.
 class MockProcessProbe : public Platform::IProcessProbe
 {
   public:
+    // Builder pattern methods for fluent API
+    MockProcessProbe& withProcess(int32_t pid, const std::string& name)
+    {
+        m_Counters.push_back(makeProcessCounters(pid, name));
+        return *this;
+    }
+
+    MockProcessProbe& withProcess(Platform::ProcessCounters counter)
+    {
+        m_Counters.push_back(std::move(counter));
+        return *this;
+    }
+
+    MockProcessProbe& withCpuTime(int32_t pid, uint64_t userTime, uint64_t systemTime)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.userTime = userTime;
+                counter.systemTime = systemTime;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.userTime = userTime;
+        c.systemTime = systemTime;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
+    MockProcessProbe& withMemory(int32_t pid, uint64_t rssBytes, uint64_t virtualBytes = 0)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.rssBytes = rssBytes;
+                counter.virtualBytes = virtualBytes > 0 ? virtualBytes : rssBytes * 2;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.rssBytes = rssBytes;
+        c.virtualBytes = virtualBytes > 0 ? virtualBytes : rssBytes * 2;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
+    MockProcessProbe& withState(int32_t pid, char state)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.state = state;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.state = state;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
+    MockProcessProbe& withThreadCount(int32_t pid, int32_t threadCount)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.threadCount = threadCount;
+                return *this;
+            }
+        }
+        return *this;
+    }
+
+    MockProcessProbe& withParent(int32_t pid, int32_t parentPid)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.parentPid = parentPid;
+                return *this;
+            }
+        }
+        return *this;
+    }
+
+    // Backward compatibility: legacy setters
     void setCounters(std::vector<Platform::ProcessCounters> counters)
     {
         m_Counters = std::move(counters);
@@ -160,32 +284,8 @@ class MockSystemProbe : public Platform::ISystemProbe
 };
 
 // =============================================================================
-// Process Counter Helpers
+// Additional Process Counter Helpers
 // =============================================================================
-
-/// Create a ProcessCounters struct with common test values.
-inline Platform::ProcessCounters makeProcessCounters(int32_t pid,
-                                                     const std::string& name,
-                                                     char state = 'R',
-                                                     uint64_t userTime = 100,
-                                                     uint64_t systemTime = 50,
-                                                     uint64_t startTimeTicks = 1000,
-                                                     uint64_t rssBytes = 1024 * 1024,
-                                                     int32_t parentPid = 1)
-{
-    Platform::ProcessCounters c;
-    c.pid = pid;
-    c.name = name;
-    c.state = state;
-    c.userTime = userTime;
-    c.systemTime = systemTime;
-    c.startTimeTicks = startTimeTicks;
-    c.rssBytes = rssBytes;
-    c.virtualBytes = rssBytes * 2;
-    c.threadCount = 1;
-    c.parentPid = parentPid;
-    return c;
-}
 
 /// Create a minimal ProcessCounters with just PID and name.
 inline Platform::ProcessCounters makeSimpleProcess(int32_t pid, const std::string& name)
