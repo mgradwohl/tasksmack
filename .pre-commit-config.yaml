@@ -20,7 +20,7 @@ repos:
         name: Check YAML syntax
       - id: check-json
         name: Check JSON syntax
-        exclude: '^\.vscode/.*\.json$'  # VS Code uses JSONC (JSON with comments)
+        exclude: '^\.vscode/.*\.json$|^\.devcontainer/.*\.json$'  # VS Code and DevContainers use JSONC (JSON with comments)
       - id: check-added-large-files
         name: Check for large files
         args: [--maxkb=500]
