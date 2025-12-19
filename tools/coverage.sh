@@ -6,6 +6,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Source common functions
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+
+# Validate prerequisites early
+validate_coverage_prereqs || exit 1
+
 VERBOSE=false
 OPEN_REPORT=false
 
@@ -36,25 +43,18 @@ done
 BUILD_DIR="${PROJECT_ROOT}/build/coverage"
 COVERAGE_DIR="${PROJECT_ROOT}/coverage"
 
-# Find llvm tools
-LLVM_PROFDATA=""
-LLVM_COV=""
-for ver in 22 21 20 19 18 17; do
-    if [[ -x "/usr/lib/llvm-$ver/bin/llvm-profdata" ]]; then
-        LLVM_PROFDATA="/usr/lib/llvm-$ver/bin/llvm-profdata"
-        LLVM_COV="/usr/lib/llvm-$ver/bin/llvm-cov"
-        break
-    fi
-done
+# Find llvm tools using common.sh functions
+LLVM_PROFDATA="$(find_llvm_tool llvm-profdata)"
+LLVM_COV="$(find_llvm_tool llvm-cov)"
 
 if [[ -z "$LLVM_PROFDATA" ]]; then
-    if command -v llvm-profdata &> /dev/null; then
-        LLVM_PROFDATA="llvm-profdata"
-        LLVM_COV="llvm-cov"
-    else
-        echo "Error: llvm-profdata not found. Install LLVM tools." >&2
-        exit 1
-    fi
+    echo "Error: llvm-profdata not found. Install LLVM tools." >&2
+    exit 1
+fi
+
+if [[ -z "$LLVM_COV" ]]; then
+    echo "Error: llvm-cov not found. Install LLVM tools." >&2
+    exit 1
 fi
 
 if $VERBOSE; then
@@ -72,7 +72,7 @@ cmake --build --preset coverage
 # Step 2: Run tests to generate profraw data
 echo "==> Running tests..."
 cd "$BUILD_DIR"
-rm -f *.profraw default.profdata
+rm -f -- *.profraw default.profdata
 
 # Set profraw output location
 export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"

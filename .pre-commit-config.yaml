@@ -1,0 +1,45 @@
+# Pre-commit hooks for TaskSmack
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# See https://pre-commit.com for more information
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+        name: Fix end of files
+      - id: mixed-line-ending
+        name: Fix mixed line endings
+        args: [--fix=lf]
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: check-json
+        name: Check JSON syntax
+        exclude: '^\.vscode/.*\.json$|^\.devcontainer/.*\.json$'  # VS Code and DevContainers use JSONC (JSON with comments)
+      - id: check-added-large-files
+        name: Check for large files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+
+  # C++ formatting with clang-format
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.6
+    hooks:
+      - id: clang-format
+        name: Format C++ code
+        args: [--style=file]
+        types_or: [c++, c]
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        name: Lint shell scripts
+        args: [-x]  # Follow sourced files

@@ -292,7 +292,7 @@ When performing a code review on this project:
 
 6. **Architecture Boundaries**: Verify layer dependencies are correct:
    - Platform probes should return raw counters, not computed values
-   - Domain should not depend on UI, Core, or graphics libraries  
+   - Domain should not depend on UI, Core, or graphics libraries
    - UI should not call Platform probes directly
    - All OpenGL calls should be in UI/Core layers only
 

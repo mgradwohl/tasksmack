@@ -13,7 +13,7 @@ echo "Prerequisites:"
 echo "  1. GitHub CLI must be installed (https://cli.github.com/)"
 echo "  2. You must be authenticated: gh auth login"
 echo ""
-read -p "Press Enter to continue or Ctrl+C to cancel..."
+read -r -p "Press Enter to continue or Ctrl+C to cancel..."
 
 # Issue 1: Fix Python Version
 echo "Creating Issue 1: Fix Python Version in Windows Build Job..."
@@ -88,7 +88,7 @@ updates:
     commit-message:
       prefix: \"ci\"
       include: \"scope\"
-    
+
   # Python dependencies (for GLAD/jinja2)
   - package-ecosystem: \"pip\"
     directory: \"/\"
@@ -132,15 +132,15 @@ Add coverage threshold check to the \`coverage\` job:
     # Extract coverage percentage from llvm-cov output
     COVERAGE=\$(grep \"TOTAL\" coverage-output.txt | awk '{print \$NF}' | sed 's/%//')
     THRESHOLD=80
-    
+
     echo \"Current coverage: \${COVERAGE}%\"
     echo \"Minimum threshold: \${THRESHOLD}%\"
-    
+
     if (( \$(echo \"\$COVERAGE < \$THRESHOLD\" | bc -l) )); then
       echo \"❌ Coverage \${COVERAGE}% is below threshold \${THRESHOLD}%\"
       exit 1
     fi
-    
+
     echo \"✅ Coverage \${COVERAGE}% meets threshold \${THRESHOLD}%\"
 \`\`\`
 
@@ -180,24 +180,24 @@ Add new job to \`.github/workflows/ci.yml\`:
       security-events: write
       actions: read
       contents: read
-    
+
     steps:
       - uses: actions/checkout@v6
-      
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: cpp
           queries: security-and-quality
-      
+
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
-      
+
       - name: Build for CodeQL
         run: |
           cmake --preset debug
           cmake --build --preset debug
-      
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
@@ -240,7 +240,7 @@ build-linux, build-windows, format-check, static-analysis, coverage, sanitizers 
 \`\`\`
 Independent jobs (all parallel):
 - build-linux
-- build-windows  
+- build-windows
 - format-check
 - static-analysis
 - coverage

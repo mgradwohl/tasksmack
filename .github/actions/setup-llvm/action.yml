@@ -36,10 +36,10 @@ runs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh ${{ inputs.llvm-version }}
-        
+
         # Build package list - always include GUI dependencies and Python for GLAD
         PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev python3 python3-jinja2"
-        
+
         if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
         fi
@@ -52,7 +52,7 @@ runs:
         if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
           PACKAGES="$PACKAGES clang-tidy-${{ inputs.llvm-version }}"
         fi
-        
+
         # Install packages
         sudo apt-get update
         sudo apt-get install -y $PACKAGES
@@ -61,29 +61,29 @@ runs:
       shell: bash
       run: |
         VER=${{ inputs.llvm-version }}
-        
+
         # Core LLVM tools (always configured)
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100
         sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$VER 100
         sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-$VER 100
         sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-$VER 100
-        
+
         # Set alternatives explicitly
         sudo update-alternatives --set clang /usr/bin/clang-$VER
         sudo update-alternatives --set clang++ /usr/bin/clang++-$VER
-        
+
         # Optional: clang-format
         if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-$VER 100
           sudo update-alternatives --set clang-format /usr/bin/clang-format-$VER
         fi
-        
+
         # Optional: clang-tidy
         if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-$VER 100
           sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$VER
         fi
-        
+
         # Optional: coverage tools
         if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-$VER 100

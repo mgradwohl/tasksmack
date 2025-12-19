@@ -42,7 +42,7 @@ fi
 if [[ ! -x "$CLANG_CXX" ]]; then
     # Fall back to PATH
     CLANG_CXX="clang++"
-    CLANG_C="clang"
+    export CLANG_C="clang"
 fi
 
 usage() {

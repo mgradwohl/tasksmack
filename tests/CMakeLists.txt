@@ -115,7 +115,7 @@ endif()
 
 if(WIN32)
     # Windows needs additional system libraries
-    target_link_libraries(TaskSmackTests PRIVATE 
+    target_link_libraries(TaskSmackTests PRIVATE
         pdh
         psapi
         userenv

@@ -73,7 +73,7 @@ try {
 
     # Run the test executable directly
     & "$BuildDir\tests\TaskSmack_tests.exe"
-    if ($LASTEXITCODE -ne 0) { 
+    if ($LASTEXITCODE -ne 0) {
         Write-Warning "Some tests failed, but continuing with coverage report..."
     }
 

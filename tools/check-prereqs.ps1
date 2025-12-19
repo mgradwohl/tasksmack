@@ -23,11 +23,11 @@ function Write-Status {
         [string]$Path,
         [string]$Required
     )
-    
+
     $nameFormatted = $Name.PadRight(14)
     $versionFormatted = if ($Version) { $Version.PadRight(12) } else { "NOT FOUND".PadRight(12) }
     $requiredFormatted = if ($Required) { "(>= $Required)".PadRight(12) } else { "".PadRight(12) }
-    
+
     if ($Status -eq "ok") {
         Write-Host "✓ " -ForegroundColor Green -NoNewline
         Write-Host $nameFormatted -NoNewline
@@ -38,9 +38,9 @@ function Write-Status {
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Red -NoNewline
     }
-    
+
     Write-Host $requiredFormatted -ForegroundColor Cyan -NoNewline
-    
+
     if ($Path) {
         Write-Host $Path -ForegroundColor Blue
     }

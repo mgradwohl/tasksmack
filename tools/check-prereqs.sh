@@ -34,13 +34,13 @@ print_status() {
     local version="$3"
     local path="$4"
     local required="$5"
-    
+
     if [[ "$status" == "ok" ]]; then
         printf "${GREEN}✓${NC} ${BOLD}%-14s${NC} " "$name"
     else
         printf "${RED}✗${NC} ${BOLD}%-14s${NC} " "$name"
     fi
-    
+
     if [[ -n "$version" ]]; then
         if [[ "$status" == "ok" ]]; then
             printf "${GREEN}%-12s${NC} " "$version"
@@ -50,17 +50,17 @@ print_status() {
     else
         printf "${RED}%-12s${NC} " "NOT FOUND"
     fi
-    
+
     if [[ -n "$required" ]]; then
         printf "${CYAN}(>= %-6s)${NC} " "$required"
     else
         printf "%-12s " ""
     fi
-    
+
     if [[ -n "$path" ]]; then
         printf "${BLUE}%s${NC}" "$path"
     fi
-    
+
     echo ""
 }
 

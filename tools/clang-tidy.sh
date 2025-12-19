@@ -136,15 +136,16 @@ if $VERBOSE; then
 fi
 
 # Function to run clang-tidy on a single file
+# shellcheck disable=SC2317  # Function is called via GNU parallel/find -exec
 run_clang_tidy() {
     local file="$1"
     local verbose="$2"
-    local relative_path="${file#${PROJECT_ROOT}/}"
-    
+    local relative_path="${file#"${PROJECT_ROOT}"/}"
+
     if [[ "$verbose" == "true" ]]; then
         echo "  Analyzing: $relative_path"
     fi
-    
+
     "$CLANG_TIDY" \
         --config-file="$CONFIG_FILE" \
         --header-filter="$HEADER_FILTER_REGEX" \

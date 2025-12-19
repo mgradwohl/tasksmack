@@ -113,14 +113,14 @@ if ($Files.Count -eq 0) {
     foreach ($dir in $SourceDirs) {
         $fullDir = Join-Path $ProjectRoot $dir
         if (Test-Path $fullDir) {
-            $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" | 
+            $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" |
                 Where-Object { $_.FullName -notmatch '\\Platform\\Linux\\' } |
                 Select-Object -ExpandProperty FullName
         }
     }
 } else {
-    $SourceFiles = $Files | ForEach-Object { 
-        if ([System.IO.Path]::IsPathRooted($_)) { $_ } 
+    $SourceFiles = $Files | ForEach-Object {
+        if ([System.IO.Path]::IsPathRooted($_)) { $_ }
         else { Join-Path $ProjectRoot $_ }
     }
 }
@@ -151,17 +151,17 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $buildDir = $using:BuildDir
     $projectRoot = $using:ProjectRoot
     $showDetails = $using:ShowDetails
-    
+
     # Get relative path for display
     $relativePath = $file
     if ($file.StartsWith($projectRoot)) {
         $relativePath = $file.Substring($projectRoot.Length + 1)
     }
-    
+
     if ($showDetails) {
         Write-Host "  Analyzing: $relativePath"
     }
-    
+
     $output = & $clangTidy `
         --config-file="$configFile" `
         --header-filter="$using:HeaderFilterRegex" `
@@ -170,9 +170,9 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         --extra-arg=-std=c++23 `
         --extra-arg=-Wno-unknown-warning-option `
         "$file" 2>&1
-    
+
     $exitCode = $LASTEXITCODE
-    
+
     [PSCustomObject]@{
         File = $relativePath
         ExitCode = $exitCode
