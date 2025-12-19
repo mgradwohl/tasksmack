@@ -25,6 +25,10 @@ jobs:
   build-linux:
     needs: validate-environment
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        build_type: [debug, release]
+    name: Build & Test (Linux ${{ matrix.build_type }})
     steps:
       - uses: actions/checkout@v6
 
@@ -34,28 +38,32 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: linux-debug
+          key: linux-${{ matrix.build_type }}
           max-size: 500M
 
       - name: Configure
-        run: cmake --preset debug
+        run: cmake --preset ${{ matrix.build_type }}
 
       - name: Build
-        run: cmake --build --preset debug
+        run: cmake --build --preset ${{ matrix.build_type }}
 
       - name: Test
-        run: ctest --preset debug -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset ${{ matrix.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: linux-test-results
-          path: build/debug/test-results.xml
+          name: linux-${{ matrix.build_type }}-test-results
+          path: build/${{ matrix.build_type }}/test-results.xml
 
   build-windows:
     needs: validate-environment
     runs-on: windows-latest
+    strategy:
+      matrix:
+        build_type: [debug, release]
+    name: Build & Test (Windows ${{ matrix.build_type }})
     steps:
       - uses: actions/checkout@v6
 
@@ -81,7 +89,7 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: windows-debug
+          key: windows-${{ matrix.build_type }}
           max-size: 500M
 
       - name: Configure
@@ -89,24 +97,24 @@ jobs:
         env:
           LLVM_ROOT: C:\Program Files\LLVM
         run: |
-          cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+          cmake --preset win-${{ matrix.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
 
       - name: Build
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --build --preset win-debug
+        run: cmake --build --preset win-${{ matrix.build_type }}
 
       - name: Test
         shell: pwsh
-        run: ctest --preset win-debug -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset win-${{ matrix.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: windows-test-results
-          path: build/win-debug/test-results.xml
+          name: windows-${{ matrix.build_type }}-test-results
+          path: build/win-${{ matrix.build_type }}/test-results.xml
 
   format-check:
     needs: validate-environment
@@ -187,6 +195,36 @@ jobs:
             echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
           else
             echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check coverage threshold
+        if: always()
+        run: |
+          # Extract coverage percentage from llvm-cov output
+          # The TOTAL line format is: "TOTAL    NNN    MMM    XX.XX%"
+          if [ -f coverage-output.txt ]; then
+            COVERAGE=$(grep "^TOTAL" coverage-output.txt | awk '{print $NF}' | sed 's/%//')
+            THRESHOLD=80
+            
+            echo "📊 Current coverage: ${COVERAGE}%"
+            echo "🎯 Minimum threshold: ${THRESHOLD}%"
+            
+            # Use awk for floating point comparison (bc might not be available)
+            if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
+              echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+              echo "This is a warning only - build will continue"
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+              # Don't fail the build, just warn
+            else
+              echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ Coverage output file not found - cannot check threshold"
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Coverage Check Failed:** Could not find coverage output file" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload coverage report
