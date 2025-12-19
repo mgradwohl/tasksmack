@@ -106,13 +106,16 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         }
 
         ProcessCounters counters{};
-        if (parseProcessStat(pid, counters))
+        if (!parseProcessStat(pid, counters))
         {
-            parseProcessStatm(pid, counters);
-            parseProcessStatus(pid, counters);
-            parseProcessCmdline(pid, counters);
-            processes.push_back(std::move(counters));
+            spdlog::debug("Failed to parse /proc/{}/stat", pid);
+            continue;
         }
+
+        parseProcessStatm(pid, counters);
+        parseProcessStatus(pid, counters);
+        parseProcessCmdline(pid, counters);
+        processes.push_back(std::move(counters));
     }
 
     if (errorCode)
