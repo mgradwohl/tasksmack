@@ -38,7 +38,7 @@ validate_coverage_prereqs() {
 # Returns: path to tool or empty string if not found
 find_llvm_tool() {
     local tool="$1"
-    
+
     # Try versioned LLVM installations first
     for ver in 22 21 20 19 18 17; do
         if [[ -x "/usr/lib/llvm-$ver/bin/$tool" ]]; then
@@ -46,12 +46,12 @@ find_llvm_tool() {
             return 0
         fi
     done
-    
+
     # Fall back to PATH
     if command -v "$tool" &>/dev/null; then
         command -v "$tool"
         return 0
     fi
-    
+
     return 1
 }
