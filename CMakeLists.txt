@@ -455,33 +455,35 @@ if(WIN32)
     set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
     set(TASKSMACK_ICO_FILE ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico)
 
-    if(EXISTS ${TASKSMACK_RC_IN})
-        # Check if ICO file exists and set the define for configure_file
-        if(EXISTS ${TASKSMACK_ICO_FILE})
-            set(TASKSMACK_HAS_ICON TRUE)
-            message(STATUS "Including application icon: ${TASKSMACK_ICO_FILE}")
-        else()
-            set(TASKSMACK_HAS_ICON FALSE)
-            message(STATUS "Icon file not found (run tools/generate-icons.ps1 to create): ${TASKSMACK_ICO_FILE}")
-        endif()
-
-        # Configure the RC file with version info
-        configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
-        list(APPEND TASKSMACK_SOURCES ${TASKSMACK_RC_OUT})
-        message(STATUS "Configured Windows resource file with version ${PROJECT_VERSION}")
-    else()
-        message(WARNING "Windows resource template not found: ${TASKSMACK_RC_IN}")
+    if(NOT EXISTS ${TASKSMACK_RC_IN})
+        message(FATAL_ERROR "Windows resource template not found: ${TASKSMACK_RC_IN}\n"
+                           "This is required for Windows builds.")
     endif()
+
+    # Check if ICO file exists and set the define for configure_file
+    if(EXISTS ${TASKSMACK_ICO_FILE})
+        set(TASKSMACK_HAS_ICON TRUE)
+        message(STATUS "Including application icon: ${TASKSMACK_ICO_FILE}")
+    else()
+        set(TASKSMACK_HAS_ICON FALSE)
+        message(STATUS "Icon file not found (run tools/generate-icons.ps1 to create): ${TASKSMACK_ICO_FILE}")
+    endif()
+
+    # Configure the RC file with version info
+    configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
+    list(APPEND TASKSMACK_SOURCES ${TASKSMACK_RC_OUT})
+    message(STATUS "Configured Windows resource file with version ${PROJECT_VERSION}")
 
     # Configure and use our custom manifest for DPI awareness and Windows compatibility
     set(TASKSMACK_MANIFEST_IN ${CMAKE_SOURCE_DIR}/assets/app.manifest.in)
     set(TASKSMACK_MANIFEST_OUT ${CMAKE_BINARY_DIR}/app.manifest)
-    if(EXISTS ${TASKSMACK_MANIFEST_IN})
-        configure_file(${TASKSMACK_MANIFEST_IN} ${TASKSMACK_MANIFEST_OUT} @ONLY)
-        message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
-    else()
-        message(WARNING "Application manifest template not found: ${TASKSMACK_MANIFEST_IN}")
+    if(NOT EXISTS ${TASKSMACK_MANIFEST_IN})
+        message(FATAL_ERROR "Application manifest template not found: ${TASKSMACK_MANIFEST_IN}\n"
+                           "This is required for Windows builds.")
     endif()
+
+    configure_file(${TASKSMACK_MANIFEST_IN} ${TASKSMACK_MANIFEST_OUT} @ONLY)
+    message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
 endif()
 
 add_executable(TaskSmack WIN32
