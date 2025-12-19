@@ -338,17 +338,3 @@ Please use the issue templates:
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure. Do not open public issues for security vulnerabilities.
 
-## Project Structure
-
-```
-.
-├── CMakeLists.txt
-├── CMakePresets.json
-├── Devshell-Updated.ps1
-├── src/
-├── tests/
-├── tools/
-├── assets/
-├── .github/
-└── .vscode/
-```
