@@ -81,6 +81,21 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+### CPU Compatibility
+
+The `optimized` and `win-optimized` presets target the x86-64-v3 microarchitecture, which requires AVX2 support (Haswell 2013+ or Excavator 2015+ CPUs). If you encounter "Illegal instruction" errors, your CPU may not support these instructions.
+
+For broader compatibility, use:
+- `release-compatible` (Linux) or `win-release-compatible` (Windows) for x86-64-v2 (2009+)
+- `release` (Linux) or `win-release` (Windows) for default compiler optimizations
+
+You can also customize the target microarchitecture by setting the `TASKSMACK_MARCH` CMake variable:
+
+```bash
+cmake --preset release -DTASKSMACK_MARCH=native  # Optimize for your specific CPU
+cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
+```
+
 ### Common Presets
 
 | Preset (Linux) | Preset (Windows) | Description |
@@ -88,7 +103,8 @@ cmake --list-presets
 | `debug` | `win-debug` | Debug symbols, no optimization, security hardening |
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
-| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped |
+| `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2, 2009+) |
+| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
 | `tsan` | — | ThreadSanitizer (Linux only) |

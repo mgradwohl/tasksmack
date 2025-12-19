@@ -96,7 +96,7 @@
         {
             "name": "optimized",
             "displayName": "Optimized",
-            "description": "Fully optimized build with LTO, march=x86-64-v3, stripped",
+            "description": "Fully optimized build with LTO, march=x86-64-v3, stripped (requires Haswell 2013+ CPUs)",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -105,6 +105,16 @@
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=lld -s",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-s",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
+            }
+        },
+        {
+            "name": "release-compatible",
+            "displayName": "Release (Compatible)",
+            "description": "Release build compatible with older CPUs (x86-64-v2, 2009+)",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v2"
             }
         },
         {
@@ -178,7 +188,7 @@
         {
             "name": "win-optimized",
             "displayName": "Windows Optimized",
-            "description": "Fully optimized Windows build with LTO",
+            "description": "Fully optimized Windows build with LTO and march=x86-64-v3 (requires Haswell 2013+ CPUs)",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-optimized",
             "cacheVariables": {
@@ -188,6 +198,17 @@
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=lld -s",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-s",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
+            }
+        },
+        {
+            "name": "win-release-compatible",
+            "displayName": "Windows Release (Compatible)",
+            "description": "Release build compatible with older CPUs (x86-64-v2, 2009+)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-release-compatible",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v2"
             }
         },
         {
@@ -225,6 +246,11 @@
             "configurePreset": "optimized"
         },
         {
+            "name": "release-compatible",
+            "displayName": "Release (Compatible)",
+            "configurePreset": "release-compatible"
+        },
+        {
             "name": "coverage",
             "displayName": "Coverage",
             "configurePreset": "coverage"
@@ -258,6 +284,11 @@
             "name": "win-optimized",
             "displayName": "Windows Optimized",
             "configurePreset": "win-optimized"
+        },
+        {
+            "name": "win-release-compatible",
+            "displayName": "Windows Release (Compatible)",
+            "configurePreset": "win-release-compatible"
         },
         {
             "name": "win-coverage",
@@ -294,6 +325,14 @@
             "name": "optimized",
             "displayName": "Optimized Tests",
             "configurePreset": "optimized",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "release-compatible",
+            "displayName": "Release Compatible Tests",
+            "configurePreset": "release-compatible",
             "output": {
                 "outputOnFailure": true
             }
@@ -350,6 +389,14 @@
             "name": "win-optimized",
             "displayName": "Windows Optimized Tests",
             "configurePreset": "win-optimized",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "win-release-compatible",
+            "displayName": "Windows Release Compatible Tests",
+            "configurePreset": "win-release-compatible",
             "output": {
                 "outputOnFailure": true
             }

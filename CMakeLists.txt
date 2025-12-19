@@ -33,6 +33,9 @@ option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" OFF)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
+# TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
+# Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
+set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86-64-v3, x86-64-v2). Empty string means no -march flag.")
 
 # Compiler caching (ccache/sccache) - required for development
 if(TASKSMACK_ENABLE_CCACHE)
