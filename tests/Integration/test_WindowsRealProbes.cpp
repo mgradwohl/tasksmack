@@ -171,8 +171,9 @@ TEST(WindowsRealProbesTest, EnumerationIsConsistent)
     auto count2 = procs2.size();
 
     // Within 20% is reasonable (Windows processes can spawn/die frequently)
-    auto diff = std::abs(static_cast<int64_t>(count1) - static_cast<int64_t>(count2));
-    auto maxDiff = static_cast<size_t>(count1 * 0.2); // 20%
+    // Using floating-point to avoid truncation for small counts
+    auto diff = static_cast<size_t>(std::abs(static_cast<int64_t>(count1) - static_cast<int64_t>(count2)));
+    auto maxDiff = std::max(size_t{1}, static_cast<size_t>(count1 * 0.2)); // At least 1, or 20%
 
     EXPECT_LE(diff, maxDiff) << "Process count between enumerations should be similar";
 }
@@ -203,9 +204,9 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
     {
         if (caps.hasIoCounters)
         {
-            // I/O counters should be non-negative (they're uint64_t)
-            // At least one should likely be non-zero for a running process
-            EXPECT_TRUE(it->readBytes > 0 || it->writeBytes > 0 || (it->readBytes == 0 && it->writeBytes == 0));
+            // This test just verifies we can retrieve I/O counters without error
+            // Values may be 0 for newly started or idle processes
+            // The fact that we got here means GetProcessIoCounters succeeded
         }
         if (caps.hasThreadCount)
         {
@@ -462,7 +463,7 @@ TEST(WindowsRealProbesTest, ProbeHandlesProcessExitingDuringEnumeration)
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
 
-    // Use cmd /c exit to create a process that exits immediately
+    // CreateProcessA modifies its second parameter, so we need a mutable buffer
     char cmdLine[] = "cmd.exe /c exit";
     if (CreateProcessA(nullptr, cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi) != 0)
     {
