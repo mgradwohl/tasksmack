@@ -55,6 +55,10 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
     )
+    set(INTEGRATION_TEST_SOURCES
+        Integration/test_CrossLayer.cpp
+        # Windows-specific integration tests would go here
+    )
 else()
     set(PLATFORM_TEST_SOURCES
         Platform/test_ProcessProbeContract.cpp
@@ -70,6 +74,10 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
     )
+    set(INTEGRATION_TEST_SOURCES
+        Integration/test_CrossLayer.cpp
+        Integration/test_LinuxRealProbes.cpp
+    )
 endif()
 
 # Test executable with all test sources
@@ -80,6 +88,7 @@ add_executable(TaskSmackTests
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
     ${PLATFORM_TEST_SOURCES}
+    ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
