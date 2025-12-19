@@ -165,10 +165,11 @@ Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH
 Coverage reports are written to `coverage/` (gitignored).
 
 ```bash
-./tools/coverage.sh            # Linux
-./tools/coverage.sh --open     # Linux
-
-pwsh tools/coverage.ps1        # Windows
+# Linux
+./tools/coverage.sh
+./tools/coverage.sh --open
+# Windows
+pwsh tools/coverage.ps1
 pwsh tools/coverage.ps1 -OpenReport
 ```
 
