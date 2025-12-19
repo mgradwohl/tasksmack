@@ -33,10 +33,16 @@ auto runApp() -> int
     {
         AllocConsole();
         // Redirect stdout/stderr to the new console
-        FILE* out = nullptr; // NOLINT(misc-const-correctness)
-        FILE* err = nullptr; // NOLINT(misc-const-correctness)
-        freopen_s(&out, "CONOUT$", "w", stdout);
-        freopen_s(&err, "CONOUT$", "w", stderr);
+        FILE* out = nullptr;
+        FILE* err = nullptr;
+        if (freopen_s(&out, "CONOUT$", "w", stdout) != 0)
+        {
+            // Redirection failed, but continue - spdlog will still work via msvc_sink
+        }
+        if (freopen_s(&err, "CONOUT$", "w", stderr) != 0)
+        {
+            // Redirection failed, but continue - spdlog will still work via msvc_sink
+        }
     }
     auto msvcSink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
     auto consoleSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
