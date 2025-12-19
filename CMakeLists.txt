@@ -107,7 +107,7 @@ function(tasksmack_apply_default_warnings target_name)
                 -Wmisleading-indentation
             )
         endif()
-        
+
         # Apply extra warning flags if specified
         if(TASKSMACK_EXTRA_WARNING_FLAGS)
             target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
@@ -119,7 +119,7 @@ function(tasksmack_apply_default_warnings target_name)
             /EHsc
             $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:/WX>
         )
-        
+
         # Apply extra warning flags if specified
         if(TASKSMACK_EXTRA_WARNING_FLAGS)
             target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
@@ -454,7 +454,7 @@ if(WIN32)
     set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
     set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
     set(TASKSMACK_ICO_FILE ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico)
-    
+
     if(EXISTS ${TASKSMACK_RC_IN})
         # Check if ICO file exists and set the define for configure_file
         if(EXISTS ${TASKSMACK_ICO_FILE})
@@ -464,7 +464,7 @@ if(WIN32)
             set(TASKSMACK_HAS_ICON FALSE)
             message(STATUS "Icon file not found (run tools/generate-icons.ps1 to create): ${TASKSMACK_ICO_FILE}")
         endif()
-        
+
         # Configure the RC file with version info
         configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
         list(APPEND TASKSMACK_SOURCES ${TASKSMACK_RC_OUT})
@@ -472,7 +472,7 @@ if(WIN32)
     else()
         message(WARNING "Windows resource template not found: ${TASKSMACK_RC_IN}")
     endif()
-    
+
     # Configure and use our custom manifest for DPI awareness and Windows compatibility
     set(TASKSMACK_MANIFEST_IN ${CMAKE_SOURCE_DIR}/assets/app.manifest.in)
     set(TASKSMACK_MANIFEST_OUT ${CMAKE_BINARY_DIR}/app.manifest)
