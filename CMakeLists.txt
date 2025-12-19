@@ -579,7 +579,7 @@ endif()
 # CPack configuration for packaging
 set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} - A modern C++23 application")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} - TaskSmack")
 set(CPACK_PACKAGE_DESCRIPTION "TaskSmack - Modern cross-platform system monitor")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mgradwohl/tasksmack")
 set(CPACK_PACKAGE_VENDOR "")
