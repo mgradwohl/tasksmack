@@ -71,10 +71,10 @@ TEST(WindowsRealProbesTest, ProcessProbeEnumeratesRealProcesses)
     // Should find many processes (at least System + this test)
     EXPECT_GT(processes.size(), 1ULL);
 
-    // All processes should have valid PIDs
+    // All processes should have valid PIDs (>= 0 on Windows, PID 0 is System Idle Process)
     for (const auto& proc : processes)
     {
-        EXPECT_GT(proc.pid, 0);
+        EXPECT_GE(proc.pid, 0);
         EXPECT_FALSE(proc.name.empty());
     }
 }
@@ -126,11 +126,11 @@ TEST(WindowsRealProbesTest, ProcessProbeFindsSystemProcess)
 
     auto processes = probe.enumerate();
 
-    // Look for System process (PID 4) or System Idle Process (PID 0)
+    // Look for System process (PID 4) - System Idle Process (PID 0) may not report memory
     bool foundSystemProcess = false;
     for (const auto& proc : processes)
     {
-        if (proc.pid == 4 || proc.pid == 0)
+        if (proc.pid == 4)
         {
             foundSystemProcess = true;
             EXPECT_GT(proc.rssBytes, 0ULL) << "System process should have memory";
@@ -138,7 +138,7 @@ TEST(WindowsRealProbesTest, ProcessProbeFindsSystemProcess)
         }
     }
 
-    EXPECT_TRUE(foundSystemProcess) << "Should find System or System Idle process";
+    EXPECT_TRUE(foundSystemProcess) << "Should find System process (PID 4)";
 }
 
 TEST(WindowsRealProbesTest, TotalCpuTimeMonotonicallyIncreases)
@@ -434,10 +434,11 @@ TEST(WindowsRealProbesTest, ProbeHandlesAccessDeniedGracefully)
     // Should still return processes even if some are inaccessible
     EXPECT_GT(processes.size(), 0ULL);
 
-    // All returned processes should have at least basic info (PID, name)
+    // All returned processes should have at least basic info (PID >= 0, name)
+    // Note: PID 0 is valid on Windows (System Idle Process)
     for (const auto& proc : processes)
     {
-        EXPECT_GT(proc.pid, 0);
+        EXPECT_GE(proc.pid, 0);
         EXPECT_FALSE(proc.name.empty());
     }
 }
