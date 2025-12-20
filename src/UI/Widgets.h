@@ -7,6 +7,11 @@
 namespace UI::Widgets
 {
 
+/// Minimum height in pixels for bar fill rendering.
+/// Ensures at least a 1px marker remains visible even when the value is 0%,
+/// providing visual feedback that the bar exists and is capable of showing data.
+constexpr float MIN_BAR_FILL_HEIGHT = 1.0F;
+
 /// Draw right-aligned text overlay on the previous ImGui item (e.g., plot, progress bar).
 /// Renders text with a shadow for visibility against varying backgrounds.
 /// @param text The text to display (null or empty is a no-op)
@@ -70,7 +75,7 @@ inline void drawVerticalBarWithValue(const char* id,
     {
         const float filledH = barSize.y * value01;
         const ImVec2 filledMin(barPos.x, barEnd.y - filledH);
-        const float clampedFilledH = std::max(filledH, 1.0F); // keep a 1px marker visible even at 0%
+        const float clampedFilledH = std::max(filledH, MIN_BAR_FILL_HEIGHT);
         const ImVec2 visibleMin(barPos.x, barEnd.y - clampedFilledH);
         dl->AddRectFilled(visibleMin, barEnd, barCol, style.FrameRounding, ImDrawFlags_RoundCornersBottom);
     }
