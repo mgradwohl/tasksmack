@@ -8,8 +8,77 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <limits>
+
 namespace App
 {
+
+namespace
+{
+
+[[nodiscard]] int snapRefreshIntervalMs(int value)
+{
+    // Sticky stops for common refresh rates.
+    // Snap only when close enough to a stop (threshold scales with stop size).
+    constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
+
+    int best = value;
+    int bestDist = std::numeric_limits<int>::max();
+
+    for (int stop : stops)
+    {
+        const int dist = std::abs(value - stop);
+        // Make it "at least twice as sticky":
+        // Previous: min(50, stop/5). Now: 2x that, capped at 100ms.
+        const int baseThreshold = std::min(50, stop / 5);
+        const int threshold = std::min(100, baseThreshold * 2);
+        if (dist <= threshold && dist < bestDist)
+        {
+            best = stop;
+            bestDist = dist;
+        }
+    }
+
+    return best;
+}
+
+void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int minValue, int maxValue)
+{
+    if (maxValue <= minValue)
+    {
+        return;
+    }
+
+    constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
+    auto* drawList = ImGui::GetWindowDrawList();
+
+    // Use a visible but subdued color; border can be too subtle on some themes.
+    const ImU32 tickColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const float w = frameMax.x - frameMin.x;
+
+    // Keep ticks inside the slider frame.
+    ImGui::PushClipRect(frameMin, frameMax, true);
+
+    for (int stop : stops)
+    {
+        if (stop < minValue || stop > maxValue)
+        {
+            continue;
+        }
+        const float t = static_cast<float>(stop - minValue) / static_cast<float>(maxValue - minValue);
+        const float x = frameMin.x + (t * w);
+
+        // Slight inset looks nicer than touching the border.
+        drawList->AddLine(ImVec2(x, frameMin.y + 2.0F), ImVec2(x, frameMax.y - 2.0F), tickColor, 1.0F);
+    }
+
+    ImGui::PopClipRect();
+}
+
+} // namespace
 
 ShellLayer::ShellLayer() : Layer("ShellLayer")
 {
@@ -78,6 +147,7 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update panels
     m_ProcessesPanel.onUpdate(deltaTime);
+    m_SystemMetricsPanel.onUpdate(deltaTime);
 
     // Sync selected PID from processes panel to details panel
     int32_t selectedPid = m_ProcessesPanel.selectedPid();
@@ -193,6 +263,46 @@ void ShellLayer::renderMenuBar()
             ImGui::MenuItem("Processes", nullptr, &m_ShowProcesses);
             ImGui::MenuItem("System Metrics", nullptr, &m_ShowMetrics);
             ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
+            ImGui::Separator();
+
+            // Sampling / refresh interval (shared)
+            {
+                constexpr int REFRESH_INTERVAL_MIN_MS = 100;
+                constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
+
+                auto& settings = UserConfig::get().settings();
+                const int beforeMs = settings.refreshIntervalMs;
+                int refreshIntervalMs = beforeMs;
+
+                ImGui::SetNextItemWidth(220.0F);
+                const bool sliderChanged =
+                    ImGui::SliderInt("Refresh (ms)", &refreshIntervalMs, REFRESH_INTERVAL_MIN_MS, REFRESH_INTERVAL_MAX_MS);
+
+                // Draw tick marks for preset values (100/250/500/1000ms) on the actual slider frame.
+                drawRefreshPresetTicks(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), REFRESH_INTERVAL_MIN_MS, REFRESH_INTERVAL_MAX_MS);
+
+                // Snap when the user finishes editing (mouse release / enter).
+                const bool releasedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+                if (releasedAfterEdit)
+                {
+                    refreshIntervalMs = snapRefreshIntervalMs(refreshIntervalMs);
+                }
+
+                const bool snappedChanged = (refreshIntervalMs != beforeMs);
+                if (sliderChanged || snappedChanged)
+                {
+                    settings.refreshIntervalMs = refreshIntervalMs;
+
+                    const auto interval = std::chrono::milliseconds(settings.refreshIntervalMs);
+                    m_ProcessesPanel.setSamplingInterval(interval);
+                    m_SystemMetricsPanel.setSamplingInterval(interval);
+
+                    // Ensure the change takes effect without waiting a full interval.
+                    m_ProcessesPanel.requestRefresh();
+                    m_SystemMetricsPanel.requestRefresh();
+                }
+            }
+
             ImGui::Separator();
 
             // Theme submenu (dynamically loaded from TOML files)

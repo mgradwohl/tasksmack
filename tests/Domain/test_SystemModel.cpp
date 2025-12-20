@@ -616,8 +616,21 @@ TEST(SystemModelTest, CoreCountReported)
     EXPECT_EQ(snap.coreCount, 8);
 }
 
-TEST(SystemModelTest, HistorySizeConstant)
+TEST(SystemModelTest, MaxHistorySecondsClamped)
 {
-    // Verify the history size constant is accessible
-    EXPECT_EQ(Domain::SystemModel::HISTORY_SIZE, 120);
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 500), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+
+    // Default should be 300s (5 minutes)
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 300.0);
+
+    // Clamp below minimum (10s)
+    model.setMaxHistorySeconds(5.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 10.0);
+
+    // Clamp above maximum (1800s)
+    model.setMaxHistorySeconds(7200.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 1800.0);
 }

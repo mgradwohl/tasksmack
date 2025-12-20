@@ -3,9 +3,18 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 
 namespace Domain
 {
+
+namespace
+{
+
+constexpr double MIN_HISTORY_SECONDS = 10.0;
+constexpr double MAX_HISTORY_SECONDS = 1800.0;
+
+} // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Probe(std::move(probe))
 {
@@ -17,6 +26,51 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Prob
     else
     {
         spdlog::warn("SystemModel: initialized without probe");
+    }
+}
+
+void SystemModel::trimHistory(double nowSeconds)
+{
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    // Trim timestamps first to know how many samples to drop from other tracks.
+    size_t removeCount = 0;
+    while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
+    {
+        m_Timestamps.pop_front();
+        ++removeCount;
+    }
+
+    auto trimSamples = [removeCount](auto& dq)
+    {
+        for (size_t i = 0; i < removeCount && !dq.empty(); ++i)
+        {
+            dq.pop_front();
+        }
+    };
+
+    trimSamples(m_CpuHistory);
+    trimSamples(m_CpuUserHistory);
+    trimSamples(m_CpuSystemHistory);
+    trimSamples(m_CpuIowaitHistory);
+    trimSamples(m_CpuIdleHistory);
+    trimSamples(m_MemoryHistory);
+    trimSamples(m_MemoryCachedHistory);
+    trimSamples(m_SwapHistory);
+
+    for (auto& coreHist : m_PerCoreHistory)
+    {
+        trimSamples(coreHist);
+    }
+}
+
+void SystemModel::setMaxHistorySeconds(double seconds)
+{
+    std::unique_lock lock(m_Mutex);
+    m_MaxHistorySeconds = std::clamp(seconds, MIN_HISTORY_SECONDS, MAX_HISTORY_SECONDS);
+
+    if (!m_Timestamps.empty())
+    {
+        trimHistory(m_Timestamps.back());
     }
 }
 
@@ -33,8 +87,14 @@ void SystemModel::refresh()
 
 void SystemModel::updateFromCounters(const Platform::SystemCounters& counters)
 {
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    updateFromCounters(counters, nowSeconds);
+}
+
+void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds)
+{
     std::unique_lock lock(m_Mutex);
-    computeSnapshot(counters);
+    computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
 }
@@ -53,57 +113,49 @@ const Platform::SystemCapabilities& SystemModel::capabilities() const
 std::vector<float> SystemModel::cpuHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_CpuHistory.size());
-    m_CpuHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_CpuHistory.begin(), m_CpuHistory.end());
 }
 
 std::vector<float> SystemModel::cpuUserHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_CpuUserHistory.size());
-    m_CpuUserHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
 }
 
 std::vector<float> SystemModel::cpuSystemHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_CpuSystemHistory.size());
-    m_CpuSystemHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIowaitHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_CpuIowaitHistory.size());
-    m_CpuIowaitHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIdleHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_CpuIdleHistory.size());
-    m_CpuIdleHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_CpuIdleHistory.begin(), m_CpuIdleHistory.end());
 }
 
 std::vector<float> SystemModel::memoryHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_MemoryHistory.size());
-    m_MemoryHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_MemoryHistory.begin(), m_MemoryHistory.end());
+}
+
+std::vector<float> SystemModel::memoryCachedHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<float>(m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end());
 }
 
 std::vector<float> SystemModel::swapHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    std::vector<float> result(m_SwapHistory.size());
-    m_SwapHistory.copyTo(result.data(), result.size());
-    return result;
+    return std::vector<float>(m_SwapHistory.begin(), m_SwapHistory.end());
 }
 
 std::vector<std::vector<float>> SystemModel::perCoreHistory() const
@@ -114,15 +166,19 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 
     for (const auto& coreHist : m_PerCoreHistory)
     {
-        std::vector<float> coreData(coreHist.size());
-        coreHist.copyTo(coreData.data(), coreData.size());
-        result.push_back(std::move(coreData));
+        result.emplace_back(coreHist.begin(), coreHist.end());
     }
 
     return result;
 }
 
-void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
+std::vector<double> SystemModel::timestamps() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
+}
+
+void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds)
 {
     SystemSnapshot snap;
 
@@ -151,6 +207,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
     if (counters.memory.totalBytes > 0)
     {
         snap.memoryUsedPercent = 100.0 * static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(counters.memory.totalBytes);
+        snap.memoryCachedPercent = 100.0 * static_cast<double>(snap.memoryCachedBytes) / static_cast<double>(counters.memory.totalBytes);
     }
 
     // Swap
@@ -203,18 +260,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters)
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
     {
-        m_CpuHistory.push(static_cast<float>(snap.cpuTotal.totalPercent));
-        m_CpuUserHistory.push(static_cast<float>(snap.cpuTotal.userPercent));
-        m_CpuSystemHistory.push(static_cast<float>(snap.cpuTotal.systemPercent));
-        m_CpuIowaitHistory.push(static_cast<float>(snap.cpuTotal.iowaitPercent));
-        m_CpuIdleHistory.push(static_cast<float>(snap.cpuTotal.idlePercent));
-        m_MemoryHistory.push(static_cast<float>(snap.memoryUsedPercent));
-        m_SwapHistory.push(static_cast<float>(snap.swapUsedPercent));
+        m_CpuHistory.push_back(static_cast<float>(snap.cpuTotal.totalPercent));
+        m_CpuUserHistory.push_back(static_cast<float>(snap.cpuTotal.userPercent));
+        m_CpuSystemHistory.push_back(static_cast<float>(snap.cpuTotal.systemPercent));
+        m_CpuIowaitHistory.push_back(static_cast<float>(snap.cpuTotal.iowaitPercent));
+        m_CpuIdleHistory.push_back(static_cast<float>(snap.cpuTotal.idlePercent));
+        m_MemoryHistory.push_back(static_cast<float>(snap.memoryUsedPercent));
+        m_MemoryCachedHistory.push_back(static_cast<float>(snap.memoryCachedPercent));
+        m_SwapHistory.push_back(static_cast<float>(snap.swapUsedPercent));
+        m_Timestamps.push_back(nowSeconds);
 
         for (size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
         {
-            m_PerCoreHistory[i].push(static_cast<float>(snap.cpuPerCore[i].totalPercent));
+            m_PerCoreHistory[i].push_back(static_cast<float>(snap.cpuPerCore[i].totalPercent));
         }
+
+        trimHistory(nowSeconds);
     }
 }
 

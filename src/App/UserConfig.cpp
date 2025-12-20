@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <fstream>
 
 #include <toml++/toml.hpp>
@@ -28,6 +29,26 @@
 
 namespace App
 {
+
+namespace
+{
+
+constexpr int REFRESH_INTERVAL_MIN_MS = 100;
+constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
+constexpr int HISTORY_SECONDS_MIN = 10;
+constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes upper guardrail
+
+[[nodiscard]] int clampRefreshIntervalMs(int value)
+{
+    return std::clamp(value, REFRESH_INTERVAL_MIN_MS, REFRESH_INTERVAL_MAX_MS);
+}
+
+[[nodiscard]] int clampHistorySeconds(int value)
+{
+    return std::clamp(value, HISTORY_SECONDS_MIN, HISTORY_SECONDS_MAX);
+}
+
+} // namespace
 
 auto UserConfig::get() -> UserConfig&
 {
@@ -90,6 +111,18 @@ void UserConfig::load()
     try
     {
         auto config = toml::parse_file(m_ConfigPath.string());
+
+        // Sampling / refresh interval
+        if (auto val = config["sampling"]["interval_ms"].value<int64_t>())
+        {
+            m_Settings.refreshIntervalMs = clampRefreshIntervalMs(static_cast<int>(*val));
+        }
+
+        if (auto val = config["sampling"]["history_max_seconds"].value<int64_t>())
+        {
+            m_Settings.maxHistorySeconds = clampHistorySeconds(static_cast<int>(*val));
+        }
+        // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
         // Theme
         if (auto theme = config["theme"]["id"].value<std::string>())
@@ -232,6 +265,11 @@ void UserConfig::save() const
 
     // Build TOML document
     auto config = toml::table{
+        {"sampling",
+         toml::table{
+             {"interval_ms", clampRefreshIntervalMs(m_Settings.refreshIntervalMs)},
+             {"history_max_seconds", clampHistorySeconds(m_Settings.maxHistorySeconds)},
+         }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
         {"panels",

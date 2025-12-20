@@ -39,6 +39,7 @@ struct SystemSnapshot
 
     // Computed percentages
     double memoryUsedPercent = 0.0;
+    double memoryCachedPercent = 0.0;
     double swapUsedPercent = 0.0;
 
     // System info

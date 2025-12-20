@@ -26,6 +26,14 @@ struct UserSettings
     // Process table column visibility
     ProcessColumnSettings processColumns;
 
+    // Sampling / refresh interval (milliseconds)
+    // Applied to all background samplers (process + system) for consistent cadence.
+    int refreshIntervalMs = 1000;
+
+    // Maximum duration of in-memory history buffers (seconds)
+    // Controls how much timeline data is retained and shown in plots.
+    int maxHistorySeconds = 300; // 5 minutes
+
     // Window state (optional, for future use)
     int windowWidth = 1280;
     int windowHeight = 720;
