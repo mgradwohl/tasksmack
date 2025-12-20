@@ -97,21 +97,23 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_CpuUserHistory.push_back(static_cast<float>(snapshot->cpuUserPercent));
             m_CpuSystemHistory.push_back(static_cast<float>(snapshot->cpuSystemPercent));
 
-            // Derive system total memory from RSS percent to express other metrics as percents for consistent charting.
+            // Use the process RSS percent as a scale factor to express other metrics as percents for consistent charting.
             const double usedPercent = std::clamp(snapshot->memoryPercent, 0.0, 100.0);
-            double totalMemoryBytes = 0.0;
+            double scale = 0.0;
             if (usedPercent > 0.0 && snapshot->memoryBytes > 0)
             {
-                totalMemoryBytes = (static_cast<double>(snapshot->memoryBytes) * 100.0) / usedPercent;
+                // memoryPercent = (memoryBytes / totalSystemMemoryBytes) * 100
+                // => X% of system = X * (memoryPercent / memoryBytes)
+                scale = usedPercent / static_cast<double>(snapshot->memoryBytes);
             }
 
-            auto toPercent = [totalMemoryBytes](uint64_t bytes) -> double
+            auto toPercent = [scale](uint64_t bytes) -> double
             {
-                if (totalMemoryBytes <= 0.0)
+                if (scale <= 0.0)
                 {
                     return 0.0;
                 }
-                return std::clamp((static_cast<double>(bytes) / totalMemoryBytes) * 100.0, 0.0, 100.0);
+                return std::clamp(static_cast<double>(bytes) * scale, 0.0, 100.0);
             };
 
             m_MemoryHistory.push_back(usedPercent);
