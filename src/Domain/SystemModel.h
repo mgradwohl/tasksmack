@@ -2,6 +2,7 @@
 
 #include "History.h"
 #include "Platform/ISystemProbe.h"
+#include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
 #include <deque>
@@ -84,7 +85,7 @@ class SystemModel
     std::deque<double> m_Timestamps;
     std::vector<std::deque<float>> m_PerCoreHistory;
 
-    double m_MaxHistorySeconds = 300.0; // Default 5 minutes
+    double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

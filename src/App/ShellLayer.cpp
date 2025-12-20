@@ -1,6 +1,7 @@
 #include "ShellLayer.h"
 
 #include "Core/Application.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
@@ -267,19 +268,21 @@ void ShellLayer::renderMenuBar()
 
             // Sampling / refresh interval (shared)
             {
-                constexpr int REFRESH_INTERVAL_MIN_MS = 100;
-                constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
-
                 auto& settings = UserConfig::get().settings();
                 const int beforeMs = settings.refreshIntervalMs;
                 int refreshIntervalMs = beforeMs;
 
                 ImGui::SetNextItemWidth(220.0F);
-                const bool sliderChanged =
-                    ImGui::SliderInt("Refresh (ms)", &refreshIntervalMs, REFRESH_INTERVAL_MIN_MS, REFRESH_INTERVAL_MAX_MS);
+                const bool sliderChanged = ImGui::SliderInt("Refresh (ms)",
+                                                            &refreshIntervalMs,
+                                                            Domain::Sampling::REFRESH_INTERVAL_MIN_MS,
+                                                            Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
 
                 // Draw tick marks for preset values (100/250/500/1000ms) on the actual slider frame.
-                drawRefreshPresetTicks(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), REFRESH_INTERVAL_MIN_MS, REFRESH_INTERVAL_MAX_MS);
+                drawRefreshPresetTicks(ImGui::GetItemRectMin(),
+                                       ImGui::GetItemRectMax(),
+                                       Domain::Sampling::REFRESH_INTERVAL_MIN_MS,
+                                       Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
 
                 // Snap when the user finishes editing (mouse release / enter).
                 const bool releasedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();

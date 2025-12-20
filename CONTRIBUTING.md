@@ -130,6 +130,11 @@ If you need to commit without running hooks (not recommended):
 git commit --no-verify
 ```
 
+## Constants
+
+- Shared sampling defaults/guardrails live in `src/Domain/SamplingConfig.h` (refresh interval ms, history seconds, clamp helpers). Reuse them instead of hardcoding new literals.
+- Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, `GLFW_INCLUDE_NONE`, etc.) as `#define`.
+
 ## Build
 
 This repo uses CMake Presets; list them with:

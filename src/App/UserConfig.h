@@ -1,8 +1,10 @@
 #pragma once
 
 #include "App/ProcessColumnConfig.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
@@ -28,11 +30,11 @@ struct UserSettings
 
     // Sampling / refresh interval (milliseconds)
     // Applied to all background samplers (process + system) for consistent cadence.
-    int refreshIntervalMs = 1000;
+    int refreshIntervalMs = Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS;
 
     // Maximum duration of in-memory history buffers (seconds)
     // Controls how much timeline data is retained and shown in plots.
-    int maxHistorySeconds = 300; // 5 minutes
+    int maxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
 
     // Window state (optional, for future use)
     int windowWidth = 1280;

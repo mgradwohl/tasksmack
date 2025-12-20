@@ -9,6 +9,7 @@
 /// - Thread-safe operations
 /// - Per-core CPU tracking
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/ISystemProbe.h"
@@ -623,14 +624,14 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
 
     Domain::SystemModel model(std::move(probe));
 
-    // Default should be 300s (5 minutes)
-    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 300.0);
+    // Default should match shared sampling default
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_DEFAULT);
 
     // Clamp below minimum (10s)
     model.setMaxHistorySeconds(5.0);
-    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 10.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
 
     // Clamp above maximum (1800s)
     model.setMaxHistorySeconds(7200.0);
-    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), 1800.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MAX);
 }

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -700,6 +701,43 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     trimDeque(m_MemoryHistory);
     trimDeque(m_SharedHistory);
     trimDeque(m_VirtualHistory);
+
+    // Keep all history buffers aligned to the smallest non-empty length.
+    size_t minSize = std::numeric_limits<size_t>::max();
+    const auto updateMin = [&minSize](size_t size)
+    {
+        if (size > 0)
+        {
+            minSize = std::min(minSize, size);
+        }
+    };
+
+    updateMin(m_Timestamps.size());
+    updateMin(m_CpuHistory.size());
+    updateMin(m_CpuUserHistory.size());
+    updateMin(m_CpuSystemHistory.size());
+    updateMin(m_MemoryHistory.size());
+    updateMin(m_SharedHistory.size());
+    updateMin(m_VirtualHistory.size());
+
+    if (minSize != std::numeric_limits<size_t>::max())
+    {
+        auto trimToMin = [minSize](auto& dq)
+        {
+            while (dq.size() > minSize)
+            {
+                dq.pop_front();
+            }
+        };
+
+        trimToMin(m_Timestamps);
+        trimToMin(m_CpuHistory);
+        trimToMin(m_CpuUserHistory);
+        trimToMin(m_CpuSystemHistory);
+        trimToMin(m_MemoryHistory);
+        trimToMin(m_SharedHistory);
+        trimToMin(m_VirtualHistory);
+    }
 }
 
 void ProcessDetailsPanel::renderActions()

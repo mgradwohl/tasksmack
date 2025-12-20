@@ -1,20 +1,15 @@
 #include "SystemModel.h"
 
+#include "SamplingConfig.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 
 namespace Domain
 {
-
-namespace
-{
-
-constexpr double MIN_HISTORY_SECONDS = 10.0;
-constexpr double MAX_HISTORY_SECONDS = 1800.0;
-
-} // namespace
 
 SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Probe(std::move(probe))
 {
@@ -61,12 +56,61 @@ void SystemModel::trimHistory(double nowSeconds)
     {
         trimSamples(coreHist);
     }
+
+    // Ensure all history buffers remain aligned by truncating to the smallest non-empty size.
+    size_t minSize = std::numeric_limits<size_t>::max();
+    const auto updateMin = [&minSize](size_t size)
+    {
+        if (size > 0)
+        {
+            minSize = std::min(minSize, size);
+        }
+    };
+
+    updateMin(m_Timestamps.size());
+    updateMin(m_CpuHistory.size());
+    updateMin(m_CpuUserHistory.size());
+    updateMin(m_CpuSystemHistory.size());
+    updateMin(m_CpuIowaitHistory.size());
+    updateMin(m_CpuIdleHistory.size());
+    updateMin(m_MemoryHistory.size());
+    updateMin(m_MemoryCachedHistory.size());
+    updateMin(m_SwapHistory.size());
+    for (const auto& coreHist : m_PerCoreHistory)
+    {
+        updateMin(coreHist.size());
+    }
+
+    if (minSize != std::numeric_limits<size_t>::max())
+    {
+        auto trimToMin = [minSize](auto& dq)
+        {
+            while (dq.size() > minSize)
+            {
+                dq.pop_front();
+            }
+        };
+
+        trimToMin(m_Timestamps);
+        trimToMin(m_CpuHistory);
+        trimToMin(m_CpuUserHistory);
+        trimToMin(m_CpuSystemHistory);
+        trimToMin(m_CpuIowaitHistory);
+        trimToMin(m_CpuIdleHistory);
+        trimToMin(m_MemoryHistory);
+        trimToMin(m_MemoryCachedHistory);
+        trimToMin(m_SwapHistory);
+        for (auto& coreHist : m_PerCoreHistory)
+        {
+            trimToMin(coreHist);
+        }
+    }
 }
 
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex);
-    m_MaxHistorySeconds = std::clamp(seconds, MIN_HISTORY_SECONDS, MAX_HISTORY_SECONDS);
+    m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
 
     if (!m_Timestamps.empty())
     {

@@ -137,6 +137,10 @@ void render(bool* open) override { /* ImGui::Begin/End, consume snapshots */ }
 
 Separate each group with a blank line. Use `#pragma once` in all headers.
 
+### Constants
+- Shared sampling defaults/guardrails live in `src/Domain/SamplingConfig.h` (refresh interval ms, history seconds, clamp helpers). Reuse these instead of re-declaring literals across App/Domain/UI.
+- Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, `GLFW_INCLUDE_NONE`, etc.) as `#define`.
+
 ### GLFW/GLAD Header Order
 ```cpp
 // clang-format off
