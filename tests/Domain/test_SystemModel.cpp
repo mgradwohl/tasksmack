@@ -9,6 +9,7 @@
 /// - Thread-safe operations
 /// - Per-core CPU tracking
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/ISystemProbe.h"
@@ -616,8 +617,21 @@ TEST(SystemModelTest, CoreCountReported)
     EXPECT_EQ(snap.coreCount, 8);
 }
 
-TEST(SystemModelTest, HistorySizeConstant)
+TEST(SystemModelTest, MaxHistorySecondsClamped)
 {
-    // Verify the history size constant is accessible
-    EXPECT_EQ(Domain::SystemModel::HISTORY_SIZE, 120);
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(100, 0, 50, 500), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+
+    // Default should match shared sampling default
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+
+    // Clamp below minimum (10s)
+    model.setMaxHistorySeconds(5.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    // Clamp above maximum (1800s)
+    model.setMaxHistorySeconds(7200.0);
+    EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MAX);
 }

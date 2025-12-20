@@ -140,17 +140,24 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     }
 
     // Compute CPU% from deltas
-    // CPU% = (processCpuDelta / totalCpuDelta) * 100 * numCores
-    // Note: totalCpuDelta already accounts for all cores
+    // CPU% = (processCpuDelta / totalCpuDelta) * 100; totalCpuDelta already includes all cores
     if (previous != nullptr && totalCpuDelta > 0)
     {
-        uint64_t prevProcessTime = previous->userTime + previous->systemTime;
-        uint64_t currProcessTime = current.userTime + current.systemTime;
+        const uint64_t prevUser = previous->userTime;
+        const uint64_t prevSystem = previous->systemTime;
+        const uint64_t currUser = current.userTime;
+        const uint64_t currSystem = current.systemTime;
 
-        if (currProcessTime >= prevProcessTime)
+        if (currUser >= prevUser && currSystem >= prevSystem)
         {
-            uint64_t processDelta = currProcessTime - prevProcessTime;
-            snapshot.cpuPercent = (static_cast<double>(processDelta) / static_cast<double>(totalCpuDelta)) * 100.0;
+            const uint64_t userDelta = currUser - prevUser;
+            const uint64_t systemDelta = currSystem - prevSystem;
+            const uint64_t processDelta = userDelta + systemDelta;
+
+            const double totalCpuDeltaD = static_cast<double>(totalCpuDelta);
+            snapshot.cpuPercent = (static_cast<double>(processDelta) / totalCpuDeltaD) * 100.0;
+            snapshot.cpuUserPercent = (static_cast<double>(userDelta) / totalCpuDeltaD) * 100.0;
+            snapshot.cpuSystemPercent = (static_cast<double>(systemDelta) / totalCpuDeltaD) * 100.0;
         }
     }
 

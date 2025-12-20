@@ -1,11 +1,11 @@
 #pragma once
 
 #include "App/Panel.h"
-#include "Domain/History.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -13,7 +13,7 @@ namespace App
 {
 
 /// Panel displaying detailed information for a selected process.
-/// Includes resource usage, I/O stats, history graphs, and process actions.
+/// Includes resource usage, I/O stats, and process actions.
 class ProcessDetailsPanel : public Panel
 {
   public:
@@ -22,8 +22,8 @@ class ProcessDetailsPanel : public Panel
 
     ProcessDetailsPanel(const ProcessDetailsPanel&) = delete;
     ProcessDetailsPanel& operator=(const ProcessDetailsPanel&) = delete;
-    ProcessDetailsPanel(ProcessDetailsPanel&&) = default;
-    ProcessDetailsPanel& operator=(ProcessDetailsPanel&&) = default;
+    ProcessDetailsPanel(ProcessDetailsPanel&&) noexcept = default;
+    ProcessDetailsPanel& operator=(ProcessDetailsPanel&&) noexcept = default;
 
     /// Update with current process data.
     /// Call each frame with the snapshot for the selected process (or nullptr if none).
@@ -46,18 +46,24 @@ class ProcessDetailsPanel : public Panel
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
     void renderIoStats(const Domain::ProcessSnapshot& proc);
-    void renderHistoryGraphs();
     void renderActions();
+    void trimHistory(double nowSeconds);
+    void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
     int32_t m_SelectedPid = -1;
     float m_HistoryTimer = 0.0F;
+    float m_LastDeltaSeconds = 0.0F;
 
-    // History buffers (120 samples at 1 Hz = 2 minutes of data)
-    static constexpr size_t HISTORY_SIZE = 120;
+    // History buffers (trimmed by time window)
     static constexpr float HISTORY_SAMPLE_INTERVAL = 1.0F;
-
-    Domain::History<float, HISTORY_SIZE> m_CpuHistory;
-    Domain::History<float, HISTORY_SIZE> m_MemoryHistory; // In MB
+    std::deque<float> m_CpuHistory;
+    std::deque<float> m_CpuUserHistory;
+    std::deque<float> m_CpuSystemHistory;
+    std::deque<double> m_MemoryHistory;  // Used memory percent (RSS)
+    std::deque<double> m_SharedHistory;  // Shared memory percent (best effort)
+    std::deque<double> m_VirtualHistory; // Virtual memory percent (best effort)
+    std::deque<double> m_Timestamps;
+    double m_MaxHistorySeconds = 300.0;
 
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
@@ -72,6 +78,14 @@ class ProcessDetailsPanel : public Panel
     std::string m_ConfirmAction;
     std::string m_LastActionResult;
     float m_ActionResultTimer = 0.0F;
+
+    struct SmoothedUsage
+    {
+        double cpuPercent = 0.0;
+        double residentBytes = 0.0;
+        double virtualBytes = 0.0;
+        bool initialized = false;
+    } m_SmoothedUsage;
 };
 
 } // namespace App

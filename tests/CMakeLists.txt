@@ -87,6 +87,7 @@ add_executable(TaskSmackTests
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
+    UI/test_HistoryWidgets.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
@@ -99,6 +100,10 @@ add_executable(TaskSmackTests
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/cpp
+    ${implot_SOURCE_DIR}
 )
 
 target_link_libraries(TaskSmackTests PRIVATE

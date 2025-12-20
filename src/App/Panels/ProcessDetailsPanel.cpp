@@ -1,7 +1,9 @@
 #include "ProcessDetailsPanel.h"
 
+#include "App/UserConfig.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
+#include "UI/HistoryWidgets.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -11,14 +13,28 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <format>
-#include <functional>
+#include <limits>
+#include <string>
+#include <vector>
 
 namespace
 {
+
+using UI::Widgets::buildTimeAxis;
+using UI::Widgets::computeAlpha;
+using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
+using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::makeTimeAxisConfig;
+using UI::Widgets::NowBar;
+using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::smoothTowards;
+using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
+using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 [[nodiscard]] auto formatCpuTime(double seconds) -> std::string
 {
@@ -45,6 +61,7 @@ namespace App
 
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
+      m_MaxHistorySeconds(static_cast<double>(App::UserConfig::get().settings().maxHistorySeconds)),
       m_ProcessActions(Platform::makeProcessActions()),
       m_ActionCapabilities(m_ProcessActions->actionCapabilities())
 {
@@ -52,6 +69,8 @@ ProcessDetailsPanel::ProcessDetailsPanel()
 
 void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime)
 {
+    m_LastDeltaSeconds = deltaTime;
+
     // Fade out action result message
     if (m_ActionResultTimer > 0.0F)
     {
@@ -67,13 +86,42 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         m_CachedSnapshot = *snapshot;
         m_HasSnapshot = true;
 
+        updateSmoothedUsage(*snapshot, deltaTime);
+
         // Sample history at fixed interval
         m_HistoryTimer += deltaTime;
         if (m_HistoryTimer >= HISTORY_SAMPLE_INTERVAL)
         {
             m_HistoryTimer = 0.0F;
-            m_CpuHistory.push(static_cast<float>(snapshot->cpuPercent));
-            m_MemoryHistory.push(static_cast<float>(static_cast<double>(snapshot->memoryBytes) / (1024.0 * 1024.0)));
+            const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            m_CpuHistory.push_back(static_cast<float>(snapshot->cpuPercent));
+            m_CpuUserHistory.push_back(static_cast<float>(snapshot->cpuUserPercent));
+            m_CpuSystemHistory.push_back(static_cast<float>(snapshot->cpuSystemPercent));
+
+            // Use the process RSS percent as a scale factor to express other metrics as percents for consistent charting.
+            const double usedPercent = std::clamp(snapshot->memoryPercent, 0.0, 100.0);
+            double scale = 0.0;
+            if (usedPercent > 0.0 && snapshot->memoryBytes > 0)
+            {
+                // memoryPercent = (memoryBytes / totalSystemMemoryBytes) * 100
+                // => X% of system = X * (memoryPercent / memoryBytes)
+                scale = usedPercent / static_cast<double>(snapshot->memoryBytes);
+            }
+
+            auto toPercent = [scale](uint64_t bytes) -> double
+            {
+                if (scale <= 0.0)
+                {
+                    return 0.0;
+                }
+                return std::clamp(static_cast<double>(bytes) * scale, 0.0, 100.0);
+            };
+
+            m_MemoryHistory.push_back(usedPercent);
+            m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
+            m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
+            m_Timestamps.push_back(nowSeconds);
+            trimHistory(nowSeconds);
         }
     }
     else if (snapshot == nullptr || snapshot->pid != m_SelectedPid)
@@ -134,12 +182,6 @@ void ProcessDetailsPanel::render(bool* open)
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("History"))
-        {
-            renderHistoryGraphs();
-            ImGui::EndTabItem();
-        }
-
         if (ImGui::BeginTabItem("Actions"))
         {
             renderActions();
@@ -158,17 +200,52 @@ void ProcessDetailsPanel::setSelectedPid(int32_t pid)
     {
         m_SelectedPid = pid;
         m_CpuHistory.clear();
+        m_CpuUserHistory.clear();
+        m_CpuSystemHistory.clear();
         m_MemoryHistory.clear();
+        m_SharedHistory.clear();
+        m_VirtualHistory.clear();
+        m_Timestamps.clear();
         m_HistoryTimer = 0.0F;
         m_HasSnapshot = false;
         m_ShowConfirmDialog = false;
         m_LastActionResult.clear();
+        m_SmoothedUsage = {};
 
         if (pid != -1)
         {
             spdlog::debug("ProcessDetailsPanel: selected PID {}", pid);
         }
     }
+}
+
+void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds)
+{
+    auto clampPercent = [](double value)
+    {
+        return std::clamp(value, 0.0, 100.0);
+    };
+
+    const auto refreshMs = std::chrono::milliseconds(App::UserConfig::get().settings().refreshIntervalMs);
+    const double alpha = computeAlpha(static_cast<double>(deltaTimeSeconds), refreshMs);
+
+    const double targetCpu = clampPercent(snapshot.cpuPercent);
+    const double targetResident = static_cast<double>(snapshot.memoryBytes);
+    const double targetVirtual = static_cast<double>(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
+
+    if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
+    {
+        m_SmoothedUsage.cpuPercent = targetCpu;
+        m_SmoothedUsage.residentBytes = targetResident;
+        m_SmoothedUsage.virtualBytes = targetVirtual;
+        m_SmoothedUsage.initialized = true;
+        return;
+    }
+
+    m_SmoothedUsage.cpuPercent = clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
+    m_SmoothedUsage.residentBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.residentBytes, targetResident, alpha));
+    m_SmoothedUsage.virtualBytes = smoothTowards(m_SmoothedUsage.virtualBytes, targetVirtual, alpha);
+    m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
@@ -306,94 +383,262 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::Text("Resource Usage");
-    ImGui::Spacing();
-
-    // CPU usage with progress bar
-    const float valueStartX = std::max(120.0F, ImGui::CalcTextSize("Memory:").x + 40.0F);
-    ImGui::Text("CPU:");
-    ImGui::SameLine(valueStartX);
-    float cpuFraction = static_cast<float>(proc.cpuPercent) / 100.0F;
-    cpuFraction = (cpuFraction > 1.0F) ? 1.0F : cpuFraction; // Clamp for multi-core
-    const std::string cpuOverlay = UI::Format::percentCompact(proc.cpuPercent);
-    const ImVec4 cpuColor = theme.progressColor(proc.cpuPercent);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, cpuColor);
-    ImGui::ProgressBar(cpuFraction, ImVec2(-1, 0), "");
-    UI::Widgets::drawRightAlignedOverlayText(cpuOverlay.c_str());
-    ImGui::PopStyleColor();
-
-    // Memory/VIRT stacked bar (Resident | Virtual remainder). Keep style consistent with other stacked bars.
-    auto drawMemVirtStackedBar = [&](uint64_t residentBytes, uint64_t virtualBytes, const char* overlayText)
+    // Ensure smoothing is initialized even if render is called before an update tick
+    if (!m_SmoothedUsage.initialized)
     {
-        const uint64_t totalBytes = std::max(virtualBytes, residentBytes);
-        if (totalBytes == 0)
-        {
-            return;
-        }
-
-        const uint64_t clampedResidentBytes = std::min(residentBytes, totalBytes);
-        const uint64_t otherVirtualBytes = totalBytes - clampedResidentBytes;
-
-        const float residentFrac = static_cast<float>(static_cast<double>(clampedResidentBytes) / static_cast<double>(totalBytes));
-        const float otherFrac = static_cast<float>(static_cast<double>(otherVirtualBytes) / static_cast<double>(totalBytes));
-
-        const ImVec2 startPos = ImGui::GetCursorScreenPos();
-        const float fullWidth = ImGui::GetContentRegionAvail().x;
-        const float height = ImGui::GetFrameHeight();
-        const ImVec2 size(fullWidth, height);
-        ImGui::InvisibleButton("##MemVirtStackedBar", size);
-
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        const float rounding = ImGui::GetStyle().FrameRounding;
-
-        const ImU32 bgCol = ImGui::GetColorU32(ImGuiCol_FrameBg);
-        const ImU32 residentCol = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartMemory);
-        const ImU32 otherCol = ImGui::ColorConvertFloat4ToU32(theme.scheme().chartIo);
-
-        const ImVec2 endPos(startPos.x + size.x, startPos.y + size.y);
-        drawList->AddRectFilled(startPos, endPos, bgCol, rounding);
-
-        float x = startPos.x;
-        const float residentW = size.x * residentFrac;
-        const float otherW = size.x * otherFrac;
-
-        if (residentW > 0.0F)
-        {
-            const ImDrawFlags flags = (otherW <= 0.0F) ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft;
-            drawList->AddRectFilled(ImVec2(x, startPos.y), ImVec2(x + residentW, endPos.y), residentCol, rounding, flags);
-            x += residentW;
-        }
-
-        if (otherW > 0.0F)
-        {
-            drawList->AddRectFilled(ImVec2(x, startPos.y), endPos, otherCol, rounding, ImDrawFlags_RoundCornersRight);
-        }
-
-        // Overlay text (consistent with other bars)
-        UI::Widgets::drawRightAlignedOverlayText(overlayText);
-
-        // Restore cursor position to below the bar.
-        ImGui::SetCursorScreenPos(ImVec2(startPos.x, endPos.y + ImGui::GetStyle().ItemInnerSpacing.y));
-    };
-
-    const uint64_t totalVirtualBytes = std::max(proc.virtualBytes, proc.memoryBytes);
-    const std::string overlay = UI::Format::bytesUsedTotalCompact(std::min(proc.memoryBytes, totalVirtualBytes), totalVirtualBytes);
-    ImGui::TextUnformatted("Memory:");
-    ImGui::SameLine(valueStartX);
-    drawMemVirtStackedBar(proc.memoryBytes, proc.virtualBytes, overlay.c_str());
-
-    if (ImGui::IsItemHovered() && totalVirtualBytes > 0)
-    {
-        const UI::Format::ByteUnit unit = UI::Format::unitForTotalBytes(totalVirtualBytes);
-        ImGui::BeginTooltip();
-        ImGui::Text("RSS: %s (%s)",
-                    UI::Format::formatBytesWithUnit(proc.memoryBytes, unit).c_str(),
-                    UI::Format::percentCompact(proc.memoryPercent).c_str());
-        ImGui::Text("VIRT: %s", UI::Format::formatBytesWithUnit(totalVirtualBytes, unit).c_str());
-        ImGui::EndTooltip();
+        updateSmoothedUsage(proc, m_LastDeltaSeconds);
     }
 
-    ImGui::Spacing();
+    const double cpuPercent = m_SmoothedUsage.initialized ? m_SmoothedUsage.cpuPercent : proc.cpuPercent;
+    const double cpuClamped = std::clamp(cpuPercent, 0.0, 100.0);
+
+    // Inline CPU history with paired now bar
+    if (!m_Timestamps.empty() && !m_CpuHistory.empty())
+    {
+        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const size_t alignedCount =
+            std::min({m_Timestamps.size(), static_cast<size_t>(m_CpuHistory.size()), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
+
+        std::vector<double> timestamps(m_Timestamps.begin(), m_Timestamps.end());
+        std::vector<double> cpuData(m_CpuHistory.begin(), m_CpuHistory.end());
+        std::vector<double> cpuUserData(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
+        std::vector<double> cpuSystemData(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
+
+        if (timestamps.size() > alignedCount)
+        {
+            timestamps.erase(timestamps.begin(), timestamps.begin() + static_cast<std::ptrdiff_t>(timestamps.size() - alignedCount));
+        }
+        if (cpuData.size() > alignedCount)
+        {
+            cpuData.erase(cpuData.begin(), cpuData.begin() + static_cast<std::ptrdiff_t>(cpuData.size() - alignedCount));
+        }
+        if (cpuUserData.size() > alignedCount)
+        {
+            cpuUserData.erase(cpuUserData.begin(), cpuUserData.begin() + static_cast<std::ptrdiff_t>(cpuUserData.size() - alignedCount));
+        }
+        if (cpuSystemData.size() > alignedCount)
+        {
+            cpuSystemData.erase(cpuSystemData.begin(),
+                                cpuSystemData.begin() + static_cast<std::ptrdiff_t>(cpuSystemData.size() - alignedCount));
+        }
+
+        const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+        std::vector<float> cpuTimeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+
+        NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(cpuClamped),
+                           .value01 = static_cast<float>(cpuClamped / 100.0),
+                           .color = theme.progressColor(cpuClamped)};
+        NowBar cpuUserNow{.valueText = UI::Format::percentCompact(proc.cpuUserPercent),
+                          .value01 = static_cast<float>(std::clamp(proc.cpuUserPercent, 0.0, 100.0) / 100.0),
+                          .color = theme.scheme().cpuUser};
+        NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(proc.cpuSystemPercent),
+                            .value01 = static_cast<float>(std::clamp(proc.cpuSystemPercent, 0.0, 100.0) / 100.0),
+                            .color = theme.scheme().cpuSystem};
+
+        std::vector<float> cpuTotalSeries(cpuData.begin(), cpuData.end());
+        std::vector<float> cpuUserSeries(cpuUserData.begin(), cpuUserData.end());
+        std::vector<float> cpuSystemSeries(cpuSystemData.begin(), cpuSystemData.end());
+
+        auto cpuPlot = [&]()
+        {
+            if (ImPlot::BeginPlot("##ProcOverviewCPU", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+            {
+                ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
+
+                if (alignedCount > 0)
+                {
+                    std::vector<float> y0(alignedCount, 0.0F);
+                    std::vector<float> yUserTop(alignedCount);
+                    std::vector<float> ySystemTop(alignedCount);
+
+                    for (size_t i = 0; i < alignedCount; ++i)
+                    {
+                        yUserTop[i] = static_cast<float>(cpuUserData[i]);
+                        ySystemTop[i] = static_cast<float>(cpuUserData[i] + cpuSystemData[i]);
+                    }
+
+                    ImVec4 userFill = theme.scheme().cpuUser;
+                    userFill.w = 0.35F;
+                    ImPlot::SetNextFillStyle(userFill);
+                    ImPlot::PlotShaded("##CpuUser", cpuTimeData.data(), y0.data(), yUserTop.data(), static_cast<int>(alignedCount));
+
+                    ImVec4 systemFill = theme.scheme().cpuSystem;
+                    systemFill.w = 0.35F;
+                    ImPlot::SetNextFillStyle(systemFill);
+                    ImPlot::PlotShaded(
+                        "##CpuSystem", cpuTimeData.data(), yUserTop.data(), ySystemTop.data(), static_cast<int>(alignedCount));
+
+                    ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
+                    ImPlot::PlotLine("Total", cpuTimeData.data(), cpuTotalSeries.data(), static_cast<int>(alignedCount));
+
+                    ImPlot::SetNextLineStyle(theme.scheme().cpuUser, 1.8F);
+                    ImPlot::PlotLine("User", cpuTimeData.data(), cpuUserSeries.data(), static_cast<int>(alignedCount));
+
+                    ImPlot::SetNextLineStyle(theme.scheme().cpuSystem, 1.8F);
+                    ImPlot::PlotLine("System", cpuTimeData.data(), cpuSystemSeries.data(), static_cast<int>(alignedCount));
+
+                    if (ImPlot::IsPlotHovered())
+                    {
+                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                        const int idx = hoveredIndexFromPlotX(cpuTimeData, mouse.x);
+                        const auto idxVal = static_cast<size_t>(idx);
+                        if (idx >= 0 && idxVal < alignedCount)
+                        {
+                            ImGui::BeginTooltip();
+                            ImGui::Text("t: %.1fs", static_cast<double>(cpuTimeData[static_cast<size_t>(idx)]));
+                            ImGui::Separator();
+                            const double totalValue = cpuData[static_cast<size_t>(idx)];
+                            const ImVec4 totalColor = theme.progressColor(totalValue);
+                            ImGui::TextColored(
+                                totalColor, "Total: %s", UI::Format::percentCompact(static_cast<double>(totalValue)).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().cpuUser,
+                                "User: %s",
+                                UI::Format::percentCompact(static_cast<double>(cpuUserData[static_cast<size_t>(idx)])).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().cpuSystem,
+                                "System: %s",
+                                UI::Format::percentCompact(static_cast<double>(cpuSystemData[static_cast<size_t>(idx)])).c_str());
+                            ImGui::EndTooltip();
+                        }
+                    }
+                }
+                else
+                {
+                    ImPlot::PlotDummy("CPU");
+                }
+
+                ImPlot::EndPlot();
+            }
+        };
+
+        ImGui::Text("CPU (%zu samples)", alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessCPUHistoryOverview", HISTORY_PLOT_HEIGHT_DEFAULT, cpuPlot, {cpuTotalNow, cpuUserNow, cpuSystemNow});
+        ImGui::Spacing();
+    }
+
+    // Inline history for memory (overview) mirroring system memory chart layout
+    if (!m_Timestamps.empty())
+    {
+        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const size_t alignedCount =
+            std::min({m_Timestamps.size(), m_MemoryHistory.size(), m_SharedHistory.size(), m_VirtualHistory.size()});
+
+        if (alignedCount > 0)
+        {
+            std::vector<double> timestamps(m_Timestamps.begin(), m_Timestamps.end());
+            std::vector<double> usedData(m_MemoryHistory.begin(), m_MemoryHistory.end());
+            std::vector<double> sharedData(m_SharedHistory.begin(), m_SharedHistory.end());
+            std::vector<double> virtData(m_VirtualHistory.begin(), m_VirtualHistory.end());
+
+            auto trimToAligned = [alignedCount](std::vector<double>& data)
+            {
+                if (data.size() > alignedCount)
+                {
+                    data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(data.size() - alignedCount));
+                }
+            };
+
+            trimToAligned(timestamps);
+            trimToAligned(usedData);
+            trimToAligned(sharedData);
+            trimToAligned(virtData);
+
+            const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+            std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+            std::vector<float> usedSeries(usedData.begin(), usedData.end());
+            std::vector<float> sharedSeries(sharedData.begin(), sharedData.end());
+            std::vector<float> virtSeries(virtData.begin(), virtData.end());
+
+            const double usedNow = usedData.empty() ? 0.0 : usedData.back();
+            const double sharedNow = sharedData.empty() ? 0.0 : sharedData.back();
+            const double virtNowVal = virtData.empty() ? 0.0 : virtData.back();
+
+            std::vector<NowBar> memoryBars;
+            memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
+                                  .value01 = static_cast<float>(std::clamp(usedNow, 0.0, 100.0) / 100.0),
+                                  .color = theme.scheme().chartMemory});
+            memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
+                                  .value01 = static_cast<float>(std::clamp(sharedNow, 0.0, 100.0) / 100.0),
+                                  .color = theme.scheme().chartCpu});
+            memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
+                                  .value01 = static_cast<float>(std::clamp(virtNowVal, 0.0, 100.0) / 100.0),
+                                  .color = theme.scheme().chartIo});
+
+            auto memoryPlot = [&]()
+            {
+                if (ImPlot::BeginPlot(
+                        "##ProcOverviewMemory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+                {
+                    ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
+                    ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+
+                    if (!usedSeries.empty())
+                    {
+                        ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
+                        ImPlot::PlotLine("Used", timeData.data(), usedSeries.data(), static_cast<int>(usedSeries.size()));
+                    }
+
+                    if (!sharedSeries.empty())
+                    {
+                        ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
+                        ImPlot::PlotLine("Shared", timeData.data(), sharedSeries.data(), static_cast<int>(sharedSeries.size()));
+                    }
+
+                    if (!virtSeries.empty())
+                    {
+                        ImPlot::SetNextLineStyle(theme.scheme().chartIo, 2.0F);
+                        ImPlot::PlotLine("Virtual", timeData.data(), virtSeries.data(), static_cast<int>(virtSeries.size()));
+                    }
+
+                    if (ImPlot::IsPlotHovered())
+                    {
+                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                        const int idx = hoveredIndexFromPlotX(timeData, mouse.x);
+                        if (idx >= 0)
+                        {
+                            const auto idxVal = static_cast<size_t>(idx);
+                            ImGui::BeginTooltip();
+                            ImGui::Text("t: %.1fs", static_cast<double>(timeData[static_cast<size_t>(idx)]));
+                            if (idxVal < usedSeries.size())
+                            {
+                                ImGui::TextColored(
+                                    theme.scheme().chartMemory,
+                                    "Used: %s",
+                                    UI::Format::percentCompact(static_cast<double>(usedSeries[static_cast<size_t>(idx)])).c_str());
+                            }
+                            if (idxVal < sharedSeries.size())
+                            {
+                                ImGui::TextColored(
+                                    theme.scheme().chartCpu,
+                                    "Shared: %s",
+                                    UI::Format::percentCompact(static_cast<double>(sharedSeries[static_cast<size_t>(idx)])).c_str());
+                            }
+                            if (idxVal < virtSeries.size())
+                            {
+                                ImGui::TextColored(
+                                    theme.scheme().chartIo,
+                                    "Virtual: %s",
+                                    UI::Format::percentCompact(static_cast<double>(virtSeries[static_cast<size_t>(idx)])).c_str());
+                            }
+                            ImGui::EndTooltip();
+                        }
+                    }
+
+                    ImPlot::EndPlot();
+                }
+            };
+
+            ImGui::Spacing();
+            ImGui::Text("Memory (%zu samples)", alignedCount);
+            renderHistoryWithNowBars("ProcessMemoryOverviewLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars);
+            ImGui::Spacing();
+        }
+    }
 }
 
 void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
@@ -432,116 +677,66 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     ImGui::Text("%.1f %s", writeVal, writeUnit);
 }
 
-void ProcessDetailsPanel::renderHistoryGraphs()
+void ProcessDetailsPanel::trimHistory(double nowSeconds)
 {
-    ImGui::Text("Resource History (last %zu samples)", m_CpuHistory.size());
-    ImGui::Spacing();
-
-    auto showHistoryTooltip =
-        [](const char* title, const float* time, const float* values, size_t count, const std::function<std::string(float)>& formatValue)
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    size_t removeCount = 0;
+    while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
     {
-        if (count == 0)
-        {
-            return;
-        }
+        m_Timestamps.pop_front();
+        ++removeCount;
+    }
 
-        if (!ImPlot::IsPlotHovered())
+    auto trimDeque = [removeCount](auto& dq)
+    {
+        for (size_t i = 0; i < removeCount && !dq.empty(); ++i)
         {
-            return;
-        }
-
-        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-        int index = static_cast<int>(std::llround(mouse.x + static_cast<double>(count - 1)));
-        index = std::clamp(index, 0, static_cast<int>(count) - 1);
-
-        if (ImGui::BeginTooltip())
-        {
-            ImGui::TextUnformatted(title);
-            ImGui::Separator();
-            const int timeSec = static_cast<int>(std::lround(static_cast<double>(time[index])));
-            ImGui::Text("t: %ds", timeSec);
-            const std::string formatted = formatValue(values[index]);
-            ImGui::TextUnformatted(formatted.c_str());
-            ImGui::EndTooltip();
+            dq.pop_front();
         }
     };
 
-    // Prepare data arrays for plotting
-    std::array<float, HISTORY_SIZE> cpuData{};
-    std::array<float, HISTORY_SIZE> memData{};
-    std::array<float, HISTORY_SIZE> timeData{};
+    trimDeque(m_CpuHistory);
+    trimDeque(m_CpuUserHistory);
+    trimDeque(m_CpuSystemHistory);
+    trimDeque(m_MemoryHistory);
+    trimDeque(m_SharedHistory);
+    trimDeque(m_VirtualHistory);
 
-    size_t cpuCount = m_CpuHistory.copyTo(cpuData.data(), HISTORY_SIZE);
-    size_t memCount = m_MemoryHistory.copyTo(memData.data(), HISTORY_SIZE);
-
-    // Generate time axis (negative = past)
-    for (size_t i = 0; i < cpuCount; ++i)
+    // Keep all history buffers aligned to the smallest non-empty length.
+    size_t minSize = std::numeric_limits<size_t>::max();
+    const auto updateMin = [&minSize](size_t size)
     {
-        timeData[i] = static_cast<float>(i) - static_cast<float>(cpuCount - 1);
-    }
+        if (size > 0)
+        {
+            minSize = std::min(minSize, size);
+        }
+    };
 
-    // CPU History Plot
-    const auto& theme = UI::Theme::get();
-    ImGui::Text("CPU Usage");
-    if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
+    updateMin(m_Timestamps.size());
+    updateMin(m_CpuHistory.size());
+    updateMin(m_CpuUserHistory.size());
+    updateMin(m_CpuSystemHistory.size());
+    updateMin(m_MemoryHistory.size());
+    updateMin(m_SharedHistory.size());
+    updateMin(m_VirtualHistory.size());
+
+    if (minSize != std::numeric_limits<size_t>::max())
     {
-        ImPlot::SetupAxes("Time (s)", "%", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_Lock);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-
-        if (cpuCount > 0)
+        auto trimToMin = [minSize](auto& dq)
         {
-            ImVec4 fillColor = theme.scheme().chartCpu;
-            fillColor.w = 0.3F;
-            ImPlot::SetNextFillStyle(fillColor);
-            ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuData.data(), static_cast<int>(cpuCount), 0.0);
+            while (dq.size() > minSize)
+            {
+                dq.pop_front();
+            }
+        };
 
-            ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-            ImPlot::PlotLine("CPU", timeData.data(), cpuData.data(), static_cast<int>(cpuCount));
-        }
-        else
-        {
-            ImPlot::PlotDummy("CPU");
-        }
-
-        showHistoryTooltip("CPU Usage",
-                           timeData.data(),
-                           cpuData.data(),
-                           cpuCount,
-                           [](float value) { return std::format("CPU: {}", UI::Format::percentCompact(static_cast<double>(value))); });
-
-        ImPlot::EndPlot();
-    }
-
-    ImGui::Spacing();
-
-    // Memory History Plot
-    ImGui::Text("Memory Usage (RSS)");
-    if (ImPlot::BeginPlot("##MemoryHistory", ImVec2(-1, 200), ImPlotFlags_NoLegend))
-    {
-        ImPlot::SetupAxes("Time (s)", "MB", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-
-        if (memCount > 0)
-        {
-            ImVec4 fillColor = theme.scheme().chartMemory;
-            fillColor.w = 0.3F;
-            ImPlot::SetNextFillStyle(fillColor);
-            ImPlot::PlotShaded("##MemoryShaded", timeData.data(), memData.data(), static_cast<int>(memCount), 0.0);
-
-            ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
-            ImPlot::PlotLine("Memory", timeData.data(), memData.data(), static_cast<int>(memCount));
-        }
-        else
-        {
-            ImPlot::PlotDummy("Memory");
-        }
-
-        showHistoryTooltip("Memory Usage (RSS)",
-                           timeData.data(),
-                           memData.data(),
-                           memCount,
-                           [](float value) { return std::format("RSS: {:.1f} MB", value); });
-
-        ImPlot::EndPlot();
+        trimToMin(m_Timestamps);
+        trimToMin(m_CpuHistory);
+        trimToMin(m_CpuUserHistory);
+        trimToMin(m_CpuSystemHistory);
+        trimToMin(m_MemoryHistory);
+        trimToMin(m_SharedHistory);
+        trimToMin(m_VirtualHistory);
     }
 }
 

@@ -91,6 +91,18 @@ void UserConfig::load()
     {
         auto config = toml::parse_file(m_ConfigPath.string());
 
+        // Sampling / refresh interval
+        if (auto val = config["sampling"]["interval_ms"].value<int64_t>())
+        {
+            m_Settings.refreshIntervalMs = Domain::Sampling::clampRefreshInterval(static_cast<int>(*val));
+        }
+
+        if (auto val = config["sampling"]["history_max_seconds"].value<int64_t>())
+        {
+            m_Settings.maxHistorySeconds = Domain::Sampling::clampHistorySeconds(static_cast<int>(*val));
+        }
+        // When the key is missing we intentionally keep the default (300s) set in UserSettings.
+
         // Theme
         if (auto theme = config["theme"]["id"].value<std::string>())
         {
@@ -232,6 +244,11 @@ void UserConfig::save() const
 
     // Build TOML document
     auto config = toml::table{
+        {"sampling",
+         toml::table{
+             {"interval_ms", Domain::Sampling::clampRefreshInterval(m_Settings.refreshIntervalMs)},
+             {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
+         }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
         {"panels",

@@ -2,11 +2,11 @@
 
 #include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
-#include "Domain/BackgroundSampler.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -15,7 +15,7 @@ namespace App
 {
 
 /// Panel for displaying and managing the process list.
-/// Uses background sampling for non-blocking updates.
+/// Refresh cadence is driven by the main loop via onUpdate().
 class ProcessesPanel : public Panel
 {
   public:
@@ -65,10 +65,19 @@ class ProcessesPanel : public Panel
         m_ColumnSettings = settings;
     }
 
+    /// Set the refresh interval (applied by onUpdate cadence checks).
+    void setSamplingInterval(std::chrono::milliseconds interval);
+
+    /// Request an immediate refresh.
+    void requestRefresh();
+
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
-    std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     int32_t m_SelectedPid = -1;
+
+    std::chrono::milliseconds m_RefreshInterval{1000};
+    float m_RefreshAccumulatorSec = 0.0F;
+    bool m_ForceRefresh = false;
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;

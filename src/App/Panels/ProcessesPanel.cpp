@@ -10,7 +10,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <format>
+#include <ranges>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace App
 {
@@ -21,15 +26,6 @@ ProcessesPanel::ProcessesPanel() : Panel("Processes")
 
 ProcessesPanel::~ProcessesPanel()
 {
-    // Stop and clear sampler before destruction to prevent callback use-after-free.
-    // The callback captures 'this', so we must ensure the sampler thread is stopped
-    // and the callback is cleared before any member destruction.
-    if (m_Sampler)
-    {
-        m_Sampler->stop();
-        m_Sampler->setCallback(nullptr); // Clear callback to prevent races
-        m_Sampler.reset();
-    }
     m_ProcessModel.reset();
 }
 
@@ -38,38 +34,69 @@ void ProcessesPanel::onAttach()
     // Load column settings from user config
     m_ColumnSettings = UserConfig::get().settings().processColumns;
 
-    // Create process model (no probe - we'll feed it from sampler)
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(nullptr);
+    const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
+    m_RefreshInterval = std::chrono::milliseconds(intervalMs);
+    m_RefreshAccumulatorSec = 0.0F;
+    m_ForceRefresh = true;
 
-    // Create and start background sampler
-    m_Sampler =
-        std::make_unique<Domain::BackgroundSampler>(Platform::makeProcessProbe(), Domain::SamplerConfig{std::chrono::milliseconds(1000)});
+    // Create process model with platform probe; refresh is driven by onUpdate().
+    m_ProcessModel = std::make_unique<Domain::ProcessModel>(Platform::makeProcessProbe());
 
-    // Set callback to update model when new data arrives
-    m_Sampler->setCallback([this](const std::vector<Platform::ProcessCounters>& counters, uint64_t totalCpuTime)
-                           { m_ProcessModel->updateFromCounters(counters, totalCpuTime); });
+    // Initial population
+    m_ProcessModel->refresh();
+    m_ForceRefresh = false;
 
-    m_Sampler->start();
+    spdlog::info("ProcessesPanel: initialized with main-loop-driven refresh");
+}
 
-    spdlog::info("ProcessesPanel: initialized with background sampling");
+void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
+{
+    m_RefreshInterval = interval;
+    m_RefreshAccumulatorSec = 0.0F;
+    m_ForceRefresh = true;
+}
+
+void ProcessesPanel::requestRefresh()
+{
+    m_ForceRefresh = true;
 }
 
 void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
-
-    if (m_Sampler)
-    {
-        m_Sampler->stop();
-        m_Sampler.reset();
-    }
     m_ProcessModel.reset();
 }
 
-void ProcessesPanel::onUpdate(float /* deltaTime */)
+void ProcessesPanel::onUpdate(float deltaTime)
 {
-    // No longer needed - background sampler handles refresh
+    if (!m_ProcessModel)
+    {
+        return;
+    }
+
+    m_RefreshAccumulatorSec += deltaTime;
+
+    const float intervalSec = static_cast<float>(m_RefreshInterval.count()) / 1000.0F;
+    const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
+
+    if (m_ForceRefresh || intervalElapsed)
+    {
+        m_ProcessModel->refresh();
+        m_ForceRefresh = false;
+        if (intervalSec > 0.0F)
+        {
+            // Keep remainder to avoid drift on low FPS.
+            while (m_RefreshAccumulatorSec >= intervalSec)
+            {
+                m_RefreshAccumulatorSec -= intervalSec;
+            }
+        }
+        else
+        {
+            m_RefreshAccumulatorSec = 0.0F;
+        }
+    }
 }
 
 int ProcessesPanel::visibleColumnCount() const
@@ -181,20 +208,20 @@ void ProcessesPanel::render(bool* open)
         }
     }
 
-    char summaryBuf[64];
+    std::string summaryStr;
     if (searchTerm.empty())
     {
-        snprintf(summaryBuf, sizeof(summaryBuf), "%zu processes, %zu running", currentSnapshots.size(), runningCount);
+        summaryStr = std::format("{} processes, {} running", currentSnapshots.size(), runningCount);
     }
     else
     {
-        snprintf(summaryBuf, sizeof(summaryBuf), "%zu / %zu processes", filteredIndices.size(), currentSnapshots.size());
+        summaryStr = std::format("{} / {} processes", filteredIndices.size(), currentSnapshots.size());
     }
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const float textW = ImGui::CalcTextSize(summaryBuf).x;
+    const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW));
-    ImGui::TextUnformatted(summaryBuf);
+    ImGui::TextUnformatted(summaryStr.c_str());
 
     ImGui::Separator();
 
@@ -329,10 +356,10 @@ void ProcessesPanel::render(bool* open)
                 if (col == ProcessColumn::PID)
                 {
                     const bool isSelected = (m_SelectedPid == proc.pid);
-                    char label[32];
-                    snprintf(label, sizeof(label), "%d", proc.pid);
+                    const std::string label = std::format("{}", proc.pid);
 
-                    if (ImGui::Selectable(label, isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    if (ImGui::Selectable(
+                            label.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
                     {
                         m_SelectedPid = proc.pid;
                     }

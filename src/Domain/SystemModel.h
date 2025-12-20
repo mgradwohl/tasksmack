@@ -2,8 +2,10 @@
 
 #include "History.h"
 #include "Platform/ISystemProbe.h"
+#include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
+#include <deque>
 #include <memory>
 #include <shared_mutex>
 #include <vector>
@@ -32,6 +34,7 @@ class SystemModel
     /// Update with externally-provided counters (for background sampler).
     /// Thread-safe.
     void updateFromCounters(const Platform::SystemCounters& counters);
+    void updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds);
 
     /// Get latest computed snapshot (copy for thread safety).
     [[nodiscard]] SystemSnapshot snapshot() const;
@@ -39,8 +42,14 @@ class SystemModel
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
 
+    /// Configure maximum retained history duration (seconds).
+    void setMaxHistorySeconds(double seconds);
+    [[nodiscard]] double maxHistorySeconds() const
+    {
+        return m_MaxHistorySeconds;
+    }
+
     // History access (read-only copies)
-    static constexpr size_t HISTORY_SIZE = 120; // 2 minutes at 1 Hz
 
     [[nodiscard]] std::vector<float> cpuHistory() const;
     [[nodiscard]] std::vector<float> cpuUserHistory() const;
@@ -49,7 +58,9 @@ class SystemModel
     [[nodiscard]] std::vector<float> cpuIdleHistory() const;
     [[nodiscard]] std::vector<float> memoryHistory() const;
     [[nodiscard]] std::vector<float> swapHistory() const;
+    [[nodiscard]] std::vector<float> memoryCachedHistory() const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
+    [[nodiscard]] std::vector<double> timestamps() const;
 
   private:
     std::unique_ptr<Platform::ISystemProbe> m_Probe;
@@ -62,21 +73,26 @@ class SystemModel
     // Latest computed snapshot
     SystemSnapshot m_Snapshot;
 
-    // History buffers
-    History<float, HISTORY_SIZE> m_CpuHistory;
-    History<float, HISTORY_SIZE> m_CpuUserHistory;
-    History<float, HISTORY_SIZE> m_CpuSystemHistory;
-    History<float, HISTORY_SIZE> m_CpuIowaitHistory;
-    History<float, HISTORY_SIZE> m_CpuIdleHistory;
-    History<float, HISTORY_SIZE> m_MemoryHistory;
-    History<float, HISTORY_SIZE> m_SwapHistory;
-    std::vector<History<float, HISTORY_SIZE>> m_PerCoreHistory;
+    // History buffers (trimmed by time window)
+    std::deque<float> m_CpuHistory;
+    std::deque<float> m_CpuUserHistory;
+    std::deque<float> m_CpuSystemHistory;
+    std::deque<float> m_CpuIowaitHistory;
+    std::deque<float> m_CpuIdleHistory;
+    std::deque<float> m_MemoryHistory;
+    std::deque<float> m_MemoryCachedHistory;
+    std::deque<float> m_SwapHistory;
+    std::deque<double> m_Timestamps;
+    std::vector<std::deque<float>> m_PerCoreHistory;
+
+    double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
 
     // Helpers
-    void computeSnapshot(const Platform::SystemCounters& counters);
+    void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
+    void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
 };
 

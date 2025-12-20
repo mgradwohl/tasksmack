@@ -6,8 +6,8 @@
 
 #include <implot.h>
 
+#include <chrono>
 #include <memory>
-#include <thread>
 
 namespace App
 {
@@ -25,11 +25,20 @@ class SystemMetricsPanel : public Panel
     SystemMetricsPanel(SystemMetricsPanel&&) = delete;
     SystemMetricsPanel& operator=(SystemMetricsPanel&&) = delete;
 
-    /// Initialize the panel (creates SystemModel and starts sampler thread).
+    /// Initialize the panel (creates SystemModel).
     void onAttach() override;
 
-    /// Cleanup (stops sampler thread).
+    /// Cleanup.
     void onDetach() override;
+
+    /// Update logic (refresh cadence is driven by main loop).
+    void onUpdate(float deltaTime) override;
+
+    /// Set the refresh interval (applied by onUpdate cadence checks).
+    void setSamplingInterval(std::chrono::milliseconds interval);
+
+    /// Request an immediate refresh.
+    void requestRefresh();
 
     /// Render the panel.
     void render(bool* open) override;
@@ -37,22 +46,37 @@ class SystemMetricsPanel : public Panel
   private:
     void renderOverview();
     void renderCpuSection();
-    void renderMemorySection();
     void renderPerCoreSection();
-    void samplerLoop();
-
     std::unique_ptr<Domain::SystemModel> m_Model;
 
-    // Background sampler
-    std::jthread m_SamplerThread;
-    std::atomic<bool> m_Running{false};
+    double m_MaxHistorySeconds = 300.0;
+    double m_HistoryScrollSeconds = 0.0;
+    double m_CurrentNowSeconds = 0.0;
+    std::vector<double> m_TimestampsCache;
 
-    // Display options
-    bool m_ShowPerCore = false;
+    std::chrono::milliseconds m_RefreshInterval{1000};
+    float m_RefreshAccumulatorSec = 0.0F;
+    bool m_ForceRefresh = false;
+    float m_LastDeltaSeconds = 0.0F;
 
-    // Heatmap colormap (cached to avoid recreating every frame)
-    ImPlotColormap m_HeatmapColormap = -1;
-    std::size_t m_LastThemeIndex = 0;
+    struct SmoothedCpu
+    {
+        double total = 0.0;
+        double user = 0.0;
+        double system = 0.0;
+        double iowait = 0.0;
+        double idle = 0.0;
+        bool initialized = false;
+    } m_SmoothedCpu;
+
+    struct SmoothedMemory
+    {
+        double usedPercent = 0.0;
+        double swapPercent = 0.0;
+        bool initialized = false;
+    } m_SmoothedMemory;
+
+    std::vector<double> m_SmoothedPerCore;
 
     // Cached layout values (recalculated one frame after font changes)
     UI::FontSize m_LastFontSize = UI::FontSize::Medium;
@@ -65,6 +89,9 @@ class SystemMetricsPanel : public Panel
     std::string m_Hostname = "System";
 
     void updateCachedLayout();
+    void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
+    void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
+    void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
 };
 
 } // namespace App
