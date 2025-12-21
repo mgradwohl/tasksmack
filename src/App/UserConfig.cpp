@@ -1,15 +1,16 @@
 #include "UserConfig.h"
 
+#include "Domain/Numeric.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -39,12 +40,6 @@ namespace App
 
 namespace
 {
-
-template<typename To, typename From> [[nodiscard]] To narrowCast(const From value) noexcept
-{
-    assert(std::in_range<To>(value));
-    return static_cast<To>(value);
-}
 
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
@@ -142,12 +137,14 @@ void UserConfig::load()
         // Sampling / refresh interval
         if (auto val = config["sampling"]["interval_ms"].value<std::int64_t>())
         {
-            m_Settings.refreshIntervalMs = Domain::Sampling::clampRefreshInterval(narrowCast<int>(*val));
+            // Clamp function will handle out-of-range values; use default (1000ms) if narrowOr fails
+            m_Settings.refreshIntervalMs = Domain::Sampling::clampRefreshInterval(Domain::Numeric::narrowOr<int>(*val, 1000));
         }
 
         if (auto val = config["sampling"]["history_max_seconds"].value<std::int64_t>())
         {
-            m_Settings.maxHistorySeconds = Domain::Sampling::clampHistorySeconds(narrowCast<int>(*val));
+            // Clamp function will handle out-of-range values; use default (300s) if narrowOr fails
+            m_Settings.maxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::narrowOr<int>(*val, 300));
         }
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
@@ -203,17 +200,20 @@ void UserConfig::load()
         // Window state
         if (auto val = config["window"]["width"].value<std::int64_t>())
         {
-            const int width = narrowCast<int>(*val);
+            // Use default width of 800 if narrowOr fails; clamp will further constrain to valid range
+            const int width = Domain::Numeric::narrowOr<int>(*val, 800);
             m_Settings.windowWidth = std::clamp(width, 200, 16'384);
         }
         if (auto val = config["window"]["height"].value<std::int64_t>())
         {
-            const int height = narrowCast<int>(*val);
+            // Use default height of 600 if narrowOr fails; clamp will further constrain to valid range
+            const int height = Domain::Numeric::narrowOr<int>(*val, 600);
             m_Settings.windowHeight = std::clamp(height, 200, 16'384);
         }
         if (auto val = config["window"]["x"].value<std::int64_t>())
         {
-            const int x = narrowCast<int>(*val);
+            // Use default x position of 100 if narrowOr fails
+            const int x = Domain::Numeric::narrowOr<int>(*val, 100);
             if (isSaneWindowPositionComponent(x))
             {
                 m_Settings.windowPosX = x;
@@ -225,7 +225,8 @@ void UserConfig::load()
         }
         if (auto val = config["window"]["y"].value<std::int64_t>())
         {
-            const int y = narrowCast<int>(*val);
+            // Use default y position of 100 if narrowOr fails
+            const int y = Domain::Numeric::narrowOr<int>(*val, 100);
             if (isSaneWindowPositionComponent(y))
             {
                 m_Settings.windowPosY = y;
@@ -375,8 +376,10 @@ void UserConfig::applyToApplication()
     // Apply font size
     theme.setFontSize(m_Settings.fontSize);
 
-    spdlog::debug(
-        "Applied user config: theme={}, fontSize={}", m_Settings.themeId, narrowCast<int>(std::to_underlying(m_Settings.fontSize)));
+    spdlog::debug("Applied user config: theme={}, fontSize={}",
+                  m_Settings.themeId,
+                  // Use 0 as fallback if enum value is out of int range
+                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 void UserConfig::captureFromApplication()
@@ -389,8 +392,10 @@ void UserConfig::captureFromApplication()
     // Capture font size
     m_Settings.fontSize = theme.currentFontSize();
 
-    spdlog::debug(
-        "Captured app state: theme={}, fontSize={}", m_Settings.themeId, narrowCast<int>(std::to_underlying(m_Settings.fontSize)));
+    spdlog::debug("Captured app state: theme={}, fontSize={}",
+                  m_Settings.themeId,
+                  // Use 0 as fallback if enum value is out of int range
+                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 } // namespace App

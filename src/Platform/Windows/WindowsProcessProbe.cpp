@@ -1,5 +1,7 @@
 #include "WindowsProcessProbe.h"
 
+#include "Domain/Numeric.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off
@@ -19,9 +21,9 @@
 #include "WindowsProcAddress.h"
 
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -32,12 +34,6 @@ namespace Platform
 
 namespace
 {
-
-template<typename To, typename From> [[nodiscard]] To narrowCast(const From value) noexcept
-{
-    assert(std::in_range<To>(value));
-    return static_cast<To>(value);
-}
 
 /// Convert FILETIME to 100-nanosecond intervals (ticks)
 [[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
@@ -62,7 +58,10 @@ template<typename To, typename From> [[nodiscard]] To narrowCast(const From valu
         return {};
     }
 
-    std::string result(narrowCast<size_t>(sizeNeeded - 1), '\0');
+    // WideCharToMultiByte returns size including null terminator, subtract 1 for string length
+    // Fallback to 0 (empty string) if size is unexpectedly out of range
+    const size_t strLength = Domain::Numeric::narrowOr<size_t>(sizeNeeded - 1, size_t{0});
+    std::string result(strLength, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide, -1, result.data(), sizeNeeded, nullptr, nullptr);
     return result;
 }
@@ -129,8 +128,9 @@ template<typename To, typename From> [[nodiscard]] To narrowCast(const From valu
     std::memcpy(&tokenUser, tokenInfo.data(), sizeof(TOKEN_USER));
     std::array<WCHAR, 256> userName{};
     std::array<WCHAR, 256> domainName{};
-    DWORD userNameLen = narrowCast<DWORD>(userName.size());
-    DWORD domainNameLen = narrowCast<DWORD>(domainName.size());
+    // Fallback to array size if conversion fails (should never happen with fixed-size arrays)
+    DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), static_cast<DWORD>(userName.size()));
+    DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), static_cast<DWORD>(domainName.size()));
     SID_NAME_USE sidType{};
 
     if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
@@ -152,7 +152,8 @@ template<typename To, typename From> [[nodiscard]] To narrowCast(const From valu
     }
 
     std::array<WCHAR, MAX_PATH> path{};
-    DWORD size = narrowCast<DWORD>(path.size());
+    // Fallback to array size if conversion fails (should never happen with fixed-size arrays)
+    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), static_cast<DWORD>(path.size()));
 
     if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
     {
@@ -203,13 +204,19 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
 
     TaskSmackVmCounters vm{};
     ULONG returnLen = 0;
-    const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, narrowCast<ULONG>(sizeof(vm)), &returnLen);
+    // Fallback to ULONG max if sizeof exceeds ULONG range (should never happen)
+    const NTSTATUS status = fn(hProcess,
+                               PROCESS_INFO_VM_COUNTERS,
+                               &vm,
+                               Domain::Numeric::narrowOr<ULONG>(sizeof(vm), std::numeric_limits<ULONG>::max()),
+                               &returnLen);
     if (status < 0)
     {
         return std::nullopt;
     }
 
-    return narrowCast<uint64_t>(vm.virtualSize);
+    // Fallback to 0 if virtual size exceeds uint64_t range (should never happen)
+    return Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
 }
 
 } // namespace
@@ -243,10 +250,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     for (BOOL hasEntry = TRUE; hasEntry != FALSE; hasEntry = Process32NextW(hSnapshot, &pe32))
     {
         ProcessCounters counters{};
-        counters.pid = narrowCast<std::int32_t>(pe32.th32ProcessID);
-        counters.parentPid = narrowCast<std::int32_t>(pe32.th32ParentProcessID);
+        // Fallback to 0 for PID/parent PID if out of range (should never happen in practice)
+        counters.pid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ProcessID, std::int32_t{0});
+        counters.parentPid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ParentProcessID, std::int32_t{0});
         counters.name = wideToUtf8(pe32.szExeFile);
-        counters.threadCount = narrowCast<std::int32_t>(pe32.cntThreads);
+        // Fallback to 0 for thread count if out of range
+        counters.threadCount = Domain::Numeric::narrowOr<std::int32_t>(pe32.cntThreads, std::int32_t{0});
 
         // Get detailed info (CPU times, memory) - may fail for protected processes
         // Ignore return value - we still want to include process even if details fail
