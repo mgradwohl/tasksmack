@@ -10,7 +10,6 @@
 #endif
 #include <windows.h>
 // clang-format on
-#endif
 
 #include <type_traits>
 
@@ -40,3 +39,5 @@ template<typename T> [[nodiscard]] T getProcAddress(HMODULE module, const char* 
 }
 
 } // namespace Platform::Windows
+
+#endif // _WIN32
