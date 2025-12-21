@@ -128,9 +128,9 @@ namespace
     std::memcpy(&tokenUser, tokenInfo.data(), sizeof(TOKEN_USER));
     std::array<WCHAR, 256> userName{};
     std::array<WCHAR, 256> domainName{};
-    // Fallback to array size if conversion fails (should never happen with fixed-size arrays)
-    DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), static_cast<DWORD>(userName.size()));
-    DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), static_cast<DWORD>(domainName.size()));
+    // Fallback to the actual array size constant (256) if conversion fails
+    DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), DWORD{256});
+    DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
     SID_NAME_USE sidType{};
 
     if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
@@ -152,8 +152,8 @@ namespace
     }
 
     std::array<WCHAR, MAX_PATH> path{};
-    // Fallback to array size if conversion fails (should never happen with fixed-size arrays)
-    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), static_cast<DWORD>(path.size()));
+    // MAX_PATH is 260 on Windows; use it as fallback if conversion somehow fails
+    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), DWORD{MAX_PATH});
 
     if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
     {
