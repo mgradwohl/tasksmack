@@ -1,6 +1,7 @@
 #include "UserConfig.h"
 
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -137,14 +138,16 @@ void UserConfig::load()
         // Sampling / refresh interval
         if (auto val = config["sampling"]["interval_ms"].value<std::int64_t>())
         {
-            // Clamp function will handle out-of-range values; use default (1000ms) if narrowOr fails
-            m_Settings.refreshIntervalMs = Domain::Sampling::clampRefreshInterval(Domain::Numeric::narrowOr<int>(*val, 1000));
+            // Clamp function will handle out-of-range values; use default if narrowOr fails
+            m_Settings.refreshIntervalMs =
+                Domain::Sampling::clampRefreshInterval(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS));
         }
 
         if (auto val = config["sampling"]["history_max_seconds"].value<std::int64_t>())
         {
-            // Clamp function will handle out-of-range values; use default (300s) if narrowOr fails
-            m_Settings.maxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::narrowOr<int>(*val, 300));
+            // Clamp function will handle out-of-range values; use default if narrowOr fails
+            m_Settings.maxHistorySeconds =
+                Domain::Sampling::clampHistorySeconds(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
         }
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 

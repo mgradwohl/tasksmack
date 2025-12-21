@@ -30,6 +30,7 @@ template<std::integral To, std::integral From> [[nodiscard]] constexpr auto narr
     {
         return fallback;
     }
+    // Explicit conversion is safe here because we've verified the value is in range for the target type
     return static_cast<To>(value);
 }
 
