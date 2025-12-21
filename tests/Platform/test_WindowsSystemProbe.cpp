@@ -62,7 +62,7 @@ TEST(WindowsSystemProbeTest, ReadReturnsValidCounters)
 
     EXPECT_GT(counters.hostname.size(), 0ULL);
     EXPECT_GT(counters.cpuModel.size(), 0ULL);
-    EXPECT_GT(counters.cpuCoreCount, 0);
+    EXPECT_GT(counters.cpuCoreCount, 0U);
 }
 
 TEST(WindowsSystemProbeTest, UptimeIncreases)

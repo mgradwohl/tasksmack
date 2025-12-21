@@ -1,6 +1,9 @@
 {
 	"version": "2.0.0",
 	"tasks": [
+		// -----------------------------
+		// Configure
+		// -----------------------------
 		{
 			"label": "CMake: Configure Debug",
 			"type": "shell",
@@ -16,13 +19,16 @@
 				]
 			},
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -40,13 +46,16 @@
 				]
 			},
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -64,13 +73,16 @@
 				]
 			},
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -88,13 +100,16 @@
 				]
 			},
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -106,13 +121,16 @@
 				"asan-ubsan"
 			],
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -124,15 +142,21 @@
 				"tsan"
 			],
 			"group": "build",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
+		// -----------------------------
+		// Build
+		// -----------------------------
 		{
 			"label": "CMake: Build Debug",
 			"type": "shell",
@@ -158,8 +182,86 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
+			}
+		},
+		{
+			"label": "CMake: Build Debug (verbose)",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"debug",
+				"--",
+				"-v"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-debug",
+					"--",
+					"-v"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Configure Debug",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
+			}
+		},
+		{
+			"label": "CMake: Clean Debug",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"debug",
+				"--target",
+				"clean"
+			],
+			"windows": {
+				"args": [
+					"--build",
+					"--preset",
+					"win-debug",
+					"--target",
+					"clean"
+				]
+			},
+			"group": "build",
+			"dependsOn": "CMake: Configure Debug",
+			"problemMatcher": [
+				"$gcc"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -184,8 +286,14 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -210,8 +318,14 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -236,8 +350,14 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -255,8 +375,14 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -274,10 +400,19 @@
 				"$gcc"
 			],
 			"presentation": {
-				"reveal": "silent",
-				"panel": "shared"
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
+		// -----------------------------
+		// Test
+		// -----------------------------
 		{
 			"label": "CMake: Test Debug",
 			"type": "shell",
@@ -297,7 +432,13 @@
 			"problemMatcher": [],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared"
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -313,7 +454,13 @@
 			"problemMatcher": [],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared"
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -329,9 +476,18 @@
 			"problemMatcher": [],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared"
+				"panel": "shared",
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
+		// -----------------------------
+		// Tools
+		// -----------------------------
 		{
 			"label": "Clang-Tidy",
 			"type": "shell",
@@ -350,13 +506,16 @@
 				]
 			},
 			"group": "test",
-			"problemMatcher": [
-				"$gcc"
-			],
+			"problemMatcher": [],
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -379,7 +538,12 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -402,9 +566,17 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
+		// -----------------------------
+		// Packaging / Coverage / Prereqs
+		// -----------------------------
 		{
 			"label": "CPack: Create Package",
 			"type": "shell",
@@ -429,7 +601,12 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -452,7 +629,12 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		},
 		{
@@ -471,7 +653,12 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "shared",
-				"clear": true
+				"clear": false,
+				"echo": true,
+				"focus": false
+			},
+			"options": {
+				"cwd": "${workspaceFolder}"
 			}
 		}
 	]

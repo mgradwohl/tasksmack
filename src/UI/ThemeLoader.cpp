@@ -1,5 +1,7 @@
 #include "ThemeLoader.h"
 
+#include "UI/Numeric.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -55,11 +57,11 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
         std::from_chars(hexData + 6, hexData + 8, a, 16);
     }
 
-    constexpr float MAX_COMPONENT = 255.0F;
-    return ImVec4(static_cast<float>(r) / MAX_COMPONENT,
-                  static_cast<float>(g) / MAX_COMPONENT,
-                  static_cast<float>(b) / MAX_COMPONENT,
-                  static_cast<float>(a) / MAX_COMPONENT);
+    constexpr float INV_MAX_COMPONENT = 1.0F / 255.0F;
+    return ImVec4(UI::Numeric::toFloatNarrow(r) * INV_MAX_COMPONENT,
+                  UI::Numeric::toFloatNarrow(g) * INV_MAX_COMPONENT,
+                  UI::Numeric::toFloatNarrow(b) * INV_MAX_COMPONENT,
+                  UI::Numeric::toFloatNarrow(a) * INV_MAX_COMPONENT);
 }
 
 namespace
@@ -84,11 +86,11 @@ auto parseColorNode(const toml::node& node) -> ImVec4
         const auto* arr = node.as_array();
         if (arr && arr->size() >= 3)
         {
-            auto r = arr->get(0)->value_or(0.0);
-            auto g = arr->get(1)->value_or(0.0);
-            auto b = arr->get(2)->value_or(0.0);
-            auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-            return ImVec4(static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a));
+            const float r = arr->get(0)->value_or(0.0F);
+            const float g = arr->get(1)->value_or(0.0F);
+            const float b = arr->get(2)->value_or(0.0F);
+            const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
+            return ImVec4(r, g, b, a);
         }
     }
 
@@ -116,11 +118,11 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
         {
             if (arr->size() >= 3)
             {
-                auto r = arr->get(0)->value_or(0.0);
-                auto g = arr->get(1)->value_or(0.0);
-                auto b = arr->get(2)->value_or(0.0);
-                auto a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0) : 1.0;
-                return ImVec4(static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), static_cast<float>(a));
+                const float r = arr->get(0)->value_or(0.0F);
+                const float g = arr->get(1)->value_or(0.0F);
+                const float b = arr->get(2)->value_or(0.0F);
+                const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
+                return ImVec4(r, g, b, a);
             }
         }
     }

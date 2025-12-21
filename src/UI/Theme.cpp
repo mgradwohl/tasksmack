@@ -5,9 +5,20 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <utility>
 
 namespace UI
 {
+
+namespace
+{
+
+[[nodiscard]] constexpr auto fontSizeIndex(FontSize size) noexcept -> std::size_t
+{
+    return static_cast<std::size_t>(std::to_underlying(size));
+}
+
+} // namespace
 
 auto Theme::get() -> Theme&
 {
@@ -188,12 +199,14 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 void Theme::initializeFontSizes()
 {
     // Font size presets (regular/large point sizes)
-    m_FontSizes[static_cast<std::size_t>(FontSize::Small)] = {.name = "Small", .regularPt = 6.0F, .largePt = 8.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Medium)] = {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Large)] = {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::ExtraLarge)] = {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::Huge)] = {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F};
-    m_FontSizes[static_cast<std::size_t>(FontSize::EvenHuger)] = {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F};
+    m_FontSizes = {{
+        {.name = "Small", .regularPt = 6.0F, .largePt = 8.0F},
+        {.name = "Medium", .regularPt = 8.0F, .largePt = 10.0F},
+        {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F},
+        {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F},
+        {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F},
+        {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F},
+    }};
 }
 
 auto Theme::currentThemeId() const -> const std::string&
@@ -331,26 +344,33 @@ auto Theme::themeName(std::size_t index) const -> std::string_view
 auto Theme::heatmapColor(double percent) const -> ImVec4
 {
     const auto& colors = scheme().heatmap;
-    const double t = std::clamp(percent, 0.0, 100.0) / 100.0;
+    const float t = static_cast<float>(std::clamp(percent, 0.0, 100.0) / 100.0);
 
     // 5 stops: 0, 0.25, 0.5, 0.75, 1.0
-    constexpr double STEP = 0.25;
-    auto idx = static_cast<std::size_t>(t / STEP);
-    if (idx >= 4)
+    constexpr float STEP = 0.25F;
+    constexpr std::array<float, 4> SEGMENT_STARTS{0.0F, 0.25F, 0.50F, 0.75F};
+
+    std::size_t idx = 0;
+    if (t >= SEGMENT_STARTS[3])
     {
         idx = 3;
     }
+    else if (t >= SEGMENT_STARTS[2])
+    {
+        idx = 2;
+    }
+    else if (t >= SEGMENT_STARTS[1])
+    {
+        idx = 1;
+    }
 
-    const double localT = (t - (static_cast<double>(idx) * STEP)) / STEP;
+    const float localT = (t - SEGMENT_STARTS[idx]) / STEP;
 
     const ImVec4& c1 = colors[idx];
     const ImVec4& c2 = colors[idx + 1];
 
-    const auto localTf = static_cast<float>(localT);
-    return ImVec4(c1.x + ((c2.x - c1.x) * localTf),
-                  c1.y + ((c2.y - c1.y) * localTf),
-                  c1.z + ((c2.z - c1.z) * localTf),
-                  c1.w + ((c2.w - c1.w) * localTf));
+    return ImVec4(
+        c1.x + ((c2.x - c1.x) * localT), c1.y + ((c2.y - c1.y) * localT), c1.z + ((c2.z - c1.z) * localT), c1.w + ((c2.w - c1.w) * localT));
 }
 
 auto Theme::progressColor(double percent) const -> ImVec4
@@ -388,49 +408,81 @@ void Theme::setFontSize(FontSize size)
 
 auto Theme::fontConfig() const -> const FontSizeConfig&
 {
-    return m_FontSizes[static_cast<std::size_t>(m_CurrentFontSize)];
+    return m_FontSizes[fontSizeIndex(m_CurrentFontSize)];
 }
 
 auto Theme::fontConfig(FontSize size) const -> const FontSizeConfig&
 {
-    return m_FontSizes[static_cast<std::size_t>(size)];
+    return m_FontSizes[fontSizeIndex(size)];
 }
 
 auto Theme::increaseFontSize() -> bool
 {
-    auto current = static_cast<int>(m_CurrentFontSize);
-    if (current < static_cast<int>(FontSize::Count) - 1)
+    switch (m_CurrentFontSize)
     {
-        setFontSize(static_cast<FontSize>(current + 1));
+    case FontSize::Small:
+        setFontSize(FontSize::Medium);
         return true;
+    case FontSize::Medium:
+        setFontSize(FontSize::Large);
+        return true;
+    case FontSize::Large:
+        setFontSize(FontSize::ExtraLarge);
+        return true;
+    case FontSize::ExtraLarge:
+        setFontSize(FontSize::Huge);
+        return true;
+    case FontSize::Huge:
+        setFontSize(FontSize::EvenHuger);
+        return true;
+    case FontSize::EvenHuger:
+    case FontSize::Count:
+        return false;
     }
+
     return false;
 }
 
 auto Theme::decreaseFontSize() -> bool
 {
-    auto current = static_cast<int>(m_CurrentFontSize);
-    if (current > 0)
+    switch (m_CurrentFontSize)
     {
-        setFontSize(static_cast<FontSize>(current - 1));
+    case FontSize::Small:
+    case FontSize::Count:
+        return false;
+    case FontSize::Medium:
+        setFontSize(FontSize::Small);
+        return true;
+    case FontSize::Large:
+        setFontSize(FontSize::Medium);
+        return true;
+    case FontSize::ExtraLarge:
+        setFontSize(FontSize::Large);
+        return true;
+    case FontSize::Huge:
+        setFontSize(FontSize::ExtraLarge);
+        return true;
+    case FontSize::EvenHuger:
+        setFontSize(FontSize::Huge);
         return true;
     }
+
     return false;
 }
 
 auto Theme::regularFont() const -> ImFont*
 {
-    return m_Fonts[static_cast<std::size_t>(m_CurrentFontSize)].regular;
+    return m_Fonts[fontSizeIndex(m_CurrentFontSize)].regular;
 }
 
 auto Theme::largeFont() const -> ImFont*
 {
-    return m_Fonts[static_cast<std::size_t>(m_CurrentFontSize)].large;
+    return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;
 }
 
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
 {
-    m_Fonts[static_cast<std::size_t>(size)] = {.regular = regular, .large = large};
+    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large};
 }
 
 } // namespace UI

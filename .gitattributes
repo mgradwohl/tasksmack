@@ -1,0 +1,19 @@
+# Enforce LF line endings in the working tree across platforms.
+# This avoids Windows-only CRLF churn in diffs and keeps the repo consistent.
+* text=auto eol=lf
+
+# Common binary assets (never treat as text)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.zip binary
+*.7z binary
+*.pdf binary
+*.exe binary
+*.dll binary
+*.lib binary
+*.so binary
+*.dylib binary

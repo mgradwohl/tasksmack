@@ -97,7 +97,7 @@ void BackgroundSampler::samplerLoop(std::stop_token stopToken)
 
         // Enumerate processes
         auto counters = m_Probe->enumerate();
-        uint64_t totalCpuTime = m_Probe->totalCpuTime();
+        const std::uint64_t totalCpuTime = m_Probe->totalCpuTime();
 
         // Invoke callback
         {

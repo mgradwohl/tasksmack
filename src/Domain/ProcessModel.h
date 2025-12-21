@@ -3,6 +3,8 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
@@ -31,13 +33,13 @@ class ProcessModel
 
     /// Update with externally-provided counters (for background sampler).
     /// Thread-safe.
-    void updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, uint64_t totalCpuTime);
+    void updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
 
     /// Number of processes in latest snapshot.
-    [[nodiscard]] size_t processCount() const;
+    [[nodiscard]] std::size_t processCount() const;
 
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::ProcessCapabilities& capabilities() const;
@@ -47,10 +49,10 @@ class ProcessModel
     Platform::ProcessCapabilities m_Capabilities;
 
     // Previous counters for delta calculation (keyed by uniqueKey)
-    std::unordered_map<uint64_t, Platform::ProcessCounters> m_PrevCounters;
-    uint64_t m_PrevTotalCpuTime = 0;
-    uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
-    long m_TicksPerSecond = 100;      // For cpuTimeSeconds calculation
+    std::unordered_map<std::uint64_t, Platform::ProcessCounters> m_PrevCounters;
+    std::uint64_t m_PrevTotalCpuTime = 0;
+    std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
+    long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
 
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
@@ -59,15 +61,15 @@ class ProcessModel
     mutable std::shared_mutex m_Mutex;
 
     // Helpers
-    void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, uint64_t totalCpuTime);
+    void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
     [[nodiscard]] ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
                                                   const Platform::ProcessCounters* previous,
-                                                  uint64_t totalCpuDelta,
-                                                  uint64_t systemTotalMemory,
+                                                  std::uint64_t totalCpuDelta,
+                                                  std::uint64_t systemTotalMemory,
                                                   long ticksPerSecond) const;
 
-    [[nodiscard]] static uint64_t makeUniqueKey(int32_t pid, uint64_t startTime);
+    [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);
 };
 

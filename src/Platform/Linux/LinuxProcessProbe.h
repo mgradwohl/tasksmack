@@ -26,7 +26,7 @@ class LinuxProcessProbe : public IProcessProbe
 
   private:
     long m_TicksPerSecond;
-    long m_PageSize;
+    uint64_t m_PageSize;
 
     /// Parse /proc/[pid]/stat for a single process
     [[nodiscard]] bool parseProcessStat(int32_t pid, ProcessCounters& counters) const;

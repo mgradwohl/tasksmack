@@ -4,8 +4,8 @@
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
-#include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace App
@@ -39,6 +39,8 @@ struct UserSettings
     // Window state (optional, for future use)
     int windowWidth = 1280;
     int windowHeight = 720;
+    std::optional<int> windowPosX;
+    std::optional<int> windowPosY;
     bool windowMaximized = false;
 };
 
@@ -97,6 +99,7 @@ class UserConfig
 
     std::filesystem::path m_ConfigPath;
     UserSettings m_Settings;
+    bool m_IsLoaded = false;
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };

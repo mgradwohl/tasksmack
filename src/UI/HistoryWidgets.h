@@ -1,5 +1,6 @@
 #pragma once
 
+#include "UI/Numeric.h"
 #include "UI/Widgets.h"
 
 #include <imgui.h>
@@ -8,9 +9,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <functional>
-#include <ranges>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace UI::Widgets
@@ -27,10 +30,15 @@ inline constexpr double TAU_MS_MAX = 400.0;
 
 inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
-    const double baseIntervalMs = static_cast<double>(refreshInterval.count());
+    const double baseIntervalMs = UI::Numeric::toDouble(refreshInterval.count());
     const double tauMs = std::clamp(baseIntervalMs * SMOOTH_FACTOR, TAU_MS_MIN, TAU_MS_MAX);
     const double dtMs = (deltaTimeSeconds > 0.0) ? deltaTimeSeconds * 1000.0 : baseIntervalMs;
     return std::clamp(1.0 - std::exp(-dtMs / std::max(1.0, tauMs)), 0.0, 1.0);
+}
+
+inline double computeAlpha(float deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
+{
+    return computeAlpha(UI::Numeric::toDouble(deltaTimeSeconds), refreshInterval); // Explicit: float seconds -> double smoothing math
 }
 
 inline double smoothTowards(double current, double target, double alpha)
@@ -41,7 +49,7 @@ inline double smoothTowards(double current, double target, double alpha)
 struct NowBar
 {
     std::string valueText;
-    float value01 = 0.0F;
+    double value01 = 0.0;
     ImVec4 color;
 };
 
@@ -87,38 +95,92 @@ inline std::vector<float> buildTimeAxis(const std::vector<double>& timestamps, s
     }
     for (size_t i = 0; i < n; ++i)
     {
-        timeData[i] = static_cast<float>(timestamps[offset + i] - nowSeconds);
+        timeData[i] = UI::Numeric::toFloatNarrow(timestamps[offset + i] - nowSeconds);
     }
     return timeData;
 }
 
-inline int hoveredIndexFromPlotX(const std::vector<float>& timeData, double mouseX)
+inline std::vector<double> buildTimeAxisDoubles(const std::vector<double>& timestamps, size_t desiredCount, double nowSeconds)
+{
+    const size_t n = std::min(desiredCount, timestamps.size());
+    std::vector<double> timeData(n);
+    const size_t offset = timestamps.size() - n;
+    if (n == 0)
+    {
+        return timeData;
+    }
+    for (size_t i = 0; i < n; ++i)
+    {
+        timeData[i] = timestamps[offset + i] - nowSeconds;
+    }
+    return timeData;
+}
+
+inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mouseX) -> std::optional<size_t>
 {
     if (timeData.empty())
     {
-        return -1;
+        return std::nullopt;
     }
 
-    const float x = static_cast<float>(mouseX);
+    const float x = UI::Numeric::toFloatNarrow(mouseX);
     const auto it = std::ranges::lower_bound(timeData, x);
 
     if (it == timeData.begin())
     {
-        return 0;
+        return 0U;
     }
 
     if (it == timeData.end())
     {
-        return static_cast<int>(timeData.size() - 1);
+        return timeData.size() - 1;
     }
 
-    const size_t upperIdx = static_cast<size_t>(std::distance(timeData.begin(), it));
+    const auto upperDist = std::distance(timeData.begin(), it);
+    if (!std::in_range<size_t>(upperDist))
+    {
+        return std::nullopt;
+    }
+    const size_t upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
     const size_t lowerIdx = upperIdx - 1;
 
     const float distLower = std::abs(timeData[lowerIdx] - x);
     const float distUpper = std::abs(timeData[upperIdx] - x);
 
-    return static_cast<int>((distUpper < distLower) ? upperIdx : lowerIdx);
+    return (distUpper < distLower) ? upperIdx : lowerIdx;
+}
+
+inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mouseX) -> std::optional<size_t>
+{
+    if (timeData.empty())
+    {
+        return std::nullopt;
+    }
+
+    const auto it = std::ranges::lower_bound(timeData, mouseX);
+
+    if (it == timeData.begin())
+    {
+        return 0U;
+    }
+
+    if (it == timeData.end())
+    {
+        return timeData.size() - 1;
+    }
+
+    const auto upperDist = std::distance(timeData.begin(), it);
+    if (!std::in_range<size_t>(upperDist))
+    {
+        return std::nullopt;
+    }
+    const size_t upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
+    const size_t lowerIdx = upperIdx - 1;
+
+    const double distLower = std::abs(timeData[lowerIdx] - mouseX);
+    const double distUpper = std::abs(timeData[upperIdx] - mouseX);
+
+    return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
 inline void renderHistoryWithNowBars(const char* tableId,
@@ -143,7 +205,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
         ImGui::BeginGroup();
         for (size_t i = 0; i < bars.size(); ++i)
         {
-            ImGui::PushID(static_cast<int>(i));
+            ImGui::PushID(&bars[i]);
             if (i > 0)
             {
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
@@ -159,8 +221,9 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const size_t barColumnCount = std::max(bars.size(), minBarColumns);
-    const float spacing = (barColumnCount > 1) ? style.ItemSpacing.x * static_cast<float>(barColumnCount - 1) : 0.0F;
-    const float columnWidth = (BAR_WIDTH * static_cast<float>(barColumnCount)) + spacing;
+    const float barColumnCountF = UI::Numeric::toFloatNarrow(UI::Numeric::toDouble(barColumnCount));
+    const float spacing = (barColumnCount > 1) ? style.ItemSpacing.x * (barColumnCountF - 1.0F) : 0.0F;
+    const float columnWidth = (BAR_WIDTH * barColumnCountF) + spacing;
 
     int pushedVars = 0;
     if (compactSpacing)
@@ -185,7 +248,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
         ImGui::BeginGroup();
         for (size_t i = 0; i < bars.size(); ++i)
         {
-            ImGui::PushID(static_cast<int>(i));
+            ImGui::PushID(&bars[i]);
             if (i > 0)
             {
                 ImGui::SameLine();

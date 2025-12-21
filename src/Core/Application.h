@@ -5,6 +5,8 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Core
@@ -13,8 +15,8 @@ namespace Core
 struct ApplicationSpecification
 {
     std::string Name = "Application";
-    uint32_t Width = 1280;
-    uint32_t Height = 720;
+    int Width = 1280;
+    int Height = 720;
     bool VSync = true;
 };
 

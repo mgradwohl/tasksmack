@@ -257,7 +257,7 @@ TEST(WindowsRealProbesTest, SystemProbeReturnsValidCpu)
 
     // Per-core counters should exist
     EXPECT_GT(counters.cpuPerCore.size(), 0ULL);
-    EXPECT_EQ(counters.cpuPerCore.size(), static_cast<size_t>(counters.cpuCoreCount));
+    EXPECT_EQ(counters.cpuPerCore.size(), counters.cpuCoreCount);
 }
 
 TEST(WindowsRealProbesTest, SystemProbeUptimeIsPositive)
@@ -307,7 +307,7 @@ TEST(WindowsRealProbesTest, SystemProbeStaticInfoIsValid)
 
     EXPECT_FALSE(counters.hostname.empty()) << "Hostname should not be empty";
     EXPECT_FALSE(counters.cpuModel.empty()) << "CPU model should not be empty";
-    EXPECT_GT(counters.cpuCoreCount, 0) << "Should have at least one CPU core";
+    EXPECT_GT(counters.cpuCoreCount, 0U) << "Should have at least one CPU core";
 
     // CPU frequency should be reasonable (modern CPUs are > 100 MHz)
     if (counters.cpuFreqMHz > 0)

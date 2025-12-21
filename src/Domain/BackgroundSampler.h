@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -24,7 +25,7 @@ struct SamplerConfig
 class BackgroundSampler
 {
   public:
-    using SnapshotCallback = std::function<void(const std::vector<Platform::ProcessCounters>&, uint64_t)>;
+    using SnapshotCallback = std::function<void(const std::vector<Platform::ProcessCounters>&, std::uint64_t)>;
 
     explicit BackgroundSampler(std::unique_ptr<Platform::IProcessProbe> probe, SamplerConfig config = {});
     ~BackgroundSampler();

@@ -155,6 +155,23 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - `std::ranges` and `std::views` over raw loops
 - `std::format` or `std::print` for type-safe formatting
 - `std::jthread` with `std::stop_token` for background threads
+- prefer modern C++ 23 alternatives for legacy patterns (e.g., prefer `std::string::contains()` over `find()`, prefer `std::views` over raw loops)
+- prefer modern C++ 23 standard library features  that improves code clarity, safety, or performance (e.g., `std::format` for type-safe formatting, `std::jthread` for threads with automatic joining)
+- prefer modern C++ 23 standard library features when a third-party library function provides similar functionality to a C++23 standard library feature (e.g., prefer `std::format` over `fmt::format`)
+- prefer modern C++ 23 types to improve code clarity, safety, or performance (e.g., `std::span` for array views, `std::optional` for optional values) over legacy types
+- prefer range-based for loops and standard algorithms from `<algorithm>` over traditional for loops for better readability and safety
+- prefer `enum class` over traditional `enum` for better type safety and scoping with a type 'enum class EnumName : std::uint8_t { ... };' to specify underlying type when size matters
+- prefer `std::array` or `std::vector` over C-style arrays for better safety and functionality
+- prefer `std::make_unique` and `std::make_shared` for creating smart pointers to ensure exception safety and clarity
+- prefer `std::string_view` for read-only string parameters to avoid unnecessary copies
+- prefer `std::filesystem` for file and path manipulations for better portability and functionality
+- prefer const correctness and use [[nodiscard]] attribute on functions where the return value should not be ignored
+
+### Modern C++23 Features (Avoid)
+- avoid using `using namespace ...` in header files; prefer fully qualified names or selective `using` declarations in implementation files
+- avoid using std library features that are deprecated
+- try to avoid c-style arrays, char, malloc/free, raw pointers
+- try to avoid casts (`static_cast`, `reinterpret_cast`, etc.), this isn't always possible because ImGui/ImPlot don't use the same base types as the data that Linux and Windows APIs provide, do your best, and any time a cast is necessary make sure to use the most appropriate cast for the situation and avoid C-style casts and comment why the cast is safe and necessary
 
 ### Rule of 5 / RAII Compliance
 - **Default behavior**: If a class needs no special resource management, use compiler-generated defaults

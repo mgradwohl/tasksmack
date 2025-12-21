@@ -1,0 +1,88 @@
+# ============================================================
+# EditorConfig – Cross-Platform C++ (Windows + Linux)
+# Enforces UTF-8, LF, and sane defaults across editors
+# ============================================================
+
+root = true
+
+# ------------------------------------------------------------
+# Global defaults (ALL files unless overridden)
+# ------------------------------------------------------------
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+tab_width = 4
+
+# ------------------------------------------------------------
+# C / C++ source & headers
+# ------------------------------------------------------------
+[*.{c,cc,cpp,cxx,h,hh,hpp,hxx,inl,ipp}]
+indent_style = space
+indent_size = 4
+tab_width = 4
+
+# ------------------------------------------------------------
+# CMake
+# ------------------------------------------------------------
+[CMakeLists.txt]
+indent_style = space
+indent_size = 4
+
+[*.cmake]
+indent_style = space
+indent_size = 4
+
+# ------------------------------------------------------------
+# Shell scripts (LF required for shebangs)
+# ------------------------------------------------------------
+[*.sh]
+end_of_line = lf
+indent_style = space
+indent_size = 4
+
+# ------------------------------------------------------------
+# PowerShell & Windows batch scripts
+# (Keep consistent with .gitattributes: LF everywhere)
+# ------------------------------------------------------------
+[*.{ps1,psm1,psd1}]
+end_of_line = lf
+indent_style = space
+indent_size = 4
+
+[*.{bat,cmd}]
+end_of_line = lf
+indent_style = space
+indent_size = 4
+
+# ------------------------------------------------------------
+# Config / data files
+# ------------------------------------------------------------
+[*.{json,yml,yaml,toml,ini,cfg}]
+indent_style = space
+indent_size = 2
+
+# ------------------------------------------------------------
+# Markdown
+# (Don't strip trailing whitespace – it can be meaningful)
+# ------------------------------------------------------------
+[*.md]
+trim_trailing_whitespace = false
+indent_style = space
+indent_size = 2
+
+# ------------------------------------------------------------
+# Makefiles MUST use tabs
+# ------------------------------------------------------------
+[Makefile]
+indent_style = tab
+tab_width = 8
+
+# ------------------------------------------------------------
+# Binary assets (editor hint only – Git handles this too)
+# ------------------------------------------------------------
+[*.{png,jpg,jpeg,gif,ico,pdf,zip,7z,exe,dll,so,dylib}]
+charset = unset

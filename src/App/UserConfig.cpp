@@ -1,10 +1,19 @@
 #include "UserConfig.h"
 
+#include "Domain/Numeric.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <limits>
+#include <optional>
+#include <string>
+#include <utility>
 
 #include <toml++/toml.hpp>
 
@@ -28,6 +37,41 @@
 
 namespace App
 {
+
+namespace
+{
+
+[[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
+{
+    const auto count = std::to_underlying(ProcessColumn::Count);
+    if (index >= static_cast<std::size_t>(count))
+    {
+        spdlog::warn("processColumnFromIndex: index {} out of range [0, {})", index, count);
+        return static_cast<ProcessColumn>(0);
+    }
+    return static_cast<ProcessColumn>(index);
+}
+
+constexpr int WINDOW_POS_ABS_MAX = 100'000;
+
+[[nodiscard]] bool isSaneWindowPositionComponent(int value)
+{
+    return std::abs(value) <= WINDOW_POS_ABS_MAX;
+}
+
+#ifndef _WIN32
+[[nodiscard]] auto readEnvVarString(const char* name) -> std::optional<std::string>
+{
+    const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
+    if (value == nullptr || value[0] == '\0')
+    {
+        return std::nullopt;
+    }
+    return std::string(value);
+}
+#endif
+
+} // namespace
 
 auto UserConfig::get() -> UserConfig&
 {
@@ -56,17 +100,15 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     return std::filesystem::current_path();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config
-    const char* xdgConfig = std::getenv("XDG_CONFIG_HOME"); // NOLINT(concurrency-mt-unsafe)
-    if (xdgConfig != nullptr && xdgConfig[0] != '\0')
+    if (auto xdgConfig = readEnvVarString("XDG_CONFIG_HOME"))
     {
-        return std::filesystem::path(xdgConfig) / "tasksmack";
+        return std::filesystem::path(*xdgConfig) / "tasksmack";
     }
 
     // Fall back to ~/.config
-    const char* homeEnv = std::getenv("HOME"); // NOLINT(concurrency-mt-unsafe)
-    if (homeEnv != nullptr && homeEnv[0] != '\0')
+    if (auto homeEnv = readEnvVarString("HOME"))
     {
-        return std::filesystem::path(homeEnv) / ".config" / "tasksmack";
+        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
     }
 
     // Last resort: use passwd entry
@@ -81,6 +123,12 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 
 void UserConfig::load()
 {
+    if (m_IsLoaded)
+    {
+        return;
+    }
+    m_IsLoaded = true;
+
     if (!std::filesystem::exists(m_ConfigPath))
     {
         spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
@@ -92,14 +140,18 @@ void UserConfig::load()
         auto config = toml::parse_file(m_ConfigPath.string());
 
         // Sampling / refresh interval
-        if (auto val = config["sampling"]["interval_ms"].value<int64_t>())
+        if (auto val = config["sampling"]["interval_ms"].value<std::int64_t>())
         {
-            m_Settings.refreshIntervalMs = Domain::Sampling::clampRefreshInterval(static_cast<int>(*val));
+            // Clamp function will handle out-of-range values; use default if narrowOr fails
+            m_Settings.refreshIntervalMs =
+                Domain::Sampling::clampRefreshInterval(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS));
         }
 
-        if (auto val = config["sampling"]["history_max_seconds"].value<int64_t>())
+        if (auto val = config["sampling"]["history_max_seconds"].value<std::int64_t>())
         {
-            m_Settings.maxHistorySeconds = Domain::Sampling::clampHistorySeconds(static_cast<int>(*val));
+            // Clamp function will handle out-of-range values; use default if narrowOr fails
+            m_Settings.maxHistorySeconds =
+                Domain::Sampling::clampHistorySeconds(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
         }
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
@@ -153,13 +205,43 @@ void UserConfig::load()
         }
 
         // Window state
-        if (auto val = config["window"]["width"].value<int64_t>())
+        if (auto val = config["window"]["width"].value<std::int64_t>())
         {
-            m_Settings.windowWidth = static_cast<int>(*val);
+            // Use default width of 800 if narrowOr fails; clamp will further constrain to valid range
+            const int width = Domain::Numeric::narrowOr<int>(*val, 800);
+            m_Settings.windowWidth = std::clamp(width, 200, 16'384);
         }
-        if (auto val = config["window"]["height"].value<int64_t>())
+        if (auto val = config["window"]["height"].value<std::int64_t>())
         {
-            m_Settings.windowHeight = static_cast<int>(*val);
+            // Use default height of 600 if narrowOr fails; clamp will further constrain to valid range
+            const int height = Domain::Numeric::narrowOr<int>(*val, 600);
+            m_Settings.windowHeight = std::clamp(height, 200, 16'384);
+        }
+        if (auto val = config["window"]["x"].value<std::int64_t>())
+        {
+            // Use default x position of 100 if narrowOr fails
+            const int x = Domain::Numeric::narrowOr<int>(*val, 100);
+            if (isSaneWindowPositionComponent(x))
+            {
+                m_Settings.windowPosX = x;
+            }
+            else
+            {
+                m_Settings.windowPosX.reset();
+            }
+        }
+        if (auto val = config["window"]["y"].value<std::int64_t>())
+        {
+            // Use default y position of 100 if narrowOr fails
+            const int y = Domain::Numeric::narrowOr<int>(*val, 100);
+            if (isSaneWindowPositionComponent(y))
+            {
+                m_Settings.windowPosY = y;
+            }
+            else
+            {
+                m_Settings.windowPosY.reset();
+            }
         }
         if (auto val = config["window"]["maximized"].value<bool>())
         {
@@ -169,9 +251,9 @@ void UserConfig::load()
         // Process panel column visibility
         if (auto* cols = config["process_columns"].as_table())
         {
-            for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+            for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
             {
-                auto col = static_cast<ProcessColumn>(i);
+                const auto col = processColumnFromIndex(i);
                 const auto info = getColumnInfo(col);
                 if (auto* node = cols->get(info.configKey); node != nullptr)
                 {
@@ -235,14 +317,29 @@ void UserConfig::save() const
 
     // Build process columns table
     auto processColumnsTable = toml::table{};
-    for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+    for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
     {
-        auto col = static_cast<ProcessColumn>(i);
+        const auto col = processColumnFromIndex(i);
         const auto info = getColumnInfo(col);
         processColumnsTable.insert(std::string(info.configKey), m_Settings.processColumns.isVisible(col));
     }
 
     // Build TOML document
+    auto windowTable = toml::table{
+        {"width", m_Settings.windowWidth},
+        {"height", m_Settings.windowHeight},
+        {"maximized", m_Settings.windowMaximized},
+    };
+
+    if (m_Settings.windowPosX.has_value())
+    {
+        windowTable.insert("x", *m_Settings.windowPosX);
+    }
+    if (m_Settings.windowPosY.has_value())
+    {
+        windowTable.insert("y", *m_Settings.windowPosY);
+    }
+
     auto config = toml::table{
         {"sampling",
          toml::table{
@@ -257,12 +354,7 @@ void UserConfig::save() const
              {"metrics", m_Settings.showMetrics},
              {"details", m_Settings.showDetails},
          }},
-        {"window",
-         toml::table{
-             {"width", m_Settings.windowWidth},
-             {"height", m_Settings.windowHeight},
-             {"maximized", m_Settings.windowMaximized},
-         }},
+        {"window", windowTable},
         {"process_columns", processColumnsTable},
     };
 
@@ -291,7 +383,10 @@ void UserConfig::applyToApplication()
     // Apply font size
     theme.setFontSize(m_Settings.fontSize);
 
-    spdlog::debug("Applied user config: theme={}, fontSize={}", m_Settings.themeId, static_cast<int>(m_Settings.fontSize));
+    spdlog::debug("Applied user config: theme={}, fontSize={}",
+                  m_Settings.themeId,
+                  // Use 0 as fallback if enum value is out of int range
+                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 void UserConfig::captureFromApplication()
@@ -304,7 +399,10 @@ void UserConfig::captureFromApplication()
     // Capture font size
     m_Settings.fontSize = theme.currentFontSize();
 
-    spdlog::debug("Captured app state: theme={}, fontSize={}", m_Settings.themeId, static_cast<int>(m_Settings.fontSize));
+    spdlog::debug("Captured app state: theme={}, fontSize={}",
+                  m_Settings.themeId,
+                  // Use 0 as fallback if enum value is out of int range
+                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 } // namespace App

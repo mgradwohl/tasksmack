@@ -105,4 +105,24 @@ inline void drawVerticalBarWithValue(const char* id,
     }
 }
 
+inline void drawVerticalBarWithValue(const char* id,
+                                     double value01,
+                                     const ImVec4& color,
+                                     float barHeight,
+                                     float barWidth,
+                                     const char* valueText,
+                                     const char* labelText = nullptr,
+                                     const char* tooltipText = nullptr)
+{
+    const double clamped = std::clamp(value01, 0.0, 1.0);
+    drawVerticalBarWithValue(id,
+                             static_cast<float>(clamped), // Narrowing: UI geometry uses float; value is clamped to [0,1]
+                             color,
+                             barHeight,
+                             barWidth,
+                             valueText,
+                             labelText,
+                             tooltipText);
+}
+
 } // namespace UI::Widgets

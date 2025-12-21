@@ -1,5 +1,7 @@
 #include "WindowsProcessProbe.h"
 
+#include "Domain/Numeric.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off
@@ -16,8 +18,15 @@
 #include <winternl.h>
 // clang-format on
 
+#include "WindowsProcAddress.h"
+
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -49,7 +58,10 @@ namespace
         return {};
     }
 
-    std::string result(static_cast<size_t>(sizeNeeded - 1), '\0');
+    // WideCharToMultiByte returns size including null terminator, subtract 1 for string length
+    // Fallback to 0 (empty string) if size is unexpectedly out of range
+    const size_t strLength = Domain::Numeric::narrowOr<size_t>(sizeNeeded - 1, size_t{0});
+    std::string result(strLength, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide, -1, result.data(), sizeNeeded, nullptr, nullptr);
     return result;
 }
@@ -106,21 +118,29 @@ namespace
     }
 
     // Look up the user name from the SID
-    auto* tokenUser = reinterpret_cast<TOKEN_USER*>(tokenInfo.data());
-    WCHAR userName[256] = {};
-    WCHAR domainName[256] = {};
-    DWORD userNameLen = 256;
-    DWORD domainNameLen = 256;
+    if (tokenInfo.size() < sizeof(TOKEN_USER))
+    {
+        CloseHandle(hToken);
+        return {};
+    }
+
+    TOKEN_USER tokenUser{};
+    std::memcpy(&tokenUser, tokenInfo.data(), sizeof(TOKEN_USER));
+    std::array<WCHAR, 256> userName{};
+    std::array<WCHAR, 256> domainName{};
+    // Fallback to the actual array size constant (256) if conversion fails
+    DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), DWORD{256});
+    DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
     SID_NAME_USE sidType{};
 
-    if (LookupAccountSidW(nullptr, tokenUser->User.Sid, userName, &userNameLen, domainName, &domainNameLen, &sidType) == 0)
+    if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
     {
         CloseHandle(hToken);
         return {};
     }
 
     CloseHandle(hToken);
-    return wideToUtf8(userName);
+    return wideToUtf8(userName.data());
 }
 
 /// Get the full command line (image path) of a process
@@ -131,12 +151,13 @@ namespace
         return {};
     }
 
-    WCHAR path[MAX_PATH] = {};
-    DWORD size = MAX_PATH;
+    std::array<WCHAR, MAX_PATH> path{};
+    // MAX_PATH is 260 on Windows; use it as fallback if conversion somehow fails
+    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), DWORD{MAX_PATH});
 
-    if (QueryFullProcessImageNameW(hProcess, 0, path, &size) != 0)
+    if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
     {
-        return wideToUtf8(path);
+        return wideToUtf8(path.data());
     }
     return {};
 }
@@ -175,7 +196,7 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
         return std::nullopt;
     }
 
-    auto* fn = reinterpret_cast<NtQueryInformationProcessFn>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    auto* fn = Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
     if (fn == nullptr)
     {
         return std::nullopt;
@@ -183,13 +204,18 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
 
     TaskSmackVmCounters vm{};
     ULONG returnLen = 0;
-    const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, static_cast<ULONG>(sizeof(vm)), &returnLen);
+    // Verify at compile time that sizeof(vm) fits in ULONG
+    static_assert(sizeof(vm) <= std::numeric_limits<ULONG>::max(), "TaskSmackVmCounters size exceeds ULONG range");
+    // Since we've verified the size fits, the narrowOr will never use the fallback
+    const ULONG vmSize = Domain::Numeric::narrowOr<ULONG>(sizeof(vm), ULONG{0});
+    const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, vmSize, &returnLen);
     if (status < 0)
     {
         return std::nullopt;
     }
 
-    return static_cast<uint64_t>(vm.virtualSize);
+    // Fallback to 0 if virtual size exceeds uint64_t range (should never happen)
+    return Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
 }
 
 } // namespace
@@ -223,10 +249,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     for (BOOL hasEntry = TRUE; hasEntry != FALSE; hasEntry = Process32NextW(hSnapshot, &pe32))
     {
         ProcessCounters counters{};
-        counters.pid = static_cast<int32_t>(pe32.th32ProcessID);
-        counters.parentPid = static_cast<int32_t>(pe32.th32ParentProcessID);
+        // Fallback to 0 for PID/parent PID if out of range (should never happen in practice)
+        counters.pid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ProcessID, std::int32_t{0});
+        counters.parentPid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ParentProcessID, std::int32_t{0});
         counters.name = wideToUtf8(pe32.szExeFile);
-        counters.threadCount = static_cast<int32_t>(pe32.cntThreads);
+        // Fallback to 0 for thread count if out of range
+        counters.threadCount = Domain::Numeric::narrowOr<std::int32_t>(pe32.cntThreads, std::int32_t{0});
 
         // Get detailed info (CPU times, memory) - may fail for protected processes
         // Ignore return value - we still want to include process even if details fail
@@ -308,26 +336,32 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     }
 
     // Get memory info
-    PROCESS_MEMORY_COUNTERS_EX pmc{};
-    pmc.cb = sizeof(pmc);
-
-    if (GetProcessMemoryInfo(hProcess, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)) != 0)
+    struct ProcessMemoryCountersEx
     {
-        counters.rssBytes = pmc.WorkingSetSize;
+        PROCESS_MEMORY_COUNTERS base{};
+        SIZE_T privateUsage{};
+    };
+
+    ProcessMemoryCountersEx pmc{};
+    pmc.base.cb = sizeof(pmc);
+
+    if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
+    {
+        counters.rssBytes = pmc.base.WorkingSetSize;
 
         if (auto virtualSizeBytes = queryProcessVirtualSizeBytes(hProcess))
         {
             counters.virtualBytes = *virtualSizeBytes;
         }
-        else if (pmc.PagefileUsage != 0)
+        else if (pmc.base.PagefileUsage != 0)
         {
             // Fallback: commit charge (not virtual address space size, but avoids reporting RSS/Private bytes as VIRT).
-            counters.virtualBytes = pmc.PagefileUsage;
+            counters.virtualBytes = pmc.base.PagefileUsage;
         }
         else
         {
             // Last resort: private bytes.
-            counters.virtualBytes = pmc.PrivateUsage;
+            counters.virtualBytes = pmc.privateUsage;
         }
     }
 

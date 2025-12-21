@@ -58,7 +58,7 @@ TEST(SystemProbeContractTest, ReadReturnsSaneCounters)
     }
 
     EXPECT_GT(counters.hostname.size(), 0ULL);
-    EXPECT_GT(counters.cpuCoreCount, 0);
+    EXPECT_GT(counters.cpuCoreCount, 0U);
 
     if (caps.hasPerCoreCpu)
     {

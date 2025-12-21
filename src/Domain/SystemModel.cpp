@@ -1,11 +1,14 @@
 #include "SystemModel.h"
 
+#include "Numeric.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace Domain
@@ -28,7 +31,7 @@ void SystemModel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
     // Trim timestamps first to know how many samples to drop from other tracks.
-    size_t removeCount = 0;
+    std::size_t removeCount = 0;
     while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
     {
         m_Timestamps.pop_front();
@@ -37,7 +40,7 @@ void SystemModel::trimHistory(double nowSeconds)
 
     auto trimSamples = [removeCount](auto& dq)
     {
-        for (size_t i = 0; i < removeCount && !dq.empty(); ++i)
+        for (std::size_t i = 0; i < removeCount && !dq.empty(); ++i)
         {
             dq.pop_front();
         }
@@ -58,8 +61,8 @@ void SystemModel::trimHistory(double nowSeconds)
     }
 
     // Ensure all history buffers remain aligned by truncating to the smallest non-empty size.
-    size_t minSize = std::numeric_limits<size_t>::max();
-    const auto updateMin = [&minSize](size_t size)
+    std::size_t minSize = std::numeric_limits<std::size_t>::max();
+    const auto updateMin = [&minSize](std::size_t size)
     {
         if (size > 0)
         {
@@ -81,7 +84,7 @@ void SystemModel::trimHistory(double nowSeconds)
         updateMin(coreHist.size());
     }
 
-    if (minSize != std::numeric_limits<size_t>::max())
+    if (minSize != std::numeric_limits<std::size_t>::max())
     {
         auto trimToMin = [minSize](auto& dq)
         {
@@ -250,8 +253,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     // Memory percentage
     if (counters.memory.totalBytes > 0)
     {
-        snap.memoryUsedPercent = 100.0 * static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(counters.memory.totalBytes);
-        snap.memoryCachedPercent = 100.0 * static_cast<double>(snap.memoryCachedBytes) / static_cast<double>(counters.memory.totalBytes);
+        const double totalBytes = Numeric::toDouble(counters.memory.totalBytes);
+        snap.memoryUsedPercent = 100.0 * (Numeric::toDouble(snap.memoryUsedBytes) / totalBytes);
+        snap.memoryCachedPercent = 100.0 * (Numeric::toDouble(snap.memoryCachedBytes) / totalBytes);
     }
 
     // Swap
@@ -259,7 +263,8 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.swapUsedBytes = counters.memory.swapTotalBytes - counters.memory.swapFreeBytes;
     if (counters.memory.swapTotalBytes > 0)
     {
-        snap.swapUsedPercent = 100.0 * static_cast<double>(snap.swapUsedBytes) / static_cast<double>(counters.memory.swapTotalBytes);
+        const double totalSwapBytes = Numeric::toDouble(counters.memory.swapTotalBytes);
+        snap.swapUsedPercent = 100.0 * (Numeric::toDouble(snap.swapUsedBytes) / totalSwapBytes);
     }
 
     // Uptime
@@ -282,7 +287,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         snap.cpuTotal = computeCpuUsage(counters.cpuTotal, m_PrevCounters.cpuTotal);
 
         // Per-core CPU
-        size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
+        const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
         snap.cpuPerCore.reserve(numCores);
 
         // Resize per-core history if needed
@@ -291,7 +296,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             m_PerCoreHistory.resize(numCores);
         }
 
-        for (size_t i = 0; i < numCores; ++i)
+        for (std::size_t i = 0; i < numCores; ++i)
         {
             auto coreUsage = computeCpuUsage(counters.cpuPerCore[i], m_PrevCounters.cpuPerCore[i]);
             snap.cpuPerCore.push_back(coreUsage);
@@ -304,19 +309,19 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
     {
-        m_CpuHistory.push_back(static_cast<float>(snap.cpuTotal.totalPercent));
-        m_CpuUserHistory.push_back(static_cast<float>(snap.cpuTotal.userPercent));
-        m_CpuSystemHistory.push_back(static_cast<float>(snap.cpuTotal.systemPercent));
-        m_CpuIowaitHistory.push_back(static_cast<float>(snap.cpuTotal.iowaitPercent));
-        m_CpuIdleHistory.push_back(static_cast<float>(snap.cpuTotal.idlePercent));
-        m_MemoryHistory.push_back(static_cast<float>(snap.memoryUsedPercent));
-        m_MemoryCachedHistory.push_back(static_cast<float>(snap.memoryCachedPercent));
-        m_SwapHistory.push_back(static_cast<float>(snap.swapUsedPercent));
+        m_CpuHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
+        m_CpuUserHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
+        m_CpuSystemHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
+        m_CpuIowaitHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
+        m_CpuIdleHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
+        m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
+        m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
+        m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
         m_Timestamps.push_back(nowSeconds);
 
-        for (size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
+        for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
         {
-            m_PerCoreHistory[i].push_back(static_cast<float>(snap.cpuPerCore[i].totalPercent));
+            m_PerCoreHistory[i].push_back(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
         }
 
         trimHistory(nowSeconds);
@@ -327,16 +332,18 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 {
     CpuUsage usage;
 
-    uint64_t totalDelta = current.total() - previous.total();
+    const std::uint64_t totalDelta = current.total() - previous.total();
     if (totalDelta == 0)
     {
         return usage; // Avoid division by zero
     }
 
-    auto percent = [totalDelta](uint64_t curr, uint64_t prev) -> double
+    const double totalDeltaDouble = Numeric::toDouble(totalDelta);
+
+    auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
     {
-        uint64_t delta = curr - prev;
-        return 100.0 * static_cast<double>(delta) / static_cast<double>(totalDelta);
+        const std::uint64_t delta = curr - prev;
+        return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);
     };
 
     usage.userPercent = percent(current.user + current.nice, previous.user + previous.nice);

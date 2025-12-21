@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <string>
+#include <utility>
 
 struct GLFWwindow;
 
@@ -11,8 +11,8 @@ namespace Core
 struct WindowSpecification
 {
     std::string Title = "Window";
-    uint32_t Width = 1280;
-    uint32_t Height = 720;
+    int Width = 1280;
+    int Height = 720;
     bool VSync = true;
 };
 
@@ -31,11 +31,11 @@ class Window
 
     [[nodiscard]] bool shouldClose() const;
 
-    [[nodiscard]] uint32_t getWidth() const
+    [[nodiscard]] int getWidth() const
     {
         return m_Spec.Width;
     }
-    [[nodiscard]] uint32_t getHeight() const
+    [[nodiscard]] int getHeight() const
     {
         return m_Spec.Height;
     }
@@ -44,6 +44,15 @@ class Window
     {
         return m_Handle;
     }
+
+    void setPosition(int x, int y) const;
+    [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
+
+    void setSize(int width, int height);
+    [[nodiscard]] auto getSize() const -> std::pair<int, int>;
+
+    [[nodiscard]] bool isMaximized() const;
+    void maximize() const;
 
   private:
     WindowSpecification m_Spec;

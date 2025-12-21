@@ -25,6 +25,17 @@ enum class FontSize : std::uint8_t
     Count
 };
 
+inline constexpr auto ALL_FONT_SIZES = std::to_array<FontSize>({
+    FontSize::Small,
+    FontSize::Medium,
+    FontSize::Large,
+    FontSize::ExtraLarge,
+    FontSize::Huge,
+    FontSize::EvenHuger,
+});
+
+inline constexpr std::size_t FONT_SIZE_COUNT = ALL_FONT_SIZES.size();
+
 /// Color scheme definition with heatmap gradient and accent colors
 struct ColorScheme
 {
@@ -252,7 +263,7 @@ class Theme
     std::size_t m_CurrentThemeIndex = 0;
 
     FontSize m_CurrentFontSize = FontSize::Medium;
-    std::array<FontSizeConfig, static_cast<std::size_t>(FontSize::Count)> m_FontSizes;
+    std::array<FontSizeConfig, FONT_SIZE_COUNT> m_FontSizes;
 
     // Pre-baked fonts for each size preset (regular and large variants)
     struct FontPair
@@ -260,14 +271,14 @@ class Theme
         ImFont* regular = nullptr;
         ImFont* large = nullptr;
     };
-    std::array<FontPair, static_cast<std::size_t>(FontSize::Count)> m_Fonts{};
+    std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
 
     void initializeFontSizes();
     void loadDefaultFallbackTheme();
 };
 
 // Helper to convert hex color to ImVec4 (compile-time friendly)
-constexpr ImVec4 hexToImVec4(uint32_t hex)
+constexpr ImVec4 hexToImVec4(std::uint32_t hex)
 {
     return ImVec4(static_cast<float>((hex >> 16) & 0xFF) / 255.0F,
                   static_cast<float>((hex >> 8) & 0xFF) / 255.0F,

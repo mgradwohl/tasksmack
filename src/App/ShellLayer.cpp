@@ -1,16 +1,19 @@
 #include "ShellLayer.h"
 
 #include "Core/Application.h"
+#include "Core/Layer.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
 #include <imgui.h>
-#include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 
@@ -125,6 +128,18 @@ void ShellLayer::onDetach()
     settings.showMetrics = m_ShowMetrics;
     settings.showDetails = m_ShowDetails;
 
+    // Capture current window geometry/state.
+    auto& window = Core::Application::get().getWindow();
+    const auto [width, height] = window.getSize();
+    settings.windowWidth = width;
+    settings.windowHeight = height;
+
+    const auto [x, y] = window.getPosition();
+    settings.windowPosX = x;
+    settings.windowPosY = y;
+
+    settings.windowMaximized = window.isMaximized();
+
     config.save();
 
     m_SystemMetricsPanel.onDetach();
@@ -151,7 +166,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_SystemMetricsPanel.onUpdate(deltaTime);
 
     // Sync selected PID from processes panel to details panel
-    int32_t selectedPid = m_ProcessesPanel.selectedPid();
+    std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     m_ProcessDetailsPanel.setSelectedPid(selectedPid);
 
     // Find the selected process snapshot
@@ -332,9 +347,8 @@ void ShellLayer::renderMenuBar()
                 auto& theme = UI::Theme::get();
                 auto currentSize = theme.currentFontSize();
 
-                for (std::size_t i = 0; i < static_cast<std::size_t>(UI::FontSize::Count); ++i)
+                for (const auto fontSize : UI::ALL_FONT_SIZES)
                 {
-                    auto fontSize = static_cast<UI::FontSize>(i);
                     const auto& cfg = theme.fontConfig(fontSize);
                     bool selected = (currentSize == fontSize);
                     const std::string label(cfg.name);

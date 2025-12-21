@@ -2,6 +2,7 @@
 
 #include "Platform/ISystemProbe.h"
 
+#include <cstddef>
 #include <string>
 
 namespace Platform
@@ -32,7 +33,7 @@ class WindowsSystemProbe : public ISystemProbe
     void readStaticInfo(SystemCounters& counters) const;
     void readCpuFreq(SystemCounters& counters) const;
 
-    int m_NumCores;
+    std::size_t m_NumCores{0};
 
     // Cached static info (read once)
     std::string m_Hostname;
