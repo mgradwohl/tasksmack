@@ -204,9 +204,10 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
 
     TaskSmackVmCounters vm{};
     ULONG returnLen = 0;
-    // Use the actual size of the structure, which should always fit in ULONG
-    // Cast directly since sizeof is compile-time constant and known to be small
-    const ULONG vmSize = static_cast<ULONG>(sizeof(vm));
+    // Verify at compile time that sizeof(vm) fits in ULONG
+    static_assert(sizeof(vm) <= std::numeric_limits<ULONG>::max(), "TaskSmackVmCounters size exceeds ULONG range");
+    // Since we've verified the size fits, the narrowOr will never use the fallback
+    const ULONG vmSize = Domain::Numeric::narrowOr<ULONG>(sizeof(vm), ULONG{0});
     const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, vmSize, &returnLen);
     if (status < 0)
     {
