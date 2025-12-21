@@ -48,7 +48,12 @@ template<typename To, typename From> [[nodiscard]] To narrowCast(const From valu
 
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
-    assert(index < std::to_underlying(ProcessColumn::Count));
+    const auto count = std::to_underlying(ProcessColumn::Count);
+    if (index >= static_cast<std::size_t>(count))
+    {
+        spdlog::warn("processColumnFromIndex: index {} out of range [0, {})", index, count);
+        return static_cast<ProcessColumn>(0);
+    }
     return static_cast<ProcessColumn>(index);
 }
 
