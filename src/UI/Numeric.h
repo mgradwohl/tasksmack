@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Domain/Numeric.h"
+
 #include <algorithm>
 #include <concepts>
 #include <cstddef>
@@ -19,16 +21,8 @@ namespace UI::Numeric
     return clampPercent(percent) / 100.0;
 }
 
-template<std::integral To, std::integral From> [[nodiscard]] constexpr auto narrowOr(From value, To fallback) noexcept -> To
-{
-    if (!std::in_range<To>(value))
-    {
-        return fallback;
-    }
-
-    // Explicit conversion to satisfy strict warnings-as-errors (e.g. -Wconversion / -Wsign-conversion).
-    return static_cast<To>(value);
-}
+// Re-export Domain::Numeric::narrowOr for UI layer convenience
+using Domain::Numeric::narrowOr;
 
 // ImPlot series counts are int; keep conversion explicit + checked.
 [[nodiscard]] constexpr auto checkedCount(std::size_t value) noexcept -> int
