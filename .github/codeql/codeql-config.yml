@@ -1,0 +1,16 @@
+name: "CodeQL Config"
+
+paths:
+  - src
+  - tests
+  - assets
+
+paths-ignore:
+  - '**/deps'
+  - '**/dependencies'
+  - '**/node_modules'
+  - '**/vendor'
+  - '**/third_party'
+  - '**/external'
+  - '**/build'
+  - '**/tools'
