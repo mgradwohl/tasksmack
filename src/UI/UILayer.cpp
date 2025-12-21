@@ -87,12 +87,11 @@ void UILayer::loadAllFonts()
     auto exeDir = getExecutableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
 
-    spdlog::info("Pre-baking fonts for all {} size presets", static_cast<int>(FontSize::Count));
+    spdlog::info("Pre-baking fonts for all {} size presets", FONT_SIZE_COUNT);
 
     // Load fonts for all size presets into a single atlas
-    for (size_t i = 0; i < static_cast<size_t>(FontSize::Count); ++i)
+    for (const auto size : ALL_FONT_SIZES)
     {
-        auto size = static_cast<FontSize>(i);
         const auto& fontCfg = theme.fontConfig(size);
 
         const float fontSizeRegular = pointsToPixels(fontCfg.regularPt);

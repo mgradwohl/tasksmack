@@ -1,3 +1,7 @@
+// Keep this translation unit parseable on non-Linux platforms (e.g. Windows clangd)
+// by compiling the implementation only when targeting Linux and required headers exist.
+#if defined(__linux__) && __has_include(<dirent.h>) && __has_include(<pwd.h>) && __has_include(<unistd.h>)
+
 #include "LinuxProcessProbe.h"
 
 #include <spdlog/spdlog.h>
@@ -6,10 +10,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 
 #include <dirent.h>
@@ -21,6 +27,42 @@ namespace Platform
 
 namespace
 {
+
+[[nodiscard]] constexpr auto clampToI32(int64_t value) noexcept -> int32_t
+{
+    if (value < std::numeric_limits<int32_t>::min())
+    {
+        return std::numeric_limits<int32_t>::min();
+    }
+    if (value > std::numeric_limits<int32_t>::max())
+    {
+        return std::numeric_limits<int32_t>::max();
+    }
+
+    // Explicit narrowing is safe after range checks above.
+    return static_cast<int32_t>(value);
+}
+
+template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, uint64_t fallback) noexcept -> uint64_t
+{
+    if constexpr (std::is_signed_v<T>)
+    {
+        if (value <= 0)
+        {
+            return fallback;
+        }
+    }
+    else
+    {
+        if (value == 0)
+        {
+            return fallback;
+        }
+    }
+
+    // Explicit conversion: keeps -Wconversion/-Wsign-conversion happy, and callers have already ensured value is positive.
+    return static_cast<uint64_t>(value);
+}
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -66,17 +108,12 @@ std::mutex& getUsernameCacheMutex()
 
 } // namespace
 
-LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(sysconf(_SC_PAGESIZE))
+LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL))
 {
     if (m_TicksPerSecond <= 0)
     {
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
-    }
-    if (m_PageSize <= 0)
-    {
-        m_PageSize = 4096; // Common default
-        spdlog::warn("Failed to get PAGE_SIZE, using default: {}", m_PageSize);
     }
 }
 
@@ -222,11 +259,11 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.parentPid = parentPid;
     counters.userTime = utime;
     counters.systemTime = stime;
-    counters.threadCount = static_cast<int32_t>(numThreads > 0 ? numThreads : 1);
+    counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
     counters.startTimeTicks = starttime;
     counters.virtualBytes = vsize;
-    counters.rssBytes = static_cast<uint64_t>(rss) * static_cast<uint64_t>(m_PageSize);
-    counters.nice = static_cast<int32_t>(nice);
+    counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
+    counters.nice = clampToI32(nice);
 
     return true;
 }
@@ -251,8 +288,8 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     if (!statmFile.fail())
     {
         // statm gives more accurate RSS, update if available
-        counters.rssBytes = resident * static_cast<uint64_t>(m_PageSize);
-        counters.sharedBytes = shared * static_cast<uint64_t>(m_PageSize);
+        counters.rssBytes = resident * m_PageSize;
+        counters.sharedBytes = shared * m_PageSize;
     }
 }
 
@@ -397,3 +434,5 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
 }
 
 } // namespace Platform
+
+#endif

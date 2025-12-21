@@ -7,6 +7,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -42,7 +43,7 @@ class ProcessesPanel : public Panel
 
     /// Get the currently selected process PID.
     /// @return Selected PID, or -1 if none selected.
-    [[nodiscard]] int32_t selectedPid() const
+    [[nodiscard]] std::int32_t selectedPid() const
     {
         return m_SelectedPid;
     }
@@ -73,7 +74,7 @@ class ProcessesPanel : public Panel
 
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
-    int32_t m_SelectedPid = -1;
+    std::int32_t m_SelectedPid = -1;
 
     std::chrono::milliseconds m_RefreshInterval{1000};
     float m_RefreshAccumulatorSec = 0.0F;

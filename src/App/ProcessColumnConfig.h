@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -9,7 +10,7 @@ namespace App
 
 /// All available columns for the process table.
 /// Order here defines the default column order.
-enum class ProcessColumn : uint8_t
+enum class ProcessColumn : std::uint8_t
 {
     PID = 0,
     User,
@@ -31,6 +32,38 @@ enum class ProcessColumn : uint8_t
     Count // Must be last
 };
 
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+{
+    // Keep in sync with ProcessColumn enum (excluding Count).
+    return {
+        ProcessColumn::PID,
+        ProcessColumn::User,
+        ProcessColumn::CpuPercent,
+        ProcessColumn::MemPercent,
+        ProcessColumn::Virtual,
+        ProcessColumn::Resident,
+        ProcessColumn::Shared,
+        ProcessColumn::CpuTime,
+        ProcessColumn::State,
+        ProcessColumn::Name,
+        ProcessColumn::PPID,
+        ProcessColumn::Nice,
+        ProcessColumn::Threads,
+        ProcessColumn::Command,
+    };
+}
+
+[[nodiscard]] constexpr auto processColumnCount() -> std::size_t
+{
+    return allProcessColumns().size();
+}
+
+[[nodiscard]] constexpr auto toIndex(ProcessColumn col) -> std::size_t
+{
+    // Explicit: ProcessColumn is a small, contiguous enum used as an index.
+    return static_cast<std::size_t>(std::to_underlying(col));
+}
+
 /// Column metadata for display and configuration
 struct ProcessColumnInfo
 {
@@ -46,7 +79,7 @@ struct ProcessColumnInfo
 constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 {
     // clang-format off
-    constexpr std::array<ProcessColumnInfo, static_cast<size_t>(ProcessColumn::Count)> infos = {{
+    constexpr std::array<ProcessColumnInfo, processColumnCount()> infos = {{
         // PID - always visible
         {.name="PID", .configKey="pid", .defaultWidth=60.0F, .defaultVisible=true, .canHide=false, .description="Process ID"},
         // User
@@ -78,36 +111,36 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     }};
     // clang-format on
 
-    return infos[static_cast<size_t>(col)];
+    return infos[toIndex(col)];
 }
 
 /// Column visibility settings for persistence
 struct ProcessColumnSettings
 {
-    std::array<bool, static_cast<size_t>(ProcessColumn::Count)> visible{};
+    std::array<bool, processColumnCount()> visible{};
 
     ProcessColumnSettings()
     {
         // Initialize with defaults
-        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        for (ProcessColumn col : allProcessColumns())
         {
-            visible[i] = getColumnInfo(static_cast<ProcessColumn>(i)).defaultVisible;
+            visible[toIndex(col)] = getColumnInfo(col).defaultVisible;
         }
     }
 
     [[nodiscard]] bool isVisible(ProcessColumn col) const
     {
-        return visible[static_cast<size_t>(col)];
+        return visible[toIndex(col)];
     }
 
     void setVisible(ProcessColumn col, bool vis)
     {
-        visible[static_cast<size_t>(col)] = vis;
+        visible[toIndex(col)] = vis;
     }
 
     void toggleVisible(ProcessColumn col)
     {
-        auto idx = static_cast<size_t>(col);
+        const std::size_t idx = toIndex(col);
         visible[idx] = !visible[idx];
     }
 };

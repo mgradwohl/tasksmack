@@ -10,29 +10,29 @@ namespace Platform
 /// Probes populate this; domain computes deltas and rates.
 struct ProcessCounters
 {
-    int32_t pid = 0;
-    int32_t parentPid = 0;
+    std::int32_t pid = 0;
+    std::int32_t parentPid = 0;
     std::string name;
-    std::string command; // Full command line
-    std::string user;    // Username (owner) of the process
-    char state = '?';    // Raw state character from OS (e.g., 'R', 'S', 'Z')
-    int32_t nice = 0;    // Nice value (-20 to 19 on Linux)
+    std::string command;   // Full command line
+    std::string user;      // Username (owner) of the process
+    char state = '?';      // Raw state character from OS (e.g., 'R', 'S', 'Z')
+    std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
 
-    uint64_t startTimeTicks = 0; // For PID reuse detection
+    std::uint64_t startTimeTicks = 0; // For PID reuse detection
 
     // CPU time (cumulative ticks/jiffies)
-    uint64_t userTime = 0;
-    uint64_t systemTime = 0;
+    std::uint64_t userTime = 0;
+    std::uint64_t systemTime = 0;
 
     // Memory (bytes)
-    uint64_t rssBytes = 0;
-    uint64_t virtualBytes = 0;
-    uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
+    std::uint64_t rssBytes = 0;
+    std::uint64_t virtualBytes = 0;
+    std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
     // Optional fields (check capabilities)
-    uint64_t readBytes = 0;
-    uint64_t writeBytes = 0;
-    int32_t threadCount = 0;
+    std::uint64_t readBytes = 0;
+    std::uint64_t writeBytes = 0;
+    std::int32_t threadCount = 0;
 };
 
 /// Reports what this platform's probe supports.

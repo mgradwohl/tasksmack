@@ -13,8 +13,12 @@
 #include <winternl.h>
 // clang-format on
 
+#include "WindowsProcAddress.h"
+
 #include <array>
 #include <chrono>
+#include <concepts>
+#include <type_traits>
 #include <vector>
 
 namespace Platform
@@ -30,6 +34,24 @@ namespace
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
     return uli.QuadPart;
+}
+
+template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value) noexcept -> uint64_t
+{
+    if constexpr (std::is_signed_v<T>)
+    {
+        if (value < 0)
+        {
+            return 0;
+        }
+    }
+
+    return static_cast<uint64_t>(value);
+}
+
+[[nodiscard]] uint64_t largeIntegerToTicks(const LARGE_INTEGER& value)
+{
+    return toU64NonNegative(value.QuadPart);
 }
 
 // NtQuerySystemInformation function pointer type
@@ -64,8 +86,7 @@ struct ProcessorPerformanceInfo
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         if (ntdll != nullptr)
         {
-            // NOLINTNEXTLINE(clang-diagnostic-cast-function-type-mismatch)
-            fn = reinterpret_cast<NtQuerySystemInformationFn>(GetProcAddress(ntdll, "NtQuerySystemInformation"));
+            fn = Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
         }
         initialized = true;
     }
@@ -74,15 +95,15 @@ struct ProcessorPerformanceInfo
 
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
+WindowsSystemProbe::WindowsSystemProbe()
 {
     SYSTEM_INFO sysInfo{};
     GetSystemInfo(&sysInfo);
-    m_NumCores = static_cast<int>(sysInfo.dwNumberOfProcessors);
+    m_NumCores = sysInfo.dwNumberOfProcessors;
 
     // Get hostname
     std::array<char, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
-    DWORD bufferSize = static_cast<DWORD>(hostBuffer.size());
+    DWORD bufferSize = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameA(hostBuffer.data(), &bufferSize) != 0)
     {
         m_Hostname = hostBuffer.data();
@@ -93,16 +114,19 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
     }
 
     // Get CPU model from registry
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         std::array<char, 256> cpuBuffer{};
-        DWORD cpuBufferSize = static_cast<DWORD>(cpuBuffer.size());
-        DWORD type = 0;
-        if (RegQueryValueExA(hKey, "ProcessorNameString", nullptr, &type, reinterpret_cast<LPBYTE>(cpuBuffer.data()), &cpuBufferSize) ==
-            ERROR_SUCCESS)
+        DWORD cpuBufferSize = 256;
+        if (RegGetValueA(HKEY_LOCAL_MACHINE,
+                         R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                         "ProcessorNameString",
+                         RRF_RT_REG_SZ,
+                         nullptr,
+                         cpuBuffer.data(),
+                         &cpuBufferSize) == ERROR_SUCCESS)
         {
             m_CpuModel = cpuBuffer.data();
+
             // Trim leading/trailing whitespace
             while (!m_CpuModel.empty() && m_CpuModel[0] == ' ')
             {
@@ -113,7 +137,6 @@ WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(0)
                 m_CpuModel.pop_back();
             }
         }
-        RegCloseKey(hKey);
     }
     if (m_CpuModel.empty())
     {
@@ -179,7 +202,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     // Allocate buffer for all processors
-    std::vector<ProcessorPerformanceInfo> perfInfo(static_cast<size_t>(m_NumCores));
+    std::vector<ProcessorPerformanceInfo> perfInfo(m_NumCores);
     ULONG returnLength = 0;
 
     NTSTATUS status = ntQuery(SystemProcessorPerformanceInformation,
@@ -189,7 +212,8 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 
     if (status != 0) // STATUS_SUCCESS = 0
     {
-        spdlog::error("NtQuerySystemInformation failed: 0x{:08X}", static_cast<unsigned>(status));
+        // NTSTATUS is a signed integral type; formatting with {:X} prints the underlying bit pattern in hex.
+        spdlog::error("NtQuerySystemInformation failed: 0x{:08X}", status);
         return;
     }
 
@@ -203,9 +227,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 
         CpuCounters core{};
         // KernelTime includes idle, so subtract to get actual kernel/system time
-        uint64_t kernelTicks = static_cast<uint64_t>(info.KernelTime.QuadPart);
-        uint64_t idleTicks = static_cast<uint64_t>(info.IdleTime.QuadPart);
-        uint64_t userTicks = static_cast<uint64_t>(info.UserTime.QuadPart);
+        uint64_t kernelTicks = largeIntegerToTicks(info.KernelTime);
+        uint64_t idleTicks = largeIntegerToTicks(info.IdleTime);
+        uint64_t userTicks = largeIntegerToTicks(info.UserTime);
 
         core.idle = idleTicks;
         core.system = kernelTicks - idleTicks; // Actual kernel time
@@ -213,9 +237,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 
         // DPC and interrupt time are included in kernel time, but we can expose them
         // as irq/softirq for more detail if desired
-        core.irq = static_cast<uint64_t>(info.InterruptTime.QuadPart);
+        core.irq = largeIntegerToTicks(info.InterruptTime);
         // DpcTime is deferred procedure calls (similar to softirq on Linux)
-        core.softirq = static_cast<uint64_t>(info.DpcTime.QuadPart);
+        core.softirq = largeIntegerToTicks(info.DpcTime);
 
         counters.cpuPerCore.push_back(core);
     }
@@ -263,7 +287,8 @@ void WindowsSystemProbe::readUptime(SystemCounters& counters) const
     // Calculate boot timestamp
     auto now = std::chrono::system_clock::now();
     auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-    counters.bootTimestamp = static_cast<uint64_t>(nowEpoch) - counters.uptimeSeconds;
+    const uint64_t nowEpochSeconds = toU64NonNegative(nowEpoch);
+    counters.bootTimestamp = (nowEpochSeconds > counters.uptimeSeconds) ? (nowEpochSeconds - counters.uptimeSeconds) : 0ULL;
 }
 
 void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
@@ -277,17 +302,19 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
 {
     // Read CPU frequency from registry (in MHz)
     // This is the base frequency; current frequency requires more complex APIs
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
     {
         DWORD mhz = 0;
         DWORD dataSize = sizeof(mhz);
-        DWORD type = 0;
-        if (RegQueryValueExA(hKey, "~MHz", nullptr, &type, reinterpret_cast<LPBYTE>(&mhz), &dataSize) == ERROR_SUCCESS)
+        if (RegGetValueA(HKEY_LOCAL_MACHINE,
+                         R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                         "~MHz",
+                         RRF_RT_REG_DWORD,
+                         nullptr,
+                         &mhz,
+                         &dataSize) == ERROR_SUCCESS)
         {
-            counters.cpuFreqMHz = static_cast<uint64_t>(mhz);
+            counters.cpuFreqMHz = toU64NonNegative(mhz);
         }
-        RegCloseKey(hKey);
     }
     // Load average is not available on Windows (leave at 0)
 }

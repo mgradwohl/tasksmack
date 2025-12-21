@@ -2,6 +2,7 @@
 
 #include "Platform/ISystemProbe.h"
 
+#include <cstddef>
 #include <string>
 
 namespace Platform
@@ -33,7 +34,7 @@ class LinuxSystemProbe : public ISystemProbe
     void readStaticInfo(SystemCounters& counters) const;
 
     long m_TicksPerSecond;
-    int m_NumCores;
+    std::size_t m_NumCores;
 
     // Cached static info (read once)
     std::string m_Hostname;

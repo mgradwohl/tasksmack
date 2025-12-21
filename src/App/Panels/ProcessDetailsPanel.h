@@ -34,10 +34,10 @@ class ProcessDetailsPanel : public Panel
     void render(bool* open) override;
 
     /// Set the process to display.
-    void setSelectedPid(int32_t pid);
+    void setSelectedPid(std::int32_t pid);
 
     /// Get currently displayed PID.
-    [[nodiscard]] int32_t selectedPid() const
+    [[nodiscard]] std::int32_t selectedPid() const
     {
         return m_SelectedPid;
     }
@@ -50,18 +50,18 @@ class ProcessDetailsPanel : public Panel
     void trimHistory(double nowSeconds);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
-    int32_t m_SelectedPid = -1;
+    std::int32_t m_SelectedPid = -1;
     float m_HistoryTimer = 0.0F;
     float m_LastDeltaSeconds = 0.0F;
 
     // History buffers (trimmed by time window)
     static constexpr float HISTORY_SAMPLE_INTERVAL = 1.0F;
-    std::deque<float> m_CpuHistory;
-    std::deque<float> m_CpuUserHistory;
-    std::deque<float> m_CpuSystemHistory;
-    std::deque<double> m_MemoryHistory;  // Used memory percent (RSS)
-    std::deque<double> m_SharedHistory;  // Shared memory percent (best effort)
-    std::deque<double> m_VirtualHistory; // Virtual memory percent (best effort)
+    std::deque<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
+    std::deque<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
+    std::deque<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
+    std::deque<double> m_MemoryHistory;    // Used memory percent (RSS)
+    std::deque<double> m_SharedHistory;    // Shared memory percent (best effort)
+    std::deque<double> m_VirtualHistory;   // Virtual memory percent (best effort)
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
 

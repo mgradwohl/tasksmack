@@ -27,15 +27,15 @@ struct SystemSnapshot
     std::vector<CpuUsage> cpuPerCore;
 
     // Memory (bytes)
-    uint64_t memoryTotalBytes = 0;
-    uint64_t memoryUsedBytes = 0;
-    uint64_t memoryAvailableBytes = 0;
-    uint64_t memoryCachedBytes = 0;
-    uint64_t memoryBuffersBytes = 0;
+    std::uint64_t memoryTotalBytes = 0;
+    std::uint64_t memoryUsedBytes = 0;
+    std::uint64_t memoryAvailableBytes = 0;
+    std::uint64_t memoryCachedBytes = 0;
+    std::uint64_t memoryBuffersBytes = 0;
 
     // Swap (bytes)
-    uint64_t swapTotalBytes = 0;
-    uint64_t swapUsedBytes = 0;
+    std::uint64_t swapTotalBytes = 0;
+    std::uint64_t swapUsedBytes = 0;
 
     // Computed percentages
     double memoryUsedPercent = 0.0;
@@ -43,7 +43,7 @@ struct SystemSnapshot
     double swapUsedPercent = 0.0;
 
     // System info
-    uint64_t uptimeSeconds = 0;
+    std::uint64_t uptimeSeconds = 0;
     int coreCount = 0;
     std::string hostname;
     std::string cpuModel;
@@ -54,7 +54,7 @@ struct SystemSnapshot
     double loadAvg15 = 0.0;
 
     // CPU frequency in MHz
-    uint64_t cpuFreqMHz = 0;
+    std::uint64_t cpuFreqMHz = 0;
 };
 
 } // namespace Domain

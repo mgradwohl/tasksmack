@@ -1,9 +1,12 @@
 #include "SystemMetricsPanel.h"
 
+#include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/HistoryWidgets.h"
+#include "UI/Numeric.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -19,7 +22,11 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <limits>
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -35,8 +42,10 @@ using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
-void drawProgressBarWithOverlay(float fraction, const std::string& overlay, const ImVec4& color)
+void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, const ImVec4& color)
 {
+    const double clamped = std::clamp(fraction01, 0.0, 1.0);
+    const float fraction = UI::Numeric::toFloatNarrow(clamped); // Narrowing: ImGui::ProgressBar expects float in [0, 1]
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, color);
     ImGui::ProgressBar(fraction, ImVec2(-1, 0), "");
     UI::Widgets::drawRightAlignedOverlayText(overlay.c_str());
@@ -47,7 +56,16 @@ template<typename T> void cropFrontToSize(std::vector<T>& data, size_t targetSiz
 {
     if (data.size() > targetSize)
     {
-        data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(data.size() - targetSize));
+        const size_t removeCount = data.size() - targetSize;
+        using Diff = std::ptrdiff_t;
+        const Diff removeCountDiff = UI::Numeric::narrowOr<Diff>(removeCount, std::numeric_limits<Diff>::min());
+        if (removeCountDiff == std::numeric_limits<Diff>::min())
+        {
+            data.clear();
+            return;
+        }
+
+        data.erase(data.begin(), data.begin() + removeCountDiff);
     }
 }
 
@@ -63,13 +81,19 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::renderHistoryWithNowBars;
 
+[[nodiscard]] int checkedRoundSeconds(float seconds)
+{
+    const long rounded = std::lroundf(seconds);
+    return UI::Numeric::narrowOr<int>(rounded, std::numeric_limits<int>::max());
+}
+
 void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              bool showTime,
                              int timeSec,
-                             double userPercent,
-                             double systemPercent,
-                             double iowaitPercent,
-                             double idlePercent)
+                             float userPercent,
+                             float systemPercent,
+                             float iowaitPercent,
+                             float idlePercent)
 {
     ImGui::BeginTooltip();
     if (showTime)
@@ -99,7 +123,7 @@ void SystemMetricsPanel::onAttach()
 {
     auto& settings = UserConfig::get().settings();
     m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
-    m_MaxHistorySeconds = static_cast<double>(settings.maxHistorySeconds);
+    m_MaxHistorySeconds = UI::Numeric::toDouble(settings.maxHistorySeconds);
     m_HistoryScrollSeconds = 0.0;
     m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
@@ -151,7 +175,8 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     }
 
     m_RefreshAccumulatorSec += deltaTime;
-    const float intervalSec = static_cast<float>(m_RefreshInterval.count()) / 1000.0F;
+    using SecondsF = std::chrono::duration<float>;
+    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
 
     if (m_ForceRefresh || intervalElapsed)
@@ -214,7 +239,7 @@ void SystemMetricsPanel::render(bool* open)
     }
 
     auto snap = m_Model->snapshot();
-    const size_t coreCount = static_cast<size_t>(snap.coreCount);
+    const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
     {
         m_LastCoreCount = coreCount;
@@ -262,9 +287,9 @@ void SystemMetricsPanel::renderOverview()
     std::string uptimeStr;
     if (snap.uptimeSeconds > 0)
     {
-        uint64_t days = snap.uptimeSeconds / 86400;
-        uint64_t hours = (snap.uptimeSeconds % 86400) / 3600;
-        uint64_t minutes = (snap.uptimeSeconds % 3600) / 60;
+        std::uint64_t days = snap.uptimeSeconds / 86400;
+        std::uint64_t hours = (snap.uptimeSeconds % 86400) / 3600;
+        std::uint64_t minutes = (snap.uptimeSeconds % 3600) / 60;
 
         if (days > 0)
         {
@@ -284,7 +309,7 @@ void SystemMetricsPanel::renderOverview()
     std::string coreInfo;
     if (snap.cpuFreqMHz > 0)
     {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, static_cast<double>(snap.cpuFreqMHz) / 1000.0);
+        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, UI::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
     }
     else
     {
@@ -362,40 +387,42 @@ void SystemMetricsPanel::renderOverview()
                 ImVec4 userFill = theme.scheme().cpuUser;
                 userFill.w = 0.35F;
                 ImPlot::SetNextFillStyle(userFill);
-                ImPlot::PlotShaded("##CpuUser", breakdownTimeData.data(), y0.data(), yUserTop.data(), static_cast<int>(breakdownCount));
+                ImPlot::PlotShaded(
+                    "##CpuUser", breakdownTimeData.data(), y0.data(), yUserTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
                 ImVec4 systemFill = theme.scheme().cpuSystem;
                 systemFill.w = 0.35F;
                 ImPlot::SetNextFillStyle(systemFill);
                 ImPlot::PlotShaded(
-                    "##CpuSystem", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), static_cast<int>(breakdownCount));
+                    "##CpuSystem", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
                 ImVec4 iowaitFill = theme.scheme().cpuIowait;
                 iowaitFill.w = 0.35F;
                 ImPlot::SetNextFillStyle(iowaitFill);
-                ImPlot::PlotShaded(
-                    "##CpuIowait", breakdownTimeData.data(), ySystemTop.data(), yIowaitTop.data(), static_cast<int>(breakdownCount));
+                ImPlot::PlotShaded("##CpuIowait",
+                                   breakdownTimeData.data(),
+                                   ySystemTop.data(),
+                                   yIowaitTop.data(),
+                                   UI::Numeric::checkedCount(breakdownCount));
 
                 ImVec4 idleFill = theme.scheme().cpuIdle;
                 idleFill.w = 0.20F;
                 ImPlot::SetNextFillStyle(idleFill);
                 ImPlot::PlotShaded(
-                    "##CpuIdle", breakdownTimeData.data(), yIowaitTop.data(), yTotalTop.data(), static_cast<int>(breakdownCount));
+                    "##CpuIdle", breakdownTimeData.data(), yIowaitTop.data(), yTotalTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
                 if (ImPlot::IsPlotHovered())
                 {
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    const int idx = hoveredIndexFromPlotX(breakdownTimeData, mouse.x);
-                    if (idx >= 0)
+                    if (const auto si = hoveredIndexFromPlotX(breakdownTimeData, mouse.x))
                     {
-                        const size_t si = static_cast<size_t>(idx);
                         showCpuBreakdownTooltip(theme.scheme(),
                                                 true,
-                                                static_cast<int>(std::round(breakdownTimeData[si])),
-                                                static_cast<double>(cpuUserHist[si]),
-                                                static_cast<double>(cpuSystemHist[si]),
-                                                static_cast<double>(cpuIowaitHist[si]),
-                                                static_cast<double>(cpuIdleHist[si]));
+                                                checkedRoundSeconds(breakdownTimeData[*si]),
+                                                cpuUserHist[*si],
+                                                cpuSystemHist[*si],
+                                                cpuIowaitHist[*si],
+                                                cpuIdleHist[*si]);
                     }
                 }
             }
@@ -404,20 +431,19 @@ void SystemMetricsPanel::renderOverview()
                 ImVec4 fillColor = theme.scheme().chartCpu;
                 fillColor.w = 0.3F;
                 ImPlot::SetNextFillStyle(fillColor);
-                ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), static_cast<int>(cpuHist.size()), 0.0);
+                ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
 
                 ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                ImPlot::PlotLine("##CPU", cpuTimeData.data(), cpuHist.data(), static_cast<int>(cpuHist.size()));
+                ImPlot::PlotLine("##CPU", cpuTimeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()));
 
                 if (ImPlot::IsPlotHovered())
                 {
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    const int idx = hoveredIndexFromPlotX(cpuTimeData, mouse.x);
-                    if (idx >= 0)
+                    if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
                     {
                         ImGui::BeginTooltip();
-                        ImGui::Text("t: %.1fs", static_cast<double>(cpuTimeData[static_cast<size_t>(idx)]));
-                        ImGui::Text("CPU: %s", UI::Format::percentCompact(static_cast<double>(cpuHist[static_cast<size_t>(idx)])).c_str());
+                        ImGui::TextUnformatted(std::format("t: {:.1f}s", cpuTimeData[*idxVal]).c_str());
+                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -433,19 +459,19 @@ void SystemMetricsPanel::renderOverview()
 
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
-                       .value01 = static_cast<float>(std::clamp(m_SmoothedCpu.total, 0.0, 100.0) / 100.0),
+                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
-                       .value01 = static_cast<float>(std::clamp(m_SmoothedCpu.user, 0.0, 100.0) / 100.0),
+                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
-                       .value01 = static_cast<float>(std::clamp(m_SmoothedCpu.system, 0.0, 100.0) / 100.0),
+                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
-                       .value01 = static_cast<float>(std::clamp(m_SmoothedCpu.iowait, 0.0, 100.0) / 100.0),
+                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.idle),
-                       .value01 = static_cast<float>(std::clamp(m_SmoothedCpu.idle, 0.0, 100.0) / 100.0),
+                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.idle),
                        .color = theme.scheme().cpuIdle});
 
     constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 5; // Keep CPU and Memory charts aligned
@@ -493,47 +519,42 @@ void SystemMetricsPanel::renderOverview()
                 if (!memHist.empty())
                 {
                     ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
-                    ImPlot::PlotLine("Used", timeData.data(), memHist.data(), static_cast<int>(memHist.size()));
+                    ImPlot::PlotLine("Used", timeData.data(), memHist.data(), UI::Numeric::checkedCount(memHist.size()));
                 }
 
                 if (!cachedHist.empty())
                 {
                     ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                    ImPlot::PlotLine("Cached", timeData.data(), cachedHist.data(), static_cast<int>(cachedHist.size()));
+                    ImPlot::PlotLine("Cached", timeData.data(), cachedHist.data(), UI::Numeric::checkedCount(cachedHist.size()));
                 }
 
                 if (!swapHist.empty())
                 {
                     ImPlot::SetNextLineStyle(theme.scheme().chartIo, 2.0F);
-                    ImPlot::PlotLine("Swap", timeData.data(), swapHist.data(), static_cast<int>(swapHist.size()));
+                    ImPlot::PlotLine("Swap", timeData.data(), swapHist.data(), UI::Numeric::checkedCount(swapHist.size()));
                 }
 
                 if (ImPlot::IsPlotHovered())
                 {
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    const int idx = hoveredIndexFromPlotX(timeData, mouse.x);
-                    if (idx >= 0)
+                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
                         ImGui::BeginTooltip();
-                        ImGui::Text("t: %.1fs", static_cast<double>(timeData[static_cast<size_t>(idx)]));
-                        if (idx < (static_cast<int>(memHist.size())))
+                        ImGui::TextUnformatted(std::format("t: {:.1f}s", timeData[*idxVal]).c_str());
+
+                        if (*idxVal < memHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().chartMemory,
-                                               "Used: %s",
-                                               UI::Format::percentCompact(static_cast<double>(memHist[static_cast<size_t>(idx)])).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
                         }
-                        const auto idxVal = static_cast<size_t>(idx);
-                        if (idxVal < cachedHist.size())
+                        if (*idxVal < cachedHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().chartCpu,
-                                               "Cached: %s",
-                                               UI::Format::percentCompact(static_cast<double>(cachedHist[idxVal])).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().chartCpu, "Cached: %s", UI::Format::percentCompact(cachedHist[*idxVal]).c_str());
                         }
-                        if (idxVal < swapHist.size())
+                        if (*idxVal < swapHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().chartIo,
-                                               "Swap: %s",
-                                               UI::Format::percentCompact(static_cast<double>(swapHist[idxVal])).c_str());
+                            ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(swapHist[*idxVal]).c_str());
                         }
                         ImGui::EndTooltip();
                     }
@@ -548,14 +569,12 @@ void SystemMetricsPanel::renderOverview()
         {
             const double usedPercentClamped = std::clamp(m_SmoothedMemory.usedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
-                                  .value01 = static_cast<float>(usedPercentClamped / 100.0),
+                                  .value01 = UI::Numeric::percent01(usedPercentClamped),
                                   .color = theme.scheme().chartMemory});
 
-            const double rawCachedPercent =
-                static_cast<double>(snap.memoryCachedBytes) / static_cast<double>(snap.memoryTotalBytes) * 100.0;
-            const double cachedPercent = std::clamp(rawCachedPercent, 0.0, 100.0);
+            const double cachedPercent = std::clamp(snap.memoryCachedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercent),
-                                  .value01 = static_cast<float>(cachedPercent / 100.0),
+                                  .value01 = UI::Numeric::percent01(cachedPercent),
                                   .color = theme.scheme().chartCpu});
         }
 
@@ -563,7 +582,7 @@ void SystemMetricsPanel::renderOverview()
         {
             const double swapPercentClamped = std::clamp(m_SmoothedMemory.swapPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(swapPercentClamped),
-                                  .value01 = static_cast<float>(swapPercentClamped / 100.0),
+                                  .value01 = UI::Numeric::percent01(swapPercentClamped),
                                   .color = theme.scheme().chartIo});
         }
 
@@ -586,24 +605,20 @@ void SystemMetricsPanel::renderOverview()
     // Memory usage bar with themed color
     ImGui::Text("Memory:");
     ImGui::SameLine(m_OverviewLabelWidth);
-    float memFraction = static_cast<float>(m_SmoothedMemory.usedPercent) / 100.0F;
-
     const std::string memOverlay =
         UI::Format::bytesUsedTotalPercentCompact(snap.memoryUsedBytes, snap.memoryTotalBytes, m_SmoothedMemory.usedPercent);
     ImVec4 memColor = theme.progressColor(m_SmoothedMemory.usedPercent);
-    drawProgressBarWithOverlay(memFraction, memOverlay, memColor);
+    drawProgressBarWithOverlay(UI::Numeric::percent01(m_SmoothedMemory.usedPercent), memOverlay, memColor);
 
     // Swap usage bar (if available) with themed color
     if (snap.swapTotalBytes > 0)
     {
         ImGui::Text("Swap:");
         ImGui::SameLine(m_OverviewLabelWidth);
-        float swapFraction = static_cast<float>(m_SmoothedMemory.swapPercent) / 100.0F;
-
         const std::string swapOverlay =
             UI::Format::bytesUsedTotalPercentCompact(snap.swapUsedBytes, snap.swapTotalBytes, m_SmoothedMemory.swapPercent);
         ImVec4 swapColor = theme.progressColor(m_SmoothedMemory.swapPercent);
-        drawProgressBarWithOverlay(swapFraction, swapOverlay, swapColor);
+        drawProgressBarWithOverlay(UI::Numeric::percent01(m_SmoothedMemory.swapPercent), swapOverlay, swapColor);
     }
 }
 
@@ -646,37 +661,35 @@ void SystemMetricsPanel::renderCpuSection()
             ImVec4 fillColor = theme.scheme().chartCpu;
             fillColor.w = 0.3F; // Semi-transparent fill
             ImPlot::SetNextFillStyle(fillColor);
-            ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), static_cast<int>(cpuHist.size()), 0.0);
+            ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
 
             // Draw the line on top of the shaded region.
             ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-            ImPlot::PlotLine("##CPU", timeData.data(), cpuHist.data(), static_cast<int>(cpuHist.size()));
+            ImPlot::PlotLine("##CPU", timeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()));
 
             if (ImPlot::IsPlotHovered())
             {
                 const size_t n = cpuHist.size();
                 const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                const int idx = hoveredIndexFromPlotX(timeData, mouse.x);
-                if (idx >= 0)
+                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                 {
-                    const auto idxVal = static_cast<size_t>(idx);
-                    const float timeSec = timeData[idxVal];
-                    if ((breakdownCount == n) && (idxVal < breakdownCount))
+                    const float timeSec = timeData[*idxVal];
+                    if ((breakdownCount == n) && (*idxVal < breakdownCount))
                     {
-                        const size_t si = idxVal;
+                        const size_t si = *idxVal;
                         showCpuBreakdownTooltip(theme.scheme(),
                                                 true,
-                                                static_cast<int>(std::round(timeSec)),
-                                                static_cast<double>(cpuUserHist[si]),
-                                                static_cast<double>(cpuSystemHist[si]),
-                                                static_cast<double>(cpuIowaitHist[si]),
-                                                static_cast<double>(cpuIdleHist[si]));
+                                                checkedRoundSeconds(timeSec),
+                                                cpuUserHist[si],
+                                                cpuSystemHist[si],
+                                                cpuIowaitHist[si],
+                                                cpuIdleHist[si]);
                     }
                     else
                     {
                         ImGui::BeginTooltip();
-                        ImGui::Text("t: %.1fs", static_cast<double>(timeSec));
-                        ImGui::Text("CPU: %s", UI::Format::percentCompact(static_cast<double>(cpuHist[idxVal])).c_str());
+                        ImGui::TextUnformatted(std::format("t: {:.1f}s", timeSec).c_str());
+                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -736,18 +749,18 @@ void SystemMetricsPanel::renderPerCoreSection()
         constexpr float minCellWidth = 240.0F;
         const float barWidth = ImGui::GetFrameHeight(); // Match prior horizontal bar height for visual consistency
         const float cellWidth = minCellWidth + barWidth;
-        int gridCols = std::max(1, static_cast<int>(gridWidth / cellWidth));
-        int gridRows = static_cast<int>((coreCount + static_cast<size_t>(gridCols) - 1) / static_cast<size_t>(gridCols));
+        const size_t gridCols = std::max<size_t>(1, static_cast<size_t>(gridWidth / cellWidth));
+        const int gridColsInt = UI::Numeric::checkedCount(gridCols);
+        const size_t gridRows = (coreCount + gridCols - 1) / gridCols;
 
-        if (ImGui::BeginTable("PerCoreGrid", gridCols, ImGuiTableFlags_SizingStretchSame))
+        if (ImGui::BeginTable("PerCoreGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
         {
-            for (int row = 0; row < gridRows; ++row)
+            for (size_t row = 0; row < gridRows; ++row)
             {
                 ImGui::TableNextRow();
-                for (int col = 0; col < gridCols; ++col)
+                for (size_t col = 0; col < gridCols; ++col)
                 {
-                    const auto coreIdx =
-                        (static_cast<std::size_t>(row) * static_cast<std::size_t>(gridCols)) + static_cast<std::size_t>(col);
+                    const size_t coreIdx = (row * gridCols) + col;
                     ImGui::TableNextColumn();
 
                     if (coreIdx >= coreCount)
@@ -771,8 +784,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                     const float spacingY = ImGui::GetStyle().ItemSpacing.y;
                     const float childHeight =
                         labelHeight + spacingY + HISTORY_PLOT_HEIGHT_DEFAULT + UI::Widgets::BAR_WIDTH + (spacingY * 2.0F);
-                    const bool childOpen = ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders);
-                    if (childOpen)
+                    if (ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders))
                     {
                         const float availableWidth = ImGui::GetContentRegionAvail().x;
                         const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
@@ -791,7 +803,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                                 ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
                                 ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                                ImPlot::PlotLine("##Core", timeData.data(), samples.data(), static_cast<int>(timeData.size()));
+                                ImPlot::PlotLine("##Core", timeData.data(), samples.data(), UI::Numeric::checkedCount(timeData.size()));
                                 ImPlot::EndPlot();
                             }
                         };
@@ -799,7 +811,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                         double smoothed =
                             (coreIdx < m_SmoothedPerCore.size()) ? m_SmoothedPerCore[coreIdx] : snap.cpuPerCore[coreIdx].totalPercent;
                         NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
-                                   .value01 = static_cast<float>(smoothed) / 100.0F,
+                                   .value01 = UI::Numeric::percent01(smoothed),
                                    .color = theme.progressColor(smoothed)};
 
                         std::vector<NowBar> bars;
@@ -807,10 +819,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                         const std::string tableId = std::format("CoreLayout{}", coreIdx);
                         renderHistoryWithNowBars(tableId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, plotFn, bars, false, 0, true);
                     }
-                    if (childOpen)
-                    {
-                        ImGui::EndChild();
-                    }
+                    ImGui::EndChild();
                     ImGui::PopStyleColor(2);
                 }
             }
@@ -826,7 +835,7 @@ void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, f
         return std::clamp(value, 0.0, 100.0);
     };
 
-    const double alpha = computeAlpha(static_cast<double>(deltaTimeSeconds), m_RefreshInterval);
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 
     const double targetTotal = clampPercent(snap.cpuTotal.totalPercent);
     const double targetUser = clampPercent(snap.cpuTotal.userPercent);
@@ -864,7 +873,7 @@ void SystemMetricsPanel::updateSmoothedMemory(const Domain::SystemSnapshot& snap
         return std::clamp(value, 0.0, 100.0);
     };
 
-    const double alpha = computeAlpha(static_cast<double>(deltaTimeSeconds), m_RefreshInterval);
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 
     const double targetMem = clampPercent(snap.memoryUsedPercent);
     const double targetSwap = clampPercent(snap.swapUsedPercent);
@@ -888,7 +897,7 @@ void SystemMetricsPanel::updateSmoothedPerCore(const Domain::SystemSnapshot& sna
         return std::clamp(value, 0.0, 100.0);
     };
 
-    const double alpha = computeAlpha(static_cast<double>(deltaTimeSeconds), m_RefreshInterval);
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
     const size_t numCores = snap.cpuPerCore.size();
     m_SmoothedPerCore.resize(numCores, 0.0);
 
@@ -924,7 +933,7 @@ void SystemMetricsPanel::updateCachedLayout()
     }
 
     spdlog::debug("SystemMetricsPanel: cached layout updated (font={}, overviewWidth={:.1f}, perCoreWidth={:.1f})",
-                  static_cast<int>(theme.currentFontSize()),
+                  std::to_underlying(theme.currentFontSize()),
                   m_OverviewLabelWidth,
                   m_PerCoreLabelWidth);
 }

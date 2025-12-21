@@ -1,11 +1,14 @@
 #include "ProcessDetailsPanel.h"
 
+#include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
+#include "Platform/IProcessActions.h"
 #include "UI/Format.h"
 #include "UI/HistoryWidgets.h"
+#include "UI/Numeric.h"
 #include "UI/Theme.h"
-#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -14,18 +17,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
-using UI::Widgets::buildTimeAxis;
+using UI::Widgets::buildTimeAxisDoubles;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
@@ -36,23 +38,23 @@ using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
-[[nodiscard]] auto formatCpuTime(double seconds) -> std::string
+template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, std::size_t count) -> std::vector<T>
 {
-    seconds = std::max(0.0, seconds);
+    count = std::min(count, data.size());
 
-    const uint64_t totalMs = static_cast<uint64_t>(seconds * 1000.0);
-    const uint64_t hours = totalMs / (1000ULL * 60ULL * 60ULL);
-    const uint64_t minutes = (totalMs / (1000ULL * 60ULL)) % 60ULL;
-    const uint64_t secs = (totalMs / 1000ULL) % 60ULL;
-    const uint64_t centis = (totalMs / 10ULL) % 100ULL;
+    std::vector<T> out;
+    out.reserve(count);
 
-    if (hours > 0)
+    const std::size_t start = data.size() - count;
+    for (std::size_t i = start; i < data.size(); ++i)
     {
-        return std::format("{}:{:02}:{:02}.{:02}", hours, minutes, secs, centis);
+        out.push_back(data[i]);
     }
 
-    return std::format("{}:{:02}.{:02}", minutes, secs, centis);
+    return out;
 }
+
+// ImPlot series counts are int; keep conversion explicit + checked.
 
 } // namespace
 
@@ -61,7 +63,7 @@ namespace App
 
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
-      m_MaxHistorySeconds(static_cast<double>(App::UserConfig::get().settings().maxHistorySeconds)),
+      m_MaxHistorySeconds(UI::Numeric::toDouble(App::UserConfig::get().settings().maxHistorySeconds)),
       m_ProcessActions(Platform::makeProcessActions()),
       m_ActionCapabilities(m_ProcessActions->actionCapabilities())
 {
@@ -94,9 +96,10 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
         {
             m_HistoryTimer = 0.0F;
             const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            m_CpuHistory.push_back(static_cast<float>(snapshot->cpuPercent));
-            m_CpuUserHistory.push_back(static_cast<float>(snapshot->cpuUserPercent));
-            m_CpuSystemHistory.push_back(static_cast<float>(snapshot->cpuSystemPercent));
+            // Store as double to avoid narrowing; convert only at ImPlot boundary.
+            m_CpuHistory.push_back(snapshot->cpuPercent);
+            m_CpuUserHistory.push_back(snapshot->cpuUserPercent);
+            m_CpuSystemHistory.push_back(snapshot->cpuSystemPercent);
 
             // Use the process RSS percent as a scale factor to express other metrics as percents for consistent charting.
             const double usedPercent = std::clamp(snapshot->memoryPercent, 0.0, 100.0);
@@ -105,16 +108,16 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             {
                 // memoryPercent = (memoryBytes / totalSystemMemoryBytes) * 100
                 // => X% of system = X * (memoryPercent / memoryBytes)
-                scale = usedPercent / static_cast<double>(snapshot->memoryBytes);
+                scale = usedPercent / UI::Numeric::toDouble(snapshot->memoryBytes);
             }
 
-            auto toPercent = [scale](uint64_t bytes) -> double
+            auto toPercent = [scale](std::uint64_t bytes) -> double
             {
                 if (scale <= 0.0)
                 {
                     return 0.0;
                 }
-                return std::clamp(static_cast<double>(bytes) * scale, 0.0, 100.0);
+                return std::clamp(UI::Numeric::toDouble(bytes) * scale, 0.0, 100.0);
             };
 
             m_MemoryHistory.push_back(usedPercent);
@@ -194,7 +197,7 @@ void ProcessDetailsPanel::render(bool* open)
     ImGui::End();
 }
 
-void ProcessDetailsPanel::setSelectedPid(int32_t pid)
+void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
 {
     if (pid != m_SelectedPid)
     {
@@ -221,17 +224,12 @@ void ProcessDetailsPanel::setSelectedPid(int32_t pid)
 
 void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds)
 {
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
-
     const auto refreshMs = std::chrono::milliseconds(App::UserConfig::get().settings().refreshIntervalMs);
-    const double alpha = computeAlpha(static_cast<double>(deltaTimeSeconds), refreshMs);
+    const double alpha = computeAlpha(deltaTimeSeconds, refreshMs);
 
-    const double targetCpu = clampPercent(snapshot.cpuPercent);
-    const double targetResident = static_cast<double>(snapshot.memoryBytes);
-    const double targetVirtual = static_cast<double>(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
+    const double targetCpu = UI::Numeric::clampPercent(snapshot.cpuPercent);
+    const double targetResident = UI::Numeric::toDouble(snapshot.memoryBytes);
+    const double targetVirtual = UI::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
 
     if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
     {
@@ -242,7 +240,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
         return;
     }
 
-    m_SmoothedUsage.cpuPercent = clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
+    m_SmoothedUsage.cpuPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
     m_SmoothedUsage.residentBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.residentBytes, targetResident, alpha));
     m_SmoothedUsage.virtualBytes = smoothTowards(m_SmoothedUsage.virtualBytes, targetVirtual, alpha);
     m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
@@ -373,7 +371,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::Text("%d", proc.nice);
         addLabel("CPU Time");
-        addValueText(formatCpuTime(proc.cpuTimeSeconds).c_str());
+        addValueText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds).c_str());
 
         ImGui::EndTable();
     }
@@ -397,47 +395,25 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     {
         const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         const size_t alignedCount =
-            std::min({m_Timestamps.size(), static_cast<size_t>(m_CpuHistory.size()), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
+            std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
 
-        std::vector<double> timestamps(m_Timestamps.begin(), m_Timestamps.end());
-        std::vector<double> cpuData(m_CpuHistory.begin(), m_CpuHistory.end());
-        std::vector<double> cpuUserData(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
-        std::vector<double> cpuSystemData(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
-
-        if (timestamps.size() > alignedCount)
-        {
-            timestamps.erase(timestamps.begin(), timestamps.begin() + static_cast<std::ptrdiff_t>(timestamps.size() - alignedCount));
-        }
-        if (cpuData.size() > alignedCount)
-        {
-            cpuData.erase(cpuData.begin(), cpuData.begin() + static_cast<std::ptrdiff_t>(cpuData.size() - alignedCount));
-        }
-        if (cpuUserData.size() > alignedCount)
-        {
-            cpuUserData.erase(cpuUserData.begin(), cpuUserData.begin() + static_cast<std::ptrdiff_t>(cpuUserData.size() - alignedCount));
-        }
-        if (cpuSystemData.size() > alignedCount)
-        {
-            cpuSystemData.erase(cpuSystemData.begin(),
-                                cpuSystemData.begin() + static_cast<std::ptrdiff_t>(cpuSystemData.size() - alignedCount));
-        }
+        std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+        std::vector<double> cpuData = tailVector(m_CpuHistory, alignedCount);
+        std::vector<double> cpuUserData = tailVector(m_CpuUserHistory, alignedCount);
+        std::vector<double> cpuSystemData = tailVector(m_CpuSystemHistory, alignedCount);
 
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-        std::vector<float> cpuTimeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+        std::vector<double> cpuTimeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
         NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(cpuClamped),
-                           .value01 = static_cast<float>(cpuClamped / 100.0),
+                           .value01 = UI::Numeric::percent01(cpuClamped),
                            .color = theme.progressColor(cpuClamped)};
         NowBar cpuUserNow{.valueText = UI::Format::percentCompact(proc.cpuUserPercent),
-                          .value01 = static_cast<float>(std::clamp(proc.cpuUserPercent, 0.0, 100.0) / 100.0),
+                          .value01 = UI::Numeric::percent01(proc.cpuUserPercent),
                           .color = theme.scheme().cpuUser};
         NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(proc.cpuSystemPercent),
-                            .value01 = static_cast<float>(std::clamp(proc.cpuSystemPercent, 0.0, 100.0) / 100.0),
+                            .value01 = UI::Numeric::percent01(proc.cpuSystemPercent),
                             .color = theme.scheme().cpuSystem};
-
-        std::vector<float> cpuTotalSeries(cpuData.begin(), cpuData.end());
-        std::vector<float> cpuUserSeries(cpuUserData.begin(), cpuUserData.end());
-        std::vector<float> cpuSystemSeries(cpuSystemData.begin(), cpuSystemData.end());
 
         auto cpuPlot = [&]()
         {
@@ -449,59 +425,55 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
                 if (alignedCount > 0)
                 {
-                    std::vector<float> y0(alignedCount, 0.0F);
-                    std::vector<float> yUserTop(alignedCount);
-                    std::vector<float> ySystemTop(alignedCount);
+                    const int plotCount = UI::Numeric::checkedCount(alignedCount);
+                    std::vector<double> y0(alignedCount, 0.0);
+                    std::vector<double> yUserTop(alignedCount);
+                    std::vector<double> ySystemTop(alignedCount);
 
                     for (size_t i = 0; i < alignedCount; ++i)
                     {
-                        yUserTop[i] = static_cast<float>(cpuUserData[i]);
-                        ySystemTop[i] = static_cast<float>(cpuUserData[i] + cpuSystemData[i]);
+                        yUserTop[i] = cpuUserData[i];
+                        ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
                     }
 
                     ImVec4 userFill = theme.scheme().cpuUser;
                     userFill.w = 0.35F;
                     ImPlot::SetNextFillStyle(userFill);
-                    ImPlot::PlotShaded("##CpuUser", cpuTimeData.data(), y0.data(), yUserTop.data(), static_cast<int>(alignedCount));
+                    ImPlot::PlotShaded("##CpuUser", cpuTimeData.data(), y0.data(), yUserTop.data(), plotCount);
 
                     ImVec4 systemFill = theme.scheme().cpuSystem;
                     systemFill.w = 0.35F;
                     ImPlot::SetNextFillStyle(systemFill);
-                    ImPlot::PlotShaded(
-                        "##CpuSystem", cpuTimeData.data(), yUserTop.data(), ySystemTop.data(), static_cast<int>(alignedCount));
+                    ImPlot::PlotShaded("##CpuSystem", cpuTimeData.data(), yUserTop.data(), ySystemTop.data(), plotCount);
 
                     ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                    ImPlot::PlotLine("Total", cpuTimeData.data(), cpuTotalSeries.data(), static_cast<int>(alignedCount));
+                    ImPlot::PlotLine("Total", cpuTimeData.data(), cpuData.data(), plotCount);
 
                     ImPlot::SetNextLineStyle(theme.scheme().cpuUser, 1.8F);
-                    ImPlot::PlotLine("User", cpuTimeData.data(), cpuUserSeries.data(), static_cast<int>(alignedCount));
+                    ImPlot::PlotLine("User", cpuTimeData.data(), cpuUserData.data(), plotCount);
 
                     ImPlot::SetNextLineStyle(theme.scheme().cpuSystem, 1.8F);
-                    ImPlot::PlotLine("System", cpuTimeData.data(), cpuSystemSeries.data(), static_cast<int>(alignedCount));
+                    ImPlot::PlotLine("System", cpuTimeData.data(), cpuSystemData.data(), plotCount);
 
                     if (ImPlot::IsPlotHovered())
                     {
                         const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        const int idx = hoveredIndexFromPlotX(cpuTimeData, mouse.x);
-                        const auto idxVal = static_cast<size_t>(idx);
-                        if (idx >= 0 && idxVal < alignedCount)
+                        if (const auto idxVal = hoveredIndexFromPlotX(cpuTimeData, mouse.x))
                         {
-                            ImGui::BeginTooltip();
-                            ImGui::Text("t: %.1fs", static_cast<double>(cpuTimeData[static_cast<size_t>(idx)]));
-                            ImGui::Separator();
-                            const double totalValue = cpuData[static_cast<size_t>(idx)];
-                            const ImVec4 totalColor = theme.progressColor(totalValue);
-                            ImGui::TextColored(
-                                totalColor, "Total: %s", UI::Format::percentCompact(static_cast<double>(totalValue)).c_str());
-                            ImGui::TextColored(
-                                theme.scheme().cpuUser,
-                                "User: %s",
-                                UI::Format::percentCompact(static_cast<double>(cpuUserData[static_cast<size_t>(idx)])).c_str());
-                            ImGui::TextColored(
-                                theme.scheme().cpuSystem,
-                                "System: %s",
-                                UI::Format::percentCompact(static_cast<double>(cpuSystemData[static_cast<size_t>(idx)])).c_str());
-                            ImGui::EndTooltip();
+                            if (*idxVal < alignedCount)
+                            {
+                                ImGui::BeginTooltip();
+                                ImGui::Text("t: %.1fs", cpuTimeData[*idxVal]);
+                                ImGui::Separator();
+                                const double totalValue = cpuData[*idxVal];
+                                const ImVec4 totalColor = theme.progressColor(totalValue);
+                                ImGui::TextColored(totalColor, "Total: %s", UI::Format::percentCompact(totalValue).c_str());
+                                ImGui::TextColored(
+                                    theme.scheme().cpuUser, "User: %s", UI::Format::percentCompact(cpuUserData[*idxVal]).c_str());
+                                ImGui::TextColored(
+                                    theme.scheme().cpuSystem, "System: %s", UI::Format::percentCompact(cpuSystemData[*idxVal]).c_str());
+                                ImGui::EndTooltip();
+                            }
                         }
                     }
                 }
@@ -529,29 +501,13 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         if (alignedCount > 0)
         {
-            std::vector<double> timestamps(m_Timestamps.begin(), m_Timestamps.end());
-            std::vector<double> usedData(m_MemoryHistory.begin(), m_MemoryHistory.end());
-            std::vector<double> sharedData(m_SharedHistory.begin(), m_SharedHistory.end());
-            std::vector<double> virtData(m_VirtualHistory.begin(), m_VirtualHistory.end());
-
-            auto trimToAligned = [alignedCount](std::vector<double>& data)
-            {
-                if (data.size() > alignedCount)
-                {
-                    data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(data.size() - alignedCount));
-                }
-            };
-
-            trimToAligned(timestamps);
-            trimToAligned(usedData);
-            trimToAligned(sharedData);
-            trimToAligned(virtData);
+            std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+            std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
+            std::vector<double> sharedData = tailVector(m_SharedHistory, alignedCount);
+            std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
 
             const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
-            std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
-            std::vector<float> usedSeries(usedData.begin(), usedData.end());
-            std::vector<float> sharedSeries(sharedData.begin(), sharedData.end());
-            std::vector<float> virtSeries(virtData.begin(), virtData.end());
+            std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
             const double usedNow = usedData.empty() ? 0.0 : usedData.back();
             const double sharedNow = sharedData.empty() ? 0.0 : sharedData.back();
@@ -559,13 +515,13 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
             std::vector<NowBar> memoryBars;
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
-                                  .value01 = static_cast<float>(std::clamp(usedNow, 0.0, 100.0) / 100.0),
+                                  .value01 = UI::Numeric::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
-                                  .value01 = static_cast<float>(std::clamp(sharedNow, 0.0, 100.0) / 100.0),
+                                  .value01 = UI::Numeric::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
-                                  .value01 = static_cast<float>(std::clamp(virtNowVal, 0.0, 100.0) / 100.0),
+                                  .value01 = UI::Numeric::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 
             auto memoryPlot = [&]()
@@ -577,53 +533,45 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                     ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-                    if (!usedSeries.empty())
+                    if (!usedData.empty())
                     {
                         ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
-                        ImPlot::PlotLine("Used", timeData.data(), usedSeries.data(), static_cast<int>(usedSeries.size()));
+                        ImPlot::PlotLine("Used", timeData.data(), usedData.data(), UI::Numeric::checkedCount(usedData.size()));
                     }
 
-                    if (!sharedSeries.empty())
+                    if (!sharedData.empty())
                     {
                         ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                        ImPlot::PlotLine("Shared", timeData.data(), sharedSeries.data(), static_cast<int>(sharedSeries.size()));
+                        ImPlot::PlotLine("Shared", timeData.data(), sharedData.data(), UI::Numeric::checkedCount(sharedData.size()));
                     }
 
-                    if (!virtSeries.empty())
+                    if (!virtData.empty())
                     {
                         ImPlot::SetNextLineStyle(theme.scheme().chartIo, 2.0F);
-                        ImPlot::PlotLine("Virtual", timeData.data(), virtSeries.data(), static_cast<int>(virtSeries.size()));
+                        ImPlot::PlotLine("Virtual", timeData.data(), virtData.data(), UI::Numeric::checkedCount(virtData.size()));
                     }
 
                     if (ImPlot::IsPlotHovered())
                     {
                         const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        const int idx = hoveredIndexFromPlotX(timeData, mouse.x);
-                        if (idx >= 0)
+                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                         {
-                            const auto idxVal = static_cast<size_t>(idx);
                             ImGui::BeginTooltip();
-                            ImGui::Text("t: %.1fs", static_cast<double>(timeData[static_cast<size_t>(idx)]));
-                            if (idxVal < usedSeries.size())
+                            ImGui::Text("t: %.1fs", timeData[*idxVal]);
+                            if (*idxVal < usedData.size())
                             {
                                 ImGui::TextColored(
-                                    theme.scheme().chartMemory,
-                                    "Used: %s",
-                                    UI::Format::percentCompact(static_cast<double>(usedSeries[static_cast<size_t>(idx)])).c_str());
+                                    theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(usedData[*idxVal]).c_str());
                             }
-                            if (idxVal < sharedSeries.size())
+                            if (*idxVal < sharedData.size())
                             {
                                 ImGui::TextColored(
-                                    theme.scheme().chartCpu,
-                                    "Shared: %s",
-                                    UI::Format::percentCompact(static_cast<double>(sharedSeries[static_cast<size_t>(idx)])).c_str());
+                                    theme.scheme().chartCpu, "Shared: %s", UI::Format::percentCompact(sharedData[*idxVal]).c_str());
                             }
-                            if (idxVal < virtSeries.size())
+                            if (*idxVal < virtData.size())
                             {
                                 ImGui::TextColored(
-                                    theme.scheme().chartIo,
-                                    "Virtual: %s",
-                                    UI::Format::percentCompact(static_cast<double>(virtSeries[static_cast<size_t>(idx)])).c_str());
+                                    theme.scheme().chartIo, "Virtual: %s", UI::Format::percentCompact(virtData[*idxVal]).c_str());
                             }
                             ImGui::EndTooltip();
                         }

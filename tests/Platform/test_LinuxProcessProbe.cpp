@@ -4,15 +4,36 @@
 /// These are integration tests that interact with the real /proc filesystem.
 /// They verify that the probe correctly reads and parses process information.
 
+#include <gtest/gtest.h>
+
+// Gate Linux-only integration tests by header availability + target platform.
+// This avoids Windows setups that may have partial POSIX headers.
+#if defined(__linux__) && __has_include(<unistd.h>)
+#define TASKSMACK_HAS_UNISTD 1
+#else
+#define TASKSMACK_HAS_UNISTD 0
+#endif
+
+#if TASKSMACK_HAS_UNISTD
+
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/ProcessTypes.h"
-
-#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <thread>
 
 #include <unistd.h>
+
+#else
+
+TEST(LinuxProcessProbeTest, SkippedOnNonLinux)
+{
+    GTEST_SKIP() << "LinuxProcessProbe tests require Linux (/proc, unistd.h)";
+}
+
+#endif
+
+#if TASKSMACK_HAS_UNISTD
 
 namespace Platform
 {
@@ -395,3 +416,5 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
 
 } // namespace
 } // namespace Platform
+
+#endif

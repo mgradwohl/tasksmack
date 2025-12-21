@@ -63,3 +63,6 @@ core.*
 
 # ImGui state file
 imgui.ini
+
+# Generated cast audit output
+cast-audit.md

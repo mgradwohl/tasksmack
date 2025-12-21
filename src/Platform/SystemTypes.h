@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -69,7 +70,7 @@ struct SystemCounters
     // Static system info (populated once)
     std::string hostname;
     std::string cpuModel;
-    int cpuCoreCount = 0;
+    std::size_t cpuCoreCount = 0;
 };
 
 /// Reports what this platform's system probe supports.

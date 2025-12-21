@@ -82,7 +82,7 @@ class SystemMetricsPanel : public Panel
     UI::FontSize m_LastFontSize = UI::FontSize::Medium;
     float m_OverviewLabelWidth = 0.0F;
     float m_PerCoreLabelWidth = 0.0F;
-    size_t m_LastCoreCount = 0;
+    int m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
 
     // Cached hostname for window title

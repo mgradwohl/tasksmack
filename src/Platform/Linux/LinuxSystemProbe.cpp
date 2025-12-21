@@ -1,28 +1,55 @@
+// Keep this translation unit parseable on non-Linux platforms (e.g. Windows clangd)
+// by compiling the implementation only when targeting Linux and required headers exist.
+#if defined(__linux__) && __has_include(<unistd.h>)
+
 #include "LinuxSystemProbe.h"
 
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <concepts>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 #include <unistd.h>
 
 namespace Platform
 {
 
-LinuxSystemProbe::LinuxSystemProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_NumCores(static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)))
+namespace
+{
+
+template<std::integral T> [[nodiscard]] constexpr auto checkedPositiveToSizeT(T value, std::size_t fallback) noexcept -> std::size_t
+{
+    if constexpr (std::is_signed_v<T>)
+    {
+        if (value <= 0)
+        {
+            return fallback;
+        }
+    }
+    else
+    {
+        if (value == 0)
+        {
+            return fallback;
+        }
+    }
+
+    return static_cast<std::size_t>(value);
+}
+
+} // namespace
+
+LinuxSystemProbe::LinuxSystemProbe()
+    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
     if (m_TicksPerSecond <= 0)
     {
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
-    }
-    if (m_NumCores <= 0)
-    {
-        m_NumCores = 1;
-        spdlog::warn("Failed to get CPU count, using default: {}", m_NumCores);
     }
 
     // Read hostname (cached)
@@ -295,3 +322,5 @@ void LinuxSystemProbe::readCpuFreq(SystemCounters& counters) const
 }
 
 } // namespace Platform
+
+#endif

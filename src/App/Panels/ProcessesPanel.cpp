@@ -1,8 +1,12 @@
 #include "ProcessesPanel.h"
 
+#include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "Domain/ProcessModel.h"
 #include "Platform/Factory.h"
+#include "UI/Format.h"
+#include "UI/Numeric.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -11,14 +15,48 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <format>
-#include <ranges>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace App
 {
+
+namespace
+{
+
+[[nodiscard]] auto lowerAscii(char ch) -> int
+{
+    // Safe/necessary: std::tolower is undefined for negative signed char values (except EOF).
+    // Cast to unsigned char to avoid UB when char is signed.
+    return std::tolower(static_cast<unsigned char>(ch));
+}
+
+[[nodiscard]] constexpr auto toImGuiId(ProcessColumn col) noexcept -> ImGuiID
+{
+    // Safe: ProcessColumn is a small uint8_t-backed enum; ImGuiID is a wider unsigned type.
+    return ImGuiID{std::to_underlying(col)};
+}
+
+[[nodiscard]] auto columnFromUserId(ImGuiID id) -> std::optional<ProcessColumn>
+{
+    // Map back via known columns to avoid integer->enum casts.
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (toImGuiId(col) == id)
+        {
+            return col;
+        }
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
 
 ProcessesPanel::ProcessesPanel() : Panel("Processes")
 {
@@ -77,7 +115,8 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
     m_RefreshAccumulatorSec += deltaTime;
 
-    const float intervalSec = static_cast<float>(m_RefreshInterval.count()) / 1000.0F;
+    using SecondsF = std::chrono::duration<float>;
+    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
 
     if (m_ForceRefresh || intervalElapsed)
@@ -102,9 +141,9 @@ void ProcessesPanel::onUpdate(float deltaTime)
 int ProcessesPanel::visibleColumnCount() const
 {
     int count = 0;
-    for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+    for (const ProcessColumn col : allProcessColumns())
     {
-        if (m_ColumnSettings.isVisible(static_cast<ProcessColumn>(i)))
+        if (m_ColumnSettings.isVisible(col))
         {
             ++count;
         }
@@ -174,8 +213,7 @@ void ProcessesPanel::render(bool* open)
                     bool match = true;
                     for (size_t k = 0; k < searchTerm.size(); ++k)
                     {
-                        if (std::tolower(static_cast<unsigned char>(name[j + k])) !=
-                            std::tolower(static_cast<unsigned char>(searchTerm[k])))
+                        if (lowerAscii(name[j + k]) != lowerAscii(searchTerm[k]))
                         {
                             match = false;
                             break;
@@ -227,7 +265,7 @@ void ProcessesPanel::render(bool* open)
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
-    constexpr int totalColumns = static_cast<int>(ProcessColumn::Count);
+    const int totalColumns = UI::Numeric::checkedCount(processColumnCount());
 
     if (ImGui::BeginTable("ProcessTable",
                           totalColumns,
@@ -238,9 +276,8 @@ void ProcessesPanel::render(bool* open)
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
         // Setup ALL columns with stable IDs - use enum value as user_id for stable identification
-        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        for (const ProcessColumn col : allProcessColumns())
         {
-            auto col = static_cast<ProcessColumn>(i);
             const auto info = getColumnInfo(col);
             ImGuiTableColumnFlags flags = ImGuiTableColumnFlags_None;
 
@@ -266,12 +303,12 @@ void ProcessesPanel::render(bool* open)
             if (info.defaultWidth > 0.0F)
             {
                 // Use enum value as user_id for stable column identification
-                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, info.defaultWidth, static_cast<ImGuiID>(col));
+                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, info.defaultWidth, toImGuiId(col));
             }
             else
             {
                 flags |= ImGuiTableColumnFlags_WidthStretch;
-                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, 0.0F, static_cast<ImGuiID>(col));
+                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, 0.0F, toImGuiId(col));
             }
         }
 
@@ -286,7 +323,16 @@ void ProcessesPanel::render(bool* open)
                 const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
 
                 // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
-                auto sortCol = static_cast<ProcessColumn>(spec.ColumnUserID);
+                const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
+                if (!sortColOpt.has_value())
+                {
+                    sortSpecs->SpecsDirty = true;
+                    ImGui::EndTable();
+                    ImGui::End();
+                    return;
+                }
+
+                const ProcessColumn sortCol = *sortColOpt;
 
                 std::ranges::sort(filteredIndices,
                                   [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
@@ -344,13 +390,15 @@ void ProcessesPanel::render(bool* open)
             ImGui::TableNextRow();
 
             // Render all columns - ImGui handles hidden columns automatically
-            for (size_t colIdx = 0; colIdx < static_cast<size_t>(ProcessColumn::Count); ++colIdx)
+            int colIdx = 0;
+            for (const ProcessColumn col : allProcessColumns())
             {
-                auto col = static_cast<ProcessColumn>(colIdx);
-                if (!ImGui::TableSetColumnIndex(static_cast<int>(colIdx)))
+                if (!ImGui::TableSetColumnIndex(colIdx))
                 {
+                    ++colIdx;
                     continue; // Column is hidden or clipped
                 }
+                ++colIdx;
 
                 // PID column is always the selectable
                 if (col == ProcessColumn::PID)
@@ -382,74 +430,32 @@ void ProcessesPanel::render(bool* open)
 
                 case ProcessColumn::Virtual:
                 {
-                    double virtMB = static_cast<double>(proc.virtualBytes) / (1024.0 * 1024.0);
-                    if (virtMB >= 1024.0)
-                    {
-                        ImGui::Text("%.1fG", virtMB / 1024.0);
-                    }
-                    else if (virtMB >= 1.0)
-                    {
-                        ImGui::Text("%.0fM", virtMB);
-                    }
-                    else
-                    {
-                        ImGui::Text("%.0fK", static_cast<double>(proc.virtualBytes) / 1024.0);
-                    }
+                    const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
+                    const std::string text = UI::Format::formatBytesWithUnit(proc.virtualBytes, unit);
+                    ImGui::TextUnformatted(text.c_str());
                     break;
                 }
 
                 case ProcessColumn::Resident:
                 {
-                    double resMB = static_cast<double>(proc.memoryBytes) / (1024.0 * 1024.0);
-                    if (resMB >= 1024.0)
-                    {
-                        ImGui::Text("%.1fG", resMB / 1024.0);
-                    }
-                    else if (resMB >= 1.0)
-                    {
-                        ImGui::Text("%.0fM", resMB);
-                    }
-                    else
-                    {
-                        ImGui::Text("%.0fK", static_cast<double>(proc.memoryBytes) / 1024.0);
-                    }
+                    const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
+                    const std::string text = UI::Format::formatBytesWithUnit(proc.memoryBytes, unit);
+                    ImGui::TextUnformatted(text.c_str());
                     break;
                 }
 
                 case ProcessColumn::Shared:
                 {
-                    double shrMB = static_cast<double>(proc.sharedBytes) / (1024.0 * 1024.0);
-                    if (shrMB >= 1024.0)
-                    {
-                        ImGui::Text("%.1fG", shrMB / 1024.0);
-                    }
-                    else if (shrMB >= 1.0)
-                    {
-                        ImGui::Text("%.0fM", shrMB);
-                    }
-                    else
-                    {
-                        ImGui::Text("%.0fK", static_cast<double>(proc.sharedBytes) / 1024.0);
-                    }
+                    const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
+                    const std::string text = UI::Format::formatBytesWithUnit(proc.sharedBytes, unit);
+                    ImGui::TextUnformatted(text.c_str());
                     break;
                 }
 
                 case ProcessColumn::CpuTime:
                 {
-                    auto totalSeconds = static_cast<int>(proc.cpuTimeSeconds);
-                    int hours = totalSeconds / 3600;
-                    int minutes = (totalSeconds % 3600) / 60;
-                    int seconds = totalSeconds % 60;
-                    int centiseconds = static_cast<int>((proc.cpuTimeSeconds - static_cast<double>(totalSeconds)) * 100.0);
-
-                    if (hours > 0)
-                    {
-                        ImGui::Text("%d:%02d:%02d.%02d", hours, minutes, seconds, centiseconds);
-                    }
-                    else
-                    {
-                        ImGui::Text("%d:%02d.%02d", minutes, seconds, centiseconds);
-                    }
+                    const std::string text = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+                    ImGui::TextUnformatted(text.c_str());
                     break;
                 }
 
@@ -536,15 +542,16 @@ void ProcessesPanel::render(bool* open)
         // Sync column visibility from ImGui back to our settings
         // This captures changes made via the right-click context menu
         bool settingsChanged = false;
-        for (size_t i = 0; i < static_cast<size_t>(ProcessColumn::Count); ++i)
+        int idx = 0;
+        for (const ProcessColumn col : allProcessColumns())
         {
-            auto col = static_cast<ProcessColumn>(i);
-            bool isEnabled = (ImGui::TableGetColumnFlags(static_cast<int>(i)) & ImGuiTableColumnFlags_IsEnabled) != 0;
+            const bool isEnabled = (ImGui::TableGetColumnFlags(idx) & ImGuiTableColumnFlags_IsEnabled) != 0;
             if (m_ColumnSettings.isVisible(col) != isEnabled)
             {
                 m_ColumnSettings.setVisible(col, isEnabled);
                 settingsChanged = true;
             }
+            ++idx;
         }
         if (settingsChanged)
         {
