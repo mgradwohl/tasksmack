@@ -1,7 +1,6 @@
 #include "UserConfig.h"
 
 #include "Domain/Numeric.h"
-#include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
