@@ -1,12 +1,12 @@
 #pragma once
 
+// clang-format off
+#include <glad/gl.h>
+// clang-format on
 #include <imgui.h>
 
 #include <filesystem>
 #include <utility>
-
-// Forward-declare GLuint without dragging in GLFW headers here.
-using GLuint = unsigned int;
 
 namespace UI
 {
