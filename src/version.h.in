@@ -10,6 +10,7 @@
 #define @PROJECT_NAME_UPPER@_VERSION_PATCH @PROJECT_VERSION_PATCH@
 
 #define @PROJECT_NAME_UPPER@_PROJECT_NAME "@PROJECT_NAME@"
+#define @PROJECT_NAME_UPPER@_GIT_COMMIT "@GIT_COMMIT@"
 
 // Build information (configured at CMake time)
 #define @PROJECT_NAME_UPPER@_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
@@ -33,6 +34,7 @@ struct Version
     static constexpr const char* STRING = "@PROJECT_VERSION@";
     static constexpr const char* PROJECT_NAME = "@PROJECT_NAME@";
     static constexpr const char* BUILD_TYPE = "@CMAKE_BUILD_TYPE@";
+    static constexpr const char* GIT_COMMIT = "@GIT_COMMIT@";
     static constexpr const char* COMPILER_ID = "@CMAKE_CXX_COMPILER_ID@";
     static constexpr const char* COMPILER_VERSION = "@CMAKE_CXX_COMPILER_VERSION@";
 

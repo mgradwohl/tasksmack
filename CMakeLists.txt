@@ -221,6 +221,18 @@ FetchContent_MakeAvailable(tomlplusplus)
 
 # OpenGL + ImGui stack dependencies
 
+# stb (image loader for runtime textures)
+FetchContent_Declare(
+    stb
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG f1c79c02822848a9bed4315b12c8c8f3761e1296  # Pinned to specific commit for supply-chain security
+)
+FetchContent_GetProperties(stb)
+if(NOT stb_POPULATED)
+    FetchContent_Populate(stb)
+endif()
+
 # GLFW
 find_package(glfw3 3.4 QUIET)
 if(NOT glfw3_FOUND)
@@ -332,6 +344,20 @@ set_target_properties(implot_lib PROPERTIES FOLDER "third_party")
 # Generate version header from template
 string(TOUPPER ${PROJECT_NAME} PROJECT_NAME_UPPER)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
+
+# Capture git commit (short). Fallback to "unknown" if git is unavailable.
+set(GIT_COMMIT "unknown")
+execute_process(
+    COMMAND git rev-parse --short=8 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_COMMIT_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE GIT_COMMIT_RESULT
+)
+if(GIT_COMMIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUTPUT STREQUAL "")
+    set(GIT_COMMIT ${GIT_COMMIT_OUTPUT})
+endif()
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/generated/version.h
@@ -345,6 +371,8 @@ set(TASKSMACK_SOURCES
     src/UI/UILayer.cpp
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
+    src/UI/IconLoader.cpp
+    src/App/AboutLayer.cpp
     src/App/ShellLayer.cpp
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
@@ -517,6 +545,13 @@ endif()
 
 target_compile_features(TaskSmack PRIVATE cxx_std_23)
 
+# Ensure libc++/pthread/lld are applied across all configs on Linux when using Clang,
+# so optimized and RelWithDebInfo builds keep the same link toolchain as Debug.
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
+    target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread -fuse-ld=lld)
+endif()
+
 # Precompiled headers
 if(TASKSMACK_ENABLE_PCH)
     target_precompile_headers(TaskSmack PRIVATE
@@ -553,6 +588,7 @@ endif()
 target_include_directories(TaskSmack PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${stb_SOURCE_DIR}
 )
 
 target_link_libraries(TaskSmack PRIVATE
@@ -570,6 +606,10 @@ add_custom_command(TARGET TaskSmack POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${TASKSMACK_ASSETS_DIR}/fonts"
         "$<TARGET_FILE_DIR:TaskSmack>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TaskSmack>/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${TASKSMACK_ASSETS_DIR}/icons"
+        "$<TARGET_FILE_DIR:TaskSmack>/assets/icons"
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:TaskSmack>/assets/themes"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${TASKSMACK_ASSETS_DIR}/themes"
@@ -585,9 +625,23 @@ endif()
 
 install(TARGETS TaskSmack
     BUNDLE DESTINATION .
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION .
+    LIBRARY DESTINATION .
+    ARCHIVE DESTINATION .
+)
+
+# Install static libs alongside the binary for local/portable layout
+install(TARGETS imgui_lib implot_lib glad_gl_core_33
+    RUNTIME DESTINATION .
+    LIBRARY DESTINATION .
+    ARCHIVE DESTINATION .
+)
+
+# Install runtime assets (fonts/themes/icons) only
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
+        ${CMAKE_SOURCE_DIR}/assets/themes
+        ${CMAKE_SOURCE_DIR}/assets/icons
+    DESTINATION assets
 )
 
 if(TASKSMACK_BUILD_TESTS)

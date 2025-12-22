@@ -29,8 +29,6 @@
 #include <shlobj.h>
 // clang-format on
 #else
-#include <cstdlib>
-
 #include <pwd.h>
 #include <unistd.h>
 #endif
