@@ -1,10 +1,8 @@
 #pragma once
 
-// clang-format off
-#include <glad/gl.h>
-// clang-format on
 #include <imgui.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <utility>
 
@@ -13,7 +11,7 @@ namespace UI
 
 /// RAII wrapper for OpenGL texture resources.
 /// Move-only type that automatically releases the texture on destruction.
-/// Typical usage: auto tex = loadTexture("path/to/icon.png"); ImGui::Image(tex.id(), tex.size());
+/// Typical usage: auto tex = loadTexture("path/to/icon.png"); ImGui::Image(tex.textureId(), tex.size());
 /// Default-constructed instances are invalid (valid() returns false).
 class Texture
 {
@@ -34,11 +32,14 @@ class Texture
         return m_Id != 0U;
     }
 
-    /// Returns the OpenGL texture ID for use with ImGui::Image() or raw OpenGL calls.
-    /// Returns 0 if the texture is invalid.
-    [[nodiscard]] GLuint id() const noexcept
+    /// Returns the OpenGL texture ID as ImTextureID for use with ImGui::Image().
+    /// Returns nullptr if the texture is invalid.
+    [[nodiscard]] ImTextureID textureId() const noexcept
     {
-        return m_Id;
+        // ImTextureID is void*; m_Id is uint32_t storing the GL texture handle.
+        // reinterpret_cast is required for this integer-to-pointer conversion.
+        return reinterpret_cast<ImTextureID>(
+            static_cast<std::uintptr_t>(m_Id)); // NOLINT(performance-no-int-to-ptr,cppcoreguidelines-pro-type-reinterpret-cast)
     }
 
     /// Returns the texture dimensions as an ImVec2 for convenience with ImGui.
@@ -51,7 +52,7 @@ class Texture
   private:
     void destroy() noexcept;
 
-    GLuint m_Id = 0U;
+    std::uint32_t m_Id = 0U;
     int m_Width = 0;
     int m_Height = 0;
 
