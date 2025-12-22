@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -71,6 +72,9 @@ AboutLayer::~AboutLayer()
 
 void AboutLayer::onAttach()
 {
+    // Layer lifecycle is guaranteed to be called from main thread only (GLFW requirement).
+    // Enforce single instance with assertion rather than atomic operations.
+    assert(s_Instance == nullptr && "AboutLayer instance already exists!");
     s_Instance = this;
     loadIcon();
 }
