@@ -1,10 +1,9 @@
 #pragma once
 
-#include <imgui.h>
-
 // clang-format off
 #include <glad/gl.h>
 // clang-format on
+#include <imgui.h>
 
 #include <filesystem>
 #include <utility>
