@@ -15,13 +15,13 @@
 #include <system_error>
 #include <tuple>
 
+#ifdef __linux__
+#include <unistd.h>
+#endif
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifdef __linux__
-#include <unistd.h>
 #endif
 #include <shellapi.h>
 #include <windows.h>
