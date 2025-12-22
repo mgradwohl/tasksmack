@@ -21,7 +21,7 @@ check_command() {
 validate_build_prereqs() {
     check_command cmake "apt install cmake" || return 1
     check_command ninja "apt install ninja-build" || return 1
-    check_command clang++-22 "apt install clang-22 lld-22 g++-13" || return 1
+    check_command clang++-22 "apt install clang-22 lld-22" || return 1
     return 0
 }
 

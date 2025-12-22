@@ -198,211 +198,159 @@ get_python_cmd() {
 }
 
 # Check if jinja2 Python module is installed
-check_jinja2() {
-    local python_cmd
-    python_cmd=$(get_python_cmd)
-    if [[ -z "$python_cmd" ]]; then
-        echo "no"
-        return
-    fi
-    # Try importing jinja2 - works for both system and user site-packages
-    if $python_cmd -c "import jinja2" 2>/dev/null; then
-        echo "yes"
-    else
-        echo "no"
-    fi
-}
-
-# Get jinja2 version for display
 get_jinja2_version() {
-    local python_cmd
-    python_cmd=$(get_python_cmd)
-    if [[ -z "$python_cmd" ]]; then
+    local py_cmd
+    py_cmd="$(get_python_cmd)"
+
+    if [[ -z "${py_cmd}" ]]; then
         echo ""
-        return
+        return 1
     fi
-    $python_cmd -c "import jinja2; print(jinja2.__version__)" 2>/dev/null || echo ""
+
+    "${py_cmd}" - <<'EOF' 2>/dev/null
+try:
+    import jinja2
+    print(getattr(jinja2, "__version__", "unknown"))
+except Exception:
+    pass
+EOF
 }
 
-# Main
-echo ""
-echo -e "${BOLD}========================================"
-echo -e "  Prerequisite Check"
-echo -e "========================================${NC}"
-echo ""
-echo -e "${BOLD}Tool           Version      Required     Path${NC}"
-echo "──────────────────────────────────────────────────────────────────────────"
+# Compare two version strings (returns 0 if actual >= required)
+version_at_least() {
+    local required="$1"
+    local actual="$2"
 
-ALL_OK=true
+    if [[ -z "${actual}" ]]; then
+        return 1
+    fi
 
-# Check Clang
-clang_ver=$(get_clang_version)
-clang_path=$(get_path clang)
-if [[ -n "$clang_ver" ]] && [[ "$clang_ver" -ge "${MIN_CLANG_VERSION%%.*}" ]]; then
-    print_status "clang" "ok" "$clang_ver" "$clang_path" "$MIN_CLANG_VERSION"
-else
-    print_status "clang" "fail" "$clang_ver" "$clang_path" "$MIN_CLANG_VERSION"
-    ALL_OK=false
-fi
+    local first
+    first="$(printf '%s\n%s\n' "${required}" "${actual}" | sort -V | head -n1)"
+    if [[ "${first}" == "${required}" ]]; then
+        return 0
+    fi
 
-# Check Clang++
-clangpp_ver=$(get_clang_version)
-clangpp_path=$(get_path clang++)
-if [[ -n "$clangpp_ver" ]] && [[ "$clangpp_ver" -ge "${MIN_CLANG_VERSION%%.*}" ]]; then
-    print_status "clang++" "ok" "$clangpp_ver" "$clangpp_path" "$MIN_CLANG_VERSION"
-else
-    print_status "clang++" "fail" "$clangpp_ver" "$clangpp_path" "$MIN_CLANG_VERSION"
-    ALL_OK=false
-fi
+    return 1
+}
 
-# Check CMake
-cmake_ver=$(get_cmake_version)
-cmake_path=$(get_path cmake)
-if [[ -n "$cmake_ver" ]] && version_ge "$cmake_ver" "$MIN_CMAKE_VERSION"; then
-    print_status "cmake" "ok" "$cmake_ver" "$cmake_path" "$MIN_CMAKE_VERSION"
-else
-    print_status "cmake" "fail" "$cmake_ver" "$cmake_path" "$MIN_CMAKE_VERSION"
-    ALL_OK=false
-fi
+main() {
+    echo -e "${BOLD}${CYAN}TaskSmack prerequisite check${NC}"
+    echo
 
-# Check Ninja
-ninja_ver=$(get_ninja_version)
-ninja_path=$(get_path ninja)
-if [[ -n "$ninja_ver" ]]; then
-    print_status "ninja" "ok" "$ninja_ver" "$ninja_path" ""
-else
-    print_status "ninja" "fail" "" "$ninja_path" ""
-    ALL_OK=false
-fi
+    local all_ok=0
 
-# Check lld
-lld_ver=$(get_lld_version)
-lld_path=$(get_path ld.lld)
-[[ -z "$lld_path" ]] && lld_path=$(get_path lld)
-if [[ -n "$lld_ver" ]]; then
-    print_status "lld" "ok" "$lld_ver" "$lld_path" ""
-else
-    print_status "lld" "fail" "" "$lld_path" ""
-    ALL_OK=false
-fi
+    # CMake
+    local cmake_ver
+    cmake_ver="$(get_cmake_version)"
+    if [[ -z "${cmake_ver}" ]]; then
+        echo -e "${RED}cmake${NC}: not found"
+        all_ok=1
+    else
+        local cmake_path
+        cmake_path="$(command -v cmake 2>/dev/null || true)"
+        if version_at_least "${MIN_CMAKE_VERSION}" "${cmake_ver}"; then
+            echo -e "${GREEN}cmake${NC}: ${cmake_ver} (${cmake_path})"
+        else
+            echo -e "${YELLOW}cmake${NC}: ${cmake_ver} (${cmake_path}) - minimum required ${MIN_CMAKE_VERSION}"
+            all_ok=1
+        fi
+    fi
 
-# Check ccache
-ccache_ver=$(get_ccache_version)
-ccache_path=$(get_path ccache)
-if [[ -n "$ccache_ver" ]] && version_ge "$ccache_ver" "$MIN_CCACHE_VERSION"; then
-    print_status "ccache" "ok" "$ccache_ver" "$ccache_path" "$MIN_CCACHE_VERSION"
-else
-    print_status "ccache" "fail" "$ccache_ver" "$ccache_path" "$MIN_CCACHE_VERSION"
-    ALL_OK=false
-fi
+    # Clang
+    local clang_ver
+    clang_ver="$(get_clang_version)"
+    if [[ -z "${clang_ver}" ]]; then
+        echo -e "${RED}clang${NC}: not found"
+        all_ok=1
+    else
+        local clang_path
+        clang_path="$(command -v clang 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clang_ver}"; then
+            echo -e "${GREEN}clang${NC}: ${clang_ver} (${clang_path})"
+        else
+            echo -e "${YELLOW}clang${NC}: ${clang_ver} (${clang_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
+    fi
 
-# Check clang-tidy
-tidy_ver=$(get_clang_tidy_version)
-tidy_path=$(get_path clang-tidy)
-if [[ -n "$tidy_ver" ]]; then
-    print_status "clang-tidy" "ok" "$tidy_ver" "$tidy_path" ""
-else
-    print_status "clang-tidy" "fail" "" "$tidy_path" ""
-    ALL_OK=false
-fi
+    # ccache
+    local ccache_ver
+    ccache_ver="$(get_ccache_version)"
+    if [[ -z "${ccache_ver}" ]]; then
+        echo -e "${RED}ccache${NC}: not found"
+        all_ok=1
+    else
+        local ccache_path
+        ccache_path="$(command -v ccache 2>/dev/null || true)"
+        if version_at_least "${MIN_CCACHE_VERSION}" "${ccache_ver}"; then
+            echo -e "${GREEN}ccache${NC}: ${ccache_ver} (${ccache_path})"
+        else
+            echo -e "${YELLOW}ccache${NC}: ${ccache_ver} (${ccache_path}) - minimum required ${MIN_CCACHE_VERSION}"
+            all_ok=1
+        fi
+    fi
 
-# Check clang-format
-format_ver=$(get_clang_format_version)
-format_path=$(get_path clang-format)
-if [[ -n "$format_ver" ]]; then
-    print_status "clang-format" "ok" "$format_ver" "$format_path" ""
-else
-    print_status "clang-format" "fail" "" "$format_path" ""
-    ALL_OK=false
-fi
+    # git
+    local git_ver
+    git_ver="$(get_git_version)"
+    if [[ -z "${git_ver}" ]]; then
+        echo -e "${RED}git${NC}: not found"
+        all_ok=1
+    else
+        local git_path
+        git_path="$(command -v git 2>/dev/null || true)"
+        if version_at_least "${MIN_GIT_VERSION}" "${git_ver}"; then
+            echo -e "${GREEN}git${NC}: ${git_ver} (${git_path})"
+        else
+            echo -e "${YELLOW}git${NC}: ${git_ver} (${git_path}) - minimum required ${MIN_GIT_VERSION}"
+            all_ok=1
+        fi
+    fi
 
-# Check git (required for FetchContent dependencies)
-git_ver=$(get_git_version)
-git_path=$(get_path git)
-if [[ -n "$git_ver" ]] && version_ge "$git_ver" "$MIN_GIT_VERSION"; then
-    print_status "git" "ok" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
-else
-    print_status "git" "fail" "$git_ver" "$git_path" "$MIN_GIT_VERSION"
-    ALL_OK=false
-fi
+    # llvm-cov (informational)
+    local llvm_cov_ver
+    llvm_cov_ver="$(get_llvm_cov_version)"
+    if [[ -z "${llvm_cov_ver}" ]]; then
+        echo -e "${YELLOW}llvm-cov${NC}: not found (only required for coverage)"
+    else
+        local llvm_cov_path
+        llvm_cov_path="$(command -v llvm-cov 2>/dev/null || true)"
+        echo -e "${GREEN}llvm-cov${NC}: ${llvm_cov_ver} (${llvm_cov_path})"
+    fi
 
-# Check Python 3 (required for GLAD OpenGL loader generation)
-python3_ver=$(get_python3_version)
-python3_path=$(get_path python3)
-[[ -z "$python3_path" ]] && python3_path=$(get_path python)
-if [[ -n "$python3_ver" ]]; then
-    print_status "python3" "ok" "$python3_ver" "$python3_path" "3.0"
-else
-    print_status "python3" "fail" "" "$python3_path" "3.0"
-    ALL_OK=false
-fi
+    # Python 3 (informational)
+    local py_ver
+    py_ver="$(get_python3_version)"
+    if [[ -z "${py_ver}" ]]; then
+        echo -e "${YELLOW}python3${NC}: not found (required for some tooling)"
+    else
+        local py_cmd
+        py_cmd="$(get_python_cmd)"
+        local py_path
+        py_path="$(command -v "${py_cmd}" 2>/dev/null || true)"
+        echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
+    fi
 
-# Check jinja2 Python module (required for GLAD)
-jinja2_installed=$(check_jinja2)
-jinja2_ver=$(get_jinja2_version)
-if [[ "$jinja2_installed" == "yes" ]]; then
-    jinja2_display=${jinja2_ver:-installed}
-    print_status "jinja2" "ok" "$jinja2_display" "(python module)" ""
-else
-    print_status "jinja2" "fail" "missing" "(pip install jinja2)" ""
-    ALL_OK=false
-fi
+    # jinja2 (informational)
+    local jinja_ver
+    jinja_ver="$(get_jinja2_version)"
+    if [[ -z "${jinja_ver}" ]]; then
+        echo -e "${YELLOW}jinja2${NC}: Python module not found (required for GLAD generation)"
+    else
+        echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
+    fi
 
-# Check llvm-profdata
-profdata_ver=$(get_llvm_profdata_version)
-profdata_path=$(get_path llvm-profdata)
-if [[ -n "$profdata_ver" ]]; then
-    print_status "llvm-profdata" "ok" "$profdata_ver" "$profdata_path" ""
-else
-    print_status "llvm-profdata" "fail" "" "$profdata_path" ""
-    # Don't fail for optional coverage tools
-fi
+    echo
+    if [[ "${all_ok}" -eq 0 ]]; then
+        echo -e "${GREEN}All mandatory prerequisites are satisfied.${NC}"
+        return 0
+    else
+        echo -e "${RED}Some mandatory prerequisites are missing or out of date.${NC}"
+        return 1
+    fi
+}
 
-# Check llvm-cov
-cov_ver=$(get_llvm_cov_version)
-cov_path=$(get_path llvm-cov)
-if [[ -n "$cov_ver" ]]; then
-    print_status "llvm-cov" "ok" "$cov_ver" "$cov_path" ""
-else
-    print_status "llvm-cov" "fail" "" "$cov_path" ""
-    # Don't fail for optional coverage tools
-fi
-
-echo "──────────────────────────────────────────────────────────────────────────"
-echo ""
-
-# Environment variables
-echo -e "${BOLD}Environment Variables${NC}"
-echo "──────────────────────────────────────────────────────────────────────────"
-if [[ -n "${CMAKE_ROOT:-}" ]]; then
-    echo -e "${GREEN}✓${NC} CMAKE_ROOT      = ${BLUE}$CMAKE_ROOT${NC}"
-else
-    echo -e "${YELLOW}○${NC} CMAKE_ROOT      = ${YELLOW}(not set)${NC}"
-fi
-if [[ -n "${LLVM_ROOT:-}" ]]; then
-    echo -e "${GREEN}✓${NC} LLVM_ROOT       = ${BLUE}$LLVM_ROOT${NC}"
-else
-    echo -e "${YELLOW}○${NC} LLVM_ROOT       = ${YELLOW}(not set)${NC}"
-fi
-if [[ -n "${CC:-}" ]]; then
-    echo -e "${GREEN}✓${NC} CC              = ${BLUE}$CC${NC}"
-else
-    echo -e "${YELLOW}○${NC} CC              = ${YELLOW}(not set, using default)${NC}"
-fi
-if [[ -n "${CXX:-}" ]]; then
-    echo -e "${GREEN}✓${NC} CXX             = ${BLUE}$CXX${NC}"
-else
-    echo -e "${YELLOW}○${NC} CXX             = ${YELLOW}(not set, using default)${NC}"
-fi
-echo "──────────────────────────────────────────────────────────────────────────"
-echo ""
-
-# Summary
-if $ALL_OK; then
-    echo -e "${GREEN}${BOLD}All required prerequisites are installed and meet version requirements.${NC}"
-    exit 0
-else
-    echo -e "${RED}${BOLD}Some prerequisites are missing or do not meet version requirements.${NC}"
-    echo -e "Run ${CYAN}./setup.sh --help${NC} for installation instructions."
-    exit 1
+if [[ "${BASH_SOURCE[0]:-}" == "$0" ]]; then
+    main "$@"
 fi
