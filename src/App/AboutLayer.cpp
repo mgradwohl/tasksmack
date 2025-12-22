@@ -19,9 +19,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#ifdef __linux__
-#include <unistd.h>
-#endif
 #include <shellapi.h>
 #include <windows.h>
 #endif
