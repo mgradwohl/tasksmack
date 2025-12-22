@@ -198,3 +198,159 @@ get_python_cmd() {
 }
 
 # Check if jinja2 Python module is installed
+get_jinja2_version() {
+    local py_cmd
+    py_cmd="$(get_python_cmd)"
+
+    if [[ -z "${py_cmd}" ]]; then
+        echo ""
+        return 1
+    fi
+
+    "${py_cmd}" - <<'EOF' 2>/dev/null
+try:
+    import jinja2
+    print(getattr(jinja2, "__version__", "unknown"))
+except Exception:
+    pass
+EOF
+}
+
+# Compare two version strings (returns 0 if actual >= required)
+version_at_least() {
+    local required="$1"
+    local actual="$2"
+
+    if [[ -z "${actual}" ]]; then
+        return 1
+    fi
+
+    local first
+    first="$(printf '%s\n%s\n' "${required}" "${actual}" | sort -V | head -n1)"
+    if [[ "${first}" == "${required}" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+main() {
+    echo -e "${BOLD}${CYAN}TaskSmack prerequisite check${NC}"
+    echo
+
+    local all_ok=0
+
+    # CMake
+    local cmake_ver
+    cmake_ver="$(get_cmake_version)"
+    if [[ -z "${cmake_ver}" ]]; then
+        echo -e "${RED}cmake${NC}: not found"
+        all_ok=1
+    else
+        local cmake_path
+        cmake_path="$(command -v cmake 2>/dev/null || true)"
+        if version_at_least "${MIN_CMAKE_VERSION}" "${cmake_ver}"; then
+            echo -e "${GREEN}cmake${NC}: ${cmake_ver} (${cmake_path})"
+        else
+            echo -e "${YELLOW}cmake${NC}: ${cmake_ver} (${cmake_path}) - minimum required ${MIN_CMAKE_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # Clang
+    local clang_ver
+    clang_ver="$(get_clang_version)"
+    if [[ -z "${clang_ver}" ]]; then
+        echo -e "${RED}clang${NC}: not found"
+        all_ok=1
+    else
+        local clang_path
+        clang_path="$(command -v clang 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clang_ver}"; then
+            echo -e "${GREEN}clang${NC}: ${clang_ver} (${clang_path})"
+        else
+            echo -e "${YELLOW}clang${NC}: ${clang_ver} (${clang_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # ccache
+    local ccache_ver
+    ccache_ver="$(get_ccache_version)"
+    if [[ -z "${ccache_ver}" ]]; then
+        echo -e "${RED}ccache${NC}: not found"
+        all_ok=1
+    else
+        local ccache_path
+        ccache_path="$(command -v ccache 2>/dev/null || true)"
+        if version_at_least "${MIN_CCACHE_VERSION}" "${ccache_ver}"; then
+            echo -e "${GREEN}ccache${NC}: ${ccache_ver} (${ccache_path})"
+        else
+            echo -e "${YELLOW}ccache${NC}: ${ccache_ver} (${ccache_path}) - minimum required ${MIN_CCACHE_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # git
+    local git_ver
+    git_ver="$(get_git_version)"
+    if [[ -z "${git_ver}" ]]; then
+        echo -e "${RED}git${NC}: not found"
+        all_ok=1
+    else
+        local git_path
+        git_path="$(command -v git 2>/dev/null || true)"
+        if version_at_least "${MIN_GIT_VERSION}" "${git_ver}"; then
+            echo -e "${GREEN}git${NC}: ${git_ver} (${git_path})"
+        else
+            echo -e "${YELLOW}git${NC}: ${git_ver} (${git_path}) - minimum required ${MIN_GIT_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # llvm-cov (informational)
+    local llvm_cov_ver
+    llvm_cov_ver="$(get_llvm_cov_version)"
+    if [[ -z "${llvm_cov_ver}" ]]; then
+        echo -e "${YELLOW}llvm-cov${NC}: not found (only required for coverage)"
+    else
+        local llvm_cov_path
+        llvm_cov_path="$(command -v llvm-cov 2>/dev/null || true)"
+        echo -e "${GREEN}llvm-cov${NC}: ${llvm_cov_ver} (${llvm_cov_path})"
+    fi
+
+    # Python 3 (informational)
+    local py_ver
+    py_ver="$(get_python3_version)"
+    if [[ -z "${py_ver}" ]]; then
+        echo -e "${YELLOW}python3${NC}: not found (required for some tooling)"
+    else
+        local py_cmd
+        py_cmd="$(get_python_cmd)"
+        local py_path
+        py_path="$(command -v "${py_cmd}" 2>/dev/null || true)"
+        echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
+    fi
+
+    # jinja2 (informational)
+    local jinja_ver
+    jinja_ver="$(get_jinja2_version)"
+    if [[ -z "${jinja_ver}" ]]; then
+        echo -e "${YELLOW}jinja2${NC}: Python module not found (required for GLAD generation)"
+    else
+        echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
+    fi
+
+    echo
+    if [[ "${all_ok}" -eq 0 ]]; then
+        echo -e "${GREEN}All mandatory prerequisites are satisfied.${NC}"
+        return 0
+    else
+        echo -e "${RED}Some mandatory prerequisites are missing or out of date.${NC}"
+        return 1
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]:-}" == "$0" ]]; then
+    main "$@"
+fi
