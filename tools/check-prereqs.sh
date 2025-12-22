@@ -9,7 +9,7 @@ set -euo pipefail
 
 # Required versions (minimum)
 MIN_CMAKE_VERSION="3.28"
-MIN_CLANG_VERSION="21"
+MIN_CLANG_VERSION="22"
 MIN_CCACHE_VERSION="4.9.1"
 MIN_GIT_VERSION="2.30"
 

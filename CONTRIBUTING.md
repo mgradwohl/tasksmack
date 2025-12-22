@@ -48,7 +48,9 @@ ctest --preset win-debug
 
 ### Linux Pre-Requisites
 
-- Clang 21+ recommended
+- **Clang 22 + libc++/libc++abi 22 (matches CI)**
+    - `sudo apt install clang-22 lld-22 g++-13 libc++-22-dev libc++abi-22-dev`
+    - `<print>` from C++23 requires a C++23-ready standard library (libc++ 22)
 - CMake 3.28+ (4.2.1+ recommended)
 - Ninja
 - lld (LLVM linker)

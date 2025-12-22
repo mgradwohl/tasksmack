@@ -23,13 +23,13 @@ BUILD_TYPE="debug"
 VERBOSE=false
 
 # LLVM paths (adjust if needed)
-LLVM_ROOT="/usr/lib/llvm-21"
+LLVM_ROOT="/usr/lib/llvm-22"
 CLANG_CXX="${LLVM_ROOT}/bin/clang++"
 CLANG_C="${LLVM_ROOT}/bin/clang"
 
 # Try common LLVM locations
 if [[ ! -x "$CLANG_CXX" ]]; then
-    for ver in 21 20 19 18 17; do
+    for ver in 22 21 20 19 18 17; do
         if [[ -x "/usr/lib/llvm-$ver/bin/clang++" ]]; then
             LLVM_ROOT="/usr/lib/llvm-$ver"
             CLANG_CXX="${LLVM_ROOT}/bin/clang++"
@@ -88,8 +88,9 @@ CMAKE_ARGS=(
     -DCMAKE_CXX_STANDARD_REQUIRED=ON
     -DCMAKE_CXX_EXTENSIONS=OFF
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-    -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+    -DCMAKE_CXX_FLAGS="-stdlib=libc++ -pthread"
+    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -stdlib=libc++ -pthread"
+    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -stdlib=libc++ -pthread"
 )
 
 # Build type specific args
