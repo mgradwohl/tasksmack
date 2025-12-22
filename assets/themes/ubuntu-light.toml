@@ -1,6 +1,6 @@
 # Ubuntu Light Theme
-# Inspired by Ubuntu 24.04 light mode (GNOME Adwaita)
-# Orange accent with clean, modern design
+# Inspired by Ubuntu 24.04 light mode (GNOME Adwaita) with warmer, paper-like base
+# Orange accent pushed a bit brighter to mirror the dark theme’s warmth
 #
 # Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
 # Alpha: 00 = transparent, FF = opaque
@@ -17,11 +17,11 @@ version = "1.0"
 # =============================================================================
 [heatmap]
 gradient = [
-    "#B3E5FC",  # 0%   - Light Blue (cool/idle)
-    "#81D4FA",  # 25%  - Sky Blue
-    "#FFD180",  # 50%  - Light Orange (moderate)
-    "#FF9800",  # 75%  - Orange (warning)
-    "#F44336",  # 100% - Red (hot/danger)
+    "#C5E7FF",  # 0%   - Cool Blue (cool/idle)
+    "#9AD5FF",  # 25%  - Sky Blue
+    "#FFC57A",  # 50%  - Warm Orange (moderate)
+    "#FF9C33",  # 75%  - Bright Orange (warning)
+    "#E1473A",  # 100% - Red (hot/danger)
 ]
 
 # =============================================================================
@@ -31,14 +31,14 @@ gradient = [
 # =============================================================================
 [accents]
 colors = [
-    "#E95420",  # Ubuntu Orange
-    "#19B6EE",  # Ubuntu Blue
-    "#77DD77",  # Light Green
-    "#8E44AD",  # Purple
-    "#ED7014",  # Dark Orange
-    "#3584E4",  # Blue
-    "#FFBE00",  # Yellow
-    "#C7162B",  # Red
+    "#F16322",  # Ubuntu Orange (brighter)
+    "#1CA9E8",  # Ubuntu Blue (crisper)
+    "#6FD86F",  # Light Green
+    "#8B4CC6",  # Purple
+    "#F07F1E",  # Dark Orange
+    "#3A8FEA",  # Blue
+    "#FFC533",  # Yellow
+    "#CC2333",  # Red
 ]
 
 # =============================================================================
@@ -55,6 +55,8 @@ high = "#F44336"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#111111"   # Near-black for high contrast on light bg
+text_disabled = "#6B6B6B"  # Muted gray for disabled text
 text_muted = "#888888"     # Gray - dimmed text
 text_error = "#C01C28"     # Red - error messages
 text_warning = "#E66100"   # Orange - warning messages
@@ -115,10 +117,10 @@ active = "#A51D2D"     # Dark red
 # Base colors for windows, popups, and borders - Ubuntu/Adwaita light
 # =============================================================================
 [ui.window]
-background = "#FAFAFA"            # Light background
-child_background = "#FAFAFA00"    # Transparent
-popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
-border = "#CCCCCC80"              # Light border (80 = 50%)
+background = "#FBF8F4"            # Warm paper-like background
+child_background = "#FBF8F400"    # Transparent
+popup_background = "#F8F1EAF0"    # Warm parchment-tinted popup, semi-opaque (F0 = 94%)
+border = "#D7CFC480"              # Warm gray-beige border (80 = 50%)
 border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
@@ -126,26 +128,26 @@ border_shadow = "#00000000"       # Transparent - no border shadow
 # Input fields, combo boxes, sliders background
 # =============================================================================
 [ui.frame]
-background = "#FFFFFF"
-background_hovered = "#F5F5F5"
-background_active = "#EEEEEE"
+background = "#FFF7F0"
+background_hovered = "#F6EFE6"
+background_active = "#EDE4D9"
 
 # =============================================================================
 # TITLE BAR COLORS
 # Window title bars - Ubuntu/GNOME style
 # =============================================================================
 [ui.title]
-background = "#EBEBEB"
-background_active = "#E1E1E1"
-background_collapsed = "#EBEBEB80"    # 80 = 50% alpha
+background = "#F1E8DE"
+background_active = "#E7DDCF"
+background_collapsed = "#F1E8DE80"    # 80 = 50% alpha
 
 # =============================================================================
 # BAR COLORS
 # Menu bar and status bar
 # =============================================================================
 [ui.bars]
-menu = "#EBEBEB"
-status = "#F5F5F5"
+menu = "#F1E8DE"
+status = "#F6EFE6"
 
 # =============================================================================
 # SCROLLBAR COLORS

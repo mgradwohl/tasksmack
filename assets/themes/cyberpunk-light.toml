@@ -1,6 +1,6 @@
 # Cyberpunk Light Theme
-# Light neon aesthetic with bright base and vibrant accents
-# Light variant of the dark cyberpunk theme
+# Light neon aesthetic with punchy cyan/magenta on a cool violet-tinted base
+# Light variant that echoes the synthwave glow of the dark theme
 #
 # Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
 # Alpha: 00 = transparent, FF = opaque
@@ -17,11 +17,11 @@ version = "1.0"
 # =============================================================================
 [heatmap]
 gradient = [
-    "#E1BEF7",  # 0%   - Light Purple (cool/idle)
-    "#B39DFF",  # 25%  - Light Electric Violet
-    "#FF80AB",  # 50%  - Light Magenta (moderate)
-    "#FFB74D",  # 75%  - Light Orange (warning)
-    "#FFF59D",  # 100% - Light Yellow (hot)
+    "#D9CCFF",  # 0%   - Frosted Violet (cool/idle)
+    "#BFA1FF",  # 25%  - Electric Lilac
+    "#FF7FD1",  # 50%  - Neon Pink (moderate)
+    "#FF9F3D",  # 75%  - Neon Amber (warning)
+    "#FFF07A",  # 100% - Acid Yellow (hot)
 ]
 
 # =============================================================================
@@ -30,14 +30,14 @@ gradient = [
 # =============================================================================
 [accents]
 colors = [
-    "#FF4081",  # Neon Pink
-    "#00BCD4",  # Cyan
-    "#7C4DFF",  # Violet
-    "#76FF03",  # Neon Green
-    "#FF6D00",  # Hot Orange
-    "#E040FB",  # Magenta
-    "#FFD600",  # Yellow
-    "#FF1744",  # Red
+    "#FF4FA3",  # Neon Pink
+    "#00D7FF",  # Electric Cyan
+    "#815CFF",  # Vivid Violet
+    "#7DFF5A",  # Neon Lime
+    "#FF7A1A",  # Hot Orange
+    "#F44BFF",  # Magenta
+    "#FFE433",  # Laser Yellow
+    "#FF315A",  # Crimson Neon
 ]
 
 # =============================================================================
@@ -54,6 +54,8 @@ high = "#FF6D00"      # 80-100% - Hot Orange (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#0D0D12"   # Dark near-black for contrast on light bg
+text_disabled = "#5E5E6A"  # Muted gray-violet for disabled text
 text_muted = "#808080"     # Gray
 text_error = "#D32F2F"     # Red - error messages
 text_warning = "#F57C00"   # Orange - warning messages
@@ -114,10 +116,10 @@ active = "#B71C1C"     # Dark red
 # Base colors for windows, popups, and borders
 # =============================================================================
 [ui.window]
-background = "#FAFAFA"            # Light gray-white
-child_background = "#FAFAFA00"    # Transparent
-popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
-border = "#CCCCCC80"              # Light gray border (80 = 50%)
+background = "#F7F4FC"            # Cool violet-tinted light base
+child_background = "#F7F4FC00"    # Transparent
+popup_background = "#F3EDFBF0"    # Violet-tinted popup, semi-opaque (F0 = 94%)
+border = "#D7CFF580"              # Soft violet-gray border (80 = 50%)
 border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
@@ -125,26 +127,26 @@ border_shadow = "#00000000"       # Transparent - no border shadow
 # Input fields, combo boxes, sliders background
 # =============================================================================
 [ui.frame]
-background = "#EEEEEE"
-background_hovered = "#E0E0E0"
-background_active = "#D5D5D5"
+background = "#F0ECF8"
+background_hovered = "#E6DFF5"
+background_active = "#DBD2F0"
 
 # =============================================================================
 # TITLE BAR COLORS
 # Window title bars
 # =============================================================================
 [ui.title]
-background = "#F5F5F5"
-background_active = "#E8E8E8"
-background_collapsed = "#F5F5F580"    # 80 = 50% alpha
+background = "#EFE9F7"
+background_active = "#E4DAF3"
+background_collapsed = "#EFE9F780"    # 80 = 50% alpha
 
 # =============================================================================
 # BAR COLORS
 # Menu bar and status bar
 # =============================================================================
 [ui.bars]
-menu = "#F5F5F5"
-status = "#EEEEEE"
+menu = "#EFE9F7"
+status = "#E6DFF5"
 
 # =============================================================================
 # SCROLLBAR COLORS

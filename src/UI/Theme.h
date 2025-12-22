@@ -54,11 +54,13 @@ struct ColorScheme
     ImVec4 progressHigh{};   // 80-100%
 
     // Semantic UI colors
-    ImVec4 textMuted{};   // Dimmed/secondary text (labels, hints)
-    ImVec4 textError{};   // Error messages
-    ImVec4 textWarning{}; // Warning messages
-    ImVec4 textSuccess{}; // Success messages
-    ImVec4 textInfo{};    // Informational text
+    ImVec4 textPrimary{};  // Primary text color
+    ImVec4 textDisabled{}; // Disabled text color
+    ImVec4 textMuted{};    // Dimmed/secondary text (labels, hints)
+    ImVec4 textError{};    // Error messages
+    ImVec4 textWarning{};  // Warning messages
+    ImVec4 textSuccess{};  // Success messages
+    ImVec4 textInfo{};     // Informational text
 
     // Status colors for process states
     ImVec4 statusRunning{};   // R - Running/Active (green)

@@ -55,6 +55,8 @@ high = "#E01B24"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#EDEDED"   # Near-white for contrast on dark bg
+text_disabled = "#A1A1A1"  # Soft gray for disabled text
 text_muted = "#888888"     # Gray - dimmed text
 text_error = "#ED333B"     # Light Red - error messages
 text_warning = "#FFA348"   # Light Orange - warning messages

@@ -242,6 +242,8 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.textWarning = getColor(tbl, "semantic.text_warning");
         scheme.textSuccess = getColor(tbl, "semantic.text_success");
         scheme.textInfo = getColor(tbl, "semantic.text_info");
+        scheme.textPrimary = getColor(tbl, "semantic.text_primary", scheme.textInfo);
+        scheme.textDisabled = getColor(tbl, "semantic.text_disabled", scheme.textMuted);
 
         // Status colors
         scheme.statusRunning = getColor(tbl, "status.running");

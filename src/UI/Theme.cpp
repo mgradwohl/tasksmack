@@ -49,6 +49,8 @@ void Theme::loadDefaultFallbackTheme()
     fallback.progressMedium = gray;
     fallback.progressHigh = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
 
+    fallback.textPrimary = ImVec4(0.90F, 0.92F, 0.96F, 1.0F);
+    fallback.textDisabled = ImVec4(0.65F, 0.68F, 0.72F, 1.0F);
     fallback.textMuted = gray;
     fallback.textError = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
     fallback.textWarning = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
@@ -258,6 +260,8 @@ void Theme::applyImGuiStyle() const
     const auto& s = scheme();
 
     // Apply colors
+    style.Colors[ImGuiCol_Text] = s.textPrimary;
+    style.Colors[ImGuiCol_TextDisabled] = s.textDisabled;
     style.Colors[ImGuiCol_WindowBg] = s.windowBg;
     style.Colors[ImGuiCol_ChildBg] = s.childBg;
     style.Colors[ImGuiCol_PopupBg] = s.popupBg;

@@ -1,6 +1,6 @@
 # Windows Light Theme
-# Inspired by Windows 11 light mode design language
-# Clean, modern, and professional with accent colors
+# Inspired by Windows 11 light mode with a cooler, mica-like tint and punchier accents
+# Light variant that mirrors the crisp contrast of the dark theme
 #
 # Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
 # Alpha: 00 = transparent, FF = opaque
@@ -17,11 +17,11 @@ version = "1.0"
 # =============================================================================
 [heatmap]
 gradient = [
-    "#B3D9FF",  # 0%   - Light Blue (cool/idle)
-    "#80C1FF",  # 25%  - Sky Blue
-    "#FFD966",  # 50%  - Light Gold (moderate)
-    "#FFB84D",  # 75%  - Orange (warning)
-    "#FF6B6B",  # 100% - Red (hot/danger)
+    "#C5E0FF",  # 0%   - Pale Windows Blue (cool/idle)
+    "#9BCBFF",  # 25%  - Sky Blue
+    "#FFD980",  # 50%  - Soft Gold (moderate)
+    "#FFB455",  # 75%  - Warm Amber (warning)
+    "#F26B73",  # 100% - Coral Red (hot/danger)
 ]
 
 # =============================================================================
@@ -31,14 +31,14 @@ gradient = [
 # =============================================================================
 [accents]
 colors = [
-    "#0078D4",  # Windows Blue
-    "#E74856",  # Red
-    "#10893E",  # Green
-    "#8E8CD8",  # Purple
-    "#F7630C",  # Orange
-    "#00B7C3",  # Teal
-    "#FFB900",  # Gold
-    "#E3008C",  # Magenta
+    "#0A7ED8",  # Windows Blue (slightly brighter)
+    "#E35C63",  # Red
+    "#0F8E42",  # Green
+    "#7F7AD6",  # Purple
+    "#FA7A1C",  # Orange
+    "#00B5C8",  # Teal
+    "#FFC228",  # Gold
+    "#D9008A",  # Magenta
 ]
 
 # =============================================================================
@@ -55,6 +55,8 @@ high = "#E74856"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#0F0F0F"   # Near-black for strong contrast on light bg
+text_disabled = "#666666"  # Muted gray for disabled text
 text_muted = "#8A8A8A"     # Gray - dimmed text
 text_error = "#C50F1F"     # Red - error messages
 text_warning = "#CA5010"   # Orange - warning messages
@@ -115,10 +117,10 @@ active = "#A40912"     # Darker red
 # Base colors for windows, popups, and borders - Windows 11 Mica effect inspired
 # =============================================================================
 [ui.window]
-background = "#F3F3F3"            # Light gray (Mica-like)
-child_background = "#F3F3F300"    # Transparent
-popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
-border = "#E5E5E580"              # Light border (80 = 50%)
+background = "#F5F7FA"            # Cool mica-like light gray
+child_background = "#F5F7FA00"    # Transparent
+popup_background = "#F1F5FAF0"    # Cool blue-tinted popup, semi-opaque (F0 = 94%)
+border = "#DDE3EB80"              # Cool gray-blue border (80 = 50%)
 border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
@@ -126,26 +128,26 @@ border_shadow = "#00000000"       # Transparent - no border shadow
 # Input fields, combo boxes, sliders background
 # =============================================================================
 [ui.frame]
-background = "#FFFFFF"
-background_hovered = "#F9F9F9"
-background_active = "#F3F3F3"
+background = "#F7FAFF"
+background_hovered = "#EDF3FB"
+background_active = "#E2EBF7"
 
 # =============================================================================
 # TITLE BAR COLORS
 # Window title bars - Windows 11 style
 # =============================================================================
 [ui.title]
-background = "#F3F3F3"
-background_active = "#EBEBEB"
-background_collapsed = "#F3F3F380"    # 80 = 50% alpha
+background = "#EDF1F7"
+background_active = "#E4EAF2"
+background_collapsed = "#EDF1F780"    # 80 = 50% alpha
 
 # =============================================================================
 # BAR COLORS
 # Menu bar and status bar
 # =============================================================================
 [ui.bars]
-menu = "#F3F3F3"
-status = "#F9F9F9"
+menu = "#EDF1F7"
+status = "#F0F4FA"
 
 # =============================================================================
 # SCROLLBAR COLORS

@@ -1,6 +1,6 @@
 # Arctic Fire Light Theme
-# A cool-to-warm gradient on light background: Blue → Emerald → Amber → Red
-# Light variant of the dark arctic-fire theme
+# A cool-to-warm gradient on a frosted, blue-tinted light background: Blue → Emerald → Amber → Red
+# Light variant that keeps the polar chill of the dark arctic-fire theme
 #
 # Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
 # Alpha: 00 = transparent, FF = opaque
@@ -17,11 +17,11 @@ version = "1.0"
 # =============================================================================
 [heatmap]
 gradient = [
-    "#BBDEFB",  # 0%   - Light Blue (cool/idle)
-    "#90CAF9",  # 25%  - Light Sky Blue
-    "#A5D6A7",  # 50%  - Light Emerald (moderate)
-    "#FFCC80",  # 75%  - Light Amber (warning)
-    "#EF9A9A",  # 100% - Light Red (hot/danger)
+    "#C7DAF5",  # 0%   - Ice Blue (cool/idle)
+    "#9BC6F0",  # 25%  - Glacier Blue
+    "#7FC8A5",  # 50%  - Frosted Emerald (moderate)
+    "#FFC980",  # 75%  - Frosted Amber (warning)
+    "#F29AA5",  # 100% - Soft Red (hot/danger)
 ]
 
 # =============================================================================
@@ -30,14 +30,14 @@ gradient = [
 # =============================================================================
 [accents]
 colors = [
-    "#42A5F5",  # Blue
-    "#FF7043",  # Orange
-    "#66BB6A",  # Green
-    "#AB47BC",  # Purple
-    "#FFC107",  # Gold
-    "#EC407A",  # Pink
-    "#C6FF00",  # Lime
-    "#FF8A65",  # Coral
+    "#2E7FCB",  # Glacial Blue
+    "#FF8A50",  # Warm Ember
+    "#4FAF7A",  # Alpine Green
+    "#7C64C8",  # Aurora Purple
+    "#F6C445",  # Polar Gold
+    "#E46E97",  # Sunlit Rose
+    "#A8F04F",  # Ice Lime
+    "#FF9E7A",  # Soft Coral
 ]
 
 # =============================================================================
@@ -54,6 +54,8 @@ high = "#E53935"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#0F1419"   # Dark charcoal for contrast on light bg
+text_disabled = "#666666"  # Muted gray for disabled text
 text_muted = "#999999"     # Gray - dimmed/secondary text
 text_error = "#D32F2F"     # Red - error messages
 text_warning = "#F57C00"   # Orange - warning messages
@@ -114,10 +116,10 @@ active = "#B71C1C"     # Dark red
 # Base colors for windows, popups, and borders
 # =============================================================================
 [ui.window]
-background = "#FAFAFA"            # Light background
-child_background = "#FAFAFA00"    # Transparent
-popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
-border = "#CCCCCC80"              # Light gray border (80 = 50%)
+background = "#F4F7FB"            # Frosted blue-white background
+child_background = "#F4F7FB00"    # Transparent
+popup_background = "#F1F5FAF0"    # Light blue-tinted popup, semi-opaque (F0 = 94%)
+border = "#C6D4E880"              # Cool gray-blue border (80 = 50%)
 border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
@@ -125,26 +127,26 @@ border_shadow = "#00000000"       # Transparent - no border shadow
 # Input fields, combo boxes, sliders background
 # =============================================================================
 [ui.frame]
-background = "#F5F5F5"
-background_hovered = "#EEEEEE"
-background_active = "#E0E0E0"
+background = "#EDF2F8"
+background_hovered = "#E3ECF5"
+background_active = "#D9E4F1"
 
 # =============================================================================
 # TITLE BAR COLORS
 # Window title bars
 # =============================================================================
 [ui.title]
-background = "#F8F8F8"
-background_active = "#EEEEEE"
-background_collapsed = "#F8F8F880"    # 80 = 50% alpha
+background = "#EAF0F7"
+background_active = "#DFE8F3"
+background_collapsed = "#EAF0F780"    # 80 = 50% alpha
 
 # =============================================================================
 # BAR COLORS
 # Menu bar and status bar
 # =============================================================================
 [ui.bars]
-menu = "#F8F8F8"
-status = "#F5F5F5"
+menu = "#EAF0F7"
+status = "#E3ECF5"
 
 # =============================================================================
 # SCROLLBAR COLORS

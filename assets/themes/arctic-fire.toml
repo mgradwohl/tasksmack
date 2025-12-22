@@ -54,6 +54,8 @@ high = "#E53935"      # 80-100% - Crimson (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#E5EAF2"   # Soft off-white for contrast on dark bg
+text_disabled = "#9AA4B2"  # Muted blue-gray for disabled text
 text_muted = "#999999"     # Gray - dimmed/secondary text
 text_error = "#E53935"     # Crimson - error messages
 text_warning = "#FFB300"   # Amber - warning messages

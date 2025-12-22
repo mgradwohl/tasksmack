@@ -54,6 +54,8 @@ high = "#FFEA00"      # 80-100% - Electric Yellow (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
+text_primary = "#E8E6F5"   # Pale violet-white for contrast on deep purple bg
+text_disabled = "#A3A0B5"  # Muted lavender-gray for disabled text
 text_muted = "#808099"     # Muted purple-gray
 text_error = "#FF1744"     # Red - error messages
 text_warning = "#FFEA00"   # Yellow - warning messages
