@@ -226,7 +226,7 @@ FetchContent_Declare(
     stb
     DOWNLOAD_EXTRACT_TIMESTAMP OFF
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG master
+    GIT_TAG f1c79c02822848a9bed4315b12c8c8f3761e1296  # Pinned to specific commit for supply-chain security
 )
 FetchContent_GetProperties(stb)
 if(NOT stb_POPULATED)
