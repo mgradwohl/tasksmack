@@ -1,0 +1,254 @@
+# Arctic Fire Light Theme
+# A cool-to-warm gradient on light background: Blue → Emerald → Amber → Red
+# Light variant of the dark arctic-fire theme
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Arctic Fire Light"
+description = "Blue → Emerald → Amber → Red gradient with light background"
+author = "TaskSmack"
+version = "1.0"
+
+# =============================================================================
+# HEATMAP GRADIENT
+# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
+# =============================================================================
+[heatmap]
+gradient = [
+    "#BBDEFB",  # 0%   - Light Blue (cool/idle)
+    "#90CAF9",  # 25%  - Light Sky Blue
+    "#A5D6A7",  # 50%  - Light Emerald (moderate)
+    "#FFCC80",  # 75%  - Light Amber (warning)
+    "#EF9A9A",  # 100% - Light Red (hot/danger)
+]
+
+# =============================================================================
+# ACCENT COLORS
+# 8 colors for charts, legends, and UI highlights
+# =============================================================================
+[accents]
+colors = [
+    "#42A5F5",  # Blue
+    "#FF7043",  # Orange
+    "#66BB6A",  # Green
+    "#AB47BC",  # Purple
+    "#FFC107",  # Gold
+    "#EC407A",  # Pink
+    "#C6FF00",  # Lime
+    "#FF8A65",  # Coral
+]
+
+# =============================================================================
+# PROGRESS BAR COLORS
+# Colors for progress bars based on percentage thresholds
+# =============================================================================
+[progress]
+low = "#66BB6A"       # 0-50%   - Green (healthy)
+medium = "#FFB300"    # 50-80%  - Amber (caution)
+high = "#E53935"      # 80-100% - Red (critical)
+
+# =============================================================================
+# SEMANTIC TEXT COLORS
+# Colors for different types of text/messages
+# =============================================================================
+[semantic]
+text_muted = "#999999"     # Gray - dimmed/secondary text
+text_error = "#D32F2F"     # Red - error messages
+text_warning = "#F57C00"   # Orange - warning messages
+text_success = "#388E3C"   # Green - success messages
+text_info = "#1976D2"      # Blue - informational text
+
+# =============================================================================
+# PROCESS STATUS COLORS
+# Colors for process states in the process list
+# =============================================================================
+[status]
+running = "#388E3C"    # Green - active/running (R)
+sleeping = "#1976D2"   # Blue - sleeping (S)
+disk_sleep = "#F57C00" # Orange - uninterruptible I/O (D)
+zombie = "#D32F2F"     # Red - defunct process (Z)
+stopped = "#FF7043"    # Orange - stopped/traced (T/t)
+idle = "#B0B0B0"       # Gray - idle kernel thread (I)
+
+# =============================================================================
+# CHART LINE COLORS
+# Colors for specific metric lines in graphs
+# =============================================================================
+[charts]
+cpu = "#1976D2"       # Blue - CPU usage line
+memory = "#388E3C"    # Green - memory usage line
+io = "#D32F2F"        # Red - I/O usage line
+cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
+memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
+io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O fill
+
+# =============================================================================
+# CPU BREAKDOWN COLORS
+# Colors for the stacked CPU usage bar
+# =============================================================================
+[cpu_breakdown]
+user = "#1976D2"      # Blue - user CPU time
+system = "#D32F2F"    # Red - system/kernel time
+iowait = "#F57C00"    # Orange - I/O wait time
+idle = "#D0D0D0"      # Light gray - idle time
+steal = "#D32F2F"     # Red - VM steal time
+user_fill = "#1976D259"      # Blue with 35% alpha - user fill
+system_fill = "#D32F2F59"    # Red with 35% alpha - system fill
+iowait_fill = "#F57C0059"    # Orange with 35% alpha - iowait fill
+idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
+steal_fill = "#D32F2F59"     # Red with 35% alpha - steal fill
+
+# =============================================================================
+# DANGER BUTTON COLORS
+# Colors for destructive action buttons (kill process, etc.)
+# =============================================================================
+[buttons.danger]
+normal = "#D32F2F"     # Red
+hovered = "#F44336"    # Bright red
+active = "#B71C1C"     # Dark red
+
+# =============================================================================
+# WINDOW COLORS
+# Base colors for windows, popups, and borders
+# =============================================================================
+[ui.window]
+background = "#FAFAFA"            # Light background
+child_background = "#FAFAFA00"    # Transparent
+popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
+border = "#CCCCCC80"              # Light gray border (80 = 50%)
+border_shadow = "#00000000"       # Transparent - no border shadow
+
+# =============================================================================
+# FRAME COLORS
+# Input fields, combo boxes, sliders background
+# =============================================================================
+[ui.frame]
+background = "#F5F5F5"
+background_hovered = "#EEEEEE"
+background_active = "#E0E0E0"
+
+# =============================================================================
+# TITLE BAR COLORS
+# Window title bars
+# =============================================================================
+[ui.title]
+background = "#F8F8F8"
+background_active = "#EEEEEE"
+background_collapsed = "#F8F8F880"    # 80 = 50% alpha
+
+# =============================================================================
+# BAR COLORS
+# Menu bar and status bar
+# =============================================================================
+[ui.bars]
+menu = "#F8F8F8"
+status = "#F5F5F5"
+
+# =============================================================================
+# SCROLLBAR COLORS
+# =============================================================================
+[ui.scrollbar]
+background = "#F8F8F880"          # 80 = 50% alpha
+grab = "#BBBBBB"
+grab_hovered = "#999999"
+grab_active = "#777777"
+
+# =============================================================================
+# CONTROL COLORS
+# Checkboxes, sliders, etc.
+# =============================================================================
+[ui.controls]
+check_mark = "#1976D2"
+slider_grab = "#1976D2"
+slider_grab_active = "#1565C0"
+
+# =============================================================================
+# BUTTON COLORS
+# Standard buttons (not danger buttons)
+# =============================================================================
+[ui.button]
+normal = "#E8E8E8"
+hovered = "#BDBDBD"
+active = "#9E9E9E"
+
+# =============================================================================
+# HEADER COLORS
+# Collapsible headers, tree nodes
+# =============================================================================
+[ui.header]
+normal = "#E8E8E8"
+hovered = "#BDBDBD"
+active = "#9E9E9E"
+
+# =============================================================================
+# SEPARATOR COLORS
+# Horizontal/vertical separators
+# =============================================================================
+[ui.separator]
+normal = "#CCCCCC80"              # 80 = 50% alpha
+hovered = "#1976D2"
+active = "#1565C0"
+
+# =============================================================================
+# RESIZE GRIP COLORS
+# Window resize handles
+# =============================================================================
+[ui.resize_grip]
+normal = "#BBBBBB33"              # 33 = 20% alpha
+hovered = "#1976D2"
+active = "#1565C0"
+
+# =============================================================================
+# TAB COLORS
+# Tab bar tabs
+# =============================================================================
+[ui.tab]
+normal = "#EEEEEE"
+hovered = "#BDBDBD"
+active = "#F5F5F5"
+active_overline = "#00000000"           # Transparent - no overline
+unfocused = "#F5F5F5"
+unfocused_active = "#E8E8E8"
+unfocused_active_overline = "#00000000" # Transparent - no overline
+
+# =============================================================================
+# DOCKING COLORS
+# Docking preview and empty space
+# =============================================================================
+[ui.docking]
+preview = "#1976D2B3"             # B3 = 70% alpha
+empty_background = "#FAFAFA"
+
+# =============================================================================
+# PLOT COLORS
+# ImGui plot widgets
+# =============================================================================
+[ui.plot]
+lines = "#1976D2"
+lines_hovered = "#D32F2F"
+histogram = "#388E3C"
+histogram_hovered = "#66BB6A"
+
+# =============================================================================
+# TABLE COLORS
+# Table widget colors
+# =============================================================================
+[ui.table]
+header_background = "#F5F5F5"
+border_strong = "#CCCCCC"
+border_light = "#E0E0E0"
+row_background = "#00000000"      # Transparent
+row_background_alt = "#00000008"  # 08 = 3% alpha
+
+# =============================================================================
+# MISCELLANEOUS UI COLORS
+# =============================================================================
+[ui.misc]
+text_selected_background = "#1976D259"    # 59 = 35% alpha
+drag_drop_target = "#FFB300"
+nav_highlight = "#1976D2"
+nav_windowing_highlight = "#00000066"     # 66 = 40% alpha
+nav_windowing_dim_background = "#00000033" # 33 = 20% alpha
+modal_window_dim_background = "#00000099"  # 99 = 60% alpha

@@ -1,0 +1,255 @@
+# Windows Light Theme
+# Inspired by Windows 11 light mode design language
+# Clean, modern, and professional with accent colors
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Windows Light"
+description = "Inspired by Windows 11 light mode - clean and modern"
+author = "TaskSmack"
+version = "1.0"
+
+# =============================================================================
+# HEATMAP GRADIENT
+# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
+# =============================================================================
+[heatmap]
+gradient = [
+    "#B3D9FF",  # 0%   - Light Blue (cool/idle)
+    "#80C1FF",  # 25%  - Sky Blue
+    "#FFD966",  # 50%  - Light Gold (moderate)
+    "#FFB84D",  # 75%  - Orange (warning)
+    "#FF6B6B",  # 100% - Red (hot/danger)
+]
+
+# =============================================================================
+# ACCENT COLORS
+# 8 colors for charts, legends, and UI highlights
+# Based on Windows 11 accent colors
+# =============================================================================
+[accents]
+colors = [
+    "#0078D4",  # Windows Blue
+    "#E74856",  # Red
+    "#10893E",  # Green
+    "#8E8CD8",  # Purple
+    "#F7630C",  # Orange
+    "#00B7C3",  # Teal
+    "#FFB900",  # Gold
+    "#E3008C",  # Magenta
+]
+
+# =============================================================================
+# PROGRESS BAR COLORS
+# Colors for progress bars based on percentage thresholds
+# =============================================================================
+[progress]
+low = "#107C10"       # 0-50%   - Green (healthy)
+medium = "#FFB900"    # 50-80%  - Gold (caution)
+high = "#E74856"      # 80-100% - Red (critical)
+
+# =============================================================================
+# SEMANTIC TEXT COLORS
+# Colors for different types of text/messages
+# =============================================================================
+[semantic]
+text_muted = "#8A8A8A"     # Gray - dimmed text
+text_error = "#C50F1F"     # Red - error messages
+text_warning = "#CA5010"   # Orange - warning messages
+text_success = "#107C10"   # Green - success messages
+text_info = "#0078D4"      # Blue - informational text
+
+# =============================================================================
+# PROCESS STATUS COLORS
+# Colors for process states in the process list
+# =============================================================================
+[status]
+running = "#107C10"    # Green - active/running (R)
+sleeping = "#0078D4"   # Blue - sleeping (S)
+disk_sleep = "#CA5010" # Orange - uninterruptible I/O (D)
+zombie = "#C50F1F"     # Red - defunct process (Z)
+stopped = "#8E8CD8"    # Purple - stopped/traced (T/t)
+idle = "#A0A0A0"       # Gray - idle kernel thread (I)
+
+# =============================================================================
+# CHART LINE COLORS
+# Colors for specific metric lines in graphs
+# =============================================================================
+[charts]
+cpu = "#0078D4"       # Windows Blue - CPU usage line
+memory = "#107C10"    # Green - memory usage line
+io = "#E74856"        # Red - I/O usage line
+cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
+memory_fill = "#107C104D"    # Green with 30% alpha - memory fill
+io_fill = "#E748564D"        # Red with 30% alpha - I/O fill
+
+# =============================================================================
+# CPU BREAKDOWN COLORS
+# Colors for the stacked CPU usage bar
+# =============================================================================
+[cpu_breakdown]
+user = "#0078D4"      # Windows Blue - user CPU time
+system = "#E74856"    # Red - system/kernel time
+iowait = "#FFB900"    # Gold - I/O wait time
+idle = "#D0D0D0"      # Light gray - idle time
+steal = "#C50F1F"     # Dark red - VM steal time
+user_fill = "#0078D459"      # Windows Blue with 35% alpha - user fill
+system_fill = "#E7485659"    # Red with 35% alpha - system fill
+iowait_fill = "#FFB90059"    # Gold with 35% alpha - iowait fill
+idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
+steal_fill = "#C50F1F59"     # Dark red with 35% alpha - steal fill
+
+# =============================================================================
+# DANGER BUTTON COLORS
+# Colors for destructive action buttons (kill process, etc.)
+# =============================================================================
+[buttons.danger]
+normal = "#C50F1F"     # Dark red
+hovered = "#E74856"    # Red
+active = "#A40912"     # Darker red
+
+# =============================================================================
+# WINDOW COLORS
+# Base colors for windows, popups, and borders - Windows 11 Mica effect inspired
+# =============================================================================
+[ui.window]
+background = "#F3F3F3"            # Light gray (Mica-like)
+child_background = "#F3F3F300"    # Transparent
+popup_background = "#FFFFFFF0"    # White, semi-opaque (F0 = 94%)
+border = "#E5E5E580"              # Light border (80 = 50%)
+border_shadow = "#00000000"       # Transparent - no border shadow
+
+# =============================================================================
+# FRAME COLORS
+# Input fields, combo boxes, sliders background
+# =============================================================================
+[ui.frame]
+background = "#FFFFFF"
+background_hovered = "#F9F9F9"
+background_active = "#F3F3F3"
+
+# =============================================================================
+# TITLE BAR COLORS
+# Window title bars - Windows 11 style
+# =============================================================================
+[ui.title]
+background = "#F3F3F3"
+background_active = "#EBEBEB"
+background_collapsed = "#F3F3F380"    # 80 = 50% alpha
+
+# =============================================================================
+# BAR COLORS
+# Menu bar and status bar
+# =============================================================================
+[ui.bars]
+menu = "#F3F3F3"
+status = "#F9F9F9"
+
+# =============================================================================
+# SCROLLBAR COLORS
+# =============================================================================
+[ui.scrollbar]
+background = "#F9F9F980"          # 80 = 50% alpha
+grab = "#C8C8C8"
+grab_hovered = "#A8A8A8"
+grab_active = "#888888"
+
+# =============================================================================
+# CONTROL COLORS
+# Checkboxes, sliders, etc. - Windows 11 accent
+# =============================================================================
+[ui.controls]
+check_mark = "#0078D4"
+slider_grab = "#0078D4"
+slider_grab_active = "#005A9E"
+
+# =============================================================================
+# BUTTON COLORS
+# Standard buttons (not danger buttons) - Windows 11 style
+# =============================================================================
+[ui.button]
+normal = "#F3F3F3"
+hovered = "#EBEBEB"
+active = "#E0E0E0"
+
+# =============================================================================
+# HEADER COLORS
+# Collapsible headers, tree nodes
+# =============================================================================
+[ui.header]
+normal = "#F3F3F3"
+hovered = "#EBEBEB"
+active = "#E0E0E0"
+
+# =============================================================================
+# SEPARATOR COLORS
+# Horizontal/vertical separators
+# =============================================================================
+[ui.separator]
+normal = "#E5E5E580"              # 80 = 50% alpha
+hovered = "#0078D4"
+active = "#005A9E"
+
+# =============================================================================
+# RESIZE GRIP COLORS
+# Window resize handles
+# =============================================================================
+[ui.resize_grip]
+normal = "#C8C8C833"              # 33 = 20% alpha
+hovered = "#0078D4"
+active = "#005A9E"
+
+# =============================================================================
+# TAB COLORS
+# Tab bar tabs - Windows 11 style
+# =============================================================================
+[ui.tab]
+normal = "#F3F3F3"
+hovered = "#EBEBEB"
+active = "#FFFFFF"
+active_overline = "#0078D4"             # Windows accent color overline
+unfocused = "#F9F9F9"
+unfocused_active = "#F3F3F3"
+unfocused_active_overline = "#0078D480" # Semi-transparent accent overline
+
+# =============================================================================
+# DOCKING COLORS
+# Docking preview and empty space
+# =============================================================================
+[ui.docking]
+preview = "#0078D4B3"             # B3 = 70% alpha
+empty_background = "#F3F3F3"
+
+# =============================================================================
+# PLOT COLORS
+# ImGui plot widgets
+# =============================================================================
+[ui.plot]
+lines = "#0078D4"
+lines_hovered = "#E74856"
+histogram = "#107C10"
+histogram_hovered = "#10893E"
+
+# =============================================================================
+# TABLE COLORS
+# Table widget colors
+# =============================================================================
+[ui.table]
+header_background = "#F9F9F9"
+border_strong = "#E5E5E5"
+border_light = "#F0F0F0"
+row_background = "#00000000"      # Transparent
+row_background_alt = "#00000008"  # 08 = 3% alpha
+
+# =============================================================================
+# MISCELLANEOUS UI COLORS
+# =============================================================================
+[ui.misc]
+text_selected_background = "#0078D459"    # 59 = 35% alpha
+drag_drop_target = "#FFB900"
+nav_highlight = "#0078D4"
+nav_windowing_highlight = "#00000066"     # 66 = 40% alpha
+nav_windowing_dim_background = "#00000033" # 33 = 20% alpha
+modal_window_dim_background = "#00000099"  # 99 = 60% alpha
