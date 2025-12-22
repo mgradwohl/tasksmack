@@ -23,6 +23,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+
 #include <shellapi.h>
 #include <windows.h>
 #endif
@@ -152,7 +153,9 @@ void AboutLayer::renderAboutDialog()
             const ImVec2 rawSize = m_Icon.size();
             const float scale = std::min(iconMax / rawSize.x, iconMax / rawSize.y);
             const ImVec2 drawSize(rawSize.x * scale, rawSize.y * scale);
-            const ImTextureID textureId = static_cast<ImTextureID>(m_Icon.id());
+            // ImTextureID is typically defined as void* in ImGui; m_Icon.id() is a GLuint.
+            // reinterpret_cast is required for this integer-to-pointer conversion.
+            const ImTextureID textureId = reinterpret_cast<ImTextureID>(m_Icon.id());
             ImGui::Image(textureId, drawSize);
         }
         else
