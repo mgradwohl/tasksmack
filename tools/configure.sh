@@ -109,8 +109,8 @@ case "$BUILD_TYPE" in
             -DCMAKE_BUILD_TYPE=Release
             -DTASKSMACK_ENABLE_IPO=ON
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-            -DCMAKE_EXE_LINKER_FLAGS_RELEASE=-s
-            -DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-s
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-fuse-ld=lld -stdlib=libc++ -pthread -s"
+            -DCMAKE_SHARED_LINKER_FLAGS_RELEASE="-fuse-ld=lld -stdlib=libc++ -pthread -s"
             "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
         )
         ;;
