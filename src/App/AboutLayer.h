@@ -8,6 +8,9 @@
 namespace App
 {
 
+/// About dialog layer (singleton).
+/// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
+/// are guaranteed to be called from the main thread only, as required by GLFW and ImGui.
 class AboutLayer : public Core::Layer
 {
   public:
