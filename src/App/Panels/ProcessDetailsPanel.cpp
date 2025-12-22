@@ -436,14 +436,10 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
                     }
 
-                    ImVec4 userFill = theme.scheme().cpuUser;
-                    userFill.w = 0.35F;
-                    ImPlot::SetNextFillStyle(userFill);
+                    ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
                     ImPlot::PlotShaded("##CpuUser", cpuTimeData.data(), y0.data(), yUserTop.data(), plotCount);
 
-                    ImVec4 systemFill = theme.scheme().cpuSystem;
-                    systemFill.w = 0.35F;
-                    ImPlot::SetNextFillStyle(systemFill);
+                    ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
                     ImPlot::PlotShaded("##CpuSystem", cpuTimeData.data(), yUserTop.data(), ySystemTop.data(), plotCount);
 
                     ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);

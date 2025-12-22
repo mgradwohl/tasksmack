@@ -82,6 +82,9 @@ idle = "#1B5E20"       # I - Very dim green - idle kernel thread
 cpu = "#81C784"       # Bright green - CPU usage line
 memory = "#4CAF50"    # Medium green - memory usage line
 io = "#66BB6A"        # Light green - I/O usage line
+cpu_fill = "#81C7844D"       # Bright green with 30% alpha - CPU fill
+memory_fill = "#4CAF504D"    # Medium green with 30% alpha - memory fill
+io_fill = "#66BB6A4D"        # Light green with 30% alpha - I/O fill
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -93,6 +96,11 @@ system = "#4CAF50"    # Medium green - system/kernel time
 iowait = "#B9F6CA"    # Glow - I/O wait time
 idle = "#2E7D32"      # Dim green - idle time
 steal = "#B9F6CA"     # Brightest (alert) - VM steal time
+user_fill = "#81C78459"      # Bright green with 35% alpha - user fill
+system_fill = "#4CAF5059"    # Medium green with 35% alpha - system fill
+iowait_fill = "#B9F6CA59"    # Glow with 35% alpha - iowait fill
+idle_fill = "#2E7D3233"      # Dim green with 20% alpha - idle fill
+steal_fill = "#B9F6CA59"     # Brightest with 35% alpha - steal fill
 
 # =============================================================================
 # DANGER BUTTON COLORS
@@ -113,6 +121,7 @@ background = "#0A140A"            # Dark with green tint
 child_background = "#0A140A00"    # Transparent
 popup_background = "#0F1A0FF0"    # Slightly lighter, semi-opaque (F0 = 94%)
 border = "#1F401F80"              # Green-tinted border (80 = 50%)
+border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
 # FRAME COLORS

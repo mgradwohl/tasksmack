@@ -82,6 +82,9 @@ idle = "#666680"       # Muted purple-gray - idle kernel thread (I)
 cpu = "#00E5FF"       # Electric Blue - CPU usage line
 memory = "#76FF03"    # Neon Green - memory usage line
 io = "#FF4081"        # Neon Pink - I/O usage line
+cpu_fill = "#00E5FF4D"       # Electric Blue with 30% alpha - CPU fill
+memory_fill = "#76FF034D"    # Neon Green with 30% alpha - memory fill
+io_fill = "#FF40814D"        # Neon Pink with 30% alpha - I/O fill
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -93,6 +96,11 @@ system = "#FF4081"    # Neon Pink - system/kernel time
 iowait = "#FFEA00"    # Electric Yellow - I/O wait time
 idle = "#666680"      # Muted - idle time
 steal = "#FF1744"     # Red - VM steal time
+user_fill = "#00E5FF59"      # Electric Blue with 35% alpha - user fill
+system_fill = "#FF408159"    # Neon Pink with 35% alpha - system fill
+iowait_fill = "#FFEA0059"    # Electric Yellow with 35% alpha - iowait fill
+idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
+steal_fill = "#FF174459"     # Red with 35% alpha - steal fill
 
 # =============================================================================
 # DANGER BUTTON COLORS
@@ -112,6 +120,7 @@ background = "#0F0A1A"            # Deep purple-black
 child_background = "#0F0A1A00"    # Transparent
 popup_background = "#140F24F0"    # Slightly lighter, semi-opaque (F0 = 94%)
 border = "#4D266680"              # Purple border (80 = 50%)
+border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
 # FRAME COLORS
