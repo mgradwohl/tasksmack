@@ -384,30 +384,22 @@ void SystemMetricsPanel::renderOverview()
                     yTotalTop[i] = yIowaitTop[i] + cpuIdleHist[i];
                 }
 
-                ImVec4 userFill = theme.scheme().cpuUser;
-                userFill.w = 0.35F;
-                ImPlot::SetNextFillStyle(userFill);
+                ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
                 ImPlot::PlotShaded(
                     "##CpuUser", breakdownTimeData.data(), y0.data(), yUserTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
-                ImVec4 systemFill = theme.scheme().cpuSystem;
-                systemFill.w = 0.35F;
-                ImPlot::SetNextFillStyle(systemFill);
+                ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
                 ImPlot::PlotShaded(
                     "##CpuSystem", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
-                ImVec4 iowaitFill = theme.scheme().cpuIowait;
-                iowaitFill.w = 0.35F;
-                ImPlot::SetNextFillStyle(iowaitFill);
+                ImPlot::SetNextFillStyle(theme.scheme().cpuIowaitFill);
                 ImPlot::PlotShaded("##CpuIowait",
                                    breakdownTimeData.data(),
                                    ySystemTop.data(),
                                    yIowaitTop.data(),
                                    UI::Numeric::checkedCount(breakdownCount));
 
-                ImVec4 idleFill = theme.scheme().cpuIdle;
-                idleFill.w = 0.20F;
-                ImPlot::SetNextFillStyle(idleFill);
+                ImPlot::SetNextFillStyle(theme.scheme().cpuIdleFill);
                 ImPlot::PlotShaded(
                     "##CpuIdle", breakdownTimeData.data(), yIowaitTop.data(), yTotalTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
@@ -428,9 +420,7 @@ void SystemMetricsPanel::renderOverview()
             }
             else if (!cpuHist.empty())
             {
-                ImVec4 fillColor = theme.scheme().chartCpu;
-                fillColor.w = 0.3F;
-                ImPlot::SetNextFillStyle(fillColor);
+                ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
                 ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
 
                 ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
@@ -658,9 +648,7 @@ void SystemMetricsPanel::renderCpuSection()
 
         if (!cpuHist.empty())
         {
-            ImVec4 fillColor = theme.scheme().chartCpu;
-            fillColor.w = 0.3F; // Semi-transparent fill
-            ImPlot::SetNextFillStyle(fillColor);
+            ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
             ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
 
             // Draw the line on top of the shaded region.

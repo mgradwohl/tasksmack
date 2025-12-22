@@ -1,44 +1,44 @@
-# Monochrome Theme
-# Classic terminal green aesthetic
-# All colors are variations of green for a retro CRT monitor look
+# Windows Dark Theme
+# Inspired by Windows 11 dark mode design language
+# Clean, modern, and professional with accent colors
 #
 # Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
 # Alpha: 00 = transparent, FF = opaque
 
 [meta]
-name = "Monochrome"
-description = "Classic terminal green aesthetic - retro CRT monitor look"
+name = "Windows Dark"
+description = "Inspired by Windows 11 dark mode - clean and modern"
 author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
 # HEATMAP GRADIENT
 # 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# All green shades from dark to bright glow
 # =============================================================================
 [heatmap]
 gradient = [
-    "#1B3D1B",  # 0%   - Dark green (cool/idle)
-    "#2E5D2E",  # 25%  - Dim green
-    "#4CAF50",  # 50%  - Medium green (moderate)
-    "#81C784",  # 75%  - Bright green (warning)
-    "#B9F6CA",  # 100% - Glow green (hot)
+    "#0078D4",  # 0%   - Windows Blue (cool/idle)
+    "#4EA0D8",  # 25%  - Light Blue
+    "#FFB900",  # 50%  - Gold (moderate)
+    "#F7630C",  # 75%  - Orange (warning)
+    "#E74856",  # 100% - Red (hot/danger)
 ]
 
 # =============================================================================
 # ACCENT COLORS
-# 8 shades of green for charts, legends, and UI highlights
+# 8 colors for charts, legends, and UI highlights
+# Based on Windows 11 accent colors
 # =============================================================================
 [accents]
 colors = [
-    "#1B5E20",  # Darkest
-    "#2E7D32",
-    "#388E3C",
-    "#43A047",
-    "#4CAF50",
-    "#66BB6A",
-    "#81C784",
-    "#A5D6A7",  # Lightest
+    "#0078D4",  # Windows Blue
+    "#E74856",  # Red
+    "#10893E",  # Green
+    "#8E8CD8",  # Purple
+    "#F7630C",  # Orange
+    "#00B7C3",  # Teal
+    "#FFB900",  # Gold
+    "#E3008C",  # Magenta
 ]
 
 # =============================================================================
@@ -46,81 +46,79 @@ colors = [
 # Colors for progress bars based on percentage thresholds
 # =============================================================================
 [progress]
-low = "#2E7D32"       # 0-50%   - Dim green (healthy)
-medium = "#4CAF50"    # 50-80%  - Medium green (caution)
-high = "#B9F6CA"      # 80-100% - Bright glow (critical)
+low = "#10893E"       # 0-50%   - Green (healthy)
+medium = "#FFB900"    # 50-80%  - Gold (caution)
+high = "#E74856"      # 80-100% - Red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
 # Colors for different types of text/messages
-# All variations of green
 # =============================================================================
 [semantic]
-text_muted = "#66BB6A"     # Muted green
-text_error = "#B9F6CA"     # Bright glow (stands out)
-text_warning = "#81C784"   # Bright green
-text_success = "#4CAF50"   # Medium green
-text_info = "#66BB6A"      # Light green
+text_muted = "#8A8A8A"     # Gray - dimmed text
+text_error = "#F1707B"     # Light Red - error messages
+text_warning = "#F7630C"   # Orange - warning messages
+text_success = "#6CCB5F"   # Light Green - success messages
+text_info = "#60CDFF"      # Light Blue - informational text
 
 # =============================================================================
 # PROCESS STATUS COLORS
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#4CAF50"    # R - Medium green - active/running
-sleeping = "#2E7D32"   # S - Dim green - sleeping/interruptible
-disk_sleep = "#81C784" # D - Bright green - uninterruptible disk sleep
-zombie = "#B9F6CA"     # Z - Bright glow - zombie/defunct (alert)
-stopped = "#66BB6A"    # T - Light green - stopped/traced
-idle = "#1B5E20"       # I - Very dim green - idle kernel thread
+running = "#6CCB5F"    # Light Green - active/running (R)
+sleeping = "#60CDFF"   # Light Blue - sleeping (S)
+disk_sleep = "#F7630C" # Orange - uninterruptible I/O (D)
+zombie = "#F1707B"     # Light Red - defunct process (Z)
+stopped = "#8E8CD8"    # Purple - stopped/traced (T/t)
+idle = "#808080"       # Gray - idle kernel thread (I)
 
 # =============================================================================
 # CHART LINE COLORS
 # Colors for specific metric lines in graphs
 # =============================================================================
 [charts]
-cpu = "#81C784"       # Bright green - CPU usage line
-memory = "#4CAF50"    # Medium green - memory usage line
-io = "#66BB6A"        # Light green - I/O usage line
-cpu_fill = "#81C7844D"       # Bright green with 30% alpha - CPU fill
-memory_fill = "#4CAF504D"    # Medium green with 30% alpha - memory fill
-io_fill = "#66BB6A4D"        # Light green with 30% alpha - I/O fill
+cpu = "#0078D4"       # Windows Blue - CPU usage line
+memory = "#10893E"    # Green - memory usage line
+io = "#E74856"        # Red - I/O usage line
+cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
+memory_fill = "#10893E4D"    # Green with 30% alpha - memory fill
+io_fill = "#E748564D"        # Red with 30% alpha - I/O fill
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#81C784"      # Bright green - user CPU time
-system = "#4CAF50"    # Medium green - system/kernel time
-iowait = "#B9F6CA"    # Glow - I/O wait time
-idle = "#2E7D32"      # Dim green - idle time
-steal = "#B9F6CA"     # Brightest (alert) - VM steal time
-user_fill = "#81C78459"      # Bright green with 35% alpha - user fill
-system_fill = "#4CAF5059"    # Medium green with 35% alpha - system fill
-iowait_fill = "#B9F6CA59"    # Glow with 35% alpha - iowait fill
-idle_fill = "#2E7D3233"      # Dim green with 20% alpha - idle fill
-steal_fill = "#B9F6CA59"     # Brightest with 35% alpha - steal fill
+user = "#0078D4"      # Windows Blue - user CPU time
+system = "#E74856"    # Red - system/kernel time
+iowait = "#FFB900"    # Gold - I/O wait time
+idle = "#3F3F3F"      # Dark gray - idle time
+steal = "#C50F1F"     # Dark red - VM steal time
+user_fill = "#0078D459"      # Windows Blue with 35% alpha - user fill
+system_fill = "#E7485659"    # Red with 35% alpha - system fill
+iowait_fill = "#FFB90059"    # Gold with 35% alpha - iowait fill
+idle_fill = "#3F3F3F33"      # Dark gray with 20% alpha - idle fill
+steal_fill = "#C50F1F59"     # Dark red with 35% alpha - steal fill
 
 # =============================================================================
 # DANGER BUTTON COLORS
 # Colors for destructive action buttons (kill process, etc.)
-# Using brightest greens for visibility
 # =============================================================================
 [buttons.danger]
-normal = "#388E3C"     # Medium-dark green
-hovered = "#B9F6CA"    # Bright glow
-active = "#1B5E20"     # Darkest green
+normal = "#C50F1F"     # Dark red
+hovered = "#E74856"    # Red
+active = "#A40912"     # Darker red
 
 # =============================================================================
 # WINDOW COLORS
-# Base colors for windows, popups, and borders
+# Base colors for windows, popups, and borders - Windows 11 dark mode
 # =============================================================================
 [ui.window]
-background = "#0A140A"            # Dark with green tint
-child_background = "#0A140A00"    # Transparent
-popup_background = "#0F1A0FF0"    # Slightly lighter, semi-opaque (F0 = 94%)
-border = "#1F401F80"              # Green-tinted border (80 = 50%)
+background = "#202020"            # Dark gray (Windows 11 dark)
+child_background = "#20202000"    # Transparent
+popup_background = "#2B2B2BF0"    # Slightly lighter, semi-opaque (F0 = 94%)
+border = "#3F3F3F80"              # Dark border (80 = 50%)
 border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
@@ -128,130 +126,130 @@ border_shadow = "#00000000"       # Transparent - no border shadow
 # Input fields, combo boxes, sliders background
 # =============================================================================
 [ui.frame]
-background = "#142414"
-background_hovered = "#1F331F"
-background_active = "#294729"
+background = "#2B2B2B"
+background_hovered = "#323232"
+background_active = "#3A3A3A"
 
 # =============================================================================
 # TITLE BAR COLORS
-# Window title bars
+# Window title bars - Windows 11 dark style
 # =============================================================================
 [ui.title]
-background = "#080F08"
-background_active = "#0F1F0F"
-background_collapsed = "#080F0880"    # 80 = 50% alpha
+background = "#1C1C1C"
+background_active = "#202020"
+background_collapsed = "#1C1C1C80"    # 80 = 50% alpha
 
 # =============================================================================
 # BAR COLORS
 # Menu bar and status bar
 # =============================================================================
 [ui.bars]
-menu = "#0F1A0F"
-status = "#142414"
+menu = "#2B2B2B"
+status = "#202020"
 
 # =============================================================================
 # SCROLLBAR COLORS
 # =============================================================================
 [ui.scrollbar]
-background = "#080F0880"          # 80 = 50% alpha
-grab = "#2E7D32"
-grab_hovered = "#4CAF50"
-grab_active = "#81C784"
+background = "#2B2B2B80"          # 80 = 50% alpha
+grab = "#3F3F3F"
+grab_hovered = "#4F4F4F"
+grab_active = "#5F5F5F"
 
 # =============================================================================
 # CONTROL COLORS
-# Checkboxes, sliders, etc.
+# Checkboxes, sliders, etc. - Windows 11 accent
 # =============================================================================
 [ui.controls]
-check_mark = "#4CAF50"
-slider_grab = "#4CAF50"
-slider_grab_active = "#81C784"
+check_mark = "#60CDFF"
+slider_grab = "#0078D4"
+slider_grab_active = "#005A9E"
 
 # =============================================================================
 # BUTTON COLORS
-# Standard buttons (not danger buttons)
+# Standard buttons (not danger buttons) - Windows 11 dark style
 # =============================================================================
 [ui.button]
-normal = "#1A2E1A"
-hovered = "#244224"
-active = "#2E592E"
+normal = "#2B2B2B"
+hovered = "#323232"
+active = "#3A3A3A"
 
 # =============================================================================
 # HEADER COLORS
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#1A2E1A"
-hovered = "#244224"
-active = "#81C784AA"
+normal = "#2B2B2B"
+hovered = "#323232"
+active = "#3A3A3A"
 
 # =============================================================================
 # SEPARATOR COLORS
 # Horizontal/vertical separators
 # =============================================================================
 [ui.separator]
-normal = "#1F401F80"              # 80 = 50% alpha
-hovered = "#4CAF50"
-active = "#81C784"
+normal = "#3F3F3F80"              # 80 = 50% alpha
+hovered = "#0078D4"
+active = "#005A9E"
 
 # =============================================================================
 # RESIZE GRIP COLORS
 # Window resize handles
 # =============================================================================
 [ui.resize_grip]
-normal = "#1F401F33"              # 33 = 20% alpha
-hovered = "#4CAF50"
-active = "#81C784"
+normal = "#3F3F3F33"              # 33 = 20% alpha
+hovered = "#0078D4"
+active = "#005A9E"
 
 # =============================================================================
 # TAB COLORS
-# Tab bar tabs
+# Tab bar tabs - Windows 11 dark style
 # =============================================================================
 [ui.tab]
-normal = "#0F1A0F"
-hovered = "#388E3C"
-active = "#1A2E1A"
-active_overline = "#00000000"           # Transparent - no overline
-unfocused = "#0A140A"
-unfocused_active = "#142414"
-unfocused_active_overline = "#00000000" # Transparent - no overline
+normal = "#2B2B2B"
+hovered = "#323232"
+active = "#202020"
+active_overline = "#0078D4"             # Windows accent color overline
+unfocused = "#202020"
+unfocused_active = "#2B2B2B"
+unfocused_active_overline = "#0078D480" # Semi-transparent accent overline
 
 # =============================================================================
 # DOCKING COLORS
 # Docking preview and empty space
 # =============================================================================
 [ui.docking]
-preview = "#4CAF50B3"             # B3 = 70% alpha
-empty_background = "#0A140A"
+preview = "#0078D4B3"             # B3 = 70% alpha
+empty_background = "#202020"
 
 # =============================================================================
 # PLOT COLORS
 # ImGui plot widgets
 # =============================================================================
 [ui.plot]
-lines = "#81C784"
-lines_hovered = "#B9F6CA"
-histogram = "#4CAF50"
-histogram_hovered = "#81C784"
+lines = "#60CDFF"
+lines_hovered = "#F1707B"
+histogram = "#6CCB5F"
+histogram_hovered = "#10893E"
 
 # =============================================================================
 # TABLE COLORS
 # Table widget colors
 # =============================================================================
 [ui.table]
-header_background = "#142414"
-border_strong = "#1F401F"
-border_light = "#142E14"
-row_background = "#00330008"      # 08 = 3% alpha (green tint)
-row_background_alt = "#00330030"  # 30 = 19% alpha (green tint)
+header_background = "#2B2B2B"
+border_strong = "#3F3F3F"
+border_light = "#323232"
+row_background = "#00000000"      # Transparent
+row_background_alt = "#FFFFFF08"  # 08 = 3% alpha
 
 # =============================================================================
 # MISCELLANEOUS UI COLORS
 # =============================================================================
 [ui.misc]
-text_selected_background = "#2E8C2E59"    # 59 = 35% alpha
-drag_drop_target = "#B9F6CA"
-nav_highlight = "#4CAF50"
-nav_windowing_highlight = "#80FF80B3"     # B3 = 70% alpha (green tint)
-nav_windowing_dim_background = "#336633"  # 33 = 20% alpha
+text_selected_background = "#0078D459"    # 59 = 35% alpha
+drag_drop_target = "#FFB900"
+nav_highlight = "#0078D4"
+nav_windowing_highlight = "#FFFFFF66"     # 66 = 40% alpha
+nav_windowing_dim_background = "#00000033" # 33 = 20% alpha
 modal_window_dim_background = "#00000099"  # 99 = 60% alpha

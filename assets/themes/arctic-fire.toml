@@ -82,6 +82,9 @@ idle = "#808080"       # Gray - idle kernel thread (I)
 cpu = "#42A5F5"       # Blue - CPU usage line
 memory = "#00E676"    # Emerald - memory usage line
 io = "#FF7043"        # Orange - I/O usage line
+cpu_fill = "#42A5F54D"       # Blue with 30% alpha - CPU fill
+memory_fill = "#00E6764D"    # Emerald with 30% alpha - memory fill
+io_fill = "#FF70434D"        # Orange with 30% alpha - I/O fill
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -93,6 +96,11 @@ system = "#FF7043"    # Orange - system/kernel time
 iowait = "#FFB300"    # Amber - I/O wait time
 idle = "#808080"      # Gray - idle time
 steal = "#E53935"     # Crimson - VM steal time
+user_fill = "#42A5F559"      # Blue with 35% alpha - user fill
+system_fill = "#FF704359"    # Orange with 35% alpha - system fill
+iowait_fill = "#FFB30059"    # Amber with 35% alpha - iowait fill
+idle_fill = "#80808033"      # Gray with 20% alpha - idle fill
+steal_fill = "#E5393559"     # Crimson with 35% alpha - steal fill
 
 # =============================================================================
 # DANGER BUTTON COLORS
@@ -112,6 +120,7 @@ background = "#141A24"            # Dark blue-gray
 child_background = "#141A2400"    # Transparent
 popup_background = "#1A1F29F0"    # Slightly lighter, semi-opaque (F0 = 94%)
 border = "#33405980"              # Subtle blue-gray border (80 = 50%)
+border_shadow = "#00000000"       # Transparent - no border shadow
 
 # =============================================================================
 # FRAME COLORS

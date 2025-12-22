@@ -63,11 +63,23 @@ void Theme::loadDefaultFallbackTheme()
     fallback.chartMemory = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
     fallback.chartIo = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
 
+    // Chart fill colors (semi-transparent versions)
+    fallback.chartCpuFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
+    fallback.chartMemoryFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
+    fallback.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
+
     fallback.cpuUser = blue;
     fallback.cpuSystem = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
     fallback.cpuIowait = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
     fallback.cpuIdle = gray;
     fallback.cpuSteal = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
+
+    // CPU breakdown fill colors (semi-transparent versions)
+    fallback.cpuUserFill = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
+    fallback.cpuSystemFill = ImVec4(1.0F, 0.5F, 0.0F, 0.35F);
+    fallback.cpuIowaitFill = ImVec4(1.0F, 1.0F, 0.0F, 0.35F);
+    fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F);
+    fallback.cpuStealFill = ImVec4(1.0F, 0.0F, 0.0F, 0.35F);
 
     fallback.dangerButton = ImVec4(0.8F, 0.0F, 0.0F, 1.0F);
     fallback.dangerButtonHovered = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
@@ -77,6 +89,7 @@ void Theme::loadDefaultFallbackTheme()
     fallback.childBg = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
     fallback.popupBg = ImVec4(0.08F, 0.08F, 0.08F, 0.94F);
     fallback.border = ImVec4(0.43F, 0.43F, 0.50F, 0.50F);
+    fallback.borderShadow = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
     fallback.frameBg = ImVec4(0.16F, 0.29F, 0.48F, 0.54F);
     fallback.frameBgHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.40F);
     fallback.frameBgActive = ImVec4(0.26F, 0.59F, 0.98F, 0.67F);
@@ -249,9 +262,7 @@ void Theme::applyImGuiStyle() const
     style.Colors[ImGuiCol_ChildBg] = s.childBg;
     style.Colors[ImGuiCol_PopupBg] = s.popupBg;
     style.Colors[ImGuiCol_Border] = s.border;
-    auto borderShadow = s.border;
-    borderShadow.w = 0.0F;
-    style.Colors[ImGuiCol_BorderShadow] = borderShadow;
+    style.Colors[ImGuiCol_BorderShadow] = s.borderShadow;
     style.Colors[ImGuiCol_FrameBg] = s.frameBg;
     style.Colors[ImGuiCol_FrameBgHovered] = s.frameBgHovered;
     style.Colors[ImGuiCol_FrameBgActive] = s.frameBgActive;

@@ -256,12 +256,24 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartMemory = getColor(tbl, "charts.memory");
         scheme.chartIo = getColor(tbl, "charts.io");
 
+        // Chart fill colors (with fallback to line colors for backward compatibility)
+        scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", scheme.chartCpu);
+        scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
+        scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
+
         // CPU breakdown
         scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");
         scheme.cpuSystem = getColor(tbl, "cpu_breakdown.system");
         scheme.cpuIowait = getColor(tbl, "cpu_breakdown.iowait");
         scheme.cpuIdle = getColor(tbl, "cpu_breakdown.idle");
         scheme.cpuSteal = getColor(tbl, "cpu_breakdown.steal");
+
+        // CPU breakdown fill colors (with fallback to line colors for backward compatibility)
+        scheme.cpuUserFill = getColor(tbl, "cpu_breakdown.user_fill", scheme.cpuUser);
+        scheme.cpuSystemFill = getColor(tbl, "cpu_breakdown.system_fill", scheme.cpuSystem);
+        scheme.cpuIowaitFill = getColor(tbl, "cpu_breakdown.iowait_fill", scheme.cpuIowait);
+        scheme.cpuIdleFill = getColor(tbl, "cpu_breakdown.idle_fill", scheme.cpuIdle);
+        scheme.cpuStealFill = getColor(tbl, "cpu_breakdown.steal_fill", scheme.cpuSteal);
 
         // Danger buttons
         scheme.dangerButton = getColor(tbl, "buttons.danger.normal");
@@ -273,6 +285,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.childBg = getColor(tbl, "ui.window.child_background");
         scheme.popupBg = getColor(tbl, "ui.window.popup_background");
         scheme.border = getColor(tbl, "ui.window.border");
+        scheme.borderShadow = getColor(tbl, "ui.window.border_shadow", scheme.border);
 
         // Frame colors
         scheme.frameBg = getColor(tbl, "ui.frame.background");

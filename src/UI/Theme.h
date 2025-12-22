@@ -73,12 +73,24 @@ struct ColorScheme
     ImVec4 chartMemory{}; // Memory usage line
     ImVec4 chartIo{};     // I/O usage line
 
+    // Chart fill colors (semi-transparent versions for shaded plots)
+    ImVec4 chartCpuFill{};    // CPU usage fill
+    ImVec4 chartMemoryFill{}; // Memory usage fill
+    ImVec4 chartIoFill{};     // I/O usage fill
+
     // CPU breakdown colors
     ImVec4 cpuUser{};   // User CPU time
     ImVec4 cpuSystem{}; // System/kernel CPU time
     ImVec4 cpuIowait{}; // I/O wait time
     ImVec4 cpuIdle{};   // Idle time
     ImVec4 cpuSteal{};  // VM steal time
+
+    // CPU breakdown fill colors (semi-transparent versions for stacked area charts)
+    ImVec4 cpuUserFill{};   // User CPU time fill
+    ImVec4 cpuSystemFill{}; // System/kernel CPU time fill
+    ImVec4 cpuIowaitFill{}; // I/O wait time fill
+    ImVec4 cpuIdleFill{};   // Idle time fill
+    ImVec4 cpuStealFill{};  // VM steal time fill
 
     // Danger button colors
     ImVec4 dangerButton{};
@@ -90,6 +102,7 @@ struct ColorScheme
     ImVec4 childBg{};
     ImVec4 popupBg{};
     ImVec4 border{};
+    ImVec4 borderShadow{}; // Border shadow (typically transparent)
     ImVec4 frameBg{};
     ImVec4 frameBgHovered{};
     ImVec4 frameBgActive{};
