@@ -155,7 +155,7 @@ void AboutLayer::renderAboutDialog()
             const ImVec2 drawSize(rawSize.x * scale, rawSize.y * scale);
             // ImTextureID is typically defined as void* in ImGui; m_Icon.id() is a GLuint.
             // reinterpret_cast is required for this integer-to-pointer conversion.
-            const ImTextureID textureId = reinterpret_cast<ImTextureID>(m_Icon.id());
+            const ImTextureID textureId = reinterpret_cast<ImTextureID>(m_Icon.id()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             ImGui::Image(textureId, drawSize);
         }
         else
