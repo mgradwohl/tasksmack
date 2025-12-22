@@ -2,6 +2,7 @@
 #include <windows.h>
 #endif
 
+#include "App/AboutLayer.h"
 #include "App/ShellLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -128,6 +129,9 @@ auto runApp() -> int
 
     // Push shell layer (docking workspace with panels)
     app.pushLayer<App::ShellLayer>();
+
+    // About dialog layer (modal overlay)
+    app.pushLayer<App::AboutLayer>();
 
     // Run the application
     app.run();

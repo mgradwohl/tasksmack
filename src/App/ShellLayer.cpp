@@ -1,5 +1,6 @@
 #include "ShellLayer.h"
 
+#include "App/AboutLayer.h"
 #include "Core/Application.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
@@ -14,8 +15,8 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
+#include <string>
 
 namespace App
 {
@@ -221,7 +222,6 @@ void ShellLayer::onRender()
     {
         m_ProcessDetailsPanel.render(&m_ShowDetails);
     }
-
     renderStatusBar();
 }
 
@@ -389,7 +389,10 @@ void ShellLayer::renderMenuBar()
         {
             if (ImGui::MenuItem("About TaskSmack"))
             {
-                // TODO: Open about dialog
+                if (auto* about = AboutLayer::instance(); about != nullptr)
+                {
+                    about->requestOpen();
+                }
             }
             ImGui::EndMenu();
         }

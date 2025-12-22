@@ -2,27 +2,40 @@
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-PREFIX="${PREFIX:-${ROOT_DIR}/packaging/dist/install}"
-BINARY_PATH="${PREFIX}/bin/TaskSmack"
-DESKTOP_SRC="${PREFIX}/share/applications/app.tasksmack.TaskSmack.desktop"
-ICON_SRC="${PREFIX}/share/icons/hicolor/scalable/apps/app.tasksmack.TaskSmack.svg"
-DESKTOP_DST="${HOME}/.local/share/applications/app.tasksmack.TaskSmack.desktop"
-ICON_DST="${HOME}/.local/share/icons/hicolor/scalable/apps/app.tasksmack.TaskSmack.svg"
+PREFIX="${PREFIX:-${ROOT_DIR}/packaging/dist}"
 HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
 INDEX_FILE="${HICOLOR_DIR}/index.theme"
 
-if [[ ! -x "${ROOT_DIR}/build/optimized/TaskSmack" ]]; then
-    echo "Missing optimized build at ${ROOT_DIR}/build/optimized. Run the optimized build first." >&2
+BUILD_BIN="${ROOT_DIR}/build/optimized/TaskSmack"
+ALT_BUILD_BIN="${ROOT_DIR}/build/optimized/bin/TaskSmack"
+
+if [[ -x "${BUILD_BIN}" ]]; then
+    :
+elif [[ -x "${ALT_BUILD_BIN}" ]]; then
+    BUILD_BIN="${ALT_BUILD_BIN}"
+else
+    echo "Missing optimized build at ${BUILD_BIN} (or ${ALT_BUILD_BIN}). Run the optimized build first." >&2
     exit 1
 fi
 
+# Use CMake install to mirror the optimized build layout (binary + libs at prefix root, assets under assets/)
 cmake --install "${ROOT_DIR}/build/optimized" --prefix "${PREFIX}"
 
-install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
-install -Dm644 "${ICON_SRC}" "${ICON_DST}"
+# Install launcher entry and icon into the user's local desktop paths
+DESKTOP_SRC="${ROOT_DIR}/assets/linux/app.tasksmack.TaskSmack.desktop"
+DESKTOP_DST="${HOME}/.local/share/applications/app.tasksmack.TaskSmack.desktop"
+ICON_SRC_PNG="${ROOT_DIR}/assets/icons/tasksmack-256.png"
+ICON_DST="${HOME}/.local/share/icons/hicolor/256x256/apps/app.tasksmack.TaskSmack.png"
+BINARY_PATH="${PREFIX}/TaskSmack"
 
-# Ensure Exec points to the installed binary
+install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
 sed -i "s|^Exec=.*|Exec=${BINARY_PATH}|" "${DESKTOP_DST}"
+install -Dm644 "${ICON_SRC_PNG}" "${ICON_DST}"
+
+update-desktop-database "${HOME}/.local/share/applications"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache "${HOME}/.local/share/icons/hicolor" || true
+fi
 
 # Ensure a complete hicolor index so gtk-update-icon-cache keeps all sizes
 mkdir -p "${HICOLOR_DIR}"

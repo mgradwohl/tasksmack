@@ -15,6 +15,7 @@
 
 # CPack output
 /dist/
+/packaging/dist/
 
 # Coverage output
 /coverage/
