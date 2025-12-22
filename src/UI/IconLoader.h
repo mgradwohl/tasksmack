@@ -36,10 +36,10 @@ class Texture
     /// Returns nullptr if the texture is invalid.
     [[nodiscard]] ImTextureID textureId() const noexcept
     {
-        // ImTextureID is void*; m_Id is uint32_t storing the GL texture handle.
-        // reinterpret_cast is required for this integer-to-pointer conversion.
-        return reinterpret_cast<ImTextureID>(
-            static_cast<std::uintptr_t>(m_Id)); // NOLINT(performance-no-int-to-ptr,cppcoreguidelines-pro-type-reinterpret-cast)
+        // ImTextureID may be void* or an integer type depending on ImGui's backend configuration.
+        // On some platforms it's unsigned long long. We use static_cast for integer conversions.
+        return static_cast<ImTextureID>(
+            static_cast<std::uintptr_t>(m_Id)); // NOLINT(performance-no-int-to-ptr)
     }
 
     /// Returns the texture dimensions as an ImVec2 for convenience with ImGui.
