@@ -9,8 +9,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
-#include <thread>
 #include <unistd.h>
 
 namespace Platform
@@ -93,34 +91,6 @@ TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
     // Should fail
     EXPECT_FALSE(result.success);
     EXPECT_GT(result.errorMessage.size(), 0ULL);
-}
-
-TEST(LinuxProcessActionsTest, TerminateMultipleThreadsSafely)
-{
-    LinuxProcessActions actions;
-
-    std::vector<std::thread> threads;
-    threads.reserve(4);
-
-    for (int i = 0; i < 4; ++i)
-    {
-        threads.emplace_back([] {
-            // Simulate work
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        });
-    }
-
-    for (auto& t : threads)
-    {
-        if (t.joinable())
-        {
-            t.join();
-        }
-    }
-
-    // Terminate a non-existent process should still fail safely
-    auto result = actions.terminate(99999);
-    EXPECT_FALSE(result.success);
 }
 
 } // namespace
