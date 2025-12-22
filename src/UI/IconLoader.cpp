@@ -18,6 +18,8 @@
 #pragma clang diagnostic pop
 #endif
 
+#include <glad/gl.h>
+
 #include <filesystem>
 #include <utility>
 
