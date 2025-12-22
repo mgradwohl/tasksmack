@@ -37,9 +37,9 @@ class Texture
     [[nodiscard]] ImTextureID textureId() const noexcept
     {
         // ImTextureID may be void* or an integer type depending on ImGui's backend configuration.
-        // On some platforms it's unsigned long long. We use static_cast for integer conversions.
-        return static_cast<ImTextureID>(
-            static_cast<std::uintptr_t>(m_Id)); // NOLINT(performance-no-int-to-ptr)
+        // Cast from GLuint (m_Id) to the target type. Using static_cast for integer-to-integer,
+        // reinterpret_cast would be needed for integer-to-pointer but ImGui typically uses integers.
+        return static_cast<ImTextureID>(m_Id); // NOLINT(performance-no-int-to-ptr)
     }
 
     /// Returns the texture dimensions as an ImVec2 for convenience with ImGui.
