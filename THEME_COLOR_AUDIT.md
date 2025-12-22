@@ -25,7 +25,7 @@ These files define and load colors but don't manipulate them in rendering:
 #### `src/UI/Theme.cpp`
 - **Purpose**: Theme management and fallback theme
 - **Lines**: 36-143 (fallback theme), 244-304 (apply to ImGui)
-- **Usage**: 
+- **Usage**:
   - Defines fallback theme colors using `ImVec4()` constructors
   - Applies theme colors to ImGui style
   - Interpolates heatmap colors (line 383)
@@ -34,7 +34,7 @@ These files define and load colors but don't manipulate them in rendering:
 
 #### `src/UI/ThemeLoader.h` & `src/UI/ThemeLoader.cpp`
 - **Purpose**: Load themes from TOML files
-- **Usage**: 
+- **Usage**:
   - Parses hex strings to ImVec4 (lines 26-64 in .cpp)
   - Parses TOML color arrays (lines 70-132 in .cpp)
   - Loads theme files (lines 215-369 in .cpp)
@@ -49,7 +49,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/ShellLayer.cpp`
 - **Lines**: 418-419
-- **Usage**: 
+- **Usage**:
   ```cpp
   ImGui::PushStyleColor(ImGuiCol_WindowBg, theme.scheme().statusBarBg);
   ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().border);
@@ -59,7 +59,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/Panels/ProcessesPanel.cpp`
 - **Lines**: 176, 495
-- **Usage**: 
+- **Usage**:
   ```cpp
   ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
   ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
@@ -69,7 +69,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/Panels/SystemMetricsPanel.cpp`
 - **Previous State**: Lines 388, 394, 400, 409, 432, 662 - manipulated alpha
-- **Current State**: 
+- **Current State**:
   ```cpp
   ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
   ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
@@ -82,7 +82,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/Panels/ProcessDetailsPanel.cpp`
 - **Previous State**: Lines 440, 445 - manipulated alpha
-- **Current State**: 
+- **Current State**:
   ```cpp
   ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
   ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
@@ -92,7 +92,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/Panels/SystemMetricsPanel.cpp` (other usages)
 - **Lines**: 49, 780-781
-- **Usage**: 
+- **Usage**:
   ```cpp
   ImGui::PushStyleColor(ImGuiCol_PlotHistogram, color);
   ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
@@ -103,7 +103,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/App/Panels/ProcessDetailsPanel.cpp` (other usages)
 - **Lines**: 795-797
-- **Usage**: 
+- **Usage**:
   ```cpp
   ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().dangerButton);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().dangerButtonHovered);
@@ -118,7 +118,7 @@ These files use theme colors for rendering UI elements:
 
 #### `src/UI/UILayer.cpp`
 - **Line**: 161
-- **Code**: 
+- **Code**:
   ```cpp
   style.Colors[ImGuiCol_WindowBg].w = 1.0F;
   ```
