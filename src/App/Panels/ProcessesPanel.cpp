@@ -506,8 +506,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (m_TreeViewEnabled && hasChildren)
             {
                 const std::string buttonLabel = isExpanded ? "-" : "+";
-                const std::string buttonId = std::format("##{}_tree_btn", proc.pid);
-                if (ImGui::SmallButton((buttonLabel + buttonId).c_str()))
+                const std::string buttonId = std::format("{}##{}_tree_btn", buttonLabel, proc.pid);
+                if (ImGui::SmallButton(buttonId.c_str()))
                 {
                     // Toggle collapsed state
                     if (isExpanded)
@@ -670,14 +670,30 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
 void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                            const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                                           const std::unordered_set<std::size_t>& filteredSet,
                                            std::size_t procIdx,
                                            int depth)
 {
     const auto& proc = snapshots[procIdx];
 
-    // Check if this process has children
+    // Check if this process has children (in the filtered set)
     auto childrenIt = tree.find(proc.pid);
-    const bool hasChildren = (childrenIt != tree.end() && !childrenIt->second.empty());
+    bool hasChildren = false;
+    std::vector<std::size_t> filteredChildren;
+
+    if (childrenIt != tree.end())
+    {
+        // Only count children that are in the filtered set
+        for (std::size_t childIdx : childrenIt->second)
+        {
+            if (filteredSet.find(childIdx) != filteredSet.end())
+            {
+                filteredChildren.push_back(childIdx);
+            }
+        }
+        hasChildren = !filteredChildren.empty();
+    }
+
     const bool isExpanded = (m_CollapsedPids.find(proc.pid) == m_CollapsedPids.end());
 
     // Render this process
@@ -686,9 +702,9 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
     // Recursively render children if expanded
     if (hasChildren && isExpanded)
     {
-        for (std::size_t childIdx : childrenIt->second)
+        for (std::size_t childIdx : filteredChildren)
         {
-            renderProcessTreeNode(snapshots, tree, childIdx, depth + 1);
+            renderProcessTreeNode(snapshots, tree, filteredSet, childIdx, depth + 1);
         }
     }
 }
@@ -697,23 +713,47 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
                                     const std::vector<std::size_t>& filteredIndices,
                                     const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree)
 {
-    // Find root processes (those not in any parent's children list or parent doesn't exist)
+    // Convert filtered indices to a set for O(1) lookups
+    std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
+
+    // Find root processes within the filtered set
+    // A process is a root if:
+    // 1. It has no parent in the snapshot list, OR
+    // 2. Its parent is not in the filtered set
     std::unordered_set<std::size_t> childIndices;
     for (const auto& [parentPid, children] : tree)
     {
+        // Only consider children that are in the filtered set
         for (std::size_t childIdx : children)
         {
-            childIndices.insert(childIdx);
+            if (filteredSet.find(childIdx) != filteredSet.end())
+            {
+                childIndices.insert(childIdx);
+            }
         }
     }
 
     // Render root processes and their descendants
     for (std::size_t idx : filteredIndices)
     {
-        // Only render if this is a root process (not a child of anyone in the filtered set)
-        if (childIndices.find(idx) == childIndices.end())
+        // Check if this process's parent is also in the filtered set
+        const auto& proc = snapshots[idx];
+        bool parentInFilteredSet = false;
+
+        // Look for the parent in the filtered set
+        for (std::size_t parentIdx : filteredIndices)
         {
-            renderProcessTreeNode(snapshots, tree, idx, 0);
+            if (snapshots[parentIdx].pid == proc.parentPid)
+            {
+                parentInFilteredSet = true;
+                break;
+            }
+        }
+
+        // Only render if this is a root process (parent not in filtered set)
+        if (!parentInFilteredSet)
+        {
+            renderProcessTreeNode(snapshots, tree, filteredSet, idx, 0);
         }
     }
 }

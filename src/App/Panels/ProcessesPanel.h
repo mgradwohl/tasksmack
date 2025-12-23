@@ -108,6 +108,7 @@ class ProcessesPanel : public Panel
     /// Render a single process and its children recursively
     void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                               const std::unordered_set<std::size_t>& filteredSet,
                                std::size_t procIdx,
                                int depth);
 
