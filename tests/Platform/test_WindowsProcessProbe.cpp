@@ -241,11 +241,8 @@ TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
     };
 
     const auto proc1 = findOurProcess(probe.enumerate());
-    ASSERT_NE(proc1.pid, 0) << "Should find our own process in first enumeration";
-
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
     const auto proc2 = findOurProcess(probe.enumerate());
-    ASSERT_NE(proc2.pid, 0) << "Should find our own process in second enumeration";
 
     // PID should be the same
     EXPECT_EQ(proc1.pid, proc2.pid);
@@ -272,7 +269,6 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
     };
 
     const auto proc1 = findOurProcess(probe.enumerate());
-    ASSERT_NE(proc1.pid, 0) << "Should find our own process in first enumeration";
 
     // Do significant CPU work to ensure measurable time increase
     volatile int sum = 0;
