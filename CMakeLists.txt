@@ -206,12 +206,12 @@ if(TARGET spdlog_header_only)
     target_compile_definitions(spdlog_header_only INTERFACE 
         SPDLOG_USE_STD_FORMAT 
         $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
-else()
-    message(FATAL_ERROR "Expected spdlog_header_only target not found after setting SPDLOG_HEADER_ONLY=ON")
 endif()
 
 if(TARGET spdlog)
-    message(WARNING "Unexpected spdlog target exists despite SPDLOG_HEADER_ONLY=ON")
+    target_compile_definitions(spdlog PUBLIC 
+        SPDLOG_USE_STD_FORMAT 
+        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
 endif()
 
 # toml++ for configuration files
