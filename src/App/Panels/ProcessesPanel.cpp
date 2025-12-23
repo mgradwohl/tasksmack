@@ -31,6 +31,8 @@ namespace App
 namespace
 {
 
+constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
     // Safe/necessary: std::tolower is undefined for negative signed char values (except EOF).
@@ -498,7 +500,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             // Indent for tree depth
             if (m_TreeViewEnabled && depth > 0)
             {
-                const float indentWidth = 16.0F * static_cast<float>(depth);
+                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
                 ImGui::Indent(indentWidth);
             }
 
@@ -536,7 +538,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
             if (m_TreeViewEnabled && depth > 0)
             {
-                const float indentWidth = 16.0F * static_cast<float>(depth);
+                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
                 ImGui::Unindent(indentWidth);
             }
             continue;
