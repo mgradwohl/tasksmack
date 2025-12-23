@@ -202,13 +202,14 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(spdlog)
 
-if(TARGET spdlog_header_only)
-    target_compile_definitions(spdlog_header_only INTERFACE SPDLOG_USE_STD_FORMAT $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+# We explicitly request header-only spdlog
+if(NOT TARGET spdlog_header_only)
+    message(FATAL_ERROR "Expected spdlog_header_only target not found")
 endif()
 
-if(TARGET spdlog)
-    target_compile_definitions(spdlog PUBLIC SPDLOG_USE_STD_FORMAT $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
-endif()
+target_compile_definitions(spdlog_header_only INTERFACE 
+    SPDLOG_USE_STD_FORMAT 
+    $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
 
 # toml++ for configuration files
 FetchContent_Declare(
