@@ -508,7 +508,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (m_TreeViewEnabled && hasChildren)
             {
                 const std::string buttonLabel = isExpanded ? "-" : "+";
-                const std::string buttonId = std::format("{}##{}_tree_btn", buttonLabel, proc.pid);
+                const std::string buttonId = std::format("{}##tree_btn_{}", buttonLabel, proc.pid);
                 if (ImGui::SmallButton(buttonId.c_str()))
                 {
                     // Toggle collapsed state
@@ -718,39 +718,20 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // Convert filtered indices to a set for O(1) lookups
     std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
 
-    // Find root processes within the filtered set
-    // A process is a root if:
-    // 1. It has no parent in the snapshot list, OR
-    // 2. Its parent is not in the filtered set
-    std::unordered_set<std::size_t> childIndices;
-    for (const auto& [parentPid, children] : tree)
+    // Build a PID-to-index map for O(1) parent lookups within the filtered set
+    std::unordered_map<std::int32_t, std::size_t> pidToIndex;
+    for (std::size_t idx : filteredIndices)
     {
-        // Only consider children that are in the filtered set
-        for (std::size_t childIdx : children)
-        {
-            if (filteredSet.find(childIdx) != filteredSet.end())
-            {
-                childIndices.insert(childIdx);
-            }
-        }
+        pidToIndex[snapshots[idx].pid] = idx;
     }
 
     // Render root processes and their descendants
     for (std::size_t idx : filteredIndices)
     {
-        // Check if this process's parent is also in the filtered set
         const auto& proc = snapshots[idx];
-        bool parentInFilteredSet = false;
 
-        // Look for the parent in the filtered set
-        for (std::size_t parentIdx : filteredIndices)
-        {
-            if (snapshots[parentIdx].pid == proc.parentPid)
-            {
-                parentInFilteredSet = true;
-                break;
-            }
-        }
+        // Check if this process's parent is in the filtered set
+        const bool parentInFilteredSet = pidToIndex.find(proc.parentPid) != pidToIndex.end();
 
         // Only render if this is a root process (parent not in filtered set)
         if (!parentInFilteredSet)
