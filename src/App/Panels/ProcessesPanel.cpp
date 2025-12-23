@@ -688,7 +688,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         // Only count children that are in the filtered set
         for (std::size_t childIdx : childrenIt->second)
         {
-            if (filteredSet.find(childIdx) != filteredSet.end())
+            if (filteredSet.contains(childIdx))
             {
                 filteredChildren.push_back(childIdx);
             }
@@ -696,7 +696,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         hasChildren = !filteredChildren.empty();
     }
 
-    const bool isExpanded = (m_CollapsedPids.find(proc.pid) == m_CollapsedPids.end());
+    const bool isExpanded = !m_CollapsedPids.contains(proc.pid);
 
     // Render this process
     renderProcessRow(proc, depth, hasChildren, isExpanded);
@@ -731,7 +731,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
         const auto& proc = snapshots[idx];
 
         // Check if this process's parent is in the filtered set
-        const bool parentInFilteredSet = pidToIndex.find(proc.parentPid) != pidToIndex.end();
+        const bool parentInFilteredSet = pidToIndex.contains(proc.parentPid);
 
         // Only render if this is a root process (parent not in filtered set)
         if (!parentInFilteredSet)
