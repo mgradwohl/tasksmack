@@ -792,7 +792,9 @@ TEST(ProcessModelTest, IntegerOverflowInCpuCounters)
     // CPU% should be 0 or minimal because the counter appears to have decreased
     // (which our implementation treats as a new process baseline)
     EXPECT_GE(snaps[0].cpuPercent, 0.0);
-    EXPECT_LE(snaps[0].cpuPercent, 100.0); // Should be clamped to reasonable range
+    // CPU% is calculated as (processDelta / totalCpuDelta) * 100, so it should be <= 100%
+    // regardless of core count (totalCpuDelta includes all cores)
+    EXPECT_LE(snaps[0].cpuPercent, 100.0);
 }
 
 TEST(ProcessModelTest, ExtremeValuesMaxUint64)
