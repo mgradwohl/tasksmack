@@ -31,7 +31,7 @@ option(TASKSMACK_BUILD_TESTS "Build tests" ON)
 option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
-option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" OFF)
+option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations

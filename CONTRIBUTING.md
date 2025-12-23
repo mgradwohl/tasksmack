@@ -386,13 +386,15 @@ FetchContent_MakeAvailable(mylib)
 target_link_libraries(TaskSmack PRIVATE mylib)
 ```
 
-### Optional: shared FetchContent cache
+### Shared FetchContent cache
 
-Enable the shared cache to reuse downloads across presets:
+The shared FetchContent cache is **enabled by default** to reuse downloads across presets, reducing build times and bandwidth usage. The cache is stored at `.cache/fetchcontent/` in the project root.
+
+To disable the cache:
 
 ```bash
-cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
-cmake --preset win-debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=ON
+cmake --preset debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=OFF
+cmake --preset win-debug -DTASKSMACK_ENABLE_FETCHCONTENT_CACHE=OFF
 ```
 
 Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_BASE_DIR`.
