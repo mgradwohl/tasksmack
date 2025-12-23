@@ -554,22 +554,8 @@ endif()
 
 # Precompiled headers
 if(TASKSMACK_ENABLE_PCH)
-    target_precompile_headers(TaskSmack PRIVATE
-        # GL headers first to prevent conflicts with system headers
-        <glad/gl.h>
-        # Standard library headers
-        <string>
-        <vector>
-        <memory>
-        <algorithm>
-        <functional>
-        <optional>
-        <variant>
-        <span>
-        <format>
-        # Third-party headers
-        <spdlog/spdlog.h>
-    )
+    include(cmake/PrecompiledHeaders.cmake)
+    target_precompile_headers(TaskSmack PRIVATE ${TASKSMACK_PCH_HEADERS})
 endif()
 
 tasksmack_apply_default_warnings(TaskSmack)

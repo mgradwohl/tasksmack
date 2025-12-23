@@ -131,13 +131,8 @@ tasksmack_apply_default_warnings(TaskSmackTests)
 
 # Precompiled headers for tests (speeds up compilation)
 if(TASKSMACK_ENABLE_PCH)
-    target_precompile_headers(TaskSmackTests PRIVATE
-        <gtest/gtest.h>
-        <memory>
-        <vector>
-        <string>
-        <chrono>
-    )
+    include(../cmake/TestPrecompiledHeaders.cmake)
+    target_precompile_headers(TaskSmackTests PRIVATE ${TASKSMACK_TEST_PCH_HEADERS})
 endif()
 
 gtest_discover_tests(TaskSmackTests)
