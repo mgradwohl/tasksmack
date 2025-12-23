@@ -27,6 +27,13 @@ namespace Platform
 {
 namespace
 {
+// Test constants for consistency checks
+constexpr double PROCESS_COUNT_VARIANCE_TOLERANCE = 0.2; // 20% variance allowed
+
+// Test constants for CPU time measurement
+constexpr int CPU_WORK_ITERATIONS = 5;
+constexpr int CPU_WORK_INNER_LOOP = 10'000'000;
+
 } // namespace
 
 TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
@@ -216,8 +223,9 @@ TEST(WindowsProcessProbeTest, MultipleEnumerationsAreConsistent)
 
     // Process counts might differ slightly due to short-lived processes,
     // but should be in the same ballpark
-    EXPECT_NEAR(
-        static_cast<double>(processes1.size()), static_cast<double>(processes2.size()), static_cast<double>(processes1.size()) * 0.2)
+    EXPECT_NEAR(static_cast<double>(processes1.size()),
+                static_cast<double>(processes2.size()),
+                static_cast<double>(processes1.size()) * PROCESS_COUNT_VARIANCE_TOLERANCE)
         << "Multiple enumerations should return similar process counts";
 }
 
@@ -264,9 +272,9 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 
     // Do significant CPU work to ensure measurable time increase
     volatile int sum = 0;
-    for (int iteration = 0; iteration < 5; ++iteration)
+    for (int iteration = 0; iteration < CPU_WORK_ITERATIONS; ++iteration)
     {
-        for (int i = 0; i < 10'000'000; ++i)
+        for (int i = 0; i < CPU_WORK_INNER_LOOP; ++i)
         {
             sum += i;
         }

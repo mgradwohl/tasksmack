@@ -27,6 +27,9 @@ using TestMocks::MockProcessProbe;
 namespace
 {
 
+// Test constants for overflow scenarios
+constexpr uint64_t OVERFLOW_TEST_MARGIN = 10000; // Distance from max value for overflow tests
+
 /// Helper to create a process counter (legacy compatibility wrapper).
 Platform::ProcessCounters makeCounter(int32_t pid,
                                       const std::string& name,
@@ -770,7 +773,7 @@ TEST(ProcessModelTest, IntegerOverflowInCpuCounters)
     auto* rawProbe = probe.get();
 
     // Start with very high values near overflow
-    constexpr uint64_t nearMax = std::numeric_limits<uint64_t>::max() - 10000;
+    constexpr uint64_t nearMax = std::numeric_limits<uint64_t>::max() - OVERFLOW_TEST_MARGIN;
     rawProbe->setCounters({makeCounter(100, "overflow_proc", 'R', nearMax, 5000)});
     rawProbe->setTotalCpuTime(nearMax * 2);
 
