@@ -21,6 +21,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace App
@@ -261,6 +263,21 @@ void ProcessesPanel::render(bool* open)
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW));
     ImGui::TextUnformatted(summaryStr.c_str());
 
+    // Tree view toggle button
+    ImGui::SameLine();
+    if (ImGui::Button(m_TreeViewEnabled ? "List View" : "Tree View"))
+    {
+        m_TreeViewEnabled = !m_TreeViewEnabled;
+        if (m_TreeViewEnabled)
+        {
+            spdlog::info("Switched to tree view mode");
+        }
+        else
+        {
+            spdlog::info("Switched to flat list view mode");
+        }
+    }
+
     ImGui::Separator();
 
     // Always create all columns with stable IDs (using enum value as ID)
@@ -382,160 +399,22 @@ void ProcessesPanel::render(bool* open)
             }
         }
 
-        // Render process rows
-        for (size_t idx : filteredIndices)
+        // Render process rows - tree view or flat list
+        if (m_TreeViewEnabled)
         {
-            const auto& proc = currentSnapshots[idx];
+            // Build process tree
+            const auto tree = buildProcessTree(currentSnapshots);
 
-            ImGui::TableNextRow();
-
-            // Render all columns - ImGui handles hidden columns automatically
-            int colIdx = 0;
-            for (const ProcessColumn col : allProcessColumns())
+            // Render tree view
+            renderTreeView(currentSnapshots, filteredIndices, tree);
+        }
+        else
+        {
+            // Render flat list
+            for (size_t idx : filteredIndices)
             {
-                if (!ImGui::TableSetColumnIndex(colIdx))
-                {
-                    ++colIdx;
-                    continue; // Column is hidden or clipped
-                }
-                ++colIdx;
-
-                // PID column is always the selectable
-                if (col == ProcessColumn::PID)
-                {
-                    const bool isSelected = (m_SelectedPid == proc.pid);
-                    const std::string label = std::format("{}", proc.pid);
-
-                    if (ImGui::Selectable(
-                            label.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
-                    {
-                        m_SelectedPid = proc.pid;
-                    }
-                    continue;
-                }
-
-                switch (col)
-                {
-                case ProcessColumn::User:
-                    ImGui::TextUnformatted(proc.user.c_str());
-                    break;
-
-                case ProcessColumn::CpuPercent:
-                    ImGui::Text("%.1f", proc.cpuPercent);
-                    break;
-
-                case ProcessColumn::MemPercent:
-                    ImGui::Text("%.1f", proc.memoryPercent);
-                    break;
-
-                case ProcessColumn::Virtual:
-                {
-                    const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
-                    const std::string text = UI::Format::formatBytesWithUnit(proc.virtualBytes, unit);
-                    ImGui::TextUnformatted(text.c_str());
-                    break;
-                }
-
-                case ProcessColumn::Resident:
-                {
-                    const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
-                    const std::string text = UI::Format::formatBytesWithUnit(proc.memoryBytes, unit);
-                    ImGui::TextUnformatted(text.c_str());
-                    break;
-                }
-
-                case ProcessColumn::Shared:
-                {
-                    const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
-                    const std::string text = UI::Format::formatBytesWithUnit(proc.sharedBytes, unit);
-                    ImGui::TextUnformatted(text.c_str());
-                    break;
-                }
-
-                case ProcessColumn::CpuTime:
-                {
-                    const std::string text = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
-                    ImGui::TextUnformatted(text.c_str());
-                    break;
-                }
-
-                case ProcessColumn::State:
-                {
-                    char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
-                    const auto& scheme = UI::Theme::get().scheme();
-
-                    // Color based on process state
-                    ImVec4 stateColor;
-                    switch (stateChar)
-                    {
-                    case 'R': // Running
-                        stateColor = scheme.statusRunning;
-                        break;
-                    case 'S': // Sleeping (interruptible)
-                        stateColor = scheme.statusSleeping;
-                        break;
-                    case 'D': // Disk sleep (uninterruptible)
-                        stateColor = scheme.statusDiskSleep;
-                        break;
-                    case 'Z': // Zombie
-                        stateColor = scheme.statusZombie;
-                        break;
-                    case 'T': // Stopped/Traced
-                    case 't': // Tracing stop
-                        stateColor = scheme.statusStopped;
-                        break;
-                    case 'I': // Idle kernel thread
-                        stateColor = scheme.statusIdle;
-                        break;
-                    default:
-                        stateColor = scheme.statusSleeping; // Default to muted
-                        break;
-                    }
-
-                    ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
-                    ImGui::Text("%c", stateChar);
-                    ImGui::PopStyleColor();
-                    break;
-                }
-
-                case ProcessColumn::Name:
-                    ImGui::TextUnformatted(proc.name.c_str());
-                    break;
-
-                case ProcessColumn::PPID:
-                    ImGui::Text("%d", proc.parentPid);
-                    break;
-
-                case ProcessColumn::Nice:
-                    ImGui::Text("%d", proc.nice);
-                    break;
-
-                case ProcessColumn::Threads:
-                    if (proc.threadCount > 0)
-                    {
-                        ImGui::Text("%d", proc.threadCount);
-                    }
-                    else
-                    {
-                        ImGui::TextUnformatted("-");
-                    }
-                    break;
-
-                case ProcessColumn::Command:
-                    if (!proc.command.empty())
-                    {
-                        ImGui::TextUnformatted(proc.command.c_str());
-                    }
-                    else
-                    {
-                        // Show name in brackets if no command line available
-                        ImGui::Text("[%s]", proc.name.c_str());
-                    }
-                    break;
-
-                default:
-                    break;
-                }
+                const auto& proc = currentSnapshots[idx];
+                renderProcessRow(proc, 0, false, false);
             }
         }
 
@@ -576,6 +455,267 @@ std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
         return m_ProcessModel->snapshots();
     }
     return {};
+}
+
+std::unordered_map<std::int32_t, std::vector<std::size_t>>
+ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const
+{
+    std::unordered_map<std::int32_t, std::vector<std::size_t>> tree;
+
+    // Build parent -> children mapping
+    for (std::size_t i = 0; i < snapshots.size(); ++i)
+    {
+        const auto& proc = snapshots[i];
+        if (proc.parentPid > 0)
+        {
+            tree[proc.parentPid].push_back(i);
+        }
+    }
+
+    return tree;
+}
+
+void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)
+{
+    ImGui::TableNextRow();
+
+    // Render all columns
+    int colIdx = 0;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (!ImGui::TableSetColumnIndex(colIdx))
+        {
+            ++colIdx;
+            continue; // Column is hidden or clipped
+        }
+        ++colIdx;
+
+        // PID column with tree indent and expand/collapse indicator
+        if (col == ProcessColumn::PID)
+        {
+            const bool isSelected = (m_SelectedPid == proc.pid);
+
+            // Indent for tree depth
+            if (m_TreeViewEnabled && depth > 0)
+            {
+                const float indentWidth = 16.0F * static_cast<float>(depth);
+                ImGui::Indent(indentWidth);
+            }
+
+            // Tree expand/collapse button
+            if (m_TreeViewEnabled && hasChildren)
+            {
+                const std::string buttonLabel = isExpanded ? "-" : "+";
+                const std::string buttonId = std::format("##{}_tree_btn", proc.pid);
+                if (ImGui::SmallButton((buttonLabel + buttonId).c_str()))
+                {
+                    // Toggle collapsed state
+                    if (isExpanded)
+                    {
+                        m_CollapsedPids.insert(proc.pid);
+                    }
+                    else
+                    {
+                        m_CollapsedPids.erase(proc.pid);
+                    }
+                }
+                ImGui::SameLine();
+            }
+            else if (m_TreeViewEnabled)
+            {
+                // Add spacing for processes without children
+                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
+                ImGui::SameLine();
+            }
+
+            const std::string label = std::format("{}", proc.pid);
+            if (ImGui::Selectable(label.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+            {
+                m_SelectedPid = proc.pid;
+            }
+
+            if (m_TreeViewEnabled && depth > 0)
+            {
+                const float indentWidth = 16.0F * static_cast<float>(depth);
+                ImGui::Unindent(indentWidth);
+            }
+            continue;
+        }
+
+        // Render other columns (same as before)
+        switch (col)
+        {
+        case ProcessColumn::User:
+            ImGui::TextUnformatted(proc.user.c_str());
+            break;
+
+        case ProcessColumn::CpuPercent:
+            ImGui::Text("%.1f", proc.cpuPercent);
+            break;
+
+        case ProcessColumn::MemPercent:
+            ImGui::Text("%.1f", proc.memoryPercent);
+            break;
+
+        case ProcessColumn::Virtual:
+        {
+            const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
+            const std::string text = UI::Format::formatBytesWithUnit(proc.virtualBytes, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::Resident:
+        {
+            const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
+            const std::string text = UI::Format::formatBytesWithUnit(proc.memoryBytes, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::Shared:
+        {
+            const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
+            const std::string text = UI::Format::formatBytesWithUnit(proc.sharedBytes, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::CpuTime:
+        {
+            const std::string text = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::State:
+        {
+            char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+            const auto& scheme = UI::Theme::get().scheme();
+
+            // Color based on process state
+            ImVec4 stateColor;
+            switch (stateChar)
+            {
+            case 'R': // Running
+                stateColor = scheme.statusRunning;
+                break;
+            case 'S': // Sleeping (interruptible)
+                stateColor = scheme.statusSleeping;
+                break;
+            case 'D': // Disk sleep (uninterruptible)
+                stateColor = scheme.statusDiskSleep;
+                break;
+            case 'Z': // Zombie
+                stateColor = scheme.statusZombie;
+                break;
+            case 'T': // Stopped/Traced
+            case 't': // Tracing stop
+                stateColor = scheme.statusStopped;
+                break;
+            case 'I': // Idle kernel thread
+                stateColor = scheme.statusIdle;
+                break;
+            default:
+                stateColor = scheme.statusSleeping; // Default to muted
+                break;
+            }
+
+            ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
+            ImGui::Text("%c", stateChar);
+            ImGui::PopStyleColor();
+            break;
+        }
+
+        case ProcessColumn::Name:
+            ImGui::TextUnformatted(proc.name.c_str());
+            break;
+
+        case ProcessColumn::PPID:
+            ImGui::Text("%d", proc.parentPid);
+            break;
+
+        case ProcessColumn::Nice:
+            ImGui::Text("%d", proc.nice);
+            break;
+
+        case ProcessColumn::Threads:
+            if (proc.threadCount > 0)
+            {
+                ImGui::Text("%d", proc.threadCount);
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+
+        case ProcessColumn::Command:
+            if (!proc.command.empty())
+            {
+                ImGui::TextUnformatted(proc.command.c_str());
+            }
+            else
+            {
+                // Show name in brackets if no command line available
+                ImGui::Text("[%s]", proc.name.c_str());
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+}
+
+void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                           const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                                           std::size_t procIdx,
+                                           int depth)
+{
+    const auto& proc = snapshots[procIdx];
+
+    // Check if this process has children
+    auto childrenIt = tree.find(proc.pid);
+    const bool hasChildren = (childrenIt != tree.end() && !childrenIt->second.empty());
+    const bool isExpanded = (m_CollapsedPids.find(proc.pid) == m_CollapsedPids.end());
+
+    // Render this process
+    renderProcessRow(proc, depth, hasChildren, isExpanded);
+
+    // Recursively render children if expanded
+    if (hasChildren && isExpanded)
+    {
+        for (std::size_t childIdx : childrenIt->second)
+        {
+            renderProcessTreeNode(snapshots, tree, childIdx, depth + 1);
+        }
+    }
+}
+
+void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                    const std::vector<std::size_t>& filteredIndices,
+                                    const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree)
+{
+    // Find root processes (those not in any parent's children list or parent doesn't exist)
+    std::unordered_set<std::size_t> childIndices;
+    for (const auto& [parentPid, children] : tree)
+    {
+        for (std::size_t childIdx : children)
+        {
+            childIndices.insert(childIdx);
+        }
+    }
+
+    // Render root processes and their descendants
+    for (std::size_t idx : filteredIndices)
+    {
+        // Only render if this is a root process (not a child of anyone in the filtered set)
+        if (childIndices.find(idx) == childIndices.end())
+        {
+            renderProcessTreeNode(snapshots, tree, idx, 0);
+        }
+    }
 }
 
 } // namespace App

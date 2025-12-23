@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace App
@@ -86,8 +88,31 @@ class ProcessesPanel : public Panel
     // Search/filter state
     std::array<char, 256> m_SearchBuffer{};
 
+    // Tree view state
+    bool m_TreeViewEnabled = false;
+    std::unordered_set<std::int32_t> m_CollapsedPids; // PIDs that are collapsed in tree view
+
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
+
+    /// Build parent-child process tree structure
+    /// @return Map of parent PID to vector of child indices
+    [[nodiscard]] std::unordered_map<std::int32_t, std::vector<std::size_t>>
+    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
+
+    /// Render process rows in tree view mode
+    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                        const std::vector<std::size_t>& filteredIndices,
+                        const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree);
+
+    /// Render a single process and its children recursively
+    void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                               const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                               std::size_t procIdx,
+                               int depth);
+
+    /// Render a single process row
+    void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
 };
 
 } // namespace App
