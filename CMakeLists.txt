@@ -297,6 +297,7 @@ if(NOT Freetype_FOUND)
         DOWNLOAD_EXTRACT_TIMESTAMP OFF
         URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
         URL_HASH SHA256=427201f5d5151670d05c1f5b45bef5dda1f2e7dd971ef54f0feaaa7ffd2ab90c
+        SYSTEM  # Treat as system headers to suppress warnings from FreeType
     )
     FetchContent_GetProperties(freetype)
     if(NOT freetype_POPULATED)
@@ -709,7 +710,7 @@ elseif(UNIX)
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
         set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6")
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6, libfreetype6")
     endif()
     # Check for rpmbuild (Red Hat/Fedora)
     find_program(RPMBUILD_PROGRAM rpmbuild)
