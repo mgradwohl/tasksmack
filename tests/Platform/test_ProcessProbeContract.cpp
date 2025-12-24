@@ -175,13 +175,13 @@ TEST(ProcessProbeContractTest, NiceAndBasePriorityAreRelated)
         EXPECT_GE(proc.nice, -20) << "Process " << proc.name;
         EXPECT_LE(proc.nice, 19) << "Process " << proc.name;
 
-        // Most processes should have base priority in reasonable range (4-13)
-        // unless they're specially elevated
-        if (proc.basePriority >= 1 && proc.basePriority <= 31)
-        {
-            // Valid range - this is expected
-            SUCCEED();
-        }
+        // Verify inverse relationship: lower nice (higher priority) should yield higher base priority
+        // Formula: basePriority = clamp(8 - (nice / 5), 4, 13)
+        const int32_t expectedBase = std::clamp(8 - (proc.nice / 5), 4, 13);
+        EXPECT_EQ(proc.basePriority, expectedBase)
+            << "Process " << proc.name << " (PID " << proc.pid << "): "
+            << "nice=" << proc.nice << " should map to basePriority=" << expectedBase
+            << " but got " << proc.basePriority;
     }
 }
 
