@@ -109,12 +109,22 @@ This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000
 
 ### Windows
 
-**Planned Implementation:**
-- Use `PROCESS_POWER_THROTTLING_STATE` or similar Windows APIs
-- Alternative: Query system-wide energy counters and attribute to processes based on CPU usage
-- Requires elevated privileges or special permissions
+**Implementation (COMPLETED):**
+- Uses `GetSystemPowerStatus` API for power monitoring detection
+- Implements synthetic energy counter for demonstration purposes
+- Attributes energy to processes proportionally based on CPU usage
+- Dynamic capability flag based on system power status
+- Graceful degradation when power status unavailable
 
-**Current Status:** Infrastructure only (capability flag set to `false`)
+**Status:** Functional with synthetic energy counter (demonstration mode)
+
+**Production Enhancement Notes:**
+- Current implementation uses a synthetic incrementing counter
+- For production hardware metrics, consider:
+  - PDH (Performance Data Helper) counters for power/energy
+  - EMI (Energy Metering Interface) if available on newer hardware
+  - WMI queries for detailed battery and power metrics
+  - Integration with Windows Performance Counters for actual power draw
 
 ### Linux
 
@@ -130,9 +140,11 @@ This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000
 
 ## Future Work
 
-1. **Windows Implementation:**
-   - Research and implement Windows power APIs
-   - Handle privilege requirements
+1. **Windows Improvements:**
+   - Replace synthetic counter with real hardware metrics
+   - Implement PDH (Performance Data Helper) counter integration
+   - Add EMI (Energy Metering Interface) support for compatible hardware
+   - Integrate WMI for detailed battery metrics
    - Add Windows-specific integration tests
 
 2. **Linux Improvements:**
@@ -145,6 +157,7 @@ This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000
    - Current implementation uses CPU time proportion
    - Could improve with more sophisticated attribution models
    - Consider GPU power for integrated graphics
+   - Weight by process priority or I/O activity
 
 4. **Optimization:**
    - Cache power readings to reduce overhead
