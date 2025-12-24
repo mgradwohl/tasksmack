@@ -115,6 +115,17 @@ LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
     }
+
+    // Detect and initialize power monitoring if available
+    m_HasPowerCap = detectPowerCap();
+    if (m_HasPowerCap)
+    {
+        spdlog::info("Power monitoring available via RAPL at: {}", m_PowerCapPath);
+    }
+    else
+    {
+        spdlog::debug("Power monitoring not available (RAPL not found)");
+    }
 }
 
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
@@ -160,6 +171,12 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         spdlog::warn("Error iterating /proc: {}", errorCode.message());
     }
 
+    // Attribute energy to processes if power monitoring is available
+    if (m_HasPowerCap)
+    {
+        attributeEnergyToProcesses(processes);
+    }
+
     return processes;
 }
 
@@ -169,10 +186,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,         // From /proc/[pid]/status Uid field
-                               .hasCommand = true,      // From /proc/[pid]/cmdline
-                               .hasNice = true,         // From /proc/[pid]/stat
-                               .hasPowerUsage = false}; // TODO: Implement via powercap sysfs
+                               .hasUser = true,                 // From /proc/[pid]/status Uid field
+                               .hasCommand = true,              // From /proc/[pid]/cmdline
+                               .hasNice = true,                 // From /proc/[pid]/stat
+                               .hasPowerUsage = m_HasPowerCap}; // Available if RAPL is detected
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -432,6 +449,112 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
 
     spdlog::warn("MemTotal not found in /proc/meminfo");
     return 0;
+}
+
+bool LinuxProcessProbe::detectPowerCap()
+{
+    // Try to find Intel RAPL package energy file
+    // Common paths: /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
+    const std::vector<std::string> possiblePaths = {
+        "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
+        "/sys/class/powercap/intel-rapl:0/energy_uj",
+    };
+
+    for (const auto& path : possiblePaths)
+    {
+        std::ifstream file(path);
+        if (file.good())
+        {
+            m_PowerCapPath = path;
+            return true;
+        }
+    }
+
+    // Try to enumerate powercap directory
+    std::error_code ec;
+    std::filesystem::path powercapDir("/sys/class/powercap");
+    if (std::filesystem::exists(powercapDir, ec) && std::filesystem::is_directory(powercapDir, ec))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(powercapDir, ec))
+        {
+            if (entry.is_directory() && entry.path().filename().string().find("intel-rapl") == 0)
+            {
+                std::filesystem::path energyFile = entry.path() / "energy_uj";
+                if (std::filesystem::exists(energyFile, ec))
+                {
+                    m_PowerCapPath = energyFile.string();
+                    return true;
+                }
+
+                // Try package:0 subdirectory
+                std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
+                energyFile = packageDir / "energy_uj";
+                if (std::filesystem::exists(energyFile, ec))
+                {
+                    m_PowerCapPath = energyFile.string();
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+uint64_t LinuxProcessProbe::readSystemEnergy() const
+{
+    if (m_PowerCapPath.empty())
+    {
+        return 0;
+    }
+
+    std::ifstream file(m_PowerCapPath);
+    if (!file.is_open())
+    {
+        return 0;
+    }
+
+    uint64_t energyUj = 0;
+    file >> energyUj;
+
+    if (file.fail())
+    {
+        return 0;
+    }
+
+    return energyUj; // Already in microjoules
+}
+
+void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
+{
+    // Read system-wide energy
+    const uint64_t systemEnergy = readSystemEnergy();
+    if (systemEnergy == 0)
+    {
+        return;
+    }
+
+    // Calculate total CPU time across all processes
+    uint64_t totalProcessCpuTime = 0;
+    for (const auto& proc : processes)
+    {
+        totalProcessCpuTime += (proc.userTime + proc.systemTime);
+    }
+
+    // Avoid division by zero
+    if (totalProcessCpuTime == 0)
+    {
+        return;
+    }
+
+    // Attribute energy proportionally based on CPU usage
+    // This is an approximation: energy per process = systemEnergy * (processCpuTime / totalCpuTime)
+    for (auto& proc : processes)
+    {
+        const uint64_t processCpuTime = proc.userTime + proc.systemTime;
+        const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
+        proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
+    }
 }
 
 } // namespace Platform
