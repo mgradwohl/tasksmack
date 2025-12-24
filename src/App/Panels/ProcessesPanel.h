@@ -116,6 +116,10 @@ class ProcessesPanel : public Panel
                                int depth);
 
     /// Render a single process row
+    /// @param proc The process to render.
+    /// @param depth Indentation depth in the tree.
+    /// @param hasChildren Whether the process has children.
+    /// @param isExpanded Whether the children are visible.
     void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
 };
 
