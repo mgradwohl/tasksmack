@@ -85,6 +85,7 @@ void UILayer::loadAllFonts()
     ImGuiIO& imguiIO = ImGui::GetIO();
 
     // Configure FreeType for better hinting at small sizes
+    // Note: IMGUI_ENABLE_FREETYPE is defined at compile time, so FreeType is always used
     // LightHinting provides better quality for UI fonts at typical screen sizes
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
