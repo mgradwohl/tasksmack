@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -25,6 +26,9 @@ using TestMocks::MockProcessProbe;
 
 namespace
 {
+
+// Test constants for overflow scenarios
+constexpr uint64_t OVERFLOW_TEST_MARGIN = 10000; // Distance from max value for overflow tests
 
 /// Helper to create a process counter (legacy compatibility wrapper).
 Platform::ProcessCounters makeCounter(int32_t pid,
@@ -760,6 +764,79 @@ TEST(ProcessModelTest, ProcessWithZeroStartTime)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
     // Should still work - uniqueKey based on hash of 0 is valid
+    EXPECT_NE(snaps[0].uniqueKey, 0);
+}
+
+TEST(ProcessModelTest, IntegerOverflowInCpuCounters)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // Start with very high values near overflow
+    constexpr uint64_t nearMax = std::numeric_limits<uint64_t>::max() - OVERFLOW_TEST_MARGIN;
+    rawProbe->setCounters({makeCounter(100, "overflow_proc", 'R', nearMax, 5000)});
+    rawProbe->setTotalCpuTime(nearMax * 2);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Counter wraps around (overflow scenario)
+    // In practice, OS counters may wrap, but our delta calculation should handle it gracefully
+    // by treating the new value as a new baseline
+    rawProbe->setCounters({makeCounter(100, "overflow_proc", 'R', 1000, 500)});
+    rawProbe->setTotalCpuTime(nearMax * 2 + 100000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // CPU% should be 0 or minimal because the counter appears to have decreased
+    // (which our implementation treats as a new process baseline)
+    EXPECT_GE(snaps[0].cpuPercent, 0.0);
+    // CPU% is calculated as (processDelta / totalCpuDelta) * 100, so it should be <= 100%
+    // regardless of core count (totalCpuDelta includes all cores)
+    EXPECT_LE(snaps[0].cpuPercent, 100.0);
+}
+
+TEST(ProcessModelTest, ExtremeValuesMaxUint64)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+
+    Platform::ProcessCounters c;
+    c.pid = std::numeric_limits<int32_t>::max();
+    c.parentPid = std::numeric_limits<int32_t>::max() - 1;
+    c.name = "extreme_proc";
+    c.state = 'R';
+    c.userTime = std::numeric_limits<uint64_t>::max();
+    c.systemTime = std::numeric_limits<uint64_t>::max();
+    c.startTimeTicks = std::numeric_limits<uint64_t>::max();
+    c.rssBytes = std::numeric_limits<uint64_t>::max();
+    c.virtualBytes = std::numeric_limits<uint64_t>::max();
+    c.threadCount = std::numeric_limits<int32_t>::max();
+
+    probe->setCounters({c});
+    probe->setTotalCpuTime(std::numeric_limits<uint64_t>::max());
+
+    Domain::ProcessModel model(std::move(probe));
+
+    // Should not crash or produce undefined behavior
+    EXPECT_NO_THROW({ model.refresh(); });
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // Verify extreme values are preserved
+    EXPECT_EQ(snaps[0].pid, std::numeric_limits<int32_t>::max());
+    EXPECT_EQ(snaps[0].parentPid, std::numeric_limits<int32_t>::max() - 1);
+    EXPECT_EQ(snaps[0].name, "extreme_proc");
+    EXPECT_EQ(snaps[0].memoryBytes, std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(snaps[0].virtualBytes, std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(snaps[0].threadCount, std::numeric_limits<int32_t>::max());
+
+    // CPU% should be valid (0.0 on first sample, no previous data)
+    EXPECT_GE(snaps[0].cpuPercent, 0.0);
+    EXPECT_LE(snaps[0].cpuPercent, 100.0);
+
+    // UniqueKey should be valid (non-zero hash)
     EXPECT_NE(snaps[0].uniqueKey, 0);
 }
 
