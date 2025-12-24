@@ -957,4 +957,3 @@ TEST(ProcessModelTest, BasePriorityPreservedAcrossRefreshes)
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].basePriority, 10);
 }
-

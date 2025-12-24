@@ -13,10 +13,10 @@ struct ProcessCounters
     std::int32_t pid = 0;
     std::int32_t parentPid = 0;
     std::string name;
-    std::string command;   // Full command line
-    std::string user;         // Username (owner) of the process
-    char state = '?';         // Raw state character from OS (e.g., 'R', 'S', 'Z')
-    std::int32_t nice = 0;    // Nice value (-20 to 19 on Linux)
+    std::string command;           // Full command line
+    std::string user;              // Username (owner) of the process
+    char state = '?';              // Raw state character from OS (e.g., 'R', 'S', 'Z')
+    std::int32_t nice = 0;         // Nice value (-20 to 19 on Linux)
     std::int32_t basePriority = 8; // Windows base priority (1-31); default NORMAL=8
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection
@@ -44,9 +44,9 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;        // Whether process owner/user is available
-    bool hasCommand = false;     // Whether full command line is available
-    bool hasNice = false;        // Whether nice/priority value is available
+    bool hasUser = false;         // Whether process owner/user is available
+    bool hasCommand = false;      // Whether full command line is available
+    bool hasNice = false;         // Whether nice/priority value is available
     bool hasBasePriority = false; // Whether Windows-style base priority (1-31) is available
 };
 

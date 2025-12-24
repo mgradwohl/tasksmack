@@ -170,9 +170,9 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,         // From /proc/[pid]/status Uid field
-                               .hasCommand = true,      // From /proc/[pid]/cmdline
-                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasUser = true,          // From /proc/[pid]/status Uid field
+                               .hasCommand = true,       // From /proc/[pid]/cmdline
+                               .hasNice = true,          // From /proc/[pid]/stat
                                .hasBasePriority = true}; // Mapped from nice value
 }
 
