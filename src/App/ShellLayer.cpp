@@ -15,8 +15,23 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <string>
+
+#ifdef _WIN32
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+// clang-format on
+#endif
 
 namespace App
 {
@@ -81,6 +96,43 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
     }
 
     ImGui::PopClipRect();
+}
+
+/// Open a file with the platform's default application
+void openFileWithDefaultEditor(const std::filesystem::path& filePath)
+{
+    if (!std::filesystem::exists(filePath))
+    {
+        spdlog::error("Cannot open file: {} does not exist", filePath.string());
+        return;
+    }
+
+#ifdef _WIN32
+    // Windows: Use ShellExecuteW to open the file with the default editor
+    const std::wstring wpath = filePath.wstring();
+    const HINSTANCE result = ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // ShellExecuteW returns a value > 32 on success
+    if (reinterpret_cast<intptr_t>(result) <= 32)
+    {
+        spdlog::error("Failed to open file with default editor: {}", filePath.string());
+    }
+    else
+    {
+        spdlog::info("Opened config file: {}", filePath.string());
+    }
+#else
+    // Linux: Use xdg-open to open the file with the default editor
+    const std::string command = "xdg-open \"" + filePath.string() + "\" &";
+    const int result = std::system(command.c_str()); // NOLINT(concurrency-mt-unsafe)
+    if (result != 0)
+    {
+        spdlog::error("Failed to open file with default editor: {}", filePath.string());
+    }
+    else
+    {
+        spdlog::info("Opened config file: {}", filePath.string());
+    }
+#endif
 }
 
 } // namespace
@@ -384,6 +436,14 @@ void ShellLayer::renderMenuBar()
 
         if (ImGui::BeginMenu("Tools"))
         {
+            if (ImGui::MenuItem("Open Config File..."))
+            {
+                const auto& configPath = UserConfig::get().configPath();
+                openFileWithDefaultEditor(configPath);
+            }
+
+            ImGui::Separator();
+
             if (ImGui::MenuItem("Options..."))
             {
                 // TODO: Open options dialog
