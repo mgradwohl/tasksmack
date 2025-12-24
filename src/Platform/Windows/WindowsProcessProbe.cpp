@@ -226,8 +226,6 @@ WindowsProcessProbe::WindowsProcessProbe()
     if (m_HasPowerMonitoring)
     {
         spdlog::info("Power monitoring available on Windows");
-        // Initialize baseline energy reading
-        m_LastSystemEnergy = readSystemEnergy();
     }
     else
     {
@@ -491,13 +489,12 @@ uint64_t WindowsProcessProbe::readSystemEnergy() const
     // Use a synthetic energy value based on battery state
     // In a real implementation, this would integrate battery discharge rate over time
     // For now, return a cumulative-like value that changes with battery state
-    static uint64_t syntheticEnergy = 0;
 
     // Increment synthetic energy counter (this simulates cumulative energy consumption)
     // In production, this would read actual hardware counters or integrate power over time
-    syntheticEnergy += 1000000; // Add 1 joule (1,000,000 microjoules) per sample
+    m_SyntheticEnergy += 1000000; // Add 1 joule (1,000,000 microjoules) per sample
 
-    return syntheticEnergy;
+    return m_SyntheticEnergy;
 }
 
 void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const

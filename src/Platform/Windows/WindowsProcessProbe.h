@@ -26,7 +26,7 @@ class WindowsProcessProbe : public IProcessProbe
 
   private:
     bool m_HasPowerMonitoring = false;
-    uint64_t m_LastSystemEnergy = 0;
+    mutable uint64_t m_SyntheticEnergy = 0;
 
     /// Get detailed info for a single process
     [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters) const;
