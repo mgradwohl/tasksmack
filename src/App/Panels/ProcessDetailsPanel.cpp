@@ -540,9 +540,9 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                     {
                         // Use a dashed line style with a distinct color for the peak
                         ImVec4 peakColor = theme.scheme().textWarning; // Use warning color for visibility
-                        peakColor.w = 0.7F; // Slightly transparent
+                        peakColor.w = 0.7F;                            // Slightly transparent
                         ImPlot::SetNextLineStyle(peakColor, 1.5F);
-                        
+
                         // Draw horizontal line at peak value across the entire X range
                         const double peakY = m_PeakMemoryPercent;
                         std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};

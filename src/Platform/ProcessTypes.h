@@ -44,10 +44,10 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;      // Whether process owner/user is available
-    bool hasCommand = false;   // Whether full command line is available
-    bool hasNice = false;      // Whether nice/priority value is available
-    bool hasPeakRss = false;   // Whether peak working set is available
+    bool hasUser = false;    // Whether process owner/user is available
+    bool hasCommand = false; // Whether full command line is available
+    bool hasNice = false;    // Whether nice/priority value is available
+    bool hasPeakRss = false; // Whether peak working set is available
 };
 
 } // namespace Platform

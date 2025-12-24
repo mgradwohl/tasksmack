@@ -19,6 +19,7 @@ enum class ProcessColumn : std::uint8_t
     MemPercent,
     Virtual,
     Resident,
+    PeakResident,
     Shared,
     CpuTime,
     State,
@@ -33,7 +34,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -43,6 +44,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::MemPercent,
         ProcessColumn::Virtual,
         ProcessColumn::Resident,
+        ProcessColumn::PeakResident,
         ProcessColumn::Shared,
         ProcessColumn::CpuTime,
         ProcessColumn::State,
@@ -93,6 +95,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="VIRT", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
         // RES
         {.name="RES", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
+        // PEAK RES
+        {.name="PEAK", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
         // SHR
         {.name="SHR", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // TIME+
