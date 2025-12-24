@@ -183,7 +183,13 @@ struct TaskSmackVmCounters
 
 constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLASS>(3);
 
-[[nodiscard]] auto queryProcessVirtualSizeBytes(HANDLE hProcess) -> std::optional<uint64_t>
+struct ProcessVmInfo
+{
+    std::uint64_t virtualSizeBytes = 0;
+    std::uint64_t pageFaultCount = 0;
+};
+
+[[nodiscard]] auto queryProcessVmInfo(HANDLE hProcess) -> std::optional<ProcessVmInfo>
 {
     if (hProcess == nullptr)
     {
@@ -214,8 +220,12 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
         return std::nullopt;
     }
 
+    ProcessVmInfo info;
     // Fallback to 0 if virtual size exceeds uint64_t range (should never happen)
-    return Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
+    info.virtualSizeBytes = Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
+    // Fallback to 0 if page fault count exceeds uint64_t range (should never happen)
+    info.pageFaultCount = Domain::Numeric::narrowOr<uint64_t>(vm.pageFaultCount, uint64_t{0});
+    return info;
 }
 
 } // namespace
@@ -349,9 +359,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
         counters.rssBytes = pmc.base.WorkingSetSize;
 
-        if (auto virtualSizeBytes = queryProcessVirtualSizeBytes(hProcess))
+        if (auto vmInfo = queryProcessVmInfo(hProcess))
         {
-            counters.virtualBytes = *virtualSizeBytes;
+            counters.virtualBytes = vmInfo->virtualSizeBytes;
+            counters.pageFaultCount = vmInfo->pageFaultCount;
         }
         else if (pmc.base.PagefileUsage != 0)
         {
@@ -384,9 +395,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true, // From QueryFullProcessImageName
-        .hasNice = true,    // From GetPriorityClass
+        .hasUser = true,       // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,    // From QueryFullProcessImageName
+        .hasNice = true,       // From GetPriorityClass
+        .hasPageFaults = true, // From NtQueryInformationProcess (VM_COUNTERS)
     };
 }
 

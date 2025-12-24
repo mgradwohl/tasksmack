@@ -31,6 +31,7 @@ struct ProcessSnapshot
     double ioReadBytesPerSec = 0.0;
     double ioWriteBytesPerSec = 0.0;
     std::int32_t threadCount = 0;
+    std::uint64_t pageFaults = 0; // Total page faults (cumulative)
 
     /// Stable identity across samples (handles PID reuse).
     /// Computed as hash(pid, startTime).

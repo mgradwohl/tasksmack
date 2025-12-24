@@ -413,6 +413,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::PageFaults:
+                                              return compare(procA.pageFaults, procB.pageFaults);
                                           case ProcessColumn::Command:
                                               return compare(procA.command, procB.command);
                                           default:
@@ -678,6 +680,18 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.threadCount > 0)
             {
                 ImGui::Text("%d", proc.threadCount);
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+
+        case ProcessColumn::PageFaults:
+            if (proc.pageFaults > 0)
+            {
+                // Format with thousands separator using std::format
+                ImGui::Text("%s", std::format("{:L}", proc.pageFaults).c_str());
             }
             else
             {

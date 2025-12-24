@@ -26,6 +26,7 @@ enum class ProcessColumn : std::uint8_t
     PPID,
     Nice,
     Threads,
+    PageFaults,
     Command,
     // Future columns (data not yet available):
     // IoRead,
@@ -33,7 +34,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -50,6 +51,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::PPID,
         ProcessColumn::Nice,
         ProcessColumn::Threads,
+        ProcessColumn::PageFaults,
         ProcessColumn::Command,
     };
 }
@@ -107,6 +109,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
         // Threads
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
+        // Page Faults
+        {.name="PF", .configKey="page_faults", .defaultWidth=75.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
     }};

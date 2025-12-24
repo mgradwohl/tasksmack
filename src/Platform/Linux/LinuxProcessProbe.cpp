@@ -169,9 +169,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,    // From /proc/[pid]/status Uid field
-                               .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasUser = true,        // From /proc/[pid]/status Uid field
+                               .hasCommand = true,     // From /proc/[pid]/cmdline
+                               .hasNice = true,        // From /proc/[pid]/stat
+                               .hasPageFaults = true}; // From /proc/[pid]/stat (minflt + majflt)
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -264,6 +265,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.virtualBytes = vsize;
     counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
     counters.nice = clampToI32(nice);
+    counters.pageFaultCount = minflt + majflt; // Total page faults (minor + major)
 
     return true;
 }
