@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -59,15 +60,14 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 {
     std::unique_lock lock(m_Mutex);
 
-    // Calculate time delta for rate calculations
-    const auto currentTime = std::chrono::steady_clock::now();
-    double timeDeltaSeconds = 0.0;
+    // Calculate elapsed time since last sample for rate calculations
+    const auto currentSampleTime = std::chrono::steady_clock::now();
+    double elapsedSeconds = 0.0;
     if (m_HasPrevSampleTime)
     {
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
-        timeDeltaSeconds = static_cast<double>(duration.count()) / 1000.0;
+        elapsedSeconds = std::chrono::duration<double>(currentSampleTime - m_PrevSampleTime).count();
     }
-    m_PrevSampleTime = currentTime;
+    m_PrevSampleTime = currentSampleTime;
     m_HasPrevSampleTime = true;
 
     // Calculate total CPU delta
@@ -99,6 +99,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             previous = &prevIt->second;
         }
 
+
         // Track peak RSS
         std::uint64_t peakRss = current.rssBytes;
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
@@ -118,9 +119,9 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         newPeakRss[key] = peakRss;
 
         // Compute snapshot with deltas and rates, then set peak memory
-        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, timeDeltaSeconds);
+        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds);
         snapshot.peakMemoryBytes = peakRss;
-        newSnapshots.push_back(snapshot);
+        newSnapshots.push_back(std::move(snapshot));
 
         // Store for next iteration
         newPrevCounters[key] = current;
@@ -155,7 +156,11 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
+<<<<<<< HEAD
                                               double timeDeltaSeconds) const
+=======
+                                              double elapsedSeconds) const
+>>>>>>> a102ce3 (Add per-process I/O rate infrastructure)
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -208,16 +213,15 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         }
     }
 
-    // Compute network rates from deltas
-    if (previous != nullptr && timeDeltaSeconds > 0.0)
+    // Compute network and I/O rates from deltas
+    if (previous != nullptr && elapsedSeconds > 0.0)
     {
-        // Helper lambda to compute rate from counter delta
-        auto computeRate = [timeDeltaSeconds](std::uint64_t currentValue, std::uint64_t previousValue) -> double
+        auto computeRate = [elapsedSeconds](std::uint64_t currentValue, std::uint64_t previousValue) -> double
         {
             if (currentValue >= previousValue)
             {
                 const std::uint64_t delta = currentValue - previousValue;
-                return Numeric::toDouble(delta) / timeDeltaSeconds;
+                return Numeric::toDouble(delta) / elapsedSeconds;
             }
             return 0.0;
         };
@@ -226,7 +230,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         snapshot.netSentBytesPerSec = computeRate(current.netSentBytes, previous->netSentBytes);
         snapshot.netReceivedBytesPerSec = computeRate(current.netReceivedBytes, previous->netReceivedBytes);
 
-        // I/O rates (while we're here, implement these too)
+        // I/O rates
         snapshot.ioReadBytesPerSec = computeRate(current.readBytes, previous->readBytes);
         snapshot.ioWriteBytesPerSec = computeRate(current.writeBytes, previous->writeBytes);
     }
