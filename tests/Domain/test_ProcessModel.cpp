@@ -954,7 +954,7 @@ TEST(ProcessModelTest, PeakWorkingSetFromOSWhenAvailable)
 
     // First sample: process has 1 MB RSS, OS reports 2 MB peak
     auto counter1 = makeCounter(100, "test_proc", 'R', 1000, 500);
-    counter1.rssBytes = 1024 * 1024; // 1 MB
+    counter1.rssBytes = 1024 * 1024;         // 1 MB
     counter1.peakRssBytes = 2 * 1024 * 1024; // 2 MB (OS-provided peak)
     rawProbe->setCounters({counter1});
     rawProbe->setTotalCpuTime(100000);
@@ -970,7 +970,7 @@ TEST(ProcessModelTest, PeakWorkingSetFromOSWhenAvailable)
     // Second sample: RSS increases but OS peak increases more
     auto counter2 = makeCounter(100, "test_proc", 'R', 1100, 550);
     counter2.rssBytes = static_cast<uint64_t>(1.5 * 1024 * 1024); // 1.5 MB
-    counter2.peakRssBytes = 3 * 1024 * 1024; // 3 MB (OS-provided peak)
+    counter2.peakRssBytes = 3 * 1024 * 1024;                      // 3 MB (OS-provided peak)
     rawProbe->setCounters({counter2});
     rawProbe->setTotalCpuTime(200000);
     model.refresh();
