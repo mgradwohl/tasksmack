@@ -1026,8 +1026,9 @@ TEST(ProcessModelTest, LinuxNiceToBasePriorityMapping)
 
     // Test the Linux mapping formula: basePriority = clamp(8 - (nice / 5), 4, 13)
     // Test boundary cases and typical values
+    // Note: Integer division truncates toward zero
     probe->withProcess(201, "nice_n20")
-        .withPriority(201, -20, 13) // -20: 8-(-20/5) = 8-(-4) = 12, clamped to 13
+        .withPriority(201, -20, 12) // -20: 8-(-20/5) = 8-(-4) = 12
         .withProcess(202, "nice_n15")
         .withPriority(202, -15, 11) // -15: 8-(-15/5) = 8-(-3) = 11
         .withProcess(203, "nice_n10")
