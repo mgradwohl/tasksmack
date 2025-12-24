@@ -380,7 +380,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         if (proc.pageFaults > 0)
         {
-            ImGui::Text("%s", std::format("{:L}", proc.pageFaults).c_str());
+            // Format with locale for thousands separator (cached to avoid repeated allocations)
+            static thread_local std::string formatted;
+            formatted = std::format("{:L}", proc.pageFaults);
+            ImGui::TextUnformatted(formatted.c_str());
         }
         else
         {

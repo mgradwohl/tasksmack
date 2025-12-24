@@ -690,8 +690,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::PageFaults:
             if (proc.pageFaults > 0)
             {
-                // Format with thousands separator using std::format
-                ImGui::Text("%s", std::format("{:L}", proc.pageFaults).c_str());
+                // Format with locale for thousands separator (cached to avoid repeated allocations)
+                static thread_local std::string formatted;
+                formatted = std::format("{:L}", proc.pageFaults);
+                ImGui::TextUnformatted(formatted.c_str());
             }
             else
             {
