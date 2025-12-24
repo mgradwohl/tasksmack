@@ -994,16 +994,17 @@ TEST(ProcessModelTest, PowerUsageHandlesEnergyCounterReset)
 TEST(ProcessModelTest, PowerUsageWithoutEnergyData)
 {
     auto probe = std::make_unique<MockProcessProbe>();
-    probe->withProcess(100, "no_power_proc");
-    probe->setTotalCpuTime(100000);
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(100, "no_power_proc");
+    rawProbe->setTotalCpuTime(100000);
 
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    probe->withProcess(100, "no_power_proc");
-    probe->setTotalCpuTime(200000);
+    rawProbe->withProcess(100, "no_power_proc");
+    rawProbe->setTotalCpuTime(200000);
     model.refresh();
 
     auto snaps = model.snapshots();
