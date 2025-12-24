@@ -64,6 +64,7 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_VirtualHistory;   // Virtual memory percent (best effort)
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
+    double m_PeakMemoryPercent = 0.0;      // Peak working set (never decreases)
 
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
