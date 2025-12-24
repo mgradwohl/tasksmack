@@ -19,6 +19,7 @@ This file lists features that are already implemented in TaskSmack.
 | **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
 | **Process Tree View** | btop++, htop | Hierarchical view showing parent-child relationships with collapsible nodes |
 | **Power Usage Column** | Task Manager | Process power consumption (infrastructure ready, platform implementations pending) |
+| **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 
 ## Developer Tooling / Infrastructure
 
