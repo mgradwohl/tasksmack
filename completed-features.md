@@ -22,7 +22,7 @@ This file lists features that are already implemented in TaskSmack.
 | **CPU Affinity Column** | Task Manager | Shows which CPU cores a process can run on (e.g., "0-3", "0,2,4") |
 | **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 | **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; infrastructure ready for probe implementation |
-| **Per-Process I/O Rates** | Task Manager | I/O rate display (read/write) in Process Details Overview tab; infrastructure ready for probe implementation |
+| **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
 
 ## Developer Tooling / Infrastructure
 
