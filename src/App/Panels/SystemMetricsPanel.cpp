@@ -957,7 +957,7 @@ void SystemMetricsPanel::updateSmoothedDiskIO(const Domain::StorageSnapshot& sna
     {
         totalReadMBps += disk.readBytesPerSec / 1048576.0; // Convert to MB/s
         totalWriteMBps += disk.writeBytesPerSec / 1048576.0;
-        avgUtilization += disk.utilization;
+        avgUtilization += disk.utilizationPercent;
         ++deviceCount;
     }
 
