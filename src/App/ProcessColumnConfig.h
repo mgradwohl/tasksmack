@@ -22,6 +22,7 @@ enum class ProcessColumn : std::uint8_t
     Shared,
     CpuTime,
     State,
+    Status,
     Name,
     PPID,
     Nice,
@@ -33,7 +34,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -46,6 +47,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::Shared,
         ProcessColumn::CpuTime,
         ProcessColumn::State,
+        ProcessColumn::Status,
         ProcessColumn::Name,
         ProcessColumn::PPID,
         ProcessColumn::Nice,
@@ -99,6 +101,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="TIME+", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS.cc)"},
         // State
         {.name="S", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
+        // Status
+        {.name="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Name
         {.name="Name", .configKey="name", .defaultWidth=120.0F, .defaultVisible=true, .canHide=false, .description="Process name"},
         // PPID

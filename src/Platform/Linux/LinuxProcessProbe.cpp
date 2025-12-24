@@ -152,6 +152,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatm(pid, counters);
         parseProcessStatus(pid, counters);
         parseProcessCmdline(pid, counters);
+        counters.status = getProcessStatus(pid); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
@@ -171,7 +172,8 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasStartTime = true,
                                .hasUser = true,    // From /proc/[pid]/status Uid field
                                .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasNice = true,    // From /proc/[pid]/stat
+                               .hasStatus = true}; // From cgroup freezer state
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -356,6 +358,87 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     {
         counters.command = std::move(cmdline);
     }
+}
+
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
+{
+    // Check cgroup freezer state for suspended processes
+    // Try cgroup v2 first (newer), then fall back to cgroup v1
+
+    // cgroup v2: /sys/fs/cgroup/<path>/cgroup.freeze
+    // Value: 1 = frozen, 0 = unfrozen
+    std::filesystem::path cgroupV2Path = std::filesystem::path("/proc") / std::to_string(pid) / "cgroup";
+    std::ifstream cgroupFile(cgroupV2Path);
+    if (cgroupFile.is_open())
+    {
+        std::string line;
+        // cgroup file format: hierarchy-ID:controller-list:cgroup-path
+        // For cgroup v2, it's typically: 0::/path/to/cgroup
+        while (std::getline(cgroupFile, line))
+        {
+            if (line.starts_with("0::"))
+            {
+                // Extract cgroup path (after "0::")
+                std::string cgroupPath = line.substr(3);
+                if (cgroupPath.empty() || cgroupPath == "/")
+                {
+                    cgroupPath = "";
+                }
+
+                // Try cgroup v2 freeze state
+                std::filesystem::path freezePathV2 = std::filesystem::path("/sys/fs/cgroup") / cgroupPath.substr(1) / "cgroup.freeze";
+                std::ifstream freezeFileV2(freezePathV2);
+                if (freezeFileV2.is_open())
+                {
+                    int freezeValue = 0;
+                    freezeFileV2 >> freezeValue;
+                    if (freezeValue == 1)
+                    {
+                        return "Suspended";
+                    }
+                }
+            }
+            else
+            {
+                // cgroup v1: look for freezer controller
+                // Format: hierarchy-ID:controller-list:cgroup-path
+                const auto firstColon = line.find(':');
+                if (firstColon == std::string::npos)
+                {
+                    continue;
+                }
+
+                const auto secondColon = line.find(':', firstColon + 1);
+                if (secondColon == std::string::npos)
+                {
+                    continue;
+                }
+
+                std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
+                std::string cgroupPath = line.substr(secondColon + 1);
+
+                // Check if this line has the freezer controller
+                if (controllers.find("freezer") != std::string::npos)
+                {
+                    // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
+                    std::filesystem::path freezePathV1 = std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
+                    std::ifstream freezeFileV1(freezePathV1);
+                    if (freezeFileV1.is_open())
+                    {
+                        std::string state;
+                        freezeFileV1 >> state;
+                        if (state == "FROZEN" || state == "FREEZING")
+                        {
+                            return "Suspended";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No special status
+    return {};
 }
 
 uint64_t LinuxProcessProbe::readTotalCpuTime() const

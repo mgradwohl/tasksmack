@@ -218,6 +218,84 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
     return Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
 }
 
+// Structure for ProcessExtendedBasicInformation
+// Available since Windows 8/10, contains IsFrozen and IsBackground flags
+struct ProcessExtendedBasicInformation
+{
+    SIZE_T size = 0;
+    PROCESS_BASIC_INFORMATION basicInfo{};
+    union
+    {
+        ULONG flags = 0;
+        struct
+        {
+            ULONG isProtectedProcess : 1;
+            ULONG isWow64Process : 1;
+            ULONG isProcessDeleting : 1;
+            ULONG isCrossSessionCreate : 1;
+            ULONG isFrozen : 1;       // Process is suspended (UWP apps, frozen by OS)
+            ULONG isBackground : 1;   // Background process (efficiency mode)
+            ULONG isStronglyNamed : 1;
+            ULONG isSecureProcess : 1;
+            ULONG isSubsystemProcess : 1;
+            ULONG spareBits : 23;
+        };
+    };
+};
+
+constexpr PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFOCLASS>(64);
+
+/// Query process status (Suspended, Efficiency Mode)
+[[nodiscard]] std::string getProcessStatus(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr)
+    {
+        return {};
+    }
+
+    auto* fn = Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
+    if (fn == nullptr)
+    {
+        return {};
+    }
+
+    ProcessExtendedBasicInformation extInfo{};
+    extInfo.size = sizeof(extInfo);
+    ULONG returnLen = 0;
+
+    static_assert(sizeof(extInfo) <= std::numeric_limits<ULONG>::max(), "ProcessExtendedBasicInformation size exceeds ULONG range");
+    const ULONG extInfoSize = Domain::Numeric::narrowOr<ULONG>(sizeof(extInfo), ULONG{0});
+
+    const NTSTATUS status = fn(hProcess, PROCESS_INFO_EXTENDED_BASIC, &extInfo, extInfoSize, &returnLen);
+    if (status < 0)
+    {
+        // API not available or process not accessible
+        return {};
+    }
+
+    // Check for frozen state (Suspended)
+    if (extInfo.isFrozen != 0)
+    {
+        return "Suspended";
+    }
+
+    // Check for background/efficiency mode
+    if (extInfo.isBackground != 0)
+    {
+        return "Efficiency Mode";
+    }
+
+    // No special status
+    return {};
+}
+
+
 } // namespace
 
 WindowsProcessProbe::WindowsProcessProbe()
@@ -283,6 +361,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     // Get process state
     counters.state = getProcessState(hProcess);
+
+    // Get process status (Suspended, Efficiency Mode)
+    counters.status = getProcessStatus(hProcess);
 
     // Get process owner (username)
     counters.user = getProcessOwner(hProcess);
@@ -387,6 +468,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasUser = true,    // From OpenProcessToken + LookupAccountSid
         .hasCommand = true, // From QueryFullProcessImageName
         .hasNice = true,    // From GetPriorityClass
+        .hasStatus = true,  // From NtQueryInformationProcess ProcessExtendedBasicInformation
     };
 }
 
