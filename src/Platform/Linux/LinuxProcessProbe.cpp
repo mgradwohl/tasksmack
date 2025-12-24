@@ -171,9 +171,9 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,        // From /proc/[pid]/status Uid field
-                               .hasCommand = true,     // From /proc/[pid]/cmdline
-                               .hasNice = true,        // From /proc/[pid]/stat
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
                                .hasCpuAffinity = true}; // From sched_getaffinity
 }
 
@@ -365,10 +365,10 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
 {
     // Use sched_getaffinity to read CPU affinity mask for the process
     // This returns which CPU cores the process is allowed to run on
-    
+
     cpu_set_t cpuSet;
     CPU_ZERO(&cpuSet);
-    
+
     // sched_getaffinity returns the affinity for the main thread of the process
     if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
     {
