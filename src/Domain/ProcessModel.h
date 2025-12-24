@@ -53,6 +53,7 @@ class ProcessModel
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
+    std::uint64_t m_PrevTimestampUs = 0;   // For power rate calculation (microseconds)
 
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
@@ -67,7 +68,8 @@ class ProcessModel
                                                   const Platform::ProcessCounters* previous,
                                                   std::uint64_t totalCpuDelta,
                                                   std::uint64_t systemTotalMemory,
-                                                  long ticksPerSecond) const;
+                                                  long ticksPerSecond,
+                                                  std::uint64_t timeDeltaUs) const;
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

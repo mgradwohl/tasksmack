@@ -384,9 +384,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true, // From QueryFullProcessImageName
-        .hasNice = true,    // From GetPriorityClass
+        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasNice = true,        // From GetPriorityClass
+        .hasPowerUsage = false, // TODO: Implement via PROCESS_POWER_THROTTLING_STATE or energy counters
     };
 }
 

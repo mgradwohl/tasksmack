@@ -27,13 +27,14 @@ enum class ProcessColumn : std::uint8_t
     Nice,
     Threads,
     Command,
+    Power,
     // Future columns (data not yet available):
     // IoRead,
     // IoWrite,
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -51,6 +52,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::Nice,
         ProcessColumn::Threads,
         ProcessColumn::Command,
+        ProcessColumn::Power,
     };
 }
 
@@ -109,6 +111,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
+        // Power
+        {.name="Power", .configKey="power", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Power consumption in watts (platform-dependent)"},
     }};
     // clang-format on
 

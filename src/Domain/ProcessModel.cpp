@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -19,12 +20,13 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: "
-                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}",
+                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasPowerUsage={}",
                      m_Capabilities.hasIoCounters,
                      m_Capabilities.hasThreadCount,
                      m_Capabilities.hasUserSystemTime,
                      m_Capabilities.hasStartTime,
-                     m_Capabilities.hasUser);
+                     m_Capabilities.hasUser,
+                     m_Capabilities.hasPowerUsage);
         spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
@@ -54,6 +56,18 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 {
     std::unique_lock lock(m_Mutex);
 
+    // Get current timestamp in microseconds for power delta calculation
+    const auto now = std::chrono::steady_clock::now();
+    const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    const std::uint64_t currentTimestampUs = static_cast<std::uint64_t>(nowUs);
+
+    // Calculate time delta
+    std::uint64_t timeDeltaUs = 0;
+    if (m_PrevTimestampUs > 0 && currentTimestampUs > m_PrevTimestampUs)
+    {
+        timeDeltaUs = currentTimestampUs - m_PrevTimestampUs;
+    }
+
     // Calculate total CPU delta
     std::uint64_t totalCpuDelta = 0;
     if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
@@ -81,7 +95,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
 
         // Compute snapshot with deltas
-        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond));
+        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, timeDeltaUs));
 
         // Store for next iteration
         newPrevCounters[key] = current;
@@ -91,6 +105,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     m_Snapshots = std::move(newSnapshots);
     m_PrevCounters = std::move(newPrevCounters);
     m_PrevTotalCpuTime = totalCpuTime;
+    m_PrevTimestampUs = currentTimestampUs;
 }
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
@@ -114,7 +129,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
-                                              long ticksPerSecond) const
+                                              long ticksPerSecond,
+                                              std::uint64_t timeDeltaUs) const
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -162,6 +178,21 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.cpuPercent = (Numeric::toDouble(processDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuUserPercent = (Numeric::toDouble(userDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuSystemPercent = (Numeric::toDouble(systemDelta) / totalCpuDeltaD) * 100.0;
+        }
+    }
+
+    // Compute power from energy delta
+    // Power (watts) = Energy (microjoules) / Time (microseconds) = Energy / Time
+    // 1 watt = 1 joule/second = 1,000,000 microjoules/second = 1,000,000 microjoules / 1,000,000 microseconds
+    if (previous != nullptr && timeDeltaUs > 0 && current.energyMicrojoules > 0)
+    {
+        if (current.energyMicrojoules >= previous->energyMicrojoules)
+        {
+            const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
+            // Power = (energyDelta microjoules) / (timeDelta microseconds)
+            // = (energyDelta / 1,000,000 joules) / (timeDelta / 1,000,000 seconds)
+            // = energyDelta / timeDelta watts
+            snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
         }
     }
 

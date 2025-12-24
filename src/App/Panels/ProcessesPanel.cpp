@@ -415,6 +415,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.threadCount, procB.threadCount);
                                           case ProcessColumn::Command:
                                               return compare(procA.command, procB.command);
+                                          case ProcessColumn::Power:
+                                              return compare(procA.powerWatts, procB.powerWatts);
                                           default:
                                               return false;
                                           }
@@ -694,6 +696,29 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 // Show name in brackets if no command line available
                 ImGui::Text("[%s]", proc.name.c_str());
+            }
+            break;
+
+        case ProcessColumn::Power:
+            if (proc.powerWatts > 0.0)
+            {
+                // Format power value based on magnitude
+                if (proc.powerWatts >= 1.0)
+                {
+                    ImGui::Text("%.2f W", proc.powerWatts);
+                }
+                else if (proc.powerWatts >= 0.001)
+                {
+                    ImGui::Text("%.1f mW", proc.powerWatts * 1000.0);
+                }
+                else
+                {
+                    ImGui::Text("%.0f µW", proc.powerWatts * 1000000.0);
+                }
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
             }
             break;
 

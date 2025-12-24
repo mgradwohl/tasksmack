@@ -159,6 +159,23 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    MockProcessProbe& withPowerUsage(int32_t pid, uint64_t energyMicrojoules)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.energyMicrojoules = energyMicrojoules;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.energyMicrojoules = energyMicrojoules;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
     // Backward compatibility: legacy setters
     void setCounters(std::vector<Platform::ProcessCounters> counters)
     {
@@ -407,6 +424,7 @@ inline Platform::ProcessCapabilities makeFullProcessCapabilities()
     caps.hasThreadCount = true;
     caps.hasUserSystemTime = true;
     caps.hasStartTime = true;
+    caps.hasPowerUsage = true;
     return caps;
 }
 

@@ -169,9 +169,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,    // From /proc/[pid]/status Uid field
-                               .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasPowerUsage = false}; // TODO: Implement via powercap sysfs
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const

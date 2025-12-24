@@ -33,6 +33,11 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
+
+    // Power usage (optional, platform-dependent)
+    // On Windows: from PROCESS_POWER_THROTTLING_STATE
+    // On Linux: from powercap sysfs (per-package energy counters)
+    std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 };
 
 /// Reports what this platform's probe supports.
@@ -43,9 +48,10 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;    // Whether process owner/user is available
-    bool hasCommand = false; // Whether full command line is available
-    bool hasNice = false;    // Whether nice/priority value is available
+    bool hasUser = false;       // Whether process owner/user is available
+    bool hasCommand = false;    // Whether full command line is available
+    bool hasNice = false;       // Whether nice/priority value is available
+    bool hasPowerUsage = false; // Whether power consumption metrics are available
 };
 
 } // namespace Platform
