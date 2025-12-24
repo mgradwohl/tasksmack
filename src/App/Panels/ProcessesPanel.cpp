@@ -236,6 +236,7 @@ void ProcessesPanel::render(bool* open)
             }
         }
     }
+    ImGui::Separator();
 
     // Process count with state summary (filtered/total)
     ImGui::SameLine();
@@ -260,9 +261,15 @@ void ProcessesPanel::render(bool* open)
         summaryStr = std::format("{} / {} processes", filteredIndices.size(), currentSnapshots.size());
     }
 
+    // get the width of the button before we create it
+    const char* label = "XXXX View";
+    const ImVec2 text = ImGui::CalcTextSize(label);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float buttonWidthPx = text.x + (style.FramePadding.x * 2.0f);
+
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW));
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - buttonWidthPx - style.ItemSpacing.x));
     ImGui::TextUnformatted(summaryStr.c_str());
 
     // Tree view toggle button
@@ -279,8 +286,6 @@ void ProcessesPanel::render(bool* open)
             spdlog::info("Switched to flat list view mode");
         }
     }
-
-    ImGui::Separator();
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
