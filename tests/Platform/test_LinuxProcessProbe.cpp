@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 
@@ -425,11 +426,15 @@ TEST(LinuxProcessProbeTest, IoCountersCapabilityReported)
     LinuxProcessProbe probe;
     auto caps = probe.capabilities();
     
-    // hasIoCounters should be dynamically determined based on permissions
-    // If we're root or have appropriate capabilities, it should be true
-    // Otherwise, it should be false
-    // We just verify it's a valid boolean value
-    EXPECT_TRUE(caps.hasIoCounters || !caps.hasIoCounters);
+    // Determine whether the current process can actually read /proc/self/io
+    bool canReadSelfIo = false;
+    {
+        std::ifstream ioFile("/proc/self/io");
+        canReadSelfIo = ioFile.is_open();
+    }
+    
+    // Capability flag should reflect whether /proc/self/io is readable
+    EXPECT_EQ(caps.hasIoCounters, canReadSelfIo);
 }
 
 TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
@@ -478,10 +483,20 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     const uint64_t writeBytes1 = selfProc1->writeBytes;
     
     // Do some I/O activity (write to a temporary file)
+    std::filesystem::path tempFilePath;
     {
-        std::ofstream tempFile("/tmp/tasksmack_io_test.tmp");
+        // Use system temp directory and create unique filename
+        std::string filename = "tasksmack_io_test_" + std::to_string(selfPid) + ".tmp";
+        tempFilePath = std::filesystem::temp_directory_path() / filename;
+        std::ofstream tempFile(tempFilePath);
         tempFile << "Test data for I/O counter verification\n";
         tempFile.flush();
+        // Use fsync to ensure data is flushed to disk
+        if (tempFile.is_open())
+        {
+            tempFile.close();
+            // Note: fsync requires file descriptor, so we rely on flush() and close()
+        }
     }
     
     // Second measurement
@@ -496,7 +511,7 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     EXPECT_GE(writeBytes2, writeBytes1) << "Write bytes should increase after file write";
     
     // Clean up
-    std::remove("/tmp/tasksmack_io_test.tmp");
+    std::filesystem::remove(tempFilePath);
 }
 
 } // namespace
