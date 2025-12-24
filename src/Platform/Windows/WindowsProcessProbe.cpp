@@ -348,6 +348,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.base.WorkingSetSize;
+        counters.peakRssBytes = pmc.base.PeakWorkingSetSize;
 
         if (auto virtualSizeBytes = queryProcessVirtualSizeBytes(hProcess))
         {
@@ -387,6 +388,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasUser = true,    // From OpenProcessToken + LookupAccountSid
         .hasCommand = true, // From QueryFullProcessImageName
         .hasNice = true,    // From GetPriorityClass
+        .hasPeakRss = true, // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
     };
 }
 

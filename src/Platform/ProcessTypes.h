@@ -26,6 +26,7 @@ struct ProcessCounters
 
     // Memory (bytes)
     std::uint64_t rssBytes = 0;
+    std::uint64_t peakRssBytes = 0; // Peak working set (OS-provided on Windows, computed on Linux)
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
@@ -43,9 +44,10 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;    // Whether process owner/user is available
-    bool hasCommand = false; // Whether full command line is available
-    bool hasNice = false;    // Whether nice/priority value is available
+    bool hasUser = false;      // Whether process owner/user is available
+    bool hasCommand = false;   // Whether full command line is available
+    bool hasNice = false;      // Whether nice/priority value is available
+    bool hasPeakRss = false;   // Whether peak working set is available
 };
 
 } // namespace Platform

@@ -23,6 +23,7 @@ struct ProcessSnapshot
     double memoryPercent = 0.0;    // RSS as % of total system memory
     double cpuTimeSeconds = 0.0;   // Cumulative CPU time (user + system)
     std::uint64_t memoryBytes = 0; // RSS
+    std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory
     std::int32_t nice = 0;         // Nice value

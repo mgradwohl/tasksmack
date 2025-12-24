@@ -80,8 +80,28 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             previous = &prevIt->second;
         }
 
+        // Track peak RSS
+        std::uint64_t peakRss = current.rssBytes;
+        if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
+        {
+            // OS provides peak (Windows)
+            peakRss = current.peakRssBytes;
+        }
+        else
+        {
+            // Track peak ourselves (Linux)
+            auto peakIt = m_PeakRss.find(key);
+            if (peakIt != m_PeakRss.end())
+            {
+                peakRss = std::max(peakIt->second, current.rssBytes);
+            }
+            m_PeakRss[key] = peakRss;
+        }
+
         // Compute snapshot with deltas
-        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond));
+        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond);
+        snapshot.peakMemoryBytes = peakRss;
+        newSnapshots.push_back(snapshot);
 
         // Store for next iteration
         newPrevCounters[key] = current;
