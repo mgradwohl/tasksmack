@@ -105,6 +105,7 @@ void ShellLayer::onAttach()
     m_ShowProcesses = settings.showProcesses;
     m_ShowMetrics = settings.showMetrics;
     m_ShowDetails = settings.showDetails;
+    m_ShowStorage = settings.showStorage;
 
     // Configure ImGui for docking
     ImGuiIO& io = ImGui::GetIO();
@@ -113,6 +114,7 @@ void ShellLayer::onAttach()
     // Initialize panels
     m_ProcessesPanel.onAttach();
     m_SystemMetricsPanel.onAttach();
+    m_StoragePanel.onAttach();
 
     spdlog::info("Panels initialized");
 }
@@ -128,6 +130,7 @@ void ShellLayer::onDetach()
     settings.showProcesses = m_ShowProcesses;
     settings.showMetrics = m_ShowMetrics;
     settings.showDetails = m_ShowDetails;
+    settings.showStorage = m_ShowStorage;
 
     // Capture current window geometry/state.
     auto& window = Core::Application::get().getWindow();
@@ -143,6 +146,7 @@ void ShellLayer::onDetach()
 
     config.save();
 
+    m_StoragePanel.onDetach();
     m_SystemMetricsPanel.onDetach();
     m_ProcessesPanel.onDetach();
     spdlog::info("ShellLayer detached");
@@ -165,6 +169,7 @@ void ShellLayer::onUpdate(float deltaTime)
     // Update panels
     m_ProcessesPanel.onUpdate(deltaTime);
     m_SystemMetricsPanel.onUpdate(deltaTime);
+    m_StoragePanel.onUpdate(deltaTime);
 
     // Sync selected PID from processes panel to details panel
     std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
@@ -217,6 +222,10 @@ void ShellLayer::onRender()
     if (m_ShowMetrics)
     {
         m_SystemMetricsPanel.render(&m_ShowMetrics);
+    }
+    if (m_ShowStorage)
+    {
+        m_StoragePanel.render(&m_ShowStorage);
     }
     if (m_ShowDetails)
     {
@@ -278,6 +287,7 @@ void ShellLayer::renderMenuBar()
         {
             ImGui::MenuItem("Processes", nullptr, &m_ShowProcesses);
             ImGui::MenuItem("System Metrics", nullptr, &m_ShowMetrics);
+            ImGui::MenuItem("Storage", nullptr, &m_ShowStorage);
             ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
             ImGui::Separator();
 
@@ -314,10 +324,12 @@ void ShellLayer::renderMenuBar()
                     const auto interval = std::chrono::milliseconds(settings.refreshIntervalMs);
                     m_ProcessesPanel.setSamplingInterval(interval);
                     m_SystemMetricsPanel.setSamplingInterval(interval);
+                    m_StoragePanel.setSamplingInterval(interval);
 
                     // Ensure the change takes effect without waiting a full interval.
                     m_ProcessesPanel.requestRefresh();
                     m_SystemMetricsPanel.requestRefresh();
+                    m_StoragePanel.requestRefresh();
                 }
             }
 

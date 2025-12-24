@@ -1,5 +1,6 @@
 #include "Platform/Factory.h"
 
+#include "WindowsDiskProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessProbe.h"
 #include "WindowsSystemProbe.h"
@@ -22,6 +23,11 @@ std::unique_ptr<IProcessActions> makeProcessActions()
 std::unique_ptr<ISystemProbe> makeSystemProbe()
 {
     return std::make_unique<WindowsSystemProbe>();
+}
+
+std::unique_ptr<IDiskProbe> makeDiskProbe()
+{
+    return std::make_unique<WindowsDiskProbe>();
 }
 
 } // namespace Platform

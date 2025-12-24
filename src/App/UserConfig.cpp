@@ -201,6 +201,10 @@ void UserConfig::load()
         {
             m_Settings.showDetails = *val;
         }
+        if (auto val = config["panels"]["storage"].value<bool>())
+        {
+            m_Settings.showStorage = *val;
+        }
 
         // Window state
         if (auto val = config["window"]["width"].value<std::int64_t>())
@@ -351,6 +355,7 @@ void UserConfig::save() const
              {"processes", m_Settings.showProcesses},
              {"metrics", m_Settings.showMetrics},
              {"details", m_Settings.showDetails},
+             {"storage", m_Settings.showStorage},
          }},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
