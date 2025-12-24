@@ -101,6 +101,9 @@ class ProcessesPanel : public Panel
     buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
 
     /// Render process rows in tree view mode
+    /// @param snapshots The full list of process snapshots.
+    /// @param filteredIndices Indices into snapshots for processes matching the current filter.
+    /// @param tree Mapping from parent PID to child process indices within snapshots.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
                         const std::vector<std::size_t>& filteredIndices,
                         const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree);
