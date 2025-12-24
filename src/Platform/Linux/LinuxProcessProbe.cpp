@@ -175,9 +175,6 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasCommand = true,     // From /proc/[pid]/cmdline
                                .hasNice = true,        // From /proc/[pid]/stat
                                .hasPageFaults = true}; // From /proc/[pid]/stat (minflt + majflt)
-                               .hasUser = true,         // From /proc/[pid]/status Uid field
-                               .hasCommand = true,      // From /proc/[pid]/cmdline
-                               .hasNice = true,         // From /proc/[pid]/stat
                                .hasCpuAffinity = true}; // From sched_getaffinity
 }
 
