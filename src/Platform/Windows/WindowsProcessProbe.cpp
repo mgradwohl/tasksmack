@@ -224,26 +224,21 @@ struct ProcessExtendedBasicInformation
 {
     SIZE_T size = 0;
     PROCESS_BASIC_INFORMATION basicInfo{};
-    union
-    {
-        ULONG flags = 0;
-        struct
-        {
-            ULONG isProtectedProcess : 1;
-            ULONG isWow64Process : 1;
-            ULONG isProcessDeleting : 1;
-            ULONG isCrossSessionCreate : 1;
-            ULONG isFrozen : 1;     // Process is suspended (UWP apps, frozen by OS)
-            ULONG isBackground : 1; // Background process (efficiency mode)
-            ULONG isStronglyNamed : 1;
-            ULONG isSecureProcess : 1;
-            ULONG isSubsystemProcess : 1;
-            ULONG spareBits : 23;
-        };
-    };
+    ULONG flags = 0;
 };
 
 constexpr PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFOCLASS>(64);
+
+// Bit flags for ProcessExtendedBasicInformation.flags
+constexpr ULONG PEBI_IS_PROTECTED_PROCESS = 0x00000001;
+constexpr ULONG PEBI_IS_WOW64_PROCESS = 0x00000002;
+constexpr ULONG PEBI_IS_PROCESS_DELETING = 0x00000004;
+constexpr ULONG PEBI_IS_CROSS_SESSION_CREATE = 0x00000008;
+constexpr ULONG PEBI_IS_FROZEN = 0x00000010;       // Process is suspended (UWP apps, frozen by OS)
+constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020;   // Background process (efficiency mode)
+constexpr ULONG PEBI_IS_STRONGLY_NAMED = 0x00000040;
+constexpr ULONG PEBI_IS_SECURE_PROCESS = 0x00000080;
+constexpr ULONG PEBI_IS_SUBSYSTEM_PROCESS = 0x00000100;
 
 /// Query process status (Suspended, Efficiency Mode)
 [[nodiscard]] std::string getProcessStatus(HANDLE hProcess)
@@ -280,13 +275,13 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFO
     }
 
     // Check for frozen state (Suspended)
-    if (extInfo.isFrozen != 0)
+    if ((extInfo.flags & PEBI_IS_FROZEN) != 0)
     {
         return "Suspended";
     }
 
     // Check for background/efficiency mode
-    if (extInfo.isBackground != 0)
+    if ((extInfo.flags & PEBI_IS_BACKGROUND) != 0)
     {
         return "Efficiency Mode";
     }
