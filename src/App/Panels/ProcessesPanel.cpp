@@ -301,8 +301,6 @@ void ProcessesPanel::render(bool* open)
         }
     }
 
-    ImGui::Separator();
-
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
     const int totalColumns = UI::Numeric::checkedCount(processColumnCount());
