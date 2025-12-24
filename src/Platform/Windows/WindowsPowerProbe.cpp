@@ -15,6 +15,14 @@
 namespace Platform
 {
 
+namespace
+{
+// Windows SYSTEM_POWER_STATUS BatteryFlag constants
+constexpr BYTE BATTERY_FLAG_NO_SYSTEM_BATTERY = 128;
+constexpr BYTE BATTERY_FLAG_UNKNOWN = 255;
+constexpr BYTE BATTERY_FLAG_CHARGING = 8;
+} // namespace
+
 WindowsPowerProbe::WindowsPowerProbe()
 {
     // Probe capabilities at construction time
@@ -22,7 +30,7 @@ WindowsPowerProbe::WindowsPowerProbe()
     if (GetSystemPowerStatus(&sps) != 0)
     {
         // Check if there's a battery
-        m_Capabilities.hasBattery = (sps.BatteryFlag != 128); // 128 = no system battery
+        m_Capabilities.hasBattery = (sps.BatteryFlag != BATTERY_FLAG_NO_SYSTEM_BATTERY);
         m_Capabilities.hasChargePercent = m_Capabilities.hasBattery && (sps.BatteryLifePercent <= 100);
         m_Capabilities.hasTimeEstimates = m_Capabilities.hasBattery && (sps.BatteryLifeTime != 0xFFFFFFFF);
 
@@ -56,7 +64,7 @@ PowerCounters WindowsPowerProbe::read()
     }
 
     // Check if battery is present
-    if (sps.BatteryFlag == 128) // No system battery
+    if (sps.BatteryFlag == BATTERY_FLAG_NO_SYSTEM_BATTERY)
     {
         counters.state = BatteryState::NotPresent;
         counters.isOnAc = true;
@@ -67,16 +75,17 @@ PowerCounters WindowsPowerProbe::read()
     counters.isOnAc = (sps.ACLineStatus == 1);
 
     // Parse battery state
-    if (sps.BatteryFlag == 255) // Unknown status
+    if (sps.BatteryFlag == BATTERY_FLAG_UNKNOWN)
     {
         counters.state = BatteryState::Unknown;
     }
-    else if (sps.BatteryFlag & 8) // Charging
+    else if (sps.BatteryFlag & BATTERY_FLAG_CHARGING)
     {
         counters.state = BatteryState::Charging;
     }
-    else if (counters.isOnAc && sps.BatteryLifePercent == 100)
+    else if (sps.BatteryLifePercent == 100)
     {
+        // Battery is at 100% - consider it full regardless of AC status
         counters.state = BatteryState::Full;
     }
     else
@@ -96,17 +105,14 @@ PowerCounters WindowsPowerProbe::read()
 
     // Time remaining in seconds
     // BatteryLifeTime: seconds of battery life remaining (0xFFFFFFFF = unknown)
-    // BatteryFullLifeTime: seconds when fully charged (0xFFFFFFFF = unknown)
+    // Note: Windows API does not provide time-to-full for charging state
     if (sps.BatteryLifeTime != 0xFFFFFFFF)
     {
         if (counters.state == BatteryState::Discharging)
         {
             counters.timeToEmptySec = sps.BatteryLifeTime;
         }
-        else if (counters.state == BatteryState::Charging && sps.BatteryFullLifeTime != 0xFFFFFFFF && sps.BatteryLifeTime < sps.BatteryFullLifeTime)
-        {
-            counters.timeToFullSec = sps.BatteryFullLifeTime - sps.BatteryLifeTime;
-        }
+        // timeToFullSec remains 0 (unavailable) - Windows doesn't provide this
     }
 
     return counters;

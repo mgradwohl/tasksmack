@@ -137,16 +137,18 @@ void SystemModel::refresh()
     }
 
     auto counters = m_Probe->read();
-    
-    // Also read power data if probe is available
+
+    // Also read power data if probe is available (outside mutex - it's I/O)
     if (m_PowerProbe)
     {
         auto powerCounters = m_PowerProbe->read();
+        auto powerStatus = computePowerStatus(powerCounters);
+
+        // Only lock to update the snapshot
         std::unique_lock lock(m_Mutex);
-        m_Snapshot.power = computePowerStatus(powerCounters);
-        lock.unlock();
+        m_Snapshot.power = powerStatus;
     }
-    
+
     updateFromCounters(counters);
 }
 

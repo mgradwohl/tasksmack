@@ -687,10 +687,6 @@ void SystemMetricsPanel::renderOverview()
             {
                 powerStr = std::format("+{:.2f} W (charging)", std::abs(snap.power.powerWatts));
             }
-            else if (snap.power.isDischarging)
-            {
-                powerStr = std::format("{:.2f} W", snap.power.powerWatts);
-            }
             else
             {
                 powerStr = std::format("{:.2f} W", snap.power.powerWatts);

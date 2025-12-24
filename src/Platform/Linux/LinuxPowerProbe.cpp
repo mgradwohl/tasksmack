@@ -109,7 +109,8 @@ void LinuxPowerProbe::discoverBatteries()
         m_Capabilities.hasVoltage = fs::exists(batteryPath + "/voltage_now", ec);
         m_Capabilities.hasTechnology = fs::exists(batteryPath + "/technology", ec);
         m_Capabilities.hasCycleCount = fs::exists(batteryPath + "/cycle_count", ec);
-        m_Capabilities.hasHealthPercent = fs::exists(batteryPath + "/energy_full", ec) && fs::exists(batteryPath + "/energy_full_design", ec);
+        m_Capabilities.hasHealthPercent =
+            fs::exists(batteryPath + "/energy_full", ec) && fs::exists(batteryPath + "/energy_full_design", ec);
         m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
     }
 }
@@ -172,9 +173,10 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
             if (voltageUv > 0)
             {
                 // Convert µAh * µV = pWh, then to Wh
-                counters.chargeNowWh = (chargeNowUah * voltageUv) / 1000000000000ULL;
-                counters.chargeFullWh = (chargeFullUah * voltageUv) / 1000000000000ULL;
-                counters.chargeDesignWh = (chargeDesignUah * voltageUv) / 1000000000000ULL;
+                // Cast to double to prevent overflow before division
+                counters.chargeNowWh = (static_cast<double>(chargeNowUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
+                counters.chargeFullWh = (static_cast<double>(chargeFullUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
+                counters.chargeDesignWh = (static_cast<double>(chargeDesignUah) * static_cast<double>(voltageUv)) / 1000000000000.0;
             }
         }
     }
@@ -203,7 +205,8 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
             if (voltageUv > 0)
             {
                 // µA * µV = pW, then to W
-                counters.powerNowW = static_cast<double>(currentUa * voltageUv) / 1000000000000.0;
+                // Cast to double to prevent overflow before division
+                counters.powerNowW = (static_cast<double>(currentUa) * static_cast<double>(voltageUv)) / 1000000000000.0;
 
                 if (counters.state == BatteryState::Charging)
                 {
@@ -266,14 +269,23 @@ std::string LinuxPowerProbe::readSysfsFile(const std::string& path) const
     std::string value;
     std::getline(file, value);
 
-    // Trim whitespace
-    while (!value.empty() && (value.back() == ' ' || value.back() == '\n' || value.back() == '\r'))
+    // Trim whitespace efficiently
+    if (!value.empty())
     {
-        value.pop_back();
-    }
-    while (!value.empty() && value.front() == ' ')
-    {
-        value.erase(0, 1);
+        // Trim trailing whitespace
+        const auto lastNonWs = value.find_last_not_of(" \n\r\t");
+        if (lastNonWs == std::string::npos)
+        {
+            return ""; // String contains only whitespace
+        }
+        value.resize(lastNonWs + 1);
+
+        // Trim leading spaces
+        const auto firstNonSpace = value.find_first_not_of(' ');
+        if (firstNonSpace != std::string::npos && firstNonSpace > 0)
+        {
+            value.erase(0, firstNonSpace);
+        }
     }
 
     return value;
