@@ -152,6 +152,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatm(pid, counters);
         parseProcessStatus(pid, counters);
         parseProcessCmdline(pid, counters);
+        parseProcessIo(pid, counters);
         processes.push_back(std::move(counters));
     }
 
@@ -165,7 +166,14 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
 ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
-    return ProcessCapabilities{.hasIoCounters = false, // Would need /proc/[pid]/io (requires root)
+    // Check I/O counters availability on first call
+    if (!m_IoCountersAvailabilityChecked)
+    {
+        m_IoCountersAvailable = checkIoCountersAvailability();
+        m_IoCountersAvailabilityChecked = true;
+    }
+
+    return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
@@ -356,6 +364,68 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     {
         counters.command = std::move(cmdline);
     }
+}
+
+void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) const
+{
+    // Format: /proc/[pid]/io
+    // Key-value pairs, one per line:
+    // rchar: <bytes>
+    // wchar: <bytes>
+    // syscr: <count>
+    // syscw: <count>
+    // read_bytes: <bytes>  <- actual I/O from storage layer
+    // write_bytes: <bytes> <- actual I/O to storage layer
+    // cancelled_write_bytes: <bytes>
+    //
+    // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
+    // or being the owner of the process. If we can't read it, we silently skip
+    // (capabilities() already reports hasIoCounters = false by default).
+
+    std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(pid) / "io";
+    std::ifstream ioFile(ioPath);
+    if (!ioFile.is_open())
+    {
+        // Common case: insufficient permissions, just return
+        return;
+    }
+
+    std::string line;
+    while (std::getline(ioFile, line))
+    {
+        if (line.starts_with("read_bytes:"))
+        {
+            std::istringstream iss(line.substr(11)); // Skip "read_bytes:"
+            uint64_t readBytes = 0;
+            iss >> readBytes;
+            if (!iss.fail())
+            {
+                counters.readBytes = readBytes;
+            }
+        }
+        else if (line.starts_with("write_bytes:"))
+        {
+            std::istringstream iss(line.substr(12)); // Skip "write_bytes:"
+            uint64_t writeBytes = 0;
+            iss >> writeBytes;
+            if (!iss.fail())
+            {
+                counters.writeBytes = writeBytes;
+            }
+        }
+    }
+}
+
+bool LinuxProcessProbe::checkIoCountersAvailability() const
+{
+    // Try to read our own process's I/O counters to check availability
+    // Use getpid() to get our own PID
+    const int32_t selfPid = getpid();
+    std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(selfPid) / "io";
+    std::ifstream ioFile(ioPath);
+    
+    // If we can open it, we have the necessary permissions
+    return ioFile.is_open();
 }
 
 uint64_t LinuxProcessProbe::readTotalCpuTime() const

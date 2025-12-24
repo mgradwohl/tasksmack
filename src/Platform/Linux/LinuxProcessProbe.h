@@ -27,6 +27,8 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
+    mutable bool m_IoCountersAvailable{false};       // Cached capability check
+    mutable bool m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
 
     /// Parse /proc/[pid]/stat for a single process
     [[nodiscard]] bool parseProcessStat(int32_t pid, ProcessCounters& counters) const;
@@ -39,6 +41,12 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Parse /proc/[pid]/cmdline for full command line
     void parseProcessCmdline(int32_t pid, ProcessCounters& counters) const;
+
+    /// Parse /proc/[pid]/io for I/O counters (requires permissions)
+    void parseProcessIo(int32_t pid, ProcessCounters& counters) const;
+
+    /// Check if we can read I/O counters (checks own process)
+    [[nodiscard]] bool checkIoCountersAvailability() const;
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;

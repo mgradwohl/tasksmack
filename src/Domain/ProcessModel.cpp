@@ -54,6 +54,14 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 {
     std::unique_lock lock(m_Mutex);
 
+    // Calculate elapsed time since last sample
+    const auto currentSampleTime = std::chrono::steady_clock::now();
+    double elapsedSeconds = 0.0;
+    if (m_PrevSampleTime.time_since_epoch().count() > 0)
+    {
+        elapsedSeconds = std::chrono::duration<double>(currentSampleTime - m_PrevSampleTime).count();
+    }
+
     // Calculate total CPU delta
     std::uint64_t totalCpuDelta = 0;
     if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
@@ -81,7 +89,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
 
         // Compute snapshot with deltas
-        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond));
+        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds));
 
         // Store for next iteration
         newPrevCounters[key] = current;
@@ -91,6 +99,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     m_Snapshots = std::move(newSnapshots);
     m_PrevCounters = std::move(newPrevCounters);
     m_PrevTotalCpuTime = totalCpuTime;
+    m_PrevSampleTime = currentSampleTime;
 }
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
@@ -114,7 +123,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
-                                              long ticksPerSecond) const
+                                              long ticksPerSecond,
+                                              double elapsedSeconds) const
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -162,6 +172,29 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.cpuPercent = (Numeric::toDouble(processDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuUserPercent = (Numeric::toDouble(userDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuSystemPercent = (Numeric::toDouble(systemDelta) / totalCpuDeltaD) * 100.0;
+        }
+    }
+
+    // Compute I/O rates from deltas
+    // I/O rate (bytes/sec) = (currentBytes - previousBytes) / elapsedSeconds
+    if (previous != nullptr && elapsedSeconds > 0.0)
+    {
+        const std::uint64_t currRead = current.readBytes;
+        const std::uint64_t currWrite = current.writeBytes;
+        const std::uint64_t prevRead = previous->readBytes;
+        const std::uint64_t prevWrite = previous->writeBytes;
+
+        // Only compute if counters increased (avoid wraparound or reset issues)
+        if (currRead >= prevRead)
+        {
+            const std::uint64_t readDelta = currRead - prevRead;
+            snapshot.ioReadBytesPerSec = Numeric::toDouble(readDelta) / elapsedSeconds;
+        }
+
+        if (currWrite >= prevWrite)
+        {
+            const std::uint64_t writeDelta = currWrite - prevWrite;
+            snapshot.ioWriteBytesPerSec = Numeric::toDouble(writeDelta) / elapsedSeconds;
         }
     }
 

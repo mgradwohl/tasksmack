@@ -3,6 +3,7 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -53,6 +54,7 @@ class ProcessModel
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
+    std::chrono::steady_clock::time_point m_PrevSampleTime{}; // For I/O rate calculation
 
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
@@ -67,7 +69,8 @@ class ProcessModel
                                                   const Platform::ProcessCounters* previous,
                                                   std::uint64_t totalCpuDelta,
                                                   std::uint64_t systemTotalMemory,
-                                                  long ticksPerSecond) const;
+                                                  long ticksPerSecond,
+                                                  double elapsedSeconds) const;
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);
