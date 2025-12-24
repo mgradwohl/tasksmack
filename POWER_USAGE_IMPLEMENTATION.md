@@ -118,13 +118,15 @@ This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000
 
 ### Linux
 
-**Planned Implementation:**
-- Read from `/sys/class/powercap/intel-rapl/` for Intel RAPL (Running Average Power Limit)
-- Parse per-package energy counters
-- Attribute energy to processes based on CPU usage proportions
-- Alternative: Use `perf` subsystem events
+**Implementation (COMPLETED):**
+- Reads from `/sys/class/powercap/intel-rapl/` for Intel RAPL (Running Average Power Limit)
+- Detects RAPL availability at initialization
+- Reads per-package energy counters (in microjoules)
+- Attributes energy to processes proportionally based on CPU usage
+- Gracefully degrades when RAPL unavailable (VMs, containers, non-Intel CPUs)
+- Capability flag dynamically set based on RAPL detection
 
-**Current Status:** Infrastructure only (capability flag set to `false`)
+**Status:** Functional on Intel systems with RAPL support
 
 ## Future Work
 
@@ -133,16 +135,16 @@ This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000
    - Handle privilege requirements
    - Add Windows-specific integration tests
 
-2. **Linux Implementation:**
-   - Implement RAPL energy reading
+2. **Linux Improvements:**
    - Add support for AMD processors (different powercap interface)
-   - Handle non-root access scenarios
+   - Implement per-process energy accounting if available
    - Add Linux-specific integration tests
+   - Consider perf subsystem as alternative data source
 
-3. **Power Attribution:**
-   - Currently power must be per-process
-   - May need to implement system-wide power tracking with attribution
-   - Consider GPU power if integrated graphics
+3. **Power Attribution Enhancement:**
+   - Current implementation uses CPU time proportion
+   - Could improve with more sophisticated attribution models
+   - Consider GPU power for integrated graphics
 
 4. **Optimization:**
    - Cache power readings to reduce overhead
