@@ -85,6 +85,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
     UI/test_HistoryWidgets.cpp
