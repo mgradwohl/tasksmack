@@ -40,6 +40,9 @@ class LinuxProcessProbe : public IProcessProbe
     /// Parse /proc/[pid]/cmdline for full command line
     void parseProcessCmdline(int32_t pid, ProcessCounters& counters) const;
 
+    /// Parse CPU affinity mask for a process using sched_getaffinity
+    void parseProcessAffinity(int32_t pid, ProcessCounters& counters) const;
+
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
 };

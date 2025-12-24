@@ -20,6 +20,7 @@
 
 #include <dirent.h>
 #include <pwd.h>
+#include <sched.h>
 #include <unistd.h>
 
 namespace Platform
@@ -152,6 +153,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatm(pid, counters);
         parseProcessStatus(pid, counters);
         parseProcessCmdline(pid, counters);
+        parseProcessAffinity(pid, counters);
         processes.push_back(std::move(counters));
     }
 
@@ -169,9 +171,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,    // From /proc/[pid]/status Uid field
-                               .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasCpuAffinity = true}; // From sched_getaffinity
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -355,6 +358,36 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     else
     {
         counters.command = std::move(cmdline);
+    }
+}
+
+void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters) const
+{
+    // Use sched_getaffinity to read CPU affinity mask for the process
+    // This returns which CPU cores the process is allowed to run on
+
+    cpu_set_t cpuSet;
+    CPU_ZERO(&cpuSet);
+
+    // sched_getaffinity returns the affinity for the main thread of the process
+    if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
+    {
+        // Convert cpu_set_t to a bitmask that fits in uint64_t
+        // This limits us to 64 cores, which is reasonable for most systems
+        std::uint64_t mask = 0;
+        for (int cpu = 0; cpu < 64 && cpu < CPU_SETSIZE; ++cpu)
+        {
+            if (CPU_ISSET(cpu, &cpuSet) != 0)
+            {
+                mask |= (1ULL << cpu);
+            }
+        }
+        counters.cpuAffinityMask = mask;
+    }
+    else
+    {
+        // If sched_getaffinity fails (e.g., permission denied), set mask to 0
+        counters.cpuAffinityMask = 0;
     }
 }
 
