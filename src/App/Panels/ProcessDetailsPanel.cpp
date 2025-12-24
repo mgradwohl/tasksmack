@@ -124,11 +124,11 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
             m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
             m_Timestamps.push_back(nowSeconds);
-            
+
             // Update peak memory percent (from snapshot's peak value)
             const double peakPercent = toPercent(snapshot->peakMemoryBytes);
             m_PeakMemoryPercent = std::max(m_PeakMemoryPercent, peakPercent);
-            
+
             trimHistory(nowSeconds);
         }
     }

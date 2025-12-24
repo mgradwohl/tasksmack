@@ -98,7 +98,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             m_PeakRss[key] = peakRss;
         }
 
-        // Compute snapshot with deltas
+        // Compute snapshot with deltas and set peak memory
         auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond);
         snapshot.peakMemoryBytes = peakRss;
         newSnapshots.push_back(snapshot);
