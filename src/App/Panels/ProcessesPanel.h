@@ -92,9 +92,8 @@ class ProcessesPanel : public Panel
     bool m_TreeViewEnabled = false;
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
-    // Cached tree structure (rebuilt only when process list changes)
+    // Cached tree structure (rebuilt on refresh timer in onUpdate)
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
-    std::size_t m_LastSnapshotCount = 0; // Track when to rebuild tree
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
@@ -113,7 +112,7 @@ class ProcessesPanel : public Panel
                         const std::vector<std::size_t>& filteredIndices,
                         const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree);
 
-    /// Render a single process and its children recursively
+    /// Render a single process and its children iteratively
     /// @param snapshots The full list of process snapshots.
     /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
     /// @param filteredSet Set of filtered indices for O(1) membership checks.

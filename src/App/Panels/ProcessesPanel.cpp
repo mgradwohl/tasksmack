@@ -140,6 +140,13 @@ void ProcessesPanel::onUpdate(float deltaTime)
         {
             m_RefreshAccumulatorSec = 0.0F;
         }
+
+        // Rebuild tree structure on refresh timer if tree view is enabled
+        if (m_TreeViewEnabled)
+        {
+            auto currentSnapshots = m_ProcessModel->snapshots();
+            m_CachedTree = buildProcessTree(currentSnapshots);
+        }
     }
 }
 
@@ -284,6 +291,8 @@ void ProcessesPanel::render(bool* open)
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
+            // Build tree immediately when enabling tree view
+            m_CachedTree = buildProcessTree(currentSnapshots);
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
@@ -419,14 +428,7 @@ void ProcessesPanel::render(bool* open)
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
         {
-            // Build or use cached process tree (rebuild only when process list changes)
-            if (m_LastSnapshotCount != currentSnapshots.size())
-            {
-                m_CachedTree = buildProcessTree(currentSnapshots);
-                m_LastSnapshotCount = currentSnapshots.size();
-            }
-
-            // Render tree view
+            // Render tree view (tree is rebuilt in onUpdate on refresh timer)
             renderTreeView(currentSnapshots, filteredIndices, m_CachedTree);
         }
         else
@@ -709,44 +711,60 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
                                            std::size_t procIdx,
                                            int depth)
 {
-    // Prevent stack overflow for extremely deep trees
-    if (depth >= MAX_TREE_DEPTH)
+    // Iterative tree rendering using explicit stack to avoid recursion
+    struct StackFrame
     {
-        spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, stopping recursion", MAX_TREE_DEPTH);
-        return;
-    }
+        std::size_t procIdx;
+        int depth;
+    };
 
-    const auto& proc = snapshots[procIdx];
+    std::vector<StackFrame> stack;
+    stack.push_back({procIdx, depth});
 
-    // Check if this process has children (in the filtered set)
-    auto childrenIt = tree.find(proc.uniqueKey);
-    bool hasChildren = false;
-    std::vector<std::size_t> filteredChildren;
-
-    if (childrenIt != tree.end())
+    while (!stack.empty())
     {
-        // Only count children that are in the filtered set
-        for (std::size_t childIdx : childrenIt->second)
+        const StackFrame frame = stack.back();
+        stack.pop_back();
+
+        // Prevent excessive depth
+        if (frame.depth >= MAX_TREE_DEPTH)
         {
-            if (filteredSet.contains(childIdx))
-            {
-                filteredChildren.push_back(childIdx);
-            }
+            spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, stopping traversal", MAX_TREE_DEPTH);
+            continue;
         }
-        hasChildren = !filteredChildren.empty();
-    }
 
-    const bool isExpanded = !m_CollapsedKeys.contains(proc.uniqueKey);
+        const auto& proc = snapshots[frame.procIdx];
 
-    // Render this process
-    renderProcessRow(proc, depth, hasChildren, isExpanded);
+        // Check if this process has children (in the filtered set)
+        auto childrenIt = tree.find(proc.uniqueKey);
+        bool hasChildren = false;
+        std::vector<std::size_t> filteredChildren;
 
-    // Recursively render children if expanded
-    if (hasChildren && isExpanded)
-    {
-        for (std::size_t childIdx : filteredChildren)
+        if (childrenIt != tree.end())
         {
-            renderProcessTreeNode(snapshots, tree, filteredSet, childIdx, depth + 1);
+            // Only count children that are in the filtered set
+            for (std::size_t childIdx : childrenIt->second)
+            {
+                if (filteredSet.contains(childIdx))
+                {
+                    filteredChildren.push_back(childIdx);
+                }
+            }
+            hasChildren = !filteredChildren.empty();
+        }
+
+        const bool isExpanded = !m_CollapsedKeys.contains(proc.uniqueKey);
+
+        // Render this process
+        renderProcessRow(proc, frame.depth, hasChildren, isExpanded);
+
+        // Add children to stack if expanded (in reverse order for correct rendering)
+        if (hasChildren && isExpanded)
+        {
+            for (auto it = filteredChildren.rbegin(); it != filteredChildren.rend(); ++it)
+            {
+                stack.push_back({*it, frame.depth + 1});
+            }
         }
     }
 }
