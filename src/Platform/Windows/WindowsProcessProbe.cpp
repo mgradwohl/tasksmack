@@ -384,6 +384,19 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.writeBytes = ioCounters.WriteTransferCount;
     }
 
+    // Get CPU affinity mask
+    DWORD_PTR processAffinityMask = 0;
+    DWORD_PTR systemAffinityMask = 0;
+    if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
+    {
+        // Convert DWORD_PTR to uint64_t (may truncate on 32-bit, but we support 64-bit only)
+        counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
+    }
+    else
+    {
+        counters.cpuAffinityMask = 0;
+    }
+
     CloseHandle(hProcess);
     return true;
 }
@@ -399,6 +412,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasCommand = true,    // From QueryFullProcessImageName
         .hasNice = true,       // From GetPriorityClass
         .hasPageFaults = true, // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasCpuAffinity = true, // From GetProcessAffinityMask
     };
 }
 

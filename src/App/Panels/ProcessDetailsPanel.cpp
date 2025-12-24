@@ -267,6 +267,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Nice",
             "CPU Time",
             "Page Faults",
+            "Affinity",
         };
 
         float maxTextWidth = 0.0F;
@@ -389,6 +390,12 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         {
             ImGui::TextUnformatted("-");
         }
+        // Row 6: CPU Affinity
+        ImGui::TableNextRow();
+        addLabel("Affinity");
+        ImGui::TableNextColumn();
+        const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
+        ImGui::TextUnformatted(affinityText.c_str());
 
         ImGui::EndTable();
     }
