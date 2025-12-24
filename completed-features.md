@@ -23,6 +23,7 @@ This file lists features that are already implemented in TaskSmack.
 | **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 | **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; infrastructure ready for probe implementation |
 | **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
+| **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
 
 ## Developer Tooling / Infrastructure
 
