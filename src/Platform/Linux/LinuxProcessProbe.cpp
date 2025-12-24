@@ -386,15 +386,19 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
                 }
 
                 // Try cgroup v2 freeze state
-                std::filesystem::path freezePathV2 = std::filesystem::path("/sys/fs/cgroup") / cgroupPath.substr(1) / "cgroup.freeze";
-                std::ifstream freezeFileV2(freezePathV2);
-                if (freezeFileV2.is_open())
+                // Skip if cgroupPath is empty or doesn't start with /
+                if (!cgroupPath.empty() && cgroupPath[0] == '/')
                 {
-                    int freezeValue = 0;
-                    freezeFileV2 >> freezeValue;
-                    if (freezeValue == 1)
+                    std::filesystem::path freezePathV2 = std::filesystem::path("/sys/fs/cgroup") / cgroupPath.substr(1) / "cgroup.freeze";
+                    std::ifstream freezeFileV2(freezePathV2);
+                    if (freezeFileV2.is_open())
                     {
-                        return "Suspended";
+                        int freezeValue = 0;
+                        freezeFileV2 >> freezeValue;
+                        if (freezeValue == 1)
+                        {
+                            return "Suspended";
+                        }
                     }
                 }
             }
@@ -421,16 +425,20 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
                 if (controllers.find("freezer") != std::string::npos)
                 {
                     // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
-                    std::filesystem::path freezePathV1 =
-                        std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
-                    std::ifstream freezeFileV1(freezePathV1);
-                    if (freezeFileV1.is_open())
+                    // Skip if cgroupPath is empty or doesn't start with /
+                    if (!cgroupPath.empty() && cgroupPath[0] == '/')
                     {
-                        std::string state;
-                        freezeFileV1 >> state;
-                        if (state == "FROZEN" || state == "FREEZING")
+                        std::filesystem::path freezePathV1 =
+                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
+                        std::ifstream freezeFileV1(freezePathV1);
+                        if (freezeFileV1.is_open())
                         {
-                            return "Suspended";
+                            std::string state;
+                            freezeFileV1 >> state;
+                            if (state == "FROZEN" || state == "FREEZING")
+                            {
+                                return "Suspended";
+                            }
                         }
                     }
                 }
