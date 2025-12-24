@@ -364,6 +364,9 @@ void UserConfig::save() const
     };
 
     // Add ImGui layout if not empty
+    // Note: The ImGui INI-format string may contain newlines, quotes, and other special
+    // characters. The toml++ library handles this automatically using TOML's multi-line
+    // string literals with proper escaping.
     if (!m_Settings.imguiLayout.empty())
     {
         config.insert("imgui_layout", m_Settings.imguiLayout);
@@ -432,9 +435,13 @@ void UserConfig::captureImGuiLayout()
 {
     std::size_t iniSize = 0;
     const char* iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
+    // ImGui::SaveIniSettingsToMemory() returns a pointer that is only valid until the next
+    // ImGui call or until the context/layout changes (see imgui.h documentation).
+    // We copy the data immediately into our own std::string and do not make any further
+    // ImGui calls in this function, so this use is safe even during shutdown.
     if (iniData != nullptr && iniSize > 0)
     {
-        m_Settings.imguiLayout.assign(iniData, iniSize);
+        m_Settings.imguiLayout = std::string{iniData, iniSize};
         spdlog::debug("Captured ImGui layout state ({} bytes)", iniSize);
     }
     else
