@@ -373,6 +373,13 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.writeBytes = ioCounters.WriteTransferCount;
     }
 
+    // Get handle count
+    DWORD handleCount = 0;
+    if (GetProcessHandleCount(hProcess, &handleCount) != 0)
+    {
+        counters.handleCount = static_cast<std::int32_t>(handleCount);
+    }
+
     CloseHandle(hProcess);
     return true;
 }
@@ -384,9 +391,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true, // From QueryFullProcessImageName
-        .hasNice = true,    // From GetPriorityClass
+        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasNice = true,        // From GetPriorityClass
+        .hasHandleCount = true, // From GetProcessHandleCount
     };
 }
 

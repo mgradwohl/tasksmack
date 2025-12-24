@@ -413,6 +413,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::Handles:
+                                              return compare(procA.handleCount, procB.handleCount);
                                           case ProcessColumn::Command:
                                               return compare(procA.command, procB.command);
                                           default:
@@ -678,6 +680,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.threadCount > 0)
             {
                 ImGui::Text("%d", proc.threadCount);
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+
+        case ProcessColumn::Handles:
+            if (proc.handleCount > 0)
+            {
+                ImGui::Text("%d", proc.handleCount);
             }
             else
             {

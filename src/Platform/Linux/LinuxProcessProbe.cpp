@@ -152,6 +152,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatm(pid, counters);
         parseProcessStatus(pid, counters);
         parseProcessCmdline(pid, counters);
+        parseProcessFd(pid, counters);
         processes.push_back(std::move(counters));
     }
 
@@ -169,9 +170,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,    // From /proc/[pid]/status Uid field
-                               .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasHandleCount = true}; // From /proc/[pid]/fd/
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -355,6 +357,32 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     else
     {
         counters.command = std::move(cmdline);
+    }
+}
+
+void LinuxProcessProbe::parseProcessFd(int32_t pid, ProcessCounters& counters) const
+{
+    // Count file descriptors in /proc/[pid]/fd/
+    const std::string fdPath = "/proc/" + std::to_string(pid) + "/fd";
+
+    std::error_code ec;
+    std::int32_t fdCount = 0;
+
+    // Iterate through /proc/[pid]/fd/ directory and count entries
+    for (const auto& entry : std::filesystem::directory_iterator(fdPath, ec))
+    {
+        (void) entry; // We only need to count entries
+        ++fdCount;
+    }
+
+    // If we failed to access the directory (e.g., permission denied), leave handleCount at 0
+    if (ec)
+    {
+        counters.handleCount = 0;
+    }
+    else
+    {
+        counters.handleCount = fdCount;
     }
 }
 

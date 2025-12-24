@@ -33,6 +33,7 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
+    std::int32_t handleCount = 0; // Open handles (Windows) / file descriptors (Linux)
 };
 
 /// Reports what this platform's probe supports.
@@ -43,9 +44,10 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;    // Whether process owner/user is available
-    bool hasCommand = false; // Whether full command line is available
-    bool hasNice = false;    // Whether nice/priority value is available
+    bool hasUser = false;        // Whether process owner/user is available
+    bool hasCommand = false;     // Whether full command line is available
+    bool hasNice = false;        // Whether nice/priority value is available
+    bool hasHandleCount = false; // Whether handle/file descriptor count is available
 };
 
 } // namespace Platform
