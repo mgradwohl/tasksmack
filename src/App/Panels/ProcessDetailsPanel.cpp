@@ -257,7 +257,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
-        constexpr std::array<const char*, 8> labels = {
+        constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
             "Name",
@@ -266,6 +266,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Threads",
             "Nice",
             "CPU Time",
+            "Base Priority",
+            "Command",
         };
 
         float maxTextWidth = 0.0F;
@@ -372,6 +374,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::Text("%d", proc.nice);
         addLabel("CPU Time");
         addValueText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds).c_str());
+
+        // Row 5: Base Priority / Command
+        ImGui::TableNextRow();
+        addLabel("Base Priority");
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", proc.basePriority);
+        addLabel("Command");
+        addValueText(proc.command.empty() ? "-" : proc.command.c_str());
 
         ImGui::EndTable();
     }
