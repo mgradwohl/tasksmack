@@ -411,6 +411,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.parentPid, procB.parentPid);
                                           case ProcessColumn::Nice:
                                               return compare(procA.nice, procB.nice);
+                                          case ProcessColumn::BasePriority:
+                                              return compare(procA.basePriority, procB.basePriority);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
                                           case ProcessColumn::Command:
@@ -672,6 +674,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::Nice:
             ImGui::Text("%d", proc.nice);
+            break;
+
+        case ProcessColumn::BasePriority:
+            ImGui::Text("%d", proc.basePriority);
             break;
 
         case ProcessColumn::Threads:

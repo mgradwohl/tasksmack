@@ -25,6 +25,7 @@ enum class ProcessColumn : std::uint8_t
     Name,
     PPID,
     Nice,
+    BasePriority,
     Threads,
     Command,
     // Future columns (data not yet available):
@@ -33,7 +34,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -49,6 +50,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::Name,
         ProcessColumn::PPID,
         ProcessColumn::Nice,
+        ProcessColumn::BasePriority,
         ProcessColumn::Threads,
         ProcessColumn::Command,
     };
@@ -105,6 +107,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="PPID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Nice
         {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
+        // Base Priority
+        {.name="PRI", .configKey="base_priority", .defaultWidth=40.0F, .defaultVisible=false, .canHide=true, .description="Base priority (Windows-style, 1-31)"},
         // Threads
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Command

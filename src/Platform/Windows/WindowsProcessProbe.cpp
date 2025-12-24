@@ -300,24 +300,31 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
     case IDLE_PRIORITY_CLASS:
         counters.nice = 19;
+        counters.basePriority = 4;
         break;
     case BELOW_NORMAL_PRIORITY_CLASS:
         counters.nice = 10;
+        counters.basePriority = 6;
         break;
     case NORMAL_PRIORITY_CLASS:
         counters.nice = 0;
+        counters.basePriority = 8;
         break;
     case ABOVE_NORMAL_PRIORITY_CLASS:
         counters.nice = -5;
+        counters.basePriority = 10;
         break;
     case HIGH_PRIORITY_CLASS:
         counters.nice = -10;
+        counters.basePriority = 13;
         break;
     case REALTIME_PRIORITY_CLASS:
         counters.nice = -20;
+        counters.basePriority = 24;
         break;
     default:
         counters.nice = 0;
+        counters.basePriority = 8;
         break;
     }
 
@@ -384,9 +391,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true, // From QueryFullProcessImageName
-        .hasNice = true,    // From GetPriorityClass
+        .hasUser = true,         // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,      // From QueryFullProcessImageName
+        .hasNice = true,         // From GetPriorityClass
+        .hasBasePriority = true, // From GetPriorityClass mapped to base priority
     };
 }
 

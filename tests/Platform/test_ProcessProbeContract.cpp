@@ -129,4 +129,58 @@ TEST(ProcessProbeContractTest, EnumerateFindsOurOwnProcess)
     }
 }
 
+TEST(ProcessProbeContractTest, BasePriorityIsInValidRange)
+{
+    auto probe = makeProcessProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const auto caps = probe->capabilities();
+    if (!caps.hasBasePriority)
+    {
+        GTEST_SKIP() << "Platform does not support base priority";
+    }
+
+    const auto processes = probe->enumerate();
+    ASSERT_GT(processes.size(), 0ULL);
+
+    // Base priority should be in the range 1-31 for Windows-style priorities
+    // Our implementation uses 4-24 (IDLE to REALTIME), centered around 8 (NORMAL)
+    for (const auto& proc : processes)
+    {
+        EXPECT_GE(proc.basePriority, 1) << "Process " << proc.name << " (PID " << proc.pid << ")";
+        EXPECT_LE(proc.basePriority, 31) << "Process " << proc.name << " (PID " << proc.pid << ")";
+    }
+}
+
+TEST(ProcessProbeContractTest, NiceAndBasePriorityAreRelated)
+{
+    auto probe = makeProcessProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const auto caps = probe->capabilities();
+    if (!caps.hasNice || !caps.hasBasePriority)
+    {
+        GTEST_SKIP() << "Platform does not support both nice and base priority";
+    }
+
+    const auto processes = probe->enumerate();
+    ASSERT_GT(processes.size(), 0ULL);
+
+    // On systems with both nice and base priority:
+    // - nice: -20 to +19 (lower is higher priority)
+    // - basePriority: 4 to 13+ (higher is higher priority)
+    // They should have an inverse relationship
+    for (const auto& proc : processes)
+    {
+        EXPECT_GE(proc.nice, -20) << "Process " << proc.name;
+        EXPECT_LE(proc.nice, 19) << "Process " << proc.name;
+
+        // Verify inverse relationship: lower nice (higher priority) should yield higher base priority
+        // Formula: basePriority = clamp(8 - (nice / 5), 4, 13)
+        const int32_t expectedBase = std::clamp(8 - (proc.nice / 5), 4, 13);
+        EXPECT_EQ(proc.basePriority, expectedBase) << "Process " << proc.name << " (PID " << proc.pid << "): " << "nice=" << proc.nice
+                                                   << " should map to basePriority=" << expectedBase << " but got " << proc.basePriority;
+    }
+}
+
 } // namespace Platform

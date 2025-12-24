@@ -26,6 +26,7 @@ struct ProcessSnapshot
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory
     std::int32_t nice = 0;         // Nice value
+    std::int32_t basePriority = 8; // Windows base priority (1-31); default NORMAL=8
 
     // Optional (0 if not supported)
     double ioReadBytesPerSec = 0.0;

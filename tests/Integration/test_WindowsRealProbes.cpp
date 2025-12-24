@@ -193,6 +193,7 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
     EXPECT_TRUE(caps.hasNice);
+    EXPECT_TRUE(caps.hasBasePriority);
 
     // Verify actual data matches capabilities
     auto processes = probe.enumerate();
