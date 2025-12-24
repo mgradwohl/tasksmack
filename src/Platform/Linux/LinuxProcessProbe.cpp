@@ -421,7 +421,8 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
                 if (controllers.find("freezer") != std::string::npos)
                 {
                     // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
-                    std::filesystem::path freezePathV1 = std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
+                    std::filesystem::path freezePathV1 =
+                        std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
                     std::ifstream freezeFileV1(freezePathV1);
                     if (freezeFileV1.is_open())
                     {

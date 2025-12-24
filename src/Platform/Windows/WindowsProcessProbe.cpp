@@ -233,8 +233,8 @@ struct ProcessExtendedBasicInformation
             ULONG isWow64Process : 1;
             ULONG isProcessDeleting : 1;
             ULONG isCrossSessionCreate : 1;
-            ULONG isFrozen : 1;       // Process is suspended (UWP apps, frozen by OS)
-            ULONG isBackground : 1;   // Background process (efficiency mode)
+            ULONG isFrozen : 1;     // Process is suspended (UWP apps, frozen by OS)
+            ULONG isBackground : 1; // Background process (efficiency mode)
             ULONG isStronglyNamed : 1;
             ULONG isSecureProcess : 1;
             ULONG isSubsystemProcess : 1;
@@ -294,7 +294,6 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFO
     // No special status
     return {};
 }
-
 
 } // namespace
 
