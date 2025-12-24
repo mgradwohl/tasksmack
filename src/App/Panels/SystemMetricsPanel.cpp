@@ -138,14 +138,14 @@ void SystemMetricsPanel::onAttach()
 
     m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
-    
+
     m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     // Initial refresh to seed histories
     m_Model->refresh();
     m_StorageModel->sample();
-    
+
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
     {
@@ -197,13 +197,13 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     {
         m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
         m_Model->refresh();
-        
+
         if (m_StorageModel)
         {
             m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             m_StorageModel->sample();
         }
-        
+
         m_TimestampsCache = m_Model->timestamps();
         if (!m_TimestampsCache.empty())
         {

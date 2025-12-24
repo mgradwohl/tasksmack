@@ -48,12 +48,14 @@ if(WIN32)
         Platform/test_WindowsProcessProbe.cpp
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
+        Platform/test_WindowsDiskProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp

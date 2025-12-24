@@ -48,7 +48,7 @@ class SystemMetricsPanel : public Panel
     void renderOverview();
     void renderCpuSection();
     void renderPerCoreSection();
-    
+
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
 
@@ -78,7 +78,7 @@ class SystemMetricsPanel : public Panel
         double swapPercent = 0.0;
         bool initialized = false;
     } m_SmoothedMemory;
-    
+
     struct SmoothedDiskIO
     {
         double readMBps = 0.0;

@@ -33,7 +33,7 @@ std::string wideToNarrow(const std::wstring& wide)
     {
         return {};
     }
-    
+
     int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.length()), nullptr, 0, nullptr, nullptr);
     std::string result(static_cast<size_t>(size), '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.length()), result.data(), size, nullptr, nullptr);
@@ -45,7 +45,7 @@ std::string wideToNarrow(const std::wstring& wide)
 WindowsDiskProbe::WindowsDiskProbe()
 {
     spdlog::debug("WindowsDiskProbe: initialized");
-    
+
     // Initialize PDH query
     PDH_STATUS status = PdhOpenQuery(nullptr, 0, &m_Query);
     if (status != ERROR_SUCCESS)
@@ -54,19 +54,20 @@ WindowsDiskProbe::WindowsDiskProbe()
         m_Query = nullptr;
         return;
     }
-    
+
     // Enumerate physical disks
     DWORD bufferSize = 0;
     status = PdhEnumObjectItems(nullptr, nullptr, L"PhysicalDisk", nullptr, &bufferSize, nullptr, nullptr, PERF_DETAIL_WIZARD, 0);
-    
+
     if (status == PDH_MORE_DATA && bufferSize > 0)
     {
         std::vector<wchar_t> instanceBuffer(bufferSize);
         DWORD instanceSize = bufferSize;
         DWORD counterSize = 0;
-        
-        status = PdhEnumObjectItems(nullptr, nullptr, L"PhysicalDisk", nullptr, &counterSize, instanceBuffer.data(), &instanceSize, PERF_DETAIL_WIZARD, 0);
-        
+
+        status = PdhEnumObjectItems(
+            nullptr, nullptr, L"PhysicalDisk", nullptr, &counterSize, instanceBuffer.data(), &instanceSize, PERF_DETAIL_WIZARD, 0);
+
         if (status == ERROR_SUCCESS)
         {
             // Parse instance names (null-separated list)
@@ -74,43 +75,43 @@ WindowsDiskProbe::WindowsDiskProbe()
             while (*instance != L'\0')
             {
                 std::wstring instanceName(instance);
-                
+
                 // Skip "_Total" instance
                 if (instanceName == L"_Total")
                 {
                     instance += instanceName.length() + 1;
                     continue;
                 }
-                
+
                 DiskCounterSet counterSet;
                 counterSet.instanceName = wideToNarrow(instanceName);
-                
+
                 // Add counters for this disk
                 std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
                 std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
                 std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
                 std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
                 std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
-                
+
                 PdhAddCounter(m_Query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
                 PdhAddCounter(m_Query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
                 PdhAddCounter(m_Query, readsPath.c_str(), 0, &counterSet.readsCounter);
                 PdhAddCounter(m_Query, writesPath.c_str(), 0, &counterSet.writesCounter);
                 PdhAddCounter(m_Query, idleTimePath.c_str(), 0, &counterSet.idleTimeCounter);
-                
+
                 m_DiskCounters.push_back(counterSet);
-                
+
                 instance += instanceName.length() + 1;
             }
         }
     }
-    
+
     // Collect initial sample
     if (m_Query != nullptr)
     {
         PdhCollectQueryData(m_Query);
     }
-    
+
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_DiskCounters.size());
 }
 
@@ -125,7 +126,7 @@ WindowsDiskProbe::~WindowsDiskProbe()
 SystemDiskCounters WindowsDiskProbe::read()
 {
     SystemDiskCounters result;
-    
+
     if (m_Query == nullptr || m_DiskCounters.empty())
     {
         // Fallback: enumerate logical drives
@@ -135,25 +136,25 @@ SystemDiskCounters WindowsDiskProbe::read()
             spdlog::warn("WindowsDiskProbe: GetLogicalDrives failed");
             return result;
         }
-        
+
         for (int i = 0; i < 26; ++i)
         {
             if ((drives & (1U << i)) == 0U)
             {
                 continue;
             }
-            
+
             char driveLetter = static_cast<char>('A' + i);
             std::string drivePath = std::string{driveLetter} + ":\\";
-            
+
             UINT driveType = GetDriveTypeA(drivePath.c_str());
-            
+
             // Only include fixed drives
             if (driveType != DRIVE_FIXED)
             {
                 continue;
             }
-            
+
             DiskCounters disk;
             disk.deviceName = std::string{driveLetter} + ":";
             disk.readsCompleted = 0;
@@ -167,13 +168,13 @@ SystemDiskCounters WindowsDiskProbe::read()
             disk.weightedIoTimeMs = 0;
             disk.sectorSize = 512;
             disk.isPhysicalDevice = true;
-            
+
             result.disks.push_back(disk);
         }
-        
+
         return result;
     }
-    
+
     // Collect new sample from PDH
     PDH_STATUS status = PdhCollectQueryData(m_Query);
     if (status != ERROR_SUCCESS)
@@ -181,7 +182,7 @@ SystemDiskCounters WindowsDiskProbe::read()
         spdlog::warn("WindowsDiskProbe: PdhCollectQueryData failed with status {}", status);
         return result;
     }
-    
+
     // Read counter values
     for (const auto& counterSet : m_DiskCounters)
     {
@@ -189,32 +190,32 @@ SystemDiskCounters WindowsDiskProbe::read()
         disk.deviceName = counterSet.instanceName;
         disk.sectorSize = 512;
         disk.isPhysicalDevice = true;
-        
+
         PDH_FMT_COUNTERVALUE value;
-        
+
         // Read bytes/sec
         if (PdhGetFormattedCounterValue(counterSet.readBytesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
         {
             // Convert bytes/sec to cumulative sectors (approximate)
             disk.readSectors = static_cast<uint64_t>(value.doubleValue / disk.sectorSize);
         }
-        
+
         if (PdhGetFormattedCounterValue(counterSet.writeBytesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
         {
             disk.writeSectors = static_cast<uint64_t>(value.doubleValue / disk.sectorSize);
         }
-        
+
         // Read operations/sec
         if (PdhGetFormattedCounterValue(counterSet.readsCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
         {
             disk.readsCompleted = static_cast<uint64_t>(value.doubleValue);
         }
-        
+
         if (PdhGetFormattedCounterValue(counterSet.writesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
         {
             disk.writesCompleted = static_cast<uint64_t>(value.doubleValue);
         }
-        
+
         // Idle time (convert to busy time for ioTimeMs)
         if (PdhGetFormattedCounterValue(counterSet.idleTimeCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
         {
@@ -223,10 +224,10 @@ SystemDiskCounters WindowsDiskProbe::read()
             // Convert to milliseconds (approximate based on sample interval)
             disk.ioTimeMs = static_cast<uint64_t>(busyPercent * 10.0); // Rough approximation
         }
-        
+
         result.disks.push_back(disk);
     }
-    
+
     spdlog::debug("WindowsDiskProbe: read {} disks", result.disks.size());
     return result;
 }
