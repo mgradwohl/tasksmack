@@ -366,7 +366,7 @@ void LinuxProcessProbe::parseProcessFd(int32_t pid, ProcessCounters& counters) c
     const std::string fdPath = "/proc/" + std::to_string(pid) + "/fd";
 
     std::error_code ec;
-    std::int32_t fdCount = 0;
+    std::int64_t fdCount = 0;
 
     // Iterate through /proc/[pid]/fd/ directory and count entries
     // Note: If the directory cannot be accessed (e.g., permission denied),
@@ -375,10 +375,16 @@ void LinuxProcessProbe::parseProcessFd(int32_t pid, ProcessCounters& counters) c
     {
         (void) entry; // We only need to count entries
         ++fdCount;
+        
+        // Guard against theoretical overflow (extremely unlikely but technically possible)
+        if (fdCount >= std::numeric_limits<int32_t>::max())
+        {
+            break;
+        }
     }
 
-    // Assign the count (will be 0 if directory couldn't be accessed)
-    counters.handleCount = fdCount;
+    // Clamp to int32_t range (handles overflow edge case)
+    counters.handleCount = clampToI32(fdCount);
 }
 
 uint64_t LinuxProcessProbe::readTotalCpuTime() const

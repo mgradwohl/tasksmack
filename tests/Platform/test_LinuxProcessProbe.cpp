@@ -58,6 +58,7 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    EXPECT_TRUE(caps.hasHandleCount);
 }
 
 TEST(LinuxProcessProbeTest, TicksPerSecondIsPositive)
@@ -139,6 +140,7 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     EXPECT_GE(it->systemTime, 0ULL);
     EXPECT_GT(it->startTimeTicks, 0ULL);
     EXPECT_GE(it->threadCount, 1); // At least one thread (main)
+    EXPECT_GT(it->handleCount, 0) << "Own process should have open file descriptors";
 }
 
 TEST(LinuxProcessProbeTest, EnumerateFindsInitProcess)
@@ -246,6 +248,25 @@ TEST(LinuxProcessProbeTest, StateIsValid)
         char state = proc.state;
         EXPECT_NE(validStates.find(state), std::string::npos) << "Process " << proc.pid << " has invalid state: " << state;
     }
+}
+
+TEST(LinuxProcessProbeTest, HandleCountsAreReasonable)
+{
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+
+    // Most processes should have file descriptors open
+    int processesWithFds = 0;
+    for (const auto& proc : processes)
+    {
+        if (proc.handleCount > 0)
+        {
+            ++processesWithFds;
+            // File descriptor count should be reasonable (not absurdly high)
+            EXPECT_LT(proc.handleCount, 100000) << "Process " << proc.pid << " has suspiciously high fd count";
+        }
+    }
+    EXPECT_GT(processesWithFds, 0) << "At least some processes should have open file descriptors";
 }
 
 // =============================================================================

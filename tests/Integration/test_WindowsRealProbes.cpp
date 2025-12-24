@@ -98,6 +98,7 @@ TEST(WindowsRealProbesTest, ProcessProbeFindsOwnProcess)
             EXPECT_GT(proc.rssBytes, 0ULL) << "Own process should have non-zero RSS";
             EXPECT_GT(proc.virtualBytes, 0ULL) << "Own process should have non-zero virtual memory";
             EXPECT_GE(proc.threadCount, 1) << "Own process should have at least 1 thread";
+            EXPECT_GT(proc.handleCount, 0) << "Own process should have open handles";
 
             // State should be Running or Unknown
             // Note: Windows doesn't have a zombie state like Unix; terminated processes
@@ -189,6 +190,7 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    EXPECT_TRUE(caps.hasHandleCount);
     EXPECT_TRUE(caps.hasIoCounters);
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
@@ -213,6 +215,10 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
         if (caps.hasThreadCount)
         {
             EXPECT_GT(it->threadCount, 0);
+        }
+        if (caps.hasHandleCount)
+        {
+            EXPECT_GT(it->handleCount, 0);
         }
         if (caps.hasUser)
         {

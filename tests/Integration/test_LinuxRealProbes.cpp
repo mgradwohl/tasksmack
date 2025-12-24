@@ -107,6 +107,7 @@ TEST(LinuxRealProbesTest, ProcessProbeFindsOwnProcess)
             EXPECT_GT(proc.rssBytes, 0) << "Own process should have non-zero RSS";
             EXPECT_GT(proc.virtualBytes, 0) << "Own process should have non-zero virtual memory";
             EXPECT_GT(proc.threadCount, 0) << "Own process should have at least 1 thread";
+            EXPECT_GT(proc.handleCount, 0) << "Own process should have open file descriptors";
 
             // State should be Running or Sleeping
             EXPECT_TRUE(proc.state == 'R' || proc.state == 'S') << "Own process state should be R or S, got: " << proc.state;

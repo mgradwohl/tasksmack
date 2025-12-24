@@ -49,6 +49,7 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    EXPECT_TRUE(caps.hasHandleCount);
 
     EXPECT_TRUE(caps.hasIoCounters);
     EXPECT_TRUE(caps.hasUser);
@@ -115,6 +116,7 @@ TEST(WindowsProcessProbeTest, EnumerateFindsOurOwnProcess)
 
     EXPECT_GT(it->startTimeTicks, 0ULL);
     EXPECT_GE(it->threadCount, 1);
+    EXPECT_GT(it->handleCount, 0) << "Own process should have open handles";
 
     const std::string validStates = "RZ?";
     EXPECT_NE(validStates.find(it->state), std::string::npos);
@@ -255,6 +257,25 @@ TEST(WindowsProcessProbeTest, StateIsValid)
         }
     }
     EXPECT_GT(processesWithValidState, 0) << "At least some processes should have valid states";
+}
+
+TEST(WindowsProcessProbeTest, HandleCountsAreReasonable)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    // Most processes should have positive handle counts
+    int processesWithHandles = 0;
+    for (const auto& proc : processes)
+    {
+        if (proc.handleCount > 0)
+        {
+            ++processesWithHandles;
+            // Handle count should be reasonable (not absurdly high)
+            EXPECT_LT(proc.handleCount, 100000) << "Process " << proc.pid << " has suspiciously high handle count";
+        }
+    }
+    EXPECT_GT(processesWithHandles, 0) << "At least some processes should have handle counts";
 }
 
 // =============================================================================
