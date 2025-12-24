@@ -144,4 +144,88 @@ struct ByteUnit
     return std::format("{}:{:02}.{:02}", minutes, secs, centis);
 }
 
+[[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string
+{
+    if (mask == 0)
+    {
+        return "-";
+    }
+
+    // Build a compact representation of the affinity mask
+    // Examples: "0-3" (cores 0,1,2,3), "0,2,4" (cores 0,2,4), "All" (all cores set)
+    std::string result;
+    int rangeStart = -1;
+    int rangeEnd = -1;
+    bool hasAny = false;
+
+    for (int cpu = 0; cpu < 64; ++cpu)
+    {
+        const bool isSet = (mask & (1ULL << cpu)) != 0;
+
+        if (isSet)
+        {
+            if (rangeStart == -1)
+            {
+                // Start of a new range
+                rangeStart = cpu;
+                rangeEnd = cpu;
+            }
+            else
+            {
+                // Continue existing range
+                rangeEnd = cpu;
+            }
+        }
+        else if (rangeStart != -1)
+        {
+            // End of range, output it
+            if (hasAny)
+            {
+                result += ',';
+            }
+            hasAny = true;
+
+            if (rangeStart == rangeEnd)
+            {
+                result += std::format("{}", rangeStart);
+            }
+            else if (rangeStart + 1 == rangeEnd)
+            {
+                result += std::format("{},{}", rangeStart, rangeEnd);
+            }
+            else
+            {
+                result += std::format("{}-{}", rangeStart, rangeEnd);
+            }
+
+            rangeStart = -1;
+            rangeEnd = -1;
+        }
+    }
+
+    // Handle last range if it extends to the end
+    if (rangeStart != -1)
+    {
+        if (hasAny)
+        {
+            result += ',';
+        }
+
+        if (rangeStart == rangeEnd)
+        {
+            result += std::format("{}", rangeStart);
+        }
+        else if (rangeStart + 1 == rangeEnd)
+        {
+            result += std::format("{},{}", rangeStart, rangeEnd);
+        }
+        else
+        {
+            result += std::format("{}-{}", rangeStart, rangeEnd);
+        }
+    }
+
+    return result;
+}
+
 } // namespace UI::Format
