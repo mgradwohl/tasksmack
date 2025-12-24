@@ -142,6 +142,9 @@ void UILayer::onAttach()
     imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
 
+    // Disable ImGui's default INI file - we store layout state in TOML config
+    imguiIO.IniFilename = nullptr;
+
     // Pre-bake fonts for all size presets
     loadAllFonts();
 

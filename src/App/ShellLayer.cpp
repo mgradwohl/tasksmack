@@ -100,6 +100,9 @@ void ShellLayer::onAttach()
     // Apply config to theme (must be after UILayer loads themes)
     config.applyToApplication();
 
+    // Restore ImGui layout state (window positions, docking layout, etc.)
+    config.applyImGuiLayout();
+
     // Restore panel visibility from config
     const auto& settings = config.settings();
     m_ShowProcesses = settings.showProcesses;
@@ -122,6 +125,9 @@ void ShellLayer::onDetach()
     // Save user configuration
     auto& config = UserConfig::get();
     config.captureFromApplication();
+
+    // Capture ImGui layout state (window positions, docking layout, etc.)
+    config.captureImGuiLayout();
 
     // Save panel visibility
     auto& settings = config.settings();

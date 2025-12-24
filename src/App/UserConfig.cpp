@@ -3,6 +3,7 @@
 #include "Domain/Numeric.h"
 #include "UI/Theme.h"
 
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -263,6 +264,12 @@ void UserConfig::load()
             }
         }
 
+        // ImGui layout state
+        if (auto layout = config["imgui_layout"].value<std::string>())
+        {
+            m_Settings.imguiLayout = *layout;
+        }
+
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
     catch (const toml::parse_error& err)
@@ -356,6 +363,12 @@ void UserConfig::save() const
         {"process_columns", processColumnsTable},
     };
 
+    // Add ImGui layout if not empty
+    if (!m_Settings.imguiLayout.empty())
+    {
+        config.insert("imgui_layout", m_Settings.imguiLayout);
+    }
+
     // Write to file
     std::ofstream file(m_ConfigPath);
     if (!file)
@@ -401,6 +414,34 @@ void UserConfig::captureFromApplication()
                   m_Settings.themeId,
                   // Use 0 as fallback if enum value is out of int range
                   Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
+}
+
+void UserConfig::applyImGuiLayout() const
+{
+    if (m_Settings.imguiLayout.empty())
+    {
+        spdlog::debug("No ImGui layout state to restore");
+        return;
+    }
+
+    spdlog::debug("Restoring ImGui layout state ({} bytes)", m_Settings.imguiLayout.size());
+    ImGui::LoadIniSettingsFromMemory(m_Settings.imguiLayout.c_str(), m_Settings.imguiLayout.size());
+}
+
+void UserConfig::captureImGuiLayout()
+{
+    std::size_t iniSize = 0;
+    const char* iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
+    if (iniData != nullptr && iniSize > 0)
+    {
+        m_Settings.imguiLayout.assign(iniData, iniSize);
+        spdlog::debug("Captured ImGui layout state ({} bytes)", iniSize);
+    }
+    else
+    {
+        m_Settings.imguiLayout.clear();
+        spdlog::debug("No ImGui layout state to capture");
+    }
 }
 
 } // namespace App
