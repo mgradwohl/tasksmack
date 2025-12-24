@@ -54,6 +54,7 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
     EXPECT_TRUE(caps.hasNice);
+    EXPECT_TRUE(caps.hasBasePriority);
 }
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
