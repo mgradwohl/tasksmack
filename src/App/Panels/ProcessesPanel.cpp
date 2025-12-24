@@ -32,7 +32,7 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
-constexpr int MAX_TREE_DEPTH = 200;        // Maximum recursion depth to prevent stack overflow
+constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -724,10 +724,10 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         const StackFrame frame = stack.back();
         stack.pop_back();
 
-        // Prevent excessive depth
+        // Prevent excessive depth (may indicate cycles or malformed data)
         if (frame.depth >= MAX_TREE_DEPTH)
         {
-            spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, stopping traversal", MAX_TREE_DEPTH);
+            spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, possible cycle or malformed data", MAX_TREE_DEPTH);
             continue;
         }
 
@@ -788,12 +788,12 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
         const auto& proc = snapshots[idx];
         if (proc.parentPid > 0)
         {
-            // Try to find parent in snapshots by PID
-            for (const auto& p : snapshots)
+            // Try to find parent in filtered snapshots by PID
+            for (const auto& [parentKey, parentIdx] : keyToIndex)
             {
-                if (p.pid == proc.parentPid && filteredSet.contains(&p - &snapshots[0]))
+                if (snapshots[parentIdx].pid == proc.parentPid)
                 {
-                    parentKeys.insert(p.uniqueKey);
+                    parentKeys.insert(parentKey);
                     break;
                 }
             }
