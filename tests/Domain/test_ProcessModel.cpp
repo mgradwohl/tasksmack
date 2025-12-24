@@ -893,3 +893,135 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     EXPECT_EQ(snaps[0].pid, 123);
     EXPECT_EQ(snaps[0].name, "legacy_proc");
 }
+
+// =============================================================================
+// Power Usage Calculation Tests
+// =============================================================================
+
+TEST(ProcessModelTest, FirstRefreshShowsZeroPowerUsage)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "test_proc").withPowerUsage(100, 1000000); // 1M microjoules
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // First sample has no previous data, so power should be 0
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First refresh: energy = 1,000,000 microjoules (1 joule)
+    rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1000000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait a bit to ensure time delta > 0 (simulate 1 second passing)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 0.1 second
+
+    // Second refresh: energy increased by 100,000 microjoules (0.1 joule)
+    // If 100ms passed, power = 0.1J / 0.1s = 1W
+    rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1100000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Power should be approximately 1 watt (0.1J / 0.1s)
+    // Allow some tolerance due to timing variations
+    EXPECT_GT(snaps[0].powerWatts, 0.5);
+    EXPECT_LT(snaps[0].powerWatts, 2.0);
+}
+
+TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // Process with constant energy (no power consumption)
+    rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1000000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Energy unchanged
+    rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1000000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageHandlesEnergyCounterReset)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First reading
+    rawProbe->withProcess(100, "proc").withPowerUsage(100, 5000000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Counter decreased (reset or wrap) - should be handled gracefully
+    rawProbe->withProcess(100, "proc").withPowerUsage(100, 1000000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // When energy counter decreases, no power is calculated (0 or skipped)
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageWithoutEnergyData)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "no_power_proc");
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    probe->withProcess(100, "no_power_proc");
+    probe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, BuilderPatternWithPowerUsage)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(123, "power_test").withPowerUsage(123, 5000000).withCpuTime(123, 1000, 500);
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 123);
+    EXPECT_EQ(snaps[0].name, "power_test");
+}

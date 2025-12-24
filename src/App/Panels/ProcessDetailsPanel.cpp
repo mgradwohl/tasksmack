@@ -182,6 +182,8 @@ void ProcessDetailsPanel::render(bool* open)
             renderResourceUsage(m_CachedSnapshot);
             ImGui::Separator();
             renderIoStats(m_CachedSnapshot);
+            ImGui::Separator();
+            renderPowerUsage(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
@@ -619,6 +621,38 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     ImGui::Text("Write:");
     ImGui::SameLine(80.0F);
     ImGui::Text("%.1f %s", writeVal, writeUnit);
+}
+
+void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
+{
+    // Only show power usage if we have data
+    if (proc.powerWatts <= 0.0)
+    {
+        return;
+    }
+
+    ImGui::Text("Power Usage");
+    ImGui::Spacing();
+
+    // Format power value based on magnitude
+    if (proc.powerWatts >= 1.0)
+    {
+        ImGui::Text("Power:");
+        ImGui::SameLine(80.0F);
+        ImGui::Text("%.2f W", proc.powerWatts);
+    }
+    else if (proc.powerWatts >= 0.001)
+    {
+        ImGui::Text("Power:");
+        ImGui::SameLine(80.0F);
+        ImGui::Text("%.1f mW", proc.powerWatts * 1000.0);
+    }
+    else
+    {
+        ImGui::Text("Power:");
+        ImGui::SameLine(80.0F);
+        ImGui::Text("%.0f µW", proc.powerWatts * 1000000.0);
+    }
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)
