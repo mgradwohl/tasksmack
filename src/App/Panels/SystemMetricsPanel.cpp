@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
@@ -41,6 +42,13 @@ using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
+
+[[nodiscard]] std::string formatBytesPerSecond(double bytesPerSec)
+{
+    const auto bytes = static_cast<uint64_t>(std::max(0.0, bytesPerSec));
+    const auto unit = UI::Format::unitForTotalBytes(bytes);
+    return UI::Format::formatBytesWithUnit(bytes, unit);
+}
 
 void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, const ImVec4& color)
 {
@@ -130,9 +138,14 @@ void SystemMetricsPanel::onAttach()
 
     m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
+    
+    m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
+    m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     // Initial refresh to seed histories
     m_Model->refresh();
+    m_StorageModel->sample();
+    
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
     {
@@ -150,6 +163,7 @@ void SystemMetricsPanel::onAttach()
 
 void SystemMetricsPanel::onDetach()
 {
+    m_StorageModel.reset();
     m_Model.reset();
 }
 
@@ -183,6 +197,13 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     {
         m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
         m_Model->refresh();
+        
+        if (m_StorageModel)
+        {
+            m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+            m_StorageModel->sample();
+        }
+        
         m_TimestampsCache = m_Model->timestamps();
         if (!m_TimestampsCache.empty())
         {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "UI/Theme.h"
 
@@ -13,7 +14,7 @@ namespace App
 {
 
 /// Panel displaying system-wide metrics with ImPlot graphs.
-/// Shows CPU, memory, swap usage over time.
+/// Shows CPU, memory, swap, and disk I/O usage over time.
 class SystemMetricsPanel : public Panel
 {
   public:
@@ -25,7 +26,7 @@ class SystemMetricsPanel : public Panel
     SystemMetricsPanel(SystemMetricsPanel&&) = delete;
     SystemMetricsPanel& operator=(SystemMetricsPanel&&) = delete;
 
-    /// Initialize the panel (creates SystemModel).
+    /// Initialize the panel (creates SystemModel and StorageModel).
     void onAttach() override;
 
     /// Cleanup.
@@ -47,7 +48,9 @@ class SystemMetricsPanel : public Panel
     void renderOverview();
     void renderCpuSection();
     void renderPerCoreSection();
+    
     std::unique_ptr<Domain::SystemModel> m_Model;
+    std::unique_ptr<Domain::StorageModel> m_StorageModel;
 
     double m_MaxHistorySeconds = 300.0;
     double m_HistoryScrollSeconds = 0.0;
@@ -75,6 +78,14 @@ class SystemMetricsPanel : public Panel
         double swapPercent = 0.0;
         bool initialized = false;
     } m_SmoothedMemory;
+    
+    struct SmoothedDiskIO
+    {
+        double readMBps = 0.0;
+        double writeMBps = 0.0;
+        double avgUtilization = 0.0;
+        bool initialized = false;
+    } m_SmoothedDiskIO;
 
     std::vector<double> m_SmoothedPerCore;
 
@@ -92,6 +103,7 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
+    void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
 };
 
 } // namespace App
