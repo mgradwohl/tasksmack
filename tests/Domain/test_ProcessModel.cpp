@@ -893,3 +893,68 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     EXPECT_EQ(snaps[0].pid, 123);
     EXPECT_EQ(snaps[0].name, "legacy_proc");
 }
+
+// =============================================================================
+// Base Priority Tests
+// =============================================================================
+
+TEST(ProcessModelTest, BasePriorityIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    Platform::ProcessCounters counter = makeCounter(100, "test_proc", 'R', 1000, 500);
+    counter.basePriority = 13; // HIGH_PRIORITY on Windows
+    rawProbe->setCounters({counter});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].basePriority, 13);
+}
+
+TEST(ProcessModelTest, BasePriorityDefaultValue)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // Default counter (basePriority defaults to 8 = NORMAL)
+    rawProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].basePriority, 8); // Default NORMAL priority
+}
+
+TEST(ProcessModelTest, BasePriorityPreservedAcrossRefreshes)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    Platform::ProcessCounters counter = makeCounter(100, "test_proc", 'R', 1000, 500, 1000);
+    counter.basePriority = 10; // ABOVE_NORMAL on Windows
+    rawProbe->setCounters({counter});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Second refresh with same process
+    counter.userTime = 2000;
+    counter.systemTime = 1000;
+    rawProbe->setCounters({counter});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].basePriority, 10);
+}
+
