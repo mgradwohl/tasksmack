@@ -358,6 +358,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.base.WorkingSetSize;
+        counters.peakRssBytes = pmc.base.PeakWorkingSetSize;
 
         if (auto vmInfo = queryProcessVmInfo(hProcess))
         {
@@ -412,6 +413,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasCommand = true,     // From QueryFullProcessImageName
         .hasNice = true,        // From GetPriorityClass
         .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true, // From GetProcessAffinityMask
     };
 }

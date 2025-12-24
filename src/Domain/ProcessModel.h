@@ -50,6 +50,8 @@ class ProcessModel
 
     // Previous counters for delta calculation (keyed by uniqueKey)
     std::unordered_map<std::uint64_t, Platform::ProcessCounters> m_PrevCounters;
+    // Peak RSS tracking (keyed by uniqueKey)
+    std::unordered_map<std::uint64_t, std::uint64_t> m_PeakRss;
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation

@@ -399,6 +399,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.virtualBytes, procB.virtualBytes);
                                           case ProcessColumn::Resident:
                                               return compare(procA.memoryBytes, procB.memoryBytes);
+                                          case ProcessColumn::PeakResident:
+                                              return compare(procA.peakMemoryBytes, procB.peakMemoryBytes);
                                           case ProcessColumn::Shared:
                                               return compare(procA.sharedBytes, procB.sharedBytes);
                                           case ProcessColumn::CpuTime:
@@ -608,6 +610,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
             const std::string text = UI::Format::formatBytesWithUnit(proc.memoryBytes, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::PeakResident:
+        {
+            const auto unit = UI::Format::unitForTotalBytes(proc.peakMemoryBytes);
+            const std::string text = UI::Format::formatBytesWithUnit(proc.peakMemoryBytes, unit);
             ImGui::TextUnformatted(text.c_str());
             break;
         }
