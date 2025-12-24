@@ -56,18 +56,18 @@ class StorageModel
     void trimHistory(double nowSeconds);
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
-    
+
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
     std::deque<StorageSnapshot> m_History;
     std::deque<double> m_Timestamps; // Seconds since start
-    
+
     // Per-device state for delta calculations
     std::unordered_map<std::string, DiskState> m_DiskStates;
     std::chrono::steady_clock::time_point m_PrevSampleTime;
     std::chrono::steady_clock::time_point m_StartTime;
     bool m_HasPrevSample = false;
-    
+
     double m_MaxHistorySeconds = 300.0; // 5 minutes default
 };
 

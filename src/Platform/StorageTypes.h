@@ -21,17 +21,17 @@ struct DiskCounters
     uint64_t ioInProgressMs = 0;   // I/O operations currently in progress
     uint64_t ioTimeMs = 0;         // Total time this device has been active (milliseconds)
     uint64_t weightedIoTimeMs = 0; // Weighted time of I/O operations
-    
+
     // Device info (may not be available on all platforms)
-    uint64_t sectorSize = 512;     // Sector size in bytes (typically 512 or 4096)
-    bool isPhysicalDevice = true;  // False for loop devices, partitions on some systems
+    uint64_t sectorSize = 512;    // Sector size in bytes (typically 512 or 4096)
+    bool isPhysicalDevice = true; // False for loop devices, partitions on some systems
 };
 
 /// Aggregate counters for all disks combined.
 struct SystemDiskCounters
 {
     std::vector<DiskCounters> disks;
-    
+
     /// Total reads across all disks
     [[nodiscard]] uint64_t totalReadsCompleted() const
     {
@@ -42,7 +42,7 @@ struct SystemDiskCounters
         }
         return total;
     }
-    
+
     /// Total writes across all disks
     [[nodiscard]] uint64_t totalWritesCompleted() const
     {
@@ -53,7 +53,7 @@ struct SystemDiskCounters
         }
         return total;
     }
-    
+
     /// Total read bytes across all disks
     [[nodiscard]] uint64_t totalReadBytes() const
     {
@@ -64,7 +64,7 @@ struct SystemDiskCounters
         }
         return total;
     }
-    
+
     /// Total write bytes across all disks
     [[nodiscard]] uint64_t totalWriteBytes() const
     {
@@ -80,11 +80,11 @@ struct SystemDiskCounters
 /// Reports what this platform's disk probe supports.
 struct DiskCapabilities
 {
-    bool hasDiskStats = false;        // Can read disk I/O statistics
-    bool hasReadWriteBytes = false;   // Can report bytes read/written
-    bool hasIoTime = false;           // Can report time spent in I/O
-    bool hasDeviceInfo = false;       // Can report device metadata (size, type)
-    bool canFilterPhysical = false;   // Can distinguish physical vs virtual devices
+    bool hasDiskStats = false;      // Can read disk I/O statistics
+    bool hasReadWriteBytes = false; // Can report bytes read/written
+    bool hasIoTime = false;         // Can report time spent in I/O
+    bool hasDeviceInfo = false;     // Can report device metadata (size, type)
+    bool canFilterPhysical = false; // Can distinguish physical vs virtual devices
 };
 
 } // namespace Platform

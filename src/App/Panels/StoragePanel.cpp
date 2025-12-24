@@ -31,7 +31,6 @@ namespace App
 namespace
 {
 
-using UI::Widgets::computeAlpha;
 using UI::Widgets::smoothTowards;
 
 void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, const ImVec4& color)
@@ -42,6 +41,14 @@ void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, c
     ImGui::ProgressBar(fraction, ImVec2(-1, 0), "");
     UI::Widgets::drawRightAlignedOverlayText(overlay.c_str());
     ImGui::PopStyleColor();
+}
+
+[[nodiscard]] std::string formatBytesPerSecond(double bytesPerSec)
+{
+    // Convert to uint64_t for formatting (clamped to valid range)
+    const auto bytes = static_cast<uint64_t>(std::max(0.0, bytesPerSec));
+    const auto unit = UI::Format::unitForTotalBytes(bytes);
+    return UI::Format::formatBytesWithUnit(bytes, unit);
 }
 
 } // namespace
@@ -57,10 +64,10 @@ void StoragePanel::onAttach()
     spdlog::info("StoragePanel: attaching");
     m_Model = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
-    
+
     // Initial sample
     m_Model->sample();
-    
+
     spdlog::info("StoragePanel: attached");
 }
 
@@ -155,19 +162,19 @@ void StoragePanel::renderOverview()
     ImGui::SeparatorText("Overview");
 
     const auto snap = m_Model->latestSnapshot();
-    const auto& scheme = UI::Theme::get().colorScheme();
+    const auto& theme = UI::Theme::get();
+    const auto& scheme = theme.scheme();
 
     // System-wide totals
-    const double totalReadMBps = snap.totalReadBytesPerSec / (1024.0 * 1024.0);
-    const double totalWriteMBps = snap.totalWriteBytesPerSec / (1024.0 * 1024.0);
-
     ImGui::Text("Total Read:");
     ImGui::SameLine(m_OverviewLabelWidth);
-    ImGui::TextColored(scheme.goodColor(), "%s/s", UI::Format::bytes(snap.totalReadBytesPerSec).c_str());
+    const std::string readStr = formatBytesPerSecond(snap.totalReadBytesPerSec) + "/s";
+    ImGui::TextColored(scheme.chartCpu, "%s", readStr.c_str());
 
     ImGui::Text("Total Write:");
     ImGui::SameLine(m_OverviewLabelWidth);
-    ImGui::TextColored(scheme.warningColor(), "%s/s", UI::Format::bytes(snap.totalWriteBytesPerSec).c_str());
+    const std::string writeStr = formatBytesPerSecond(snap.totalWriteBytesPerSec) + "/s";
+    ImGui::TextColored(scheme.chartIo, "%s", writeStr.c_str());
 
     ImGui::Text("Devices:");
     ImGui::SameLine(m_OverviewLabelWidth);
@@ -183,7 +190,8 @@ void StoragePanel::renderDeviceDetails()
     ImGui::SeparatorText("Devices");
 
     const auto snap = m_Model->latestSnapshot();
-    const auto& scheme = UI::Theme::get().colorScheme();
+    const auto& theme = UI::Theme::get();
+    const auto& scheme = theme.scheme();
 
     if (snap.disks.empty())
     {
@@ -192,7 +200,8 @@ void StoragePanel::renderDeviceDetails()
     }
 
     // Create a table for device details
-    constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    constexpr ImGuiTableFlags tableFlags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
 
     if (ImGui::BeginTable("DiskTable", 6, tableFlags))
     {
@@ -207,7 +216,7 @@ void StoragePanel::renderDeviceDetails()
         for (const auto& disk : snap.disks)
         {
             ImGui::TableNextRow();
-            
+
             // Device name
             ImGui::TableNextColumn();
             ImGui::Text("%s", disk.deviceName.c_str());
@@ -217,22 +226,26 @@ void StoragePanel::renderDeviceDetails()
             const auto& smoothed = m_SmoothedDisks[disk.deviceName];
             if (smoothed.initialized)
             {
-                ImGui::TextColored(scheme.goodColor(), "%s/s", UI::Format::bytes(smoothed.readMBps * 1024.0 * 1024.0).c_str());
+                const std::string readStr = formatBytesPerSecond(smoothed.readMBps * 1024.0 * 1024.0) + "/s";
+                ImGui::TextColored(scheme.chartCpu, "%s", readStr.c_str());
             }
             else
             {
-                ImGui::Text("%s/s", UI::Format::bytes(disk.readBytesPerSec).c_str());
+                const std::string readStr = formatBytesPerSecond(disk.readBytesPerSec) + "/s";
+                ImGui::Text("%s", readStr.c_str());
             }
 
             // Write rate
             ImGui::TableNextColumn();
             if (smoothed.initialized)
             {
-                ImGui::TextColored(scheme.warningColor(), "%s/s", UI::Format::bytes(smoothed.writeMBps * 1024.0 * 1024.0).c_str());
+                const std::string writeStr = formatBytesPerSecond(smoothed.writeMBps * 1024.0 * 1024.0) + "/s";
+                ImGui::TextColored(scheme.chartIo, "%s", writeStr.c_str());
             }
             else
             {
-                ImGui::Text("%s/s", UI::Format::bytes(disk.writeBytesPerSec).c_str());
+                const std::string writeStr = formatBytesPerSecond(disk.writeBytesPerSec) + "/s";
+                ImGui::Text("%s", writeStr.c_str());
             }
 
             // Utilization
@@ -241,17 +254,9 @@ void StoragePanel::renderDeviceDetails()
             {
                 const double util = smoothed.initialized ? smoothed.utilization : disk.utilizationPercent;
                 const std::string utilStr = std::format("{:.1f}%", util);
-                
-                ImVec4 utilColor = scheme.goodColor();
-                if (util > 80.0)
-                {
-                    utilColor = scheme.criticalColor();
-                }
-                else if (util > 60.0)
-                {
-                    utilColor = scheme.warningColor();
-                }
-                
+
+                ImVec4 utilColor = theme.progressColor(util);
+
                 drawProgressBarWithOverlay(util / 100.0, utilStr, utilColor);
             }
             else
@@ -287,15 +292,17 @@ void StoragePanel::updateCachedLayout()
 
 void StoragePanel::updateSmoothedMetrics(const Domain::StorageSnapshot& snap, float deltaTimeSeconds)
 {
-    const float alpha = computeAlpha(deltaTimeSeconds, 0.5F); // 0.5 second smoothing window
+    // Use the refresh interval for smoothing calculation
+    const auto refreshInterval = m_RefreshInterval;
+    const double alpha = UI::Widgets::computeAlpha(deltaTimeSeconds, refreshInterval);
 
     for (const auto& disk : snap.disks)
     {
         auto& smoothed = m_SmoothedDisks[disk.deviceName];
-        
+
         const double readMBps = disk.readBytesPerSec / (1024.0 * 1024.0);
         const double writeMBps = disk.writeBytesPerSec / (1024.0 * 1024.0);
-        
+
         if (!smoothed.initialized)
         {
             smoothed.readMBps = readMBps;
