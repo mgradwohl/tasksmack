@@ -67,12 +67,14 @@ else()
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
+        Platform/test_LinuxDiskProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -86,6 +88,7 @@ add_executable(TaskSmackTests
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
+    Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     UI/test_HistoryWidgets.cpp
     ${PLATFORM_TEST_SOURCES}
@@ -93,6 +96,7 @@ add_executable(TaskSmackTests
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
