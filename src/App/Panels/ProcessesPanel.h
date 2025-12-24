@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace App
@@ -86,8 +88,48 @@ class ProcessesPanel : public Panel
     // Search/filter state
     std::array<char, 256> m_SearchBuffer{};
 
+    // Tree view state
+    bool m_TreeViewEnabled = false;
+    std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
+
+    // Cached tree structure (rebuilt on refresh timer in onUpdate)
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
+
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
+
+    /// Build parent-child process tree structure
+    /// @param snapshots The full list of process snapshots.
+    /// @return Map of parent uniqueKey to vector of child indices
+    [[nodiscard]] std::unordered_map<std::uint64_t, std::vector<std::size_t>>
+    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
+
+    /// Render process rows in tree view mode
+    /// @param snapshots The full list of process snapshots.
+    /// @param filteredIndices Indices into snapshots for processes matching the current filter.
+    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
+    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                        const std::vector<std::size_t>& filteredIndices,
+                        const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree);
+
+    /// Render a single process and its children iteratively
+    /// @param snapshots The full list of process snapshots.
+    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
+    /// @param filteredSet Set of filtered indices for O(1) membership checks.
+    /// @param procIdx Index of current process to render.
+    /// @param depth Current depth in the tree hierarchy.
+    void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                               const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree,
+                               const std::unordered_set<std::size_t>& filteredSet,
+                               std::size_t procIdx,
+                               int depth);
+
+    /// Render a single process row
+    /// @param proc The process to render.
+    /// @param depth Indentation depth in the tree.
+    /// @param hasChildren Whether the process has children.
+    /// @param isExpanded Whether the children are visible.
+    void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
 };
 
 } // namespace App
