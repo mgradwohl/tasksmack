@@ -1,0 +1,202 @@
+# Power Usage Column Implementation
+
+## Overview
+
+This document describes the implementation of the Power Usage column feature for TaskSmack. The feature provides per-process power consumption tracking across Windows and Linux platforms.
+
+## Architecture
+
+The implementation follows TaskSmack's layered architecture:
+
+```
+Platform Layer (Raw Counters)
+    ↓
+Domain Layer (Delta Calculations)
+    ↓
+UI Layer (Display)
+```
+
+### Platform Layer
+
+**Files Modified:**
+- `src/Platform/ProcessTypes.h`
+- `src/Platform/Windows/WindowsProcessProbe.cpp`
+- `src/Platform/Linux/LinuxProcessProbe.cpp`
+
+**Changes:**
+1. Added `energyMicrojoules` field to `ProcessCounters` struct
+   - Stores cumulative energy consumption in microjoules
+   - Platform-specific probes populate this field
+
+2. Added `hasPowerUsage` flag to `ProcessCapabilities`
+   - Indicates whether the platform supports power usage tracking
+   - Currently set to `false` on both platforms (infrastructure only)
+
+### Domain Layer
+
+**Files Modified:**
+- `src/Domain/ProcessSnapshot.h`
+- `src/Domain/ProcessModel.h`
+- `src/Domain/ProcessModel.cpp`
+
+**Changes:**
+1. Added `powerWatts` field to `ProcessSnapshot`
+   - Computed from energy delta between samples
+   - Power (watts) = Energy delta (microjoules) / Time delta (microseconds)
+
+2. Updated `ProcessModel` to track timestamps
+   - Added `m_PrevTimestampUs` to track time between samples
+   - Uses `std::chrono::steady_clock` for precise timing
+
+3. Implemented power calculation in `computeSnapshot()`
+   - Calculates energy delta from previous sample
+   - Computes power rate: `powerWatts = energyDelta / timeDelta`
+   - Handles counter resets gracefully (treats as new baseline)
+
+### UI Layer
+
+**Files Modified:**
+- `src/App/ProcessColumnConfig.h`
+- `src/App/Panels/ProcessesPanel.cpp`
+- `src/App/Panels/ProcessDetailsPanel.h`
+- `src/App/Panels/ProcessDetailsPanel.cpp`
+
+**Changes:**
+1. Added `Power` column to `ProcessColumn` enum
+   - Default width: 70 pixels
+   - Hidden by default (can be enabled via column visibility menu)
+   - Sortable like other columns
+
+2. Added power rendering in `ProcessesPanel`
+   - Displays power in watts, milliwatts, or microwatts based on magnitude
+   - Shows "-" when no power data available
+
+3. Added power display in `ProcessDetailsPanel`
+   - Shows in "Overview" tab under "Power Usage" section
+   - Only visible when power data is available
+
+### Test Infrastructure
+
+**Files Modified:**
+- `tests/Mocks/MockProbes.h`
+- `tests/Domain/test_ProcessModel.cpp`
+
+**Changes:**
+1. Enhanced `MockProcessProbe` with `withPowerUsage()` builder method
+2. Added comprehensive power usage tests:
+   - Zero power on first refresh (no delta)
+   - Power calculation from energy delta
+   - Handling of zero energy delta
+   - Handling of counter resets
+   - Power usage without energy data
+
+## Formula
+
+The power calculation uses the fundamental physics relationship:
+
+```
+Power (watts) = Energy (joules) / Time (seconds)
+```
+
+In our implementation:
+- Energy is stored in microjoules (µJ): 1 joule = 1,000,000 µJ
+- Time delta is measured in microseconds (µs): 1 second = 1,000,000 µs
+- Formula: `powerWatts = energyDelta_µJ / timeDelta_µs`
+
+This simplifies to: `powerWatts = (energyDelta / 1,000,000) / (timeDelta / 1,000,000) = energyDelta / timeDelta`
+
+## Platform-Specific Implementation Notes
+
+### Windows
+
+**Planned Implementation:**
+- Use `PROCESS_POWER_THROTTLING_STATE` or similar Windows APIs
+- Alternative: Query system-wide energy counters and attribute to processes based on CPU usage
+- Requires elevated privileges or special permissions
+
+**Current Status:** Infrastructure only (capability flag set to `false`)
+
+### Linux
+
+**Planned Implementation:**
+- Read from `/sys/class/powercap/intel-rapl/` for Intel RAPL (Running Average Power Limit)
+- Parse per-package energy counters
+- Attribute energy to processes based on CPU usage proportions
+- Alternative: Use `perf` subsystem events
+
+**Current Status:** Infrastructure only (capability flag set to `false`)
+
+## Future Work
+
+1. **Windows Implementation:**
+   - Research and implement Windows power APIs
+   - Handle privilege requirements
+   - Add Windows-specific integration tests
+
+2. **Linux Implementation:**
+   - Implement RAPL energy reading
+   - Add support for AMD processors (different powercap interface)
+   - Handle non-root access scenarios
+   - Add Linux-specific integration tests
+
+3. **Power Attribution:**
+   - Currently power must be per-process
+   - May need to implement system-wide power tracking with attribution
+   - Consider GPU power if integrated graphics
+
+4. **Optimization:**
+   - Cache power readings to reduce overhead
+   - Implement sampling strategies for large process counts
+   - Consider background thread for power probe updates
+
+5. **UI Enhancements:**
+   - Add power history graphs to ProcessDetailsPanel
+   - Add system-wide power summary
+   - Color-code high power consumers
+   - Add power-based sorting and filtering
+
+## Testing Strategy
+
+### Unit Tests (Completed)
+- Power calculation from energy deltas
+- Handling of edge cases (zero delta, counter reset)
+- Thread safety of timestamp tracking
+
+### Integration Tests (Pending)
+- Platform-specific probe implementations
+- End-to-end power tracking with real processes
+- Performance impact measurement
+
+### Manual Testing (Pending)
+- Verify power display in ProcessesPanel
+- Verify power display in ProcessDetailsPanel
+- Test column sorting by power
+- Test column visibility toggle
+
+## Design Decisions
+
+### Why Cumulative Energy?
+- Most hardware counters provide cumulative energy consumption
+- Allows for accurate rate calculation over any time window
+- Handles variable sampling intervals naturally
+
+### Why Microsecond Precision?
+- Provides sufficient precision for short sampling intervals (100ms - 1s)
+- Avoids floating-point precision issues
+- Matches common OS timer resolution
+
+### Why Hide Column by Default?
+- Power data not available on all platforms yet
+- Reduces visual clutter for users who don't need it
+- Consistent with other optional columns (VIRT, SHR, PPID, etc.)
+
+### Why Graceful Degradation?
+- Power tracking is optional/supplementary
+- Application should work perfectly without power data
+- Maintains cross-platform compatibility
+
+## References
+
+- Windows: [Process Power Throttling](https://learn.microsoft.com/en-us/windows/win32/procthread/process-power-throttling)
+- Linux: [Intel RAPL](https://www.kernel.org/doc/html/latest/power/powercap/powercap.html)
+- Linux: [perf power events](https://perf.wiki.kernel.org/index.php/Tutorial#Energy_consumption)
