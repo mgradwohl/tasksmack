@@ -20,6 +20,7 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 - ImGui-based UI with docking and multi-viewport support
 - Process table with htop-inspired columns (CPU%, MEM%, RES, VIRT, SHR, TIME+, PPID, NI, threads, command)
 - Process state color-coding
+- Process actions: terminate (SIGTERM), kill (SIGKILL), stop/resume (SIGSTOP/SIGCONT on Linux)
 - Column visibility toggles (persisted)
 - Configurable themes (TOML-based)
 - Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
