@@ -129,7 +129,7 @@ void SystemMetricsPanel::onAttach()
     m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
 
-    m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe());
+    m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
@@ -643,6 +643,108 @@ void SystemMetricsPanel::renderOverview()
                                                     m_SmoothedDiskIO.avgUtilization);
         ImVec4 diskColor = theme.progressColor(m_SmoothedDiskIO.avgUtilization);
         drawProgressBarWithOverlay(UI::Numeric::percent01(m_SmoothedDiskIO.avgUtilization), diskOverlay, diskColor);
+    }
+
+    // Battery / Power status (if available)
+    if (snap.power.hasBattery)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        std::string batteryHeader = "Battery:";
+        if (snap.power.isCharging)
+        {
+            batteryHeader = "Battery (Charging):";
+        }
+        else if (snap.power.isFull)
+        {
+            batteryHeader = "Battery (Full):";
+        }
+        else if (snap.power.isDischarging)
+        {
+            batteryHeader = "Battery (Discharging):";
+        }
+
+        ImGui::TextUnformatted(batteryHeader.c_str());
+
+        if (snap.power.chargePercent >= 0)
+        {
+            ImGui::Text("Charge:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            const std::string chargeOverlay = std::format("{}%", snap.power.chargePercent);
+            const double chargePercentDouble = static_cast<double>(snap.power.chargePercent);
+            ImVec4 chargeColor = theme.progressColor(chargePercentDouble);
+            drawProgressBarWithOverlay(UI::Numeric::percent01(chargePercentDouble), chargeOverlay, chargeColor);
+        }
+
+        if (snap.power.powerWatts != 0.0)
+        {
+            ImGui::Text("Power:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            std::string powerStr;
+            if (snap.power.isCharging)
+            {
+                powerStr = std::format("+{:.2f} W (charging)", std::abs(snap.power.powerWatts));
+            }
+            else if (snap.power.isDischarging)
+            {
+                powerStr = std::format("{:.2f} W", snap.power.powerWatts);
+            }
+            else
+            {
+                powerStr = std::format("{:.2f} W", snap.power.powerWatts);
+            }
+            ImGui::TextUnformatted(powerStr.c_str());
+        }
+
+        if (snap.power.timeToEmptySec > 0 && snap.power.isDischarging)
+        {
+            ImGui::Text("Time Left:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            const std::uint64_t hours = snap.power.timeToEmptySec / 3600;
+            const std::uint64_t minutes = (snap.power.timeToEmptySec % 3600) / 60;
+            const std::string timeStr = std::format("{}h {}m", hours, minutes);
+            ImGui::TextUnformatted(timeStr.c_str());
+        }
+        else if (snap.power.timeToFullSec > 0 && snap.power.isCharging)
+        {
+            ImGui::Text("Time to Full:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            const std::uint64_t hours = snap.power.timeToFullSec / 3600;
+            const std::uint64_t minutes = (snap.power.timeToFullSec % 3600) / 60;
+            const std::string timeStr = std::format("{}h {}m", hours, minutes);
+            ImGui::TextUnformatted(timeStr.c_str());
+        }
+
+        if (snap.power.healthPercent >= 0)
+        {
+            ImGui::Text("Health:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            const std::string healthStr = std::format("{}%", snap.power.healthPercent);
+            ImGui::TextUnformatted(healthStr.c_str());
+        }
+
+        if (!snap.power.technology.empty() || !snap.power.model.empty())
+        {
+            ImGui::Text("Info:");
+            ImGui::SameLine(m_OverviewLabelWidth);
+            std::string infoStr;
+            if (!snap.power.technology.empty() && !snap.power.model.empty())
+            {
+                infoStr = std::format("{} ({})", snap.power.technology, snap.power.model);
+            }
+            else if (!snap.power.technology.empty())
+            {
+                infoStr = snap.power.technology;
+            }
+            else
+            {
+                infoStr = snap.power.model;
+            }
+            ImGui::TextUnformatted(infoStr.c_str());
+        }
+    }
     }
 }
 

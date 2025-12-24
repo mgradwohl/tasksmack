@@ -461,6 +461,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
+    src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -469,6 +470,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
+    src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -488,9 +490,14 @@ set(TASKSMACK_HEADERS
     src/UI/UILayer.h
     src/App/ShellLayer.h
     src/App/Panels/ProcessesPanel.h
-    src/Platform/ProcessTypes.h
-    src/Platform/IProcessProbe.h
     src/Platform/Factory.h
+    src/Platform/IDiskProbe.h
+    src/Platform/IPowerProbe.h
+    src/Platform/IProcessProbe.h
+    src/Platform/IProcessActions.h
+    src/Platform/ISystemProbe.h
+    src/Platform/PowerTypes.h
+    src/Platform/ProcessTypes.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
 )
@@ -499,12 +506,16 @@ set(TASKSMACK_HEADERS
 if(UNIX AND NOT APPLE)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Linux/LinuxProcessProbe.h
+        src/Platform/Linux/LinuxDiskProbe.h
+        src/Platform/Linux/LinuxPowerProbe.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
+        src/Platform/Windows/WindowsDiskProbe.h
+        src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WinString.h
     )
 endif()

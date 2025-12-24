@@ -1,6 +1,7 @@
 #include "SystemModel.h"
 
 #include "Numeric.h"
+#include "Platform/PowerTypes.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -14,7 +15,8 @@
 namespace Domain
 {
 
-SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Probe(std::move(probe))
+SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+    : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
 {
     if (m_Probe)
     {
@@ -24,6 +26,12 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Prob
     else
     {
         spdlog::warn("SystemModel: initialized without probe");
+    }
+
+    if (m_PowerProbe)
+    {
+        m_PowerCapabilities = m_PowerProbe->capabilities();
+        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
     }
 }
 
@@ -129,6 +137,16 @@ void SystemModel::refresh()
     }
 
     auto counters = m_Probe->read();
+    
+    // Also read power data if probe is available
+    if (m_PowerProbe)
+    {
+        auto powerCounters = m_PowerProbe->read();
+        std::unique_lock lock(m_Mutex);
+        m_Snapshot.power = computePowerStatus(powerCounters);
+        lock.unlock();
+    }
+    
     updateFromCounters(counters);
 }
 
@@ -364,6 +382,43 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
     usage.stealPercent = std::clamp(usage.stealPercent, 0.0, 100.0);
 
     return usage;
+}
+
+PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& counters) const
+{
+    PowerStatus status;
+
+    status.hasBattery = m_PowerCapabilities.hasBattery;
+
+    if (!status.hasBattery)
+    {
+        return status;
+    }
+
+    // Basic state
+    status.isOnAc = counters.isOnAc;
+    status.isCharging = (counters.state == Platform::BatteryState::Charging);
+    status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
+    status.isFull = (counters.state == Platform::BatteryState::Full);
+
+    // Charge percentage
+    status.chargePercent = counters.chargePercent;
+
+    // Power consumption
+    status.powerWatts = counters.powerNowW;
+
+    // Health percentage
+    status.healthPercent = counters.healthPercent;
+
+    // Time estimates
+    status.timeToEmptySec = counters.timeToEmptySec;
+    status.timeToFullSec = counters.timeToFullSec;
+
+    // Battery details
+    status.technology = counters.technology;
+    status.model = counters.model;
+
+    return status;
 }
 
 } // namespace Domain

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "History.h"
+#include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
@@ -19,7 +20,7 @@ namespace Domain
 class SystemModel
 {
   public:
-    explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe);
+    explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
     ~SystemModel() = default;
 
     SystemModel(const SystemModel&) = delete;
@@ -64,7 +65,9 @@ class SystemModel
 
   private:
     std::unique_ptr<Platform::ISystemProbe> m_Probe;
+    std::unique_ptr<Platform::IPowerProbe> m_PowerProbe;
     Platform::SystemCapabilities m_Capabilities;
+    Platform::PowerCapabilities m_PowerCapabilities;
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;
@@ -94,6 +97,7 @@ class SystemModel
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
     void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
+    [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
 };
 
 } // namespace Domain
