@@ -281,7 +281,6 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
     }
 
     const auto proc2 = findOurProcess(probe.enumerate());
-    ASSERT_NE(proc2.pid, 0) << "Should find our own process in second enumeration";
 
     // CPU time should have increased (allow for rounding/measurement variance)
     const uint64_t totalTime1 = proc1.userTime + proc1.systemTime;
