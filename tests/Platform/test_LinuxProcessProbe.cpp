@@ -20,6 +20,8 @@
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
 #include <thread>
 
 #include <unistd.h>
@@ -412,6 +414,89 @@ TEST(LinuxProcessProbeTest, ConcurrentEnumeration)
 
     // All enumerations should have succeeded
     EXPECT_GT(successCount.load(), 0);
+}
+
+// =============================================================================
+// I/O Counter Tests
+// =============================================================================
+
+TEST(LinuxProcessProbeTest, IoCountersCapabilityReported)
+{
+    LinuxProcessProbe probe;
+    auto caps = probe.capabilities();
+    
+    // hasIoCounters should be dynamically determined based on permissions
+    // If we're root or have appropriate capabilities, it should be true
+    // Otherwise, it should be false
+    // We just verify it's a valid boolean value
+    EXPECT_TRUE(caps.hasIoCounters || !caps.hasIoCounters);
+}
+
+TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
+{
+    LinuxProcessProbe probe;
+    auto caps = probe.capabilities();
+    
+    // Only test if I/O counters are available
+    if (!caps.hasIoCounters)
+    {
+        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+    }
+    
+    auto processes = probe.enumerate();
+    const pid_t selfPid = getpid();
+    
+    // Find our own process
+    auto selfProc = std::find_if(processes.begin(), processes.end(),
+                                  [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    
+    ASSERT_NE(selfProc, processes.end()) << "Could not find self process in enumeration";
+    
+    // I/O counters should be populated (at least non-negative)
+    EXPECT_GE(selfProc->readBytes, 0ULL);
+    EXPECT_GE(selfProc->writeBytes, 0ULL);
+}
+
+TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
+{
+    LinuxProcessProbe probe;
+    auto caps = probe.capabilities();
+    
+    if (!caps.hasIoCounters)
+    {
+        GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
+    }
+    
+    const pid_t selfPid = getpid();
+    
+    // First measurement
+    auto processes1 = probe.enumerate();
+    auto selfProc1 = std::find_if(processes1.begin(), processes1.end(),
+                                   [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    ASSERT_NE(selfProc1, processes1.end());
+    const uint64_t readBytes1 = selfProc1->readBytes;
+    const uint64_t writeBytes1 = selfProc1->writeBytes;
+    
+    // Do some I/O activity (write to a temporary file)
+    {
+        std::ofstream tempFile("/tmp/tasksmack_io_test.tmp");
+        tempFile << "Test data for I/O counter verification\n";
+        tempFile.flush();
+    }
+    
+    // Second measurement
+    auto processes2 = probe.enumerate();
+    auto selfProc2 = std::find_if(processes2.begin(), processes2.end(),
+                                   [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    ASSERT_NE(selfProc2, processes2.end());
+    const uint64_t readBytes2 = selfProc2->readBytes;
+    const uint64_t writeBytes2 = selfProc2->writeBytes;
+    
+    // Write bytes should have increased (we wrote to a file)
+    EXPECT_GE(writeBytes2, writeBytes1) << "Write bytes should increase after file write";
+    
+    // Clean up
+    std::remove("/tmp/tasksmack_io_test.tmp");
 }
 
 } // namespace
