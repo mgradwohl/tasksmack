@@ -261,20 +261,16 @@ void ProcessesPanel::render(bool* open)
         summaryStr = std::format("{} / {} processes", filteredIndices.size(), currentSnapshots.size());
     }
 
-    // get the width of the button before we create it
-    std::string labelForWidth;
-    if (m_TreeViewEnabled)
-    {
-        labelForWidth = "List View";
-    }
-    else
-    {
-        labelForWidth = "Tree View";
-    }
+    // Get a stable button width based on the widest possible label so layout doesn't shift when toggling
+    constexpr auto TREE_VIEW_LABEL = "Tree View";
+    constexpr auto LIST_VIEW_LABEL = "List View";
 
-    const ImVec2 text = ImGui::CalcTextSize(labelForWidth.c_str());
+    const ImVec2 treeTextSize = ImGui::CalcTextSize(TREE_VIEW_LABEL);
+    const ImVec2 listTextSize = ImGui::CalcTextSize(LIST_VIEW_LABEL);
+    const float maxLabelWidth = std::max(treeTextSize.x, listTextSize.x);
+
     const ImGuiStyle& style = ImGui::GetStyle();
-    float buttonWidthPx = text.x + (style.FramePadding.x * 2.0F);
+    float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
