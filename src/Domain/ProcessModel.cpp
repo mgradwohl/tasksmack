@@ -184,7 +184,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     // Compute power from energy delta
     // Power (watts) = Energy (microjoules) / Time (microseconds) = Energy / Time
     // 1 watt = 1 joule/second = 1,000,000 microjoules/second = 1,000,000 microjoules / 1,000,000 microseconds
-    if (previous != nullptr && timeDeltaUs > 0 && current.energyMicrojoules > 0)
+    if (previous != nullptr && timeDeltaUs > 0)
     {
         if (current.energyMicrojoules >= previous->energyMicrojoules)
         {
