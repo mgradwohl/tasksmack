@@ -211,32 +211,24 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     // Compute network rates from deltas
     if (previous != nullptr && timeDeltaSeconds > 0.0)
     {
-        // Network sent rate
-        if (current.netSentBytes >= previous->netSentBytes)
+        // Helper lambda to compute rate from counter delta
+        auto computeRate = [timeDeltaSeconds](std::uint64_t currentValue, std::uint64_t previousValue) -> double
         {
-            const std::uint64_t sentDelta = current.netSentBytes - previous->netSentBytes;
-            snapshot.netSentBytesPerSec = Numeric::toDouble(sentDelta) / timeDeltaSeconds;
-        }
+            if (currentValue >= previousValue)
+            {
+                const std::uint64_t delta = currentValue - previousValue;
+                return Numeric::toDouble(delta) / timeDeltaSeconds;
+            }
+            return 0.0;
+        };
 
-        // Network received rate
-        if (current.netReceivedBytes >= previous->netReceivedBytes)
-        {
-            const std::uint64_t receivedDelta = current.netReceivedBytes - previous->netReceivedBytes;
-            snapshot.netReceivedBytesPerSec = Numeric::toDouble(receivedDelta) / timeDeltaSeconds;
-        }
+        // Network rates
+        snapshot.netSentBytesPerSec = computeRate(current.netSentBytes, previous->netSentBytes);
+        snapshot.netReceivedBytesPerSec = computeRate(current.netReceivedBytes, previous->netReceivedBytes);
 
         // I/O rates (while we're here, implement these too)
-        if (current.readBytes >= previous->readBytes)
-        {
-            const std::uint64_t readDelta = current.readBytes - previous->readBytes;
-            snapshot.ioReadBytesPerSec = Numeric::toDouble(readDelta) / timeDeltaSeconds;
-        }
-
-        if (current.writeBytes >= previous->writeBytes)
-        {
-            const std::uint64_t writeDelta = current.writeBytes - previous->writeBytes;
-            snapshot.ioWriteBytesPerSec = Numeric::toDouble(writeDelta) / timeDeltaSeconds;
-        }
+        snapshot.ioReadBytesPerSec = computeRate(current.readBytes, previous->readBytes);
+        snapshot.ioWriteBytesPerSec = computeRate(current.writeBytes, previous->writeBytes);
     }
 
     return snapshot;

@@ -144,39 +144,23 @@ class MockProcessProbe : public Platform::IProcessProbe
 
     MockProcessProbe& withNetworkCounters(int32_t pid, uint64_t sentBytes, uint64_t receivedBytes)
     {
-        for (auto& counter : m_Counters)
-        {
-            if (counter.pid == pid)
-            {
-                counter.netSentBytes = sentBytes;
-                counter.netReceivedBytes = receivedBytes;
-                return *this;
-            }
-        }
-        // If process doesn't exist, create it
-        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
-        c.netSentBytes = sentBytes;
-        c.netReceivedBytes = receivedBytes;
-        m_Counters.push_back(c);
+        findOrCreateProcess(pid,
+                            [sentBytes, receivedBytes](Platform::ProcessCounters& c)
+                            {
+                                c.netSentBytes = sentBytes;
+                                c.netReceivedBytes = receivedBytes;
+                            });
         return *this;
     }
 
     MockProcessProbe& withIoCounters(int32_t pid, uint64_t readBytes, uint64_t writeBytes)
     {
-        for (auto& counter : m_Counters)
-        {
-            if (counter.pid == pid)
-            {
-                counter.readBytes = readBytes;
-                counter.writeBytes = writeBytes;
-                return *this;
-            }
-        }
-        // If process doesn't exist, create it
-        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
-        c.readBytes = readBytes;
-        c.writeBytes = writeBytes;
-        m_Counters.push_back(c);
+        findOrCreateProcess(pid,
+                            [readBytes, writeBytes](Platform::ProcessCounters& c)
+                            {
+                                c.readBytes = readBytes;
+                                c.writeBytes = writeBytes;
+                            });
         return *this;
     }
 
@@ -262,6 +246,24 @@ class MockProcessProbe : public Platform::IProcessProbe
     }
 
   private:
+    /// Helper to find existing process counter by PID or create a new one.
+    /// Applies the given setter function to set specific counter fields.
+    template<typename SetterFunc> void findOrCreateProcess(int32_t pid, SetterFunc setter)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                setter(counter);
+                return;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        setter(c);
+        m_Counters.push_back(c);
+    }
+
     std::vector<Platform::ProcessCounters> m_Counters;
     uint64_t m_TotalCpuTime = 0;
     uint64_t m_SystemTotalMemory = 8ULL * 1024 * 1024 * 1024; // Default 8 GB

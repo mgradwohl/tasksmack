@@ -737,7 +737,7 @@ UI: Formatted display in Process Details Overview tab
   - Alternative: System-level network interface stats from `/proc/net/dev` (not per-process)
   - I/O: Requires reading `/proc/[pid]/io` (needs root or same-user permissions)
 
-- **Windows**: 
+- **Windows**:
   - Network: Use ETW (Event Tracing for Windows) kernel providers or `GetPerTcpConnectionEStats`
   - I/O: Available via `GetProcessIoCounters` (already implemented for Windows probe)
 
@@ -766,7 +766,7 @@ The Process Details panel automatically displays network and I/O sections when r
 void ProcessDetailsPanel::renderNetworkStats(const ProcessSnapshot& proc) {
     if (proc.netSentBytesPerSec == 0.0 && proc.netReceivedBytesPerSec == 0.0)
         return;  // Hide section if no network activity
-    
+
     // Display sent/received rates with auto-scaling units
 }
 ```
