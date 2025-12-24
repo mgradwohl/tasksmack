@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <limits>
 #include <memory>
 #include <thread>
@@ -950,7 +951,6 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     EXPECT_EQ(snaps[0].name, "legacy_proc");
 }
 
-// =============================================================================
 // CPU Affinity Tests
 // =============================================================================
 
@@ -1000,4 +1000,161 @@ TEST(ProcessModelTest, CpuAffinityAllCores)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+}
+
+// =============================================================================
+// Network Rate Calculation Tests
+// =============================================================================
+
+TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);     // No previous data
+    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0); // No previous data
+}
+
+TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: 1000 sent, 2000 received
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait a bit to ensure time delta is non-zero
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Second sample: 2000 sent (+1000), 4000 received (+2000)
+    // Rates depend on time delta (should be ~100ms = 0.1s)
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // With ~0.1s delta: 1000 bytes / 0.1s = ~10000 B/s, 2000 bytes / 0.1s = ~20000 B/s
+    // Allow some tolerance for timing variations
+    EXPECT_GT(snaps[0].netSentBytesPerSec, 5000.0);
+    EXPECT_LT(snaps[0].netSentBytesPerSec, 20000.0);
+    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 10000.0);
+    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 40000.0);
+}
+
+TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 2000, 4000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Counter decreased (process restarted or counter wrapped)
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 500, 1000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Should be 0 (no rate calculated when counter decreases)
+    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+}
+
+// =============================================================================
+// I/O Rate Calculation Tests
+// =============================================================================
+
+TEST(ProcessModelTest, IoRatesZeroOnFirstRefresh)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "io_proc").withIoCounters(100, 5000, 10000);
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0);  // No previous data
+    EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0); // No previous data
+}
+
+TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: 5000 read, 10000 written
+    rawProbe->withProcess(100, "io_proc").withIoCounters(100, 5000, 10000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Second sample: 7000 read (+2000), 15000 written (+5000)
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "io_proc").withIoCounters(100, 7000, 15000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // With ~0.1s delta: 2000 bytes / 0.1s = ~20000 B/s, 5000 bytes / 0.1s = ~50000 B/s
+    EXPECT_GT(snaps[0].ioReadBytesPerSec, 10000.0);
+    EXPECT_LT(snaps[0].ioReadBytesPerSec, 40000.0);
+    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 25000.0);
+    EXPECT_LT(snaps[0].ioWriteBytesPerSec, 100000.0);
+}
+
+TEST(ProcessModelTest, CombinedNetworkAndIoRates)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample with both network and I/O counters
+    rawProbe->withProcess(100, "full_proc").withNetworkCounters(100, 1000, 2000).withIoCounters(100, 5000, 10000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Second sample with increases
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "full_proc").withNetworkCounters(100, 2000, 4000).withIoCounters(100, 7000, 15000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // All rates should be non-zero
+    EXPECT_GT(snaps[0].netSentBytesPerSec, 0.0);
+    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 0.0);
+    EXPECT_GT(snaps[0].ioReadBytesPerSec, 0.0);
+    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 0.0);
 }

@@ -142,6 +142,44 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    MockProcessProbe& withNetworkCounters(int32_t pid, uint64_t sentBytes, uint64_t receivedBytes)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.netSentBytes = sentBytes;
+                counter.netReceivedBytes = receivedBytes;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.netSentBytes = sentBytes;
+        c.netReceivedBytes = receivedBytes;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
+    MockProcessProbe& withIoCounters(int32_t pid, uint64_t readBytes, uint64_t writeBytes)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.readBytes = readBytes;
+                counter.writeBytes = writeBytes;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.readBytes = readBytes;
+        c.writeBytes = writeBytes;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
     MockProcessProbe& withParent(int32_t pid, int32_t parentPid)
     {
         for (auto& counter : m_Counters)
