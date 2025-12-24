@@ -369,21 +369,16 @@ void LinuxProcessProbe::parseProcessFd(int32_t pid, ProcessCounters& counters) c
     std::int32_t fdCount = 0;
 
     // Iterate through /proc/[pid]/fd/ directory and count entries
+    // Note: If the directory cannot be accessed (e.g., permission denied),
+    // directory_iterator will create an end iterator and the loop won't execute
     for (const auto& entry : std::filesystem::directory_iterator(fdPath, ec))
     {
         (void) entry; // We only need to count entries
         ++fdCount;
     }
 
-    // If we failed to access the directory (e.g., permission denied), leave handleCount at 0
-    if (ec)
-    {
-        counters.handleCount = 0;
-    }
-    else
-    {
-        counters.handleCount = fdCount;
-    }
+    // Assign the count (will be 0 if directory couldn't be accessed)
+    counters.handleCount = fdCount;
 }
 
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
