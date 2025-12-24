@@ -69,6 +69,9 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     std::unordered_map<std::uint64_t, Platform::ProcessCounters> newPrevCounters;
     newPrevCounters.reserve(counters.size());
 
+    std::unordered_map<std::uint64_t, std::uint64_t> newPeakRss;
+    newPeakRss.reserve(counters.size());
+
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
@@ -81,8 +84,28 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             previous = &prevIt->second;
         }
 
-        // Compute snapshot with deltas
-        newSnapshots.push_back(computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond));
+        // Track peak RSS
+        std::uint64_t peakRss = current.rssBytes;
+        if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
+        {
+            // OS provides peak (Windows)
+            peakRss = current.peakRssBytes;
+        }
+        else
+        {
+            // Track peak ourselves (Linux)
+            auto peakIt = m_PeakRss.find(key);
+            if (peakIt != m_PeakRss.end())
+            {
+                peakRss = std::max(peakIt->second, current.rssBytes);
+            }
+        }
+        newPeakRss[key] = peakRss;
+
+        // Compute snapshot with deltas and set peak memory
+        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond);
+        snapshot.peakMemoryBytes = peakRss;
+        newSnapshots.push_back(snapshot);
 
         // Store for next iteration
         newPrevCounters[key] = current;
@@ -91,6 +114,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     // Swap in new data
     m_Snapshots = std::move(newSnapshots);
     m_PrevCounters = std::move(newPrevCounters);
+    m_PeakRss = std::move(newPeakRss);
     m_PrevTotalCpuTime = totalCpuTime;
 }
 
