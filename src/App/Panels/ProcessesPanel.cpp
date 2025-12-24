@@ -32,6 +32,7 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+constexpr int MAX_TREE_DEPTH = 200;        // Maximum recursion depth to prevent stack overflow
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -236,7 +237,6 @@ void ProcessesPanel::render(bool* open)
             }
         }
     }
-    ImGui::Separator();
 
     // Process count with state summary (filtered/total)
     ImGui::SameLine();
@@ -279,18 +279,20 @@ void ProcessesPanel::render(bool* open)
 
     // Tree view toggle button
     ImGui::SameLine();
-    if (ImGui::Button(m_TreeViewEnabled ? "List View" : "Tree View"))
+    if (ImGui::Button(m_TreeViewEnabled ? LIST_VIEW_LABEL : TREE_VIEW_LABEL))
     {
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
-            spdlog::info("Switched to tree view mode");
+            spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
-            spdlog::info("Switched to flat list view mode");
+            spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
+
+    ImGui::Separator();
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
@@ -343,82 +345,89 @@ void ProcessesPanel::render(bool* open)
 
         ImGui::TableHeadersRow();
 
-        // Handle sorting
-        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
+        // Handle sorting: Disable in tree view mode to maintain parent-child hierarchy
+        if (!m_TreeViewEnabled)
         {
-            if (sortSpecs->SpecsCount > 0)
+            if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
             {
-                const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
-                const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-
-                // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
-                const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
-                if (!sortColOpt.has_value())
+                if (sortSpecs->SpecsCount > 0)
                 {
-                    sortSpecs->SpecsDirty = true;
-                    ImGui::EndTable();
-                    ImGui::End();
-                    return;
+                    const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+                    const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+
+                    // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+                    const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
+                    if (!sortColOpt.has_value())
+                    {
+                        sortSpecs->SpecsDirty = true;
+                        ImGui::EndTable();
+                        ImGui::End();
+                        return;
+                    }
+
+                    const ProcessColumn sortCol = *sortColOpt;
+
+                    std::ranges::sort(filteredIndices,
+                                      [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
+                                      {
+                                          const auto& procA = currentSnapshots[a];
+                                          const auto& procB = currentSnapshots[b];
+
+                                          auto compare = [ascending](auto lhs, auto rhs) -> bool
+                                          {
+                                              return ascending ? (lhs < rhs) : (rhs < lhs);
+                                          };
+
+                                          switch (sortCol)
+                                          {
+                                          case ProcessColumn::PID:
+                                              return compare(procA.pid, procB.pid);
+                                          case ProcessColumn::User:
+                                              return compare(procA.user, procB.user);
+                                          case ProcessColumn::CpuPercent:
+                                              return compare(procA.cpuPercent, procB.cpuPercent);
+                                          case ProcessColumn::MemPercent:
+                                              return compare(procA.memoryPercent, procB.memoryPercent);
+                                          case ProcessColumn::Virtual:
+                                              return compare(procA.virtualBytes, procB.virtualBytes);
+                                          case ProcessColumn::Resident:
+                                              return compare(procA.memoryBytes, procB.memoryBytes);
+                                          case ProcessColumn::Shared:
+                                              return compare(procA.sharedBytes, procB.sharedBytes);
+                                          case ProcessColumn::CpuTime:
+                                              return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
+                                          case ProcessColumn::State:
+                                              return compare(procA.displayState, procB.displayState);
+                                          case ProcessColumn::Name:
+                                              return compare(procA.name, procB.name);
+                                          case ProcessColumn::PPID:
+                                              return compare(procA.parentPid, procB.parentPid);
+                                          case ProcessColumn::Nice:
+                                              return compare(procA.nice, procB.nice);
+                                          case ProcessColumn::Threads:
+                                              return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::Command:
+                                              return compare(procA.command, procB.command);
+                                          default:
+                                              return false;
+                                          }
+                                      });
                 }
-
-                const ProcessColumn sortCol = *sortColOpt;
-
-                std::ranges::sort(filteredIndices,
-                                  [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                                  {
-                                      const auto& procA = currentSnapshots[a];
-                                      const auto& procB = currentSnapshots[b];
-
-                                      auto compare = [ascending](auto lhs, auto rhs) -> bool
-                                      {
-                                          return ascending ? (lhs < rhs) : (rhs < lhs);
-                                      };
-
-                                      switch (sortCol)
-                                      {
-                                      case ProcessColumn::PID:
-                                          return compare(procA.pid, procB.pid);
-                                      case ProcessColumn::User:
-                                          return compare(procA.user, procB.user);
-                                      case ProcessColumn::CpuPercent:
-                                          return compare(procA.cpuPercent, procB.cpuPercent);
-                                      case ProcessColumn::MemPercent:
-                                          return compare(procA.memoryPercent, procB.memoryPercent);
-                                      case ProcessColumn::Virtual:
-                                          return compare(procA.virtualBytes, procB.virtualBytes);
-                                      case ProcessColumn::Resident:
-                                          return compare(procA.memoryBytes, procB.memoryBytes);
-                                      case ProcessColumn::Shared:
-                                          return compare(procA.sharedBytes, procB.sharedBytes);
-                                      case ProcessColumn::CpuTime:
-                                          return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
-                                      case ProcessColumn::State:
-                                          return compare(procA.displayState, procB.displayState);
-                                      case ProcessColumn::Name:
-                                          return compare(procA.name, procB.name);
-                                      case ProcessColumn::PPID:
-                                          return compare(procA.parentPid, procB.parentPid);
-                                      case ProcessColumn::Nice:
-                                          return compare(procA.nice, procB.nice);
-                                      case ProcessColumn::Threads:
-                                          return compare(procA.threadCount, procB.threadCount);
-                                      case ProcessColumn::Command:
-                                          return compare(procA.command, procB.command);
-                                      default:
-                                          return false;
-                                      }
-                                  });
             }
-        }
+        } // End of sorting (disabled in tree view mode)
 
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
         {
-            // Build process tree
-            const auto tree = buildProcessTree(currentSnapshots);
+            // Build or use cached process tree (rebuild only when process list changes)
+            if (m_LastSnapshotCount != currentSnapshots.size())
+            {
+                m_CachedTree = buildProcessTree(currentSnapshots);
+                m_LastSnapshotCount = currentSnapshots.size();
+            }
 
             // Render tree view
-            renderTreeView(currentSnapshots, filteredIndices, tree);
+            renderTreeView(currentSnapshots, filteredIndices, m_CachedTree);
         }
         else
         {
@@ -469,18 +478,32 @@ std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
     return {};
 }
 
-std::unordered_map<std::int32_t, std::vector<std::size_t>>
+std::unordered_map<std::uint64_t, std::vector<std::size_t>>
 ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const
 {
-    std::unordered_map<std::int32_t, std::vector<std::size_t>> tree;
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> tree;
 
-    // Build parent -> children mapping
+    // First pass: build uniqueKey lookup for parent resolution
+    std::unordered_map<std::int32_t, std::uint64_t> pidToUniqueKey;
+    for (std::size_t i = 0; i < snapshots.size(); ++i)
+    {
+        const auto& proc = snapshots[i];
+        pidToUniqueKey[proc.pid] = proc.uniqueKey;
+    }
+
+    // Second pass: build parent uniqueKey -> children mapping
     for (std::size_t i = 0; i < snapshots.size(); ++i)
     {
         const auto& proc = snapshots[i];
         if (proc.parentPid > 0)
         {
-            tree[proc.parentPid].push_back(i);
+            // Find parent's uniqueKey
+            auto parentIt = pidToUniqueKey.find(proc.parentPid);
+            if (parentIt != pidToUniqueKey.end())
+            {
+                const std::uint64_t parentKey = parentIt->second;
+                tree[parentKey].push_back(i);
+            }
         }
     }
 
@@ -518,17 +541,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (m_TreeViewEnabled && hasChildren)
             {
                 const std::string buttonLabel = isExpanded ? "-" : "+";
-                const std::string buttonId = std::format("{}##tree_btn_{}", buttonLabel, proc.pid);
+                const std::string buttonId = std::format("{}##tree_btn_{}", buttonLabel, proc.uniqueKey);
                 if (ImGui::SmallButton(buttonId.c_str()))
                 {
-                    // Toggle collapsed state
+                    // Toggle collapsed state using uniqueKey
                     if (isExpanded)
                     {
-                        m_CollapsedPids.insert(proc.pid);
+                        m_CollapsedKeys.insert(proc.uniqueKey);
                     }
                     else
                     {
-                        m_CollapsedPids.erase(proc.pid);
+                        m_CollapsedKeys.erase(proc.uniqueKey);
                     }
                 }
                 ImGui::SameLine();
@@ -681,15 +704,22 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 }
 
 void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                           const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                                           const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree,
                                            const std::unordered_set<std::size_t>& filteredSet,
                                            std::size_t procIdx,
                                            int depth)
 {
+    // Prevent stack overflow for extremely deep trees
+    if (depth >= MAX_TREE_DEPTH)
+    {
+        spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, stopping recursion", MAX_TREE_DEPTH);
+        return;
+    }
+
     const auto& proc = snapshots[procIdx];
 
     // Check if this process has children (in the filtered set)
-    auto childrenIt = tree.find(proc.pid);
+    auto childrenIt = tree.find(proc.uniqueKey);
     bool hasChildren = false;
     std::vector<std::size_t> filteredChildren;
 
@@ -706,7 +736,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         hasChildren = !filteredChildren.empty();
     }
 
-    const bool isExpanded = !m_CollapsedPids.contains(proc.pid);
+    const bool isExpanded = !m_CollapsedKeys.contains(proc.uniqueKey);
 
     // Render this process
     renderProcessRow(proc, depth, hasChildren, isExpanded);
@@ -723,25 +753,55 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
 
 void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
                                     const std::vector<std::size_t>& filteredIndices,
-                                    const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree)
+                                    const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree)
 {
     // Convert filtered indices to a set for O(1) lookups
     std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
 
-    // Build a PID-to-index map for O(1) parent lookups within the filtered set
-    std::unordered_map<std::int32_t, std::size_t> pidToIndex;
+    // Build a uniqueKey-to-index map for O(1) parent lookups within the filtered set
+    std::unordered_map<std::uint64_t, std::size_t> keyToIndex;
     for (std::size_t idx : filteredIndices)
     {
-        pidToIndex[snapshots[idx].pid] = idx;
+        keyToIndex[snapshots[idx].uniqueKey] = idx;
     }
 
-    // Render root processes and their descendants
+    // Build parent uniqueKey lookup for filtering roots
+    std::unordered_set<std::uint64_t> parentKeys;
+    for (std::size_t idx : filteredIndices)
+    {
+        const auto& proc = snapshots[idx];
+        if (proc.parentPid > 0)
+        {
+            // Try to find parent in snapshots by PID
+            for (const auto& p : snapshots)
+            {
+                if (p.pid == proc.parentPid && filteredSet.contains(&p - &snapshots[0]))
+                {
+                    parentKeys.insert(p.uniqueKey);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Render root processes and their descendants (in the order of filteredIndices to respect PID/natural order)
     for (std::size_t idx : filteredIndices)
     {
         const auto& proc = snapshots[idx];
 
-        // Check if this process's parent is in the filtered set
-        const bool parentInFilteredSet = pidToIndex.contains(proc.parentPid);
+        // Check if this process's parent is in the filtered set by checking if parent's uniqueKey exists
+        bool parentInFilteredSet = false;
+        if (proc.parentPid > 0)
+        {
+            for (const auto& p : snapshots)
+            {
+                if (p.pid == proc.parentPid && keyToIndex.contains(p.uniqueKey))
+                {
+                    parentInFilteredSet = true;
+                    break;
+                }
+            }
+        }
 
         // Only render if this is a root process (parent not in filtered set)
         if (!parentInFilteredSet)

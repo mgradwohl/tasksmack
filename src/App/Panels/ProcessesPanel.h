@@ -90,27 +90,37 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
-    std::unordered_set<std::int32_t> m_CollapsedPids; // PIDs that are collapsed in tree view
+    std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
+
+    // Cached tree structure (rebuilt only when process list changes)
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
+    std::size_t m_LastSnapshotCount = 0; // Track when to rebuild tree
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
     /// Build parent-child process tree structure
-    /// @return Map of parent PID to vector of child indices
-    [[nodiscard]] std::unordered_map<std::int32_t, std::vector<std::size_t>>
+    /// @param snapshots The full list of process snapshots.
+    /// @return Map of parent uniqueKey to vector of child indices
+    [[nodiscard]] std::unordered_map<std::uint64_t, std::vector<std::size_t>>
     buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
 
     /// Render process rows in tree view mode
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
-    /// @param tree Mapping from parent PID to child process indices within snapshots.
+    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
                         const std::vector<std::size_t>& filteredIndices,
-                        const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree);
+                        const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree);
 
     /// Render a single process and its children recursively
+    /// @param snapshots The full list of process snapshots.
+    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
+    /// @param filteredSet Set of filtered indices for O(1) membership checks.
+    /// @param procIdx Index of current process to render.
+    /// @param depth Current depth in the tree hierarchy.
     void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                               const std::unordered_map<std::int32_t, std::vector<std::size_t>>& tree,
+                               const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree,
                                const std::unordered_set<std::size_t>& filteredSet,
                                std::size_t procIdx,
                                int depth);
