@@ -1027,23 +1027,23 @@ TEST(ProcessModelTest, LinuxNiceToBasePriorityMapping)
     // Test the Linux mapping formula: basePriority = clamp(8 - (nice / 5), 4, 13)
     // Test boundary cases and typical values
     probe->withProcess(201, "nice_n20")
-        .withPriority(201, -20, 13) // -20: clamp(8-(-4), 4, 13) = 12, clamped to 13
+        .withPriority(201, -20, 13) // -20: 8-(-20/5) = 8-(-4) = 12, clamped to 13
         .withProcess(202, "nice_n15")
-        .withPriority(202, -15, 11) // -15: clamp(8-(-3), 4, 13) = 11
+        .withPriority(202, -15, 11) // -15: 8-(-15/5) = 8-(-3) = 11
         .withProcess(203, "nice_n10")
-        .withPriority(203, -10, 10) // -10: clamp(8-(-2), 4, 13) = 10
+        .withPriority(203, -10, 10) // -10: 8-(-10/5) = 8-(-2) = 10
         .withProcess(204, "nice_n5")
-        .withPriority(204, -5, 9) // -5: clamp(8-(-1), 4, 13) = 9
+        .withPriority(204, -5, 9) // -5: 8-(-5/5) = 8-(-1) = 9
         .withProcess(205, "nice_0")
-        .withPriority(205, 0, 8) // 0: clamp(8-0, 4, 13) = 8
+        .withPriority(205, 0, 8) // 0: 8-(0/5) = 8-0 = 8
         .withProcess(206, "nice_5")
-        .withPriority(206, 5, 7) // 5: clamp(8-1, 4, 13) = 7
+        .withPriority(206, 5, 7) // 5: 8-(5/5) = 8-1 = 7
         .withProcess(207, "nice_10")
-        .withPriority(207, 10, 6) // 10: clamp(8-2, 4, 13) = 6
+        .withPriority(207, 10, 6) // 10: 8-(10/5) = 8-2 = 6
         .withProcess(208, "nice_15")
-        .withPriority(208, 15, 5) // 15: clamp(8-3, 4, 13) = 5
+        .withPriority(208, 15, 5) // 15: 8-(15/5) = 8-3 = 5
         .withProcess(209, "nice_19")
-        .withPriority(209, 19, 4); // 19: clamp(8-3, 4, 13) = 5, but we set 4
+        .withPriority(209, 19, 5); // 19: 8-(19/5) = 8-3 = 5 (integer division)
 
     probe->setTotalCpuTime(100000);
 
