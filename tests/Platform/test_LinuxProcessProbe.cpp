@@ -58,6 +58,10 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUserSystemTime);
     EXPECT_TRUE(caps.hasStartTime);
     EXPECT_TRUE(caps.hasThreadCount);
+    EXPECT_TRUE(caps.hasUser);
+    EXPECT_TRUE(caps.hasCommand);
+    EXPECT_TRUE(caps.hasNice);
+    EXPECT_TRUE(caps.hasBasePriority);
 }
 
 TEST(LinuxProcessProbeTest, TicksPerSecondIsPositive)
