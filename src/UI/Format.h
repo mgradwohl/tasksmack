@@ -124,6 +124,39 @@ struct ByteUnit
     return std::format("{:.0f} {}", value, unit.suffix);
 }
 
+[[nodiscard]] inline auto unitForBytesPerSecond(double bytesPerSec) -> ByteUnit
+{
+    constexpr double KIB = 1024.0;
+    constexpr double MIB = 1024.0 * 1024.0;
+    constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
+
+    const double absBytesPerSec = std::abs(bytesPerSec);
+
+    if (absBytesPerSec >= GIB)
+    {
+        return {.suffix = "GB/s", .scale = GIB, .decimals = 1};
+    }
+    if (absBytesPerSec >= MIB)
+    {
+        return {.suffix = "MB/s", .scale = MIB, .decimals = 1};
+    }
+    if (absBytesPerSec >= KIB)
+    {
+        return {.suffix = "KB/s", .scale = KIB, .decimals = 0};
+    }
+    return {.suffix = "B/s", .scale = 1.0, .decimals = 0};
+}
+
+[[nodiscard]] inline auto formatBytesPerSecWithUnit(double bytesPerSec, const ByteUnit& unit) -> std::string
+{
+    const double value = bytesPerSec / unit.scale;
+    if (unit.decimals == 1)
+    {
+        return std::format("{:.1f} {}", value, unit.suffix);
+    }
+    return std::format("{:.0f} {}", value, unit.suffix);
+}
+
 [[nodiscard]] inline auto formatCpuTimeCompact(double seconds) -> std::string
 {
     seconds = std::max(0.0, seconds);

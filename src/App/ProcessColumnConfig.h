@@ -27,13 +27,13 @@ enum class ProcessColumn : std::uint8_t
     Nice,
     Threads,
     Command,
+    IoRead,
+    IoWrite,
     // Future columns (data not yet available):
-    // IoRead,
-    // IoWrite,
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 16>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -51,6 +51,8 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::Nice,
         ProcessColumn::Threads,
         ProcessColumn::Command,
+        ProcessColumn::IoRead,
+        ProcessColumn::IoWrite,
     };
 }
 
@@ -109,6 +111,10 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
+        // I/O Read
+        {.name="I/O Read", .configKey="io_read", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk read rate (bytes/sec)"},
+        // I/O Write
+        {.name="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
     }};
     // clang-format on
 
