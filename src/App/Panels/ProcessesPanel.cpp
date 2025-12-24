@@ -262,10 +262,19 @@ void ProcessesPanel::render(bool* open)
     }
 
     // get the width of the button before we create it
-    const char* label = "XXXX View";
-    const ImVec2 text = ImGui::CalcTextSize(label);
+    std::string labelForWidth;
+    if (m_TreeViewEnabled)
+    {
+        labelForWidth = "List View";
+    }
+    else
+    {
+        labelForWidth = "Tree View";
+    }
+
+    const ImVec2 text = ImGui::CalcTextSize(labelForWidth.c_str());
     const ImGuiStyle& style = ImGui::GetStyle();
-    float buttonWidthPx = text.x + (style.FramePadding.x * 2.0f);
+    float buttonWidthPx = text.x + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
