@@ -1087,8 +1087,8 @@ TEST(ProcessModelTest, FirstRefreshShowsZeroIoRates)
     auto probe = std::make_unique<MockProcessProbe>();
 
     Platform::ProcessCounters c = makeCounter(100, "test_proc", 'R', 1000, 500);
-    c.readBytes = 1024 * 1024;  // 1 MB
-    c.writeBytes = 512 * 1024;  // 512 KB
+    c.readBytes = 1024 * 1024; // 1 MB
+    c.writeBytes = 512 * 1024; // 512 KB
 
     probe->setCounters({c});
     probe->setTotalCpuTime(100000);
@@ -1098,7 +1098,7 @@ TEST(ProcessModelTest, FirstRefreshShowsZeroIoRates)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0);  // No previous data
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0); // No previous data
     EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0);
 }
 
@@ -1142,8 +1142,8 @@ TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)
     // Read: 2 MB / 0.1s = ~20 MB/s
     // Write: 1 MB / 0.1s = ~10 MB/s
     // Allow wide tolerance for timing variations
-    EXPECT_GT(snaps[0].ioReadBytesPerSec, 1024.0 * 1024.0);  // At least 1 MB/s
-    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 512.0 * 1024.0);  // At least 512 KB/s
+    EXPECT_GT(snaps[0].ioReadBytesPerSec, 1024.0 * 1024.0); // At least 1 MB/s
+    EXPECT_GT(snaps[0].ioWriteBytesPerSec, 512.0 * 1024.0); // At least 512 KB/s
 }
 
 TEST(ProcessModelTest, IoRatesHandleNoActivity)
@@ -1165,8 +1165,8 @@ TEST(ProcessModelTest, IoRatesHandleNoActivity)
 
     // Second sample: no change in I/O counters
     Platform::ProcessCounters c2 = makeCounter(100, "idle_proc", 'S', 1000, 500);
-    c2.readBytes = 1024 * 1024;  // Same as before
-    c2.writeBytes = 512 * 1024;  // Same as before
+    c2.readBytes = 1024 * 1024; // Same as before
+    c2.writeBytes = 512 * 1024; // Same as before
 
     rawProbe->setCounters({c2});
     rawProbe->setTotalCpuTime(200000);
@@ -1202,8 +1202,8 @@ TEST(ProcessModelTest, IoRatesForMultipleProcesses)
 
     // Second sample: proc_a read 1 MB more, proc_b wrote 2 MB more
     Platform::ProcessCounters c2a = makeCounter(100, "proc_a", 'R', 1500, 0);
-    c2a.readBytes = 2 * 1024 * 1024;  // +1 MB
-    c2a.writeBytes = 512 * 1024;      // No change
+    c2a.readBytes = 2 * 1024 * 1024; // +1 MB
+    c2a.writeBytes = 512 * 1024;     // No change
 
     Platform::ProcessCounters c2b = makeCounter(200, "proc_b", 'R', 3000, 0);
     c2b.readBytes = 2 * 1024 * 1024;  // No change
@@ -1246,8 +1246,8 @@ TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
 
     // First sample with high counter values
     Platform::ProcessCounters c1 = makeCounter(100, "wrap_proc", 'R', 1000, 500);
-    c1.readBytes = 1000 * 1024 * 1024;  // 1000 MB
-    c1.writeBytes = 500 * 1024 * 1024;  // 500 MB
+    c1.readBytes = 1000 * 1024 * 1024; // 1000 MB
+    c1.writeBytes = 500 * 1024 * 1024; // 500 MB
 
     rawProbe->setCounters({c1});
     rawProbe->setTotalCpuTime(100000);
@@ -1260,8 +1260,8 @@ TEST(ProcessModelTest, IoRatesHandleCounterWrapAround)
     // Second sample: counter appears to have decreased (wraparound or reset)
     // Our implementation should handle this gracefully by showing 0 rate
     Platform::ProcessCounters c2 = makeCounter(100, "wrap_proc", 'R', 2000, 1000);
-    c2.readBytes = 100 * 1024 * 1024;   // Less than before
-    c2.writeBytes = 50 * 1024 * 1024;   // Less than before
+    c2.readBytes = 100 * 1024 * 1024; // Less than before
+    c2.writeBytes = 50 * 1024 * 1024; // Less than before
 
     rawProbe->setCounters({c2});
     rawProbe->setTotalCpuTime(200000);

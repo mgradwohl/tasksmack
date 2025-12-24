@@ -443,7 +443,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     {
         constexpr std::string_view readPrefix = "read_bytes:";
         constexpr std::string_view writePrefix = "write_bytes:";
-        
+
         if (line.starts_with(readPrefix))
         {
             std::istringstream iss(line.substr(readPrefix.length()));

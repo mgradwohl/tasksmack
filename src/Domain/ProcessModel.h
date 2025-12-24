@@ -74,7 +74,6 @@ class ProcessModel
                                                   std::uint64_t systemTotalMemory,
                                                   long ticksPerSecond,
                                                   double elapsedSeconds) const;
-                                                  double elapsedSeconds) const;
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

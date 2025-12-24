@@ -27,7 +27,7 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
-    mutable bool m_IoCountersAvailable{false};       // Cached capability check
+    mutable bool m_IoCountersAvailable{false};           // Cached capability check
     mutable bool m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
 
     /// Parse /proc/[pid]/stat for a single process
