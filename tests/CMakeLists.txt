@@ -88,6 +88,7 @@ add_executable(TaskSmackTests
     Domain/test_SystemModel.cpp
     Domain/test_BackgroundSampler.cpp
     UI/test_HistoryWidgets.cpp
+    UI/test_Format.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)

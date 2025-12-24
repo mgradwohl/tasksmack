@@ -27,6 +27,7 @@ enum class ProcessColumn : std::uint8_t
     PPID,
     Nice,
     Threads,
+    Affinity,
     Command,
     // Future columns (data not yet available):
     // IoRead,
@@ -52,6 +53,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::PPID,
         ProcessColumn::Nice,
         ProcessColumn::Threads,
+        ProcessColumn::Affinity,
         ProcessColumn::Command,
     };
 }
@@ -111,6 +113,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
         // Threads
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
+        // Affinity
+        {.name="Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
     }};

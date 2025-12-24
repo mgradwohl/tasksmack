@@ -415,6 +415,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::Affinity:
+                                              return compare(procA.cpuAffinityMask, procB.cpuAffinityMask);
                                           case ProcessColumn::Command:
                                               return compare(procA.command, procB.command);
                                           default:
@@ -694,6 +696,13 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::TextUnformatted("-");
             }
             break;
+
+        case ProcessColumn::Affinity:
+        {
+            const std::string text = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
 
         case ProcessColumn::Command:
             if (!proc.command.empty())

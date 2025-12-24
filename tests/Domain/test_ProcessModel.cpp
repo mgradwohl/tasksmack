@@ -1013,3 +1013,55 @@ TEST(ProcessModelTest, PeakWorkingSetResetForNewProcess)
     EXPECT_EQ(snaps[0].name, "new_proc");
     EXPECT_EQ(snaps[0].peakMemoryBytes, 1024 * 1024); // Peak reset for new process instance
 }
+
+// =============================================================================
+// CPU Affinity Tests
+// =============================================================================
+
+TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0x0F; // Cores 0-3
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
+}
+
+TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0; // Not available
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
+}
+
+TEST(ProcessModelTest, CpuAffinityAllCores)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+}
