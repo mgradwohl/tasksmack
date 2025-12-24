@@ -36,3 +36,4 @@ This file lists features that are already implemented in TaskSmack.
 | **Sanitizer presets** | ASan+UBSan, TSan on Linux |
 | **Compiler warning configuration** | Tuned warnings and warnings-as-errors |
 | **`std::print` adoption** | Type-safe, format-string-based output |
+| **FreeType font rendering** | Sharper text rendering at small sizes using FreeType with LightHinting |

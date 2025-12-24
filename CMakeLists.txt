@@ -288,6 +288,35 @@ if(NOT glad_POPULATED)
 endif()
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 
+# FreeType for improved font rendering
+find_package(Freetype QUIET)
+if(NOT Freetype_FOUND)
+    message(STATUS "FreeType not found, fetching from source")
+    FetchContent_Declare(
+        freetype
+        DOWNLOAD_EXTRACT_TIMESTAMP OFF
+        URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
+        URL_HASH SHA256=427201f5d5151670d05c1f5b45bef5dda1f2e7dd971ef54f0feaaa7ffd2ab90c
+    )
+    FetchContent_GetProperties(freetype)
+    if(NOT freetype_POPULATED)
+        set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+        set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+        set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+        set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+        set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+        FetchContent_Populate(freetype)
+        add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
+    endif()
+    set_target_properties(freetype PROPERTIES FOLDER "third_party")
+    # Create an alias target to match find_package(Freetype) behavior
+    if(NOT TARGET Freetype::Freetype)
+        add_library(Freetype::Freetype ALIAS freetype)
+    endif()
+else()
+    message(STATUS "Using system FreeType: ${FREETYPE_LIBRARIES}")
+endif()
+
 # ImGui
 FetchContent_Declare(
     imgui
@@ -308,16 +337,19 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
 target_include_directories(imgui_lib
     SYSTEM PUBLIC
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
         ${imgui_SOURCE_DIR}/misc/cpp
+        ${imgui_SOURCE_DIR}/misc/freetype
 )
-target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33)
+target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33 Freetype::Freetype)
 target_compile_definitions(imgui_lib PUBLIC
     IMGUI_IMPL_OPENGL_LOADER_GLAD2
+    IMGUI_ENABLE_FREETYPE
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 
