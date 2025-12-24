@@ -119,6 +119,10 @@ TEST(ProcessProbeContractTest, EnumerateFindsOurOwnProcess)
     {
         EXPECT_GE(it->threadCount, 1);
     }
+    if (caps.hasHandleCount)
+    {
+        EXPECT_GE(it->handleCount, 0);
+    }
     if (caps.hasUser)
     {
         EXPECT_GT(it->user.size(), 0ULL);
@@ -127,6 +131,30 @@ TEST(ProcessProbeContractTest, EnumerateFindsOurOwnProcess)
     {
         EXPECT_GT(it->command.size(), 0ULL);
     }
+}
+
+TEST(ProcessProbeContractTest, HandleCountIsReasonable)
+{
+    auto probe = makeProcessProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const auto caps = probe->capabilities();
+    if (!caps.hasHandleCount)
+    {
+        GTEST_SKIP() << "Platform does not support handle count";
+    }
+
+    const auto processes = probe->enumerate();
+    const int32_t ourPid = getCurrentPid();
+    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+
+    ASSERT_NE(it, processes.end()) << "Should find our own process (PID " << ourPid << ")";
+
+    // Our test process should have at least a few file descriptors/handles open
+    // (stdin, stdout, stderr, plus any other resources)
+    EXPECT_GE(it->handleCount, 3) << "Process should have at least stdin, stdout, stderr";
+    // Reasonable upper bound - test process shouldn't have thousands of handles
+    EXPECT_LT(it->handleCount, 10000) << "Handle count seems unreasonably high";
 }
 
 } // namespace Platform

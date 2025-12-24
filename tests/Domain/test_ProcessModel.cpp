@@ -472,6 +472,7 @@ TEST(ProcessModelTest, SnapshotContainsAllFields)
     c.rssBytes = 1024 * 1024 * 50; // 50 MB
     c.virtualBytes = 1024 * 1024 * 200;
     c.threadCount = 4;
+    c.handleCount = 42;
 
     probe->setCounters({c});
     probe->setTotalCpuTime(100000);
@@ -490,6 +491,7 @@ TEST(ProcessModelTest, SnapshotContainsAllFields)
     EXPECT_EQ(snap.memoryBytes, 1024 * 1024 * 50);
     EXPECT_EQ(snap.virtualBytes, 1024 * 1024 * 200);
     EXPECT_EQ(snap.threadCount, 4);
+    EXPECT_EQ(snap.handleCount, 42);
     EXPECT_NE(snap.uniqueKey, 0);
 }
 
@@ -812,6 +814,7 @@ TEST(ProcessModelTest, ExtremeValuesMaxUint64)
     c.rssBytes = std::numeric_limits<uint64_t>::max();
     c.virtualBytes = std::numeric_limits<uint64_t>::max();
     c.threadCount = std::numeric_limits<int32_t>::max();
+    c.handleCount = std::numeric_limits<int32_t>::max();
 
     probe->setCounters({c});
     probe->setTotalCpuTime(std::numeric_limits<uint64_t>::max());
@@ -831,6 +834,7 @@ TEST(ProcessModelTest, ExtremeValuesMaxUint64)
     EXPECT_EQ(snaps[0].memoryBytes, std::numeric_limits<uint64_t>::max());
     EXPECT_EQ(snaps[0].virtualBytes, std::numeric_limits<uint64_t>::max());
     EXPECT_EQ(snaps[0].threadCount, std::numeric_limits<int32_t>::max());
+    EXPECT_EQ(snaps[0].handleCount, std::numeric_limits<int32_t>::max());
 
     // CPU% should be valid (0.0 on first sample, no previous data)
     EXPECT_GE(snaps[0].cpuPercent, 0.0);
