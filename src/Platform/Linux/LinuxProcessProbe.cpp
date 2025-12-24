@@ -393,9 +393,12 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     std::string line;
     while (std::getline(ioFile, line))
     {
-        if (line.starts_with("read_bytes:"))
+        constexpr std::string_view readPrefix = "read_bytes:";
+        constexpr std::string_view writePrefix = "write_bytes:";
+        
+        if (line.starts_with(readPrefix))
         {
-            std::istringstream iss(line.substr(11)); // Skip "read_bytes:"
+            std::istringstream iss(line.substr(readPrefix.length()));
             uint64_t readBytes = 0;
             iss >> readBytes;
             if (!iss.fail())
@@ -403,9 +406,9 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
                 counters.readBytes = readBytes;
             }
         }
-        else if (line.starts_with("write_bytes:"))
+        else if (line.starts_with(writePrefix))
         {
-            std::istringstream iss(line.substr(12)); // Skip "write_bytes:"
+            std::istringstream iss(line.substr(writePrefix.length()));
             uint64_t writeBytes = 0;
             iss >> writeBytes;
             if (!iss.fail())
