@@ -634,25 +634,10 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     ImGui::Text("Power Usage");
     ImGui::Spacing();
 
-    // Format power value based on magnitude
-    if (proc.powerWatts >= 1.0)
-    {
-        ImGui::Text("Power:");
-        ImGui::SameLine(80.0F);
-        ImGui::Text("%.2f W", proc.powerWatts);
-    }
-    else if (proc.powerWatts >= 0.001)
-    {
-        ImGui::Text("Power:");
-        ImGui::SameLine(80.0F);
-        ImGui::Text("%.1f mW", proc.powerWatts * 1000.0);
-    }
-    else
-    {
-        ImGui::Text("Power:");
-        ImGui::SameLine(80.0F);
-        ImGui::Text("%.0f µW", proc.powerWatts * 1000000.0);
-    }
+    const std::string text = UI::Format::formatPowerCompact(proc.powerWatts);
+    ImGui::Text("Power:");
+    ImGui::SameLine(80.0F);
+    ImGui::TextUnformatted(text.c_str());
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)

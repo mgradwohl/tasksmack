@@ -144,4 +144,23 @@ struct ByteUnit
     return std::format("{}:{:02}.{:02}", minutes, secs, centis);
 }
 
+/// Format power value with appropriate unit (W/mW/µW) based on magnitude
+[[nodiscard]] inline auto formatPowerCompact(double watts) -> std::string
+{
+    if (watts <= 0.0)
+    {
+        return "-";
+    }
+
+    if (watts >= 1.0)
+    {
+        return std::format("{:.2f} W", watts);
+    }
+    if (watts >= 0.001)
+    {
+        return std::format("{:.1f} mW", watts * 1000.0);
+    }
+    return std::format("{:.0f} µW", watts * 1000000.0);
+}
+
 } // namespace UI::Format
