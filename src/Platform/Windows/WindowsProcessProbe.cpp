@@ -377,7 +377,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     DWORD handleCount = 0;
     if (GetProcessHandleCount(hProcess, &handleCount) != 0)
     {
-        counters.handleCount = static_cast<std::int32_t>(handleCount);
+        counters.handleCount = Domain::Numeric::clampToI32(handleCount);
     }
 
     CloseHandle(hProcess);
