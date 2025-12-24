@@ -18,7 +18,10 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 
 - Cross-platform (Windows + Linux)
 - ImGui-based UI with docking and multi-viewport support
-- Process table with htop-inspired columns (CPU%, MEM%, RES, VIRT, SHR, TIME+, PPID, NI, threads, command)
+- Process table with htop-inspired columns (CPU%, MEM%, RES, VIRT, SHR, TIME+, PPID, NI, threads, command, I/O rates)
+- Per-process disk I/O rates (read/write bytes per second)
+  - Windows: Available via `GetProcessIoCounters` (no special privileges required)
+  - Linux: Requires root or `CAP_DAC_READ_SEARCH` capability to read `/proc/[pid]/io`
 - Process state color-coding
 - Column visibility toggles (persisted)
 - Configurable themes (TOML-based)
