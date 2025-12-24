@@ -893,3 +893,123 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     EXPECT_EQ(snaps[0].pid, 123);
     EXPECT_EQ(snaps[0].name, "legacy_proc");
 }
+
+// =============================================================================
+// Peak Working Set Tests
+// =============================================================================
+
+TEST(ProcessModelTest, PeakWorkingSetTrackedAcrossRefreshes)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: process has 1 MB RSS
+    auto counter1 = makeCounter(100, "test_proc", 'R', 1000, 500);
+    counter1.rssBytes = 1024 * 1024; // 1 MB
+    rawProbe->setCounters({counter1});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].memoryBytes, 1024 * 1024);
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 1024 * 1024); // Peak equals current on first sample
+
+    // Second sample: RSS increases to 2 MB
+    auto counter2 = makeCounter(100, "test_proc", 'R', 1100, 550);
+    counter2.rssBytes = 2 * 1024 * 1024; // 2 MB
+    rawProbe->setCounters({counter2});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].memoryBytes, 2 * 1024 * 1024);
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 2 * 1024 * 1024); // Peak increased
+
+    // Third sample: RSS decreases to 1.5 MB
+    auto counter3 = makeCounter(100, "test_proc", 'R', 1200, 600);
+    counter3.rssBytes = static_cast<uint64_t>(1.5 * 1024 * 1024); // 1.5 MB
+    rawProbe->setCounters({counter3});
+    rawProbe->setTotalCpuTime(300000);
+    model.refresh();
+
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].memoryBytes, static_cast<uint64_t>(1.5 * 1024 * 1024));
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 2 * 1024 * 1024); // Peak stays at 2 MB (never decreases)
+}
+
+TEST(ProcessModelTest, PeakWorkingSetFromOSWhenAvailable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // Set capabilities to indicate OS provides peak
+    Platform::ProcessCapabilities caps;
+    caps.hasPeakRss = true;
+    rawProbe->setCapabilities(caps);
+
+    // First sample: process has 1 MB RSS, OS reports 2 MB peak
+    auto counter1 = makeCounter(100, "test_proc", 'R', 1000, 500);
+    counter1.rssBytes = 1024 * 1024; // 1 MB
+    counter1.peakRssBytes = 2 * 1024 * 1024; // 2 MB (OS-provided peak)
+    rawProbe->setCounters({counter1});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].memoryBytes, 1024 * 1024);
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 2 * 1024 * 1024); // Uses OS-provided peak
+
+    // Second sample: RSS increases but OS peak increases more
+    auto counter2 = makeCounter(100, "test_proc", 'R', 1100, 550);
+    counter2.rssBytes = static_cast<uint64_t>(1.5 * 1024 * 1024); // 1.5 MB
+    counter2.peakRssBytes = 3 * 1024 * 1024; // 3 MB (OS-provided peak)
+    rawProbe->setCounters({counter2});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].memoryBytes, static_cast<uint64_t>(1.5 * 1024 * 1024));
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 3 * 1024 * 1024); // Uses updated OS-provided peak
+}
+
+TEST(ProcessModelTest, PeakWorkingSetResetForNewProcess)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: process 100 with 2 MB RSS
+    auto counter1 = makeCounter(100, "test_proc", 'R', 1000, 500, 1000);
+    counter1.rssBytes = 2 * 1024 * 1024;
+    rawProbe->setCounters({counter1});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 100);
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 2 * 1024 * 1024);
+
+    // Second sample: PID 100 reused (different startTime), RSS is 1 MB
+    auto counter2 = makeCounter(100, "new_proc", 'R', 100, 50, 2000); // Different startTime
+    counter2.rssBytes = 1024 * 1024;
+    rawProbe->setCounters({counter2});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 100);
+    EXPECT_EQ(snaps[0].name, "new_proc");
+    EXPECT_EQ(snaps[0].peakMemoryBytes, 1024 * 1024); // Peak reset for new process instance
+}
