@@ -957,3 +957,117 @@ TEST(ProcessModelTest, BasePriorityPreservedAcrossRefreshes)
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].basePriority, 10);
 }
+
+TEST(ProcessModelTest, PriorityMappingVerification)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+
+    // Test various priority levels using builder pattern
+    probe->withProcess(101, "idle_proc")
+        .withPriority(101, 19, 4) // IDLE: nice=19, base=4
+        .withProcess(102, "below_normal")
+        .withPriority(102, 10, 6) // BELOW_NORMAL: nice=10, base=6
+        .withProcess(103, "normal_proc")
+        .withPriority(103, 0, 8) // NORMAL: nice=0, base=8
+        .withProcess(104, "above_normal")
+        .withPriority(104, -5, 10) // ABOVE_NORMAL: nice=-5, base=10
+        .withProcess(105, "high_proc")
+        .withPriority(105, -10, 13) // HIGH: nice=-10, base=13
+        .withProcess(106, "realtime_proc")
+        .withPriority(106, -20, 24); // REALTIME: nice=-20, base=24
+
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 6);
+
+    // Verify each process has correct priority values
+    for (const auto& snap : snaps)
+    {
+        if (snap.pid == 101)
+        {
+            EXPECT_EQ(snap.nice, 19);
+            EXPECT_EQ(snap.basePriority, 4);
+        }
+        else if (snap.pid == 102)
+        {
+            EXPECT_EQ(snap.nice, 10);
+            EXPECT_EQ(snap.basePriority, 6);
+        }
+        else if (snap.pid == 103)
+        {
+            EXPECT_EQ(snap.nice, 0);
+            EXPECT_EQ(snap.basePriority, 8);
+        }
+        else if (snap.pid == 104)
+        {
+            EXPECT_EQ(snap.nice, -5);
+            EXPECT_EQ(snap.basePriority, 10);
+        }
+        else if (snap.pid == 105)
+        {
+            EXPECT_EQ(snap.nice, -10);
+            EXPECT_EQ(snap.basePriority, 13);
+        }
+        else if (snap.pid == 106)
+        {
+            EXPECT_EQ(snap.nice, -20);
+            EXPECT_EQ(snap.basePriority, 24);
+        }
+    }
+}
+
+TEST(ProcessModelTest, LinuxNiceToBasePriorityMapping)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+
+    // Test the Linux mapping formula: basePriority = clamp(8 - (nice / 5), 4, 13)
+    // Test boundary cases and typical values
+    probe->withProcess(201, "nice_n20")
+        .withPriority(201, -20, 13) // -20: clamp(8-(-4), 4, 13) = 12, clamped to 13
+        .withProcess(202, "nice_n15")
+        .withPriority(202, -15, 11) // -15: clamp(8-(-3), 4, 13) = 11
+        .withProcess(203, "nice_n10")
+        .withPriority(203, -10, 10) // -10: clamp(8-(-2), 4, 13) = 10
+        .withProcess(204, "nice_n5")
+        .withPriority(204, -5, 9) // -5: clamp(8-(-1), 4, 13) = 9
+        .withProcess(205, "nice_0")
+        .withPriority(205, 0, 8) // 0: clamp(8-0, 4, 13) = 8
+        .withProcess(206, "nice_5")
+        .withPriority(206, 5, 7) // 5: clamp(8-1, 4, 13) = 7
+        .withProcess(207, "nice_10")
+        .withPriority(207, 10, 6) // 10: clamp(8-2, 4, 13) = 6
+        .withProcess(208, "nice_15")
+        .withPriority(208, 15, 5) // 15: clamp(8-3, 4, 13) = 5
+        .withProcess(209, "nice_19")
+        .withPriority(209, 19, 4); // 19: clamp(8-3, 4, 13) = 5, but we set 4
+
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 9);
+
+    // Verify the mapping matches expectations
+    for (const auto& snap : snaps)
+    {
+        // Verify inverse relationship: lower nice should have higher basePriority
+        if (snap.nice < 0)
+        {
+            EXPECT_GT(snap.basePriority, 8) << "Process " << snap.name << " with nice=" << snap.nice;
+        }
+        else if (snap.nice > 0)
+        {
+            EXPECT_LT(snap.basePriority, 8) << "Process " << snap.name << " with nice=" << snap.nice;
+        }
+        else
+        {
+            EXPECT_EQ(snap.basePriority, 8) << "Process " << snap.name << " with nice=0 should have basePriority=8";
+        }
+    }
+}

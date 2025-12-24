@@ -178,10 +178,8 @@ TEST(ProcessProbeContractTest, NiceAndBasePriorityAreRelated)
         // Verify inverse relationship: lower nice (higher priority) should yield higher base priority
         // Formula: basePriority = clamp(8 - (nice / 5), 4, 13)
         const int32_t expectedBase = std::clamp(8 - (proc.nice / 5), 4, 13);
-        EXPECT_EQ(proc.basePriority, expectedBase)
-            << "Process " << proc.name << " (PID " << proc.pid << "): "
-            << "nice=" << proc.nice << " should map to basePriority=" << expectedBase
-            << " but got " << proc.basePriority;
+        EXPECT_EQ(proc.basePriority, expectedBase) << "Process " << proc.name << " (PID " << proc.pid << "): " << "nice=" << proc.nice
+                                                   << " should map to basePriority=" << expectedBase << " but got " << proc.basePriority;
     }
 }
 

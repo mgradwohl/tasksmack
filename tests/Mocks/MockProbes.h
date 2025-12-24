@@ -159,6 +159,25 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    MockProcessProbe& withPriority(int32_t pid, int32_t nice, int32_t basePriority)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.nice = nice;
+                counter.basePriority = basePriority;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.nice = nice;
+        c.basePriority = basePriority;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
     // Backward compatibility: legacy setters
     void setCounters(std::vector<Platform::ProcessCounters> counters)
     {
