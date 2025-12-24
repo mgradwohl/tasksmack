@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -19,13 +20,16 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: "
-                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCpuAffinity={}",
-                     m_Capabilities.hasIoCounters,
-                     m_Capabilities.hasThreadCount,
-                     m_Capabilities.hasUserSystemTime,
-                     m_Capabilities.hasStartTime,
-                     m_Capabilities.hasUser,
-                     m_Capabilities.hasCpuAffinity);
+                 "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, "
+                 "hasNetworkCounters={}, hasPeakRss={}, hasCpuAffinity={}",
+                 m_Capabilities.hasIoCounters,
+                 m_Capabilities.hasThreadCount,
+                 m_Capabilities.hasUserSystemTime,
+                 m_Capabilities.hasStartTime,
+                 m_Capabilities.hasUser,
+                 m_Capabilities.hasNetworkCounters,
+                 m_Capabilities.hasPeakRss,
+                 m_Capabilities.hasCpuAffinity);
         spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
@@ -54,6 +58,17 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
     std::unique_lock lock(m_Mutex);
+
+    // Calculate time delta for rate calculations
+    const auto currentTime = std::chrono::steady_clock::now();
+    double timeDeltaSeconds = 0.0;
+    if (m_HasPrevSampleTime)
+    {
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
+        timeDeltaSeconds = static_cast<double>(duration.count()) / 1000.0;
+    }
+    m_PrevSampleTime = currentTime;
+    m_HasPrevSampleTime = true;
 
     // Calculate total CPU delta
     std::uint64_t totalCpuDelta = 0;
@@ -102,8 +117,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
         newPeakRss[key] = peakRss;
 
-        // Compute snapshot with deltas and set peak memory
-        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond);
+        // Compute snapshot with deltas and rates, then set peak memory
+        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, timeDeltaSeconds);
         snapshot.peakMemoryBytes = peakRss;
         newSnapshots.push_back(snapshot);
 
@@ -139,7 +154,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
-                                              long ticksPerSecond) const
+                                              long ticksPerSecond,
+                                              double timeDeltaSeconds) const
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -189,6 +205,37 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.cpuPercent = (Numeric::toDouble(processDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuUserPercent = (Numeric::toDouble(userDelta) / totalCpuDeltaD) * 100.0;
             snapshot.cpuSystemPercent = (Numeric::toDouble(systemDelta) / totalCpuDeltaD) * 100.0;
+        }
+    }
+
+    // Compute network rates from deltas
+    if (previous != nullptr && timeDeltaSeconds > 0.0)
+    {
+        // Network sent rate
+        if (current.netSentBytes >= previous->netSentBytes)
+        {
+            const std::uint64_t sentDelta = current.netSentBytes - previous->netSentBytes;
+            snapshot.netSentBytesPerSec = Numeric::toDouble(sentDelta) / timeDeltaSeconds;
+        }
+
+        // Network received rate
+        if (current.netReceivedBytes >= previous->netReceivedBytes)
+        {
+            const std::uint64_t receivedDelta = current.netReceivedBytes - previous->netReceivedBytes;
+            snapshot.netReceivedBytesPerSec = Numeric::toDouble(receivedDelta) / timeDeltaSeconds;
+        }
+
+        // I/O rates (while we're here, implement these too)
+        if (current.readBytes >= previous->readBytes)
+        {
+            const std::uint64_t readDelta = current.readBytes - previous->readBytes;
+            snapshot.ioReadBytesPerSec = Numeric::toDouble(readDelta) / timeDeltaSeconds;
+        }
+
+        if (current.writeBytes >= previous->writeBytes)
+        {
+            const std::uint64_t writeDelta = current.writeBytes - previous->writeBytes;
+            snapshot.ioWriteBytesPerSec = Numeric::toDouble(writeDelta) / timeDeltaSeconds;
         }
     }
 

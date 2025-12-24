@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
@@ -56,6 +57,10 @@ class ProcessModel
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
 
+    // Time tracking for rate calculations (network, I/O)
+    std::chrono::steady_clock::time_point m_PrevSampleTime;
+    bool m_HasPrevSampleTime = false;
+
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
 
@@ -69,7 +74,8 @@ class ProcessModel
                                                   const Platform::ProcessCounters* previous,
                                                   std::uint64_t totalCpuDelta,
                                                   std::uint64_t systemTotalMemory,
-                                                  long ticksPerSecond) const;
+                                                  long ticksPerSecond,
+                                                  double timeDeltaSeconds) const;
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);
