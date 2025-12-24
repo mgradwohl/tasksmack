@@ -171,10 +171,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,        // From /proc/[pid]/status Uid field
-                               .hasCommand = true,     // From /proc/[pid]/cmdline
-                               .hasNice = true,        // From /proc/[pid]/stat
-                               .hasPageFaults = true}; // From /proc/[pid]/stat (minflt + majflt)
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasPageFaults = true,   // From /proc/[pid]/stat (minflt + majflt)
                                .hasCpuAffinity = true}; // From sched_getaffinity
 }
 
@@ -379,7 +379,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
         std::uint64_t mask = 0;
         for (int cpu = 0; cpu < 64 && cpu < CPU_SETSIZE; ++cpu)
         {
-            if (CPU_ISSET(cpu, &cpuSet) != 0)
+            if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
             {
                 mask |= (1ULL << cpu);
             }

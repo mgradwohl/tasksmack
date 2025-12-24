@@ -408,10 +408,10 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,       // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,    // From QueryFullProcessImageName
-        .hasNice = true,       // From GetPriorityClass
-        .hasPageFaults = true, // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasNice = true,        // From GetPriorityClass
+        .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
         .hasCpuAffinity = true, // From GetProcessAffinityMask
     };
 }

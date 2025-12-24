@@ -33,7 +33,7 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
-    std::uint64_t pageFaultCount = 0; // Total page faults (minor + major on Linux)
+    std::uint64_t pageFaultCount = 0;  // Total page faults (minor + major on Linux)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 };
 
@@ -45,10 +45,10 @@ struct ProcessCapabilities
     bool hasThreadCount = false;
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;       // Whether process owner/user is available
-    bool hasCommand = false;    // Whether full command line is available
-    bool hasNice = false;       // Whether nice/priority value is available
-    bool hasPageFaults = false; // Whether page fault count is available
+    bool hasUser = false;        // Whether process owner/user is available
+    bool hasCommand = false;     // Whether full command line is available
+    bool hasNice = false;        // Whether nice/priority value is available
+    bool hasPageFaults = false;  // Whether page fault count is available
     bool hasCpuAffinity = false; // Whether CPU affinity mask is available
 };
 

@@ -35,7 +35,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 15>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 16>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
