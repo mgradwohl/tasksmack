@@ -6,6 +6,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
@@ -169,9 +170,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,    // From /proc/[pid]/status Uid field
-                               .hasCommand = true, // From /proc/[pid]/cmdline
-                               .hasNice = true};   // From /proc/[pid]/stat
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasBasePriority = true}; // Mapped from nice value
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -264,6 +266,10 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.virtualBytes = vsize;
     counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
     counters.nice = clampToI32(nice);
+    // Map nice value to Windows-style base priority (approximate equivalence)
+    // nice: -20 to +19 -> basePriority: 13 to 4 (inverse relationship)
+    // Formula: basePriority = 8 - (nice / 5) where 8 is NORMAL, clamped to 4-13 range
+    counters.basePriority = std::clamp(8 - (counters.nice / 5), 4, 13);
 
     return true;
 }

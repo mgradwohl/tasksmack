@@ -128,6 +128,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.sharedBytes = current.sharedBytes;
     snapshot.threadCount = current.threadCount;
     snapshot.nice = current.nice;
+    snapshot.basePriority = current.basePriority;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
 
     // Calculate memory percentage
