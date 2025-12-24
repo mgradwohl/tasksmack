@@ -425,14 +425,14 @@ TEST(LinuxProcessProbeTest, IoCountersCapabilityReported)
 {
     LinuxProcessProbe probe;
     auto caps = probe.capabilities();
-    
+
     // Determine whether the current process can actually read /proc/self/io
     bool canReadSelfIo = false;
     {
         std::ifstream ioFile("/proc/self/io");
         canReadSelfIo = ioFile.is_open();
     }
-    
+
     // Capability flag should reflect whether /proc/self/io is readable
     EXPECT_EQ(caps.hasIoCounters, canReadSelfIo);
 }
@@ -441,22 +441,21 @@ TEST(LinuxProcessProbeTest, IoCountersForSelfProcess)
 {
     LinuxProcessProbe probe;
     auto caps = probe.capabilities();
-    
+
     // Only test if I/O counters are available
     if (!caps.hasIoCounters)
     {
         GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
     }
-    
+
     auto processes = probe.enumerate();
     const pid_t selfPid = getpid();
-    
+
     // Find our own process
-    auto selfProc = std::find_if(processes.begin(), processes.end(),
-                                  [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
-    
+    auto selfProc = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+
     ASSERT_NE(selfProc, processes.end()) << "Could not find self process in enumeration";
-    
+
     // I/O counters should be populated (at least non-negative)
     EXPECT_GE(selfProc->readBytes, 0ULL);
     EXPECT_GE(selfProc->writeBytes, 0ULL);
@@ -466,22 +465,21 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 {
     LinuxProcessProbe probe;
     auto caps = probe.capabilities();
-    
+
     if (!caps.hasIoCounters)
     {
         GTEST_SKIP() << "I/O counters not available (requires root or CAP_DAC_READ_SEARCH)";
     }
-    
+
     const pid_t selfPid = getpid();
-    
+
     // First measurement
     auto processes1 = probe.enumerate();
-    auto selfProc1 = std::find_if(processes1.begin(), processes1.end(),
-                                   [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    auto selfProc1 = std::find_if(processes1.begin(), processes1.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
     ASSERT_NE(selfProc1, processes1.end());
     const uint64_t readBytes1 = selfProc1->readBytes;
     const uint64_t writeBytes1 = selfProc1->writeBytes;
-    
+
     // Do some I/O activity (write to a temporary file)
     std::filesystem::path tempFilePath;
     {
@@ -498,18 +496,17 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
             // Note: fsync requires file descriptor, so we rely on flush() and close()
         }
     }
-    
+
     // Second measurement
     auto processes2 = probe.enumerate();
-    auto selfProc2 = std::find_if(processes2.begin(), processes2.end(),
-                                   [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    auto selfProc2 = std::find_if(processes2.begin(), processes2.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
     ASSERT_NE(selfProc2, processes2.end());
     const uint64_t readBytes2 = selfProc2->readBytes;
     const uint64_t writeBytes2 = selfProc2->writeBytes;
-    
+
     // Write bytes should have increased (we wrote to a file)
     EXPECT_GE(writeBytes2, writeBytes1) << "Write bytes should increase after file write";
-    
+
     // Clean up
     std::filesystem::remove(tempFilePath);
 }

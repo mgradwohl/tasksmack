@@ -395,7 +395,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     {
         constexpr std::string_view readPrefix = "read_bytes:";
         constexpr std::string_view writePrefix = "write_bytes:";
-        
+
         if (line.starts_with(readPrefix))
         {
             std::istringstream iss(line.substr(readPrefix.length()));
@@ -426,7 +426,7 @@ bool LinuxProcessProbe::checkIoCountersAvailability() const
     const int32_t selfPid = getpid();
     std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(selfPid) / "io";
     std::ifstream ioFile(ioPath);
-    
+
     // If we can open it, we have the necessary permissions
     return ioFile.is_open();
 }
