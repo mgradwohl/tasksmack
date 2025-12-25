@@ -306,7 +306,7 @@ void SystemMetricsPanel::renderOverview()
     // Update smoothed disk I/O if storage model is available
     if (m_StorageModel)
     {
-        auto storageSnap = m_StorageModel->snapshot();
+        auto storageSnap = m_StorageModel->latestSnapshot();
         updateSmoothedDiskIO(storageSnap, m_LastDeltaSeconds);
     }
 
