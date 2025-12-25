@@ -17,12 +17,13 @@ struct ProcessSnapshot
     std::string user;         // Username (owner) of the process
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
 
-    double cpuPercent = 0.0;       // Computed from deltas
-    double cpuUserPercent = 0.0;   // Computed from deltas (user mode)
-    double cpuSystemPercent = 0.0; // Computed from deltas (system/kernel)
-    double memoryPercent = 0.0;    // RSS as % of total system memory
-    double cpuTimeSeconds = 0.0;   // Cumulative CPU time (user + system)
-    std::uint64_t memoryBytes = 0; // RSS
+    double cpuPercent = 0.0;           // Computed from deltas
+    double cpuUserPercent = 0.0;       // Computed from deltas (user mode)
+    double cpuSystemPercent = 0.0;     // Computed from deltas (system/kernel)
+    double memoryPercent = 0.0;        // RSS as % of total system memory
+    double cpuTimeSeconds = 0.0;       // Cumulative CPU time (user + system)
+    std::uint64_t memoryBytes = 0;     // RSS
+    std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory
     std::int32_t nice = 0;         // Nice value
@@ -31,6 +32,8 @@ struct ProcessSnapshot
     double ioReadBytesPerSec = 0.0;
     double ioWriteBytesPerSec = 0.0;
     std::int32_t threadCount = 0;
+    std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
+    std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 
     /// Stable identity across samples (handles PID reuse).
     /// Computed as hash(pid, startTime).

@@ -288,6 +288,38 @@ if(NOT glad_POPULATED)
 endif()
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 
+# FreeType for improved font rendering
+find_package(Freetype QUIET)
+if(NOT Freetype_FOUND)
+    message(STATUS "FreeType not found, fetching from source")
+    FetchContent_Declare(
+        freetype
+        DOWNLOAD_EXTRACT_TIMESTAMP OFF
+        URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
+        URL_HASH SHA256=1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5
+        SYSTEM  # Treat as system headers to suppress warnings from FreeType
+    )
+    # Configure FreeType build options (disable optional dependencies)
+    set(FT_DISABLE_ZLIB TRUE CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BZIP2 TRUE CACHE BOOL "" FORCE)
+    set(FT_DISABLE_PNG TRUE CACHE BOOL "" FORCE)
+    set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+    set(FT_DISABLE_BROTLI TRUE CACHE BOOL "" FORCE)
+    set(FT_REQUIRE_ZLIB FALSE CACHE BOOL "" FORCE)
+    set(FT_REQUIRE_BZIP2 FALSE CACHE BOOL "" FORCE)
+    set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
+    set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
+    set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(freetype)
+    set_target_properties(freetype PROPERTIES FOLDER "third_party")
+    # Create an alias target to match find_package(Freetype) behavior
+    if(NOT TARGET Freetype::Freetype)
+        add_library(Freetype::Freetype ALIAS freetype)
+    endif()
+else()
+    message(STATUS "Using system FreeType: ${FREETYPE_LIBRARIES}")
+endif()
+
 # ImGui
 FetchContent_Declare(
     imgui
@@ -308,16 +340,19 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
 target_include_directories(imgui_lib
     SYSTEM PUBLIC
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
         ${imgui_SOURCE_DIR}/misc/cpp
+        ${imgui_SOURCE_DIR}/misc/freetype
 )
-target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33)
+target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33 Freetype::Freetype)
 target_compile_definitions(imgui_lib PUBLIC
     IMGUI_IMPL_OPENGL_LOADER_GLAD2
+    IMGUI_ENABLE_FREETYPE
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 
@@ -681,7 +716,7 @@ elseif(UNIX)
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
         set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6")
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6, libfreetype6")
     endif()
     # Check for rpmbuild (Red Hat/Fedora)
     find_program(RPMBUILD_PROGRAM rpmbuild)

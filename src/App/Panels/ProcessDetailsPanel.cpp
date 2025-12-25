@@ -124,6 +124,11 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
             m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
             m_Timestamps.push_back(nowSeconds);
+
+            // Update peak memory percent (from snapshot's peak value)
+            const double peakPercent = toPercent(snapshot->peakMemoryBytes);
+            m_PeakMemoryPercent = std::max(m_PeakMemoryPercent, peakPercent);
+
             trimHistory(nowSeconds);
         }
     }
@@ -214,6 +219,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_ShowConfirmDialog = false;
         m_LastActionResult.clear();
         m_SmoothedUsage = {};
+        m_PeakMemoryPercent = 0.0;
 
         if (pid != -1)
         {
@@ -257,7 +263,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
-        constexpr std::array<const char*, 8> labels = {
+        constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
             "Name",
@@ -266,6 +272,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Threads",
             "Nice",
             "CPU Time",
+            "Page Faults",
+            "Affinity",
         };
 
         float maxTextWidth = 0.0F;
@@ -372,6 +380,28 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImGui::Text("%d", proc.nice);
         addLabel("CPU Time");
         addValueText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds).c_str());
+
+        // Row 5: Page Faults
+        ImGui::TableNextRow();
+        addLabel("Page Faults");
+        ImGui::TableNextColumn();
+        if (proc.pageFaults > 0)
+        {
+            // Format with locale for thousands separator (cached to avoid repeated allocations)
+            static thread_local std::string formatted;
+            formatted = std::format("{:L}", proc.pageFaults);
+            ImGui::TextUnformatted(formatted.c_str());
+        }
+        else
+        {
+            ImGui::TextUnformatted("-");
+        }
+        // Row 6: CPU Affinity
+        ImGui::TableNextRow();
+        addLabel("Affinity");
+        ImGui::TableNextColumn();
+        const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
+        ImGui::TextUnformatted(affinityText.c_str());
 
         ImGui::EndTable();
     }
@@ -529,6 +559,21 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                     ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
+                    // Draw peak working set as a horizontal reference line (never decreases)
+                    if (m_PeakMemoryPercent > 0.0)
+                    {
+                        // Use a dashed line style with a distinct color for the peak
+                        ImVec4 peakColor = theme.scheme().textWarning; // Use warning color for visibility
+                        peakColor.w = 0.7F;                            // Slightly transparent
+                        ImPlot::SetNextLineStyle(peakColor, 1.5F);
+
+                        // Draw horizontal line at peak value across the entire X range
+                        const double peakY = m_PeakMemoryPercent;
+                        std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};
+                        std::array<double, 2> peakYVals = {peakY, peakY};
+                        ImPlot::PlotLine("Peak", peakX.data(), peakYVals.data(), 2);
+                    }
+
                     if (!usedData.empty())
                     {
                         ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
@@ -568,6 +613,11 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                             {
                                 ImGui::TextColored(
                                     theme.scheme().chartIo, "Virtual: %s", UI::Format::percentCompact(virtData[*idxVal]).c_str());
+                            }
+                            if (m_PeakMemoryPercent > 0.0)
+                            {
+                                ImGui::TextColored(
+                                    theme.scheme().textWarning, "Peak: %s", UI::Format::percentCompact(m_PeakMemoryPercent).c_str());
                             }
                             ImGui::EndTooltip();
                         }

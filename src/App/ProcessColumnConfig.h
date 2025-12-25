@@ -19,6 +19,7 @@ enum class ProcessColumn : std::uint8_t
     MemPercent,
     Virtual,
     Resident,
+    PeakResident,
     Shared,
     CpuTime,
     State,
@@ -26,6 +27,8 @@ enum class ProcessColumn : std::uint8_t
     PPID,
     Nice,
     Threads,
+    PageFaults,
+    Affinity,
     Command,
     // Future columns (data not yet available):
     // IoRead,
@@ -33,7 +36,7 @@ enum class ProcessColumn : std::uint8_t
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 14>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 17>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
@@ -43,6 +46,7 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::MemPercent,
         ProcessColumn::Virtual,
         ProcessColumn::Resident,
+        ProcessColumn::PeakResident,
         ProcessColumn::Shared,
         ProcessColumn::CpuTime,
         ProcessColumn::State,
@@ -50,6 +54,8 @@ enum class ProcessColumn : std::uint8_t
         ProcessColumn::PPID,
         ProcessColumn::Nice,
         ProcessColumn::Threads,
+        ProcessColumn::PageFaults,
+        ProcessColumn::Affinity,
         ProcessColumn::Command,
     };
 }
@@ -93,6 +99,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="VIRT", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
         // RES
         {.name="RES", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
+        // PEAK RES
+        {.name="PEAK", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
         // SHR
         {.name="SHR", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // TIME+
@@ -107,6 +115,10 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
         // Threads
         {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
+        // Page Faults
+        {.name="PF", .configKey="page_faults", .defaultWidth=75.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
+        // Affinity
+        {.name="Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
     }};

@@ -18,6 +18,9 @@ This file lists features that are already implemented in TaskSmack.
 | **State Color Coding** | htop | Color-code process states based on theme |
 | **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
 | **Process Tree View** | btop++, htop | Hierarchical view showing parent-child relationships with collapsible nodes |
+| **Peak Working Set** | Task Manager | Horizontal reference line on memory graph showing historical peak RSS; OS-provided on Windows, tracked on Linux |
+| **CPU Affinity Column** | Task Manager | Shows which CPU cores a process can run on (e.g., "0-3", "0,2,4") |
+| **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 
 ## Developer Tooling / Infrastructure
 
@@ -36,3 +39,4 @@ This file lists features that are already implemented in TaskSmack.
 | **Sanitizer presets** | ASan+UBSan, TSan on Linux |
 | **Compiler warning configuration** | Tuned warnings and warnings-as-errors |
 | **`std::print` adoption** | Type-safe, format-string-based output |
+| **FreeType font rendering** | Sharper text rendering at small sizes using FreeType with LightHinting |

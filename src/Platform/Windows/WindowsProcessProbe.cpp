@@ -183,7 +183,13 @@ struct TaskSmackVmCounters
 
 constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLASS>(3);
 
-[[nodiscard]] auto queryProcessVirtualSizeBytes(HANDLE hProcess) -> std::optional<uint64_t>
+struct ProcessVmInfo
+{
+    std::uint64_t virtualSizeBytes = 0;
+    std::uint64_t pageFaultCount = 0;
+};
+
+[[nodiscard]] auto queryProcessVmInfo(HANDLE hProcess) -> std::optional<ProcessVmInfo>
 {
     if (hProcess == nullptr)
     {
@@ -214,8 +220,12 @@ constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLA
         return std::nullopt;
     }
 
+    ProcessVmInfo info;
     // Fallback to 0 if virtual size exceeds uint64_t range (should never happen)
-    return Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
+    info.virtualSizeBytes = Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
+    // Fallback to 0 if page fault count exceeds uint64_t range (should never happen)
+    info.pageFaultCount = Domain::Numeric::narrowOr<uint64_t>(vm.pageFaultCount, uint64_t{0});
+    return info;
 }
 
 } // namespace
@@ -348,10 +358,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.base.WorkingSetSize;
+        counters.peakRssBytes = pmc.base.PeakWorkingSetSize;
 
-        if (auto virtualSizeBytes = queryProcessVirtualSizeBytes(hProcess))
+        if (auto vmInfo = queryProcessVmInfo(hProcess))
         {
-            counters.virtualBytes = *virtualSizeBytes;
+            counters.virtualBytes = vmInfo->virtualSizeBytes;
+            counters.pageFaultCount = vmInfo->pageFaultCount;
         }
         else if (pmc.base.PagefileUsage != 0)
         {
@@ -373,6 +385,19 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.writeBytes = ioCounters.WriteTransferCount;
     }
 
+    // Get CPU affinity mask
+    DWORD_PTR processAffinityMask = 0;
+    DWORD_PTR systemAffinityMask = 0;
+    if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
+    {
+        // Convert DWORD_PTR to uint64_t (may truncate on 32-bit, but we support 64-bit only)
+        counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
+    }
+    else
+    {
+        counters.cpuAffinityMask = 0;
+    }
+
     CloseHandle(hProcess);
     return true;
 }
@@ -384,9 +409,12 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,    // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true, // From QueryFullProcessImageName
-        .hasNice = true,    // From GetPriorityClass
+        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasNice = true,        // From GetPriorityClass
+        .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
+        .hasCpuAffinity = true, // From GetProcessAffinityMask
     };
 }
 
