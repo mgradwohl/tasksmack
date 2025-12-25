@@ -263,7 +263,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
-        constexpr std::array<const char*, 9> labels = {
+        constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
             "Name",
