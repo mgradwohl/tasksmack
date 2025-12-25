@@ -381,7 +381,12 @@ void UserConfig::save() const
     }
 
     file << "# TaskSmack user configuration\n";
-    file << "# This file is auto-generated. Manual edits are preserved.\n\n";
+    file << "# This file is auto-generated. Manual edits are preserved.\n";
+    file << "# Notes:\n";
+    file << "# - sampling: interval_ms controls refresh cadence (ms); history_max_seconds caps timeline history.\n";
+    file << "# - process_columns: toggle columns on/off; true shows the column.\n";
+    file << "# - imgui_layout: auto-generated docking/layout state; editing is optional but may be noisy.\n";
+    file << "# - Themes: built-in themes live in assets/themes. Add your own .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());

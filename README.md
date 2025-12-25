@@ -22,7 +22,7 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 - Process state color-coding
 - Process actions: terminate (SIGTERM), kill (SIGKILL), stop/resume (SIGSTOP/SIGCONT on Linux)
 - Column visibility toggles (persisted)
-- Configurable themes (TOML-based)
+- Configurable themes (TOML-based) and user themes: drop .toml files in your user config themes folder (Windows: %APPDATA%/TaskSmack/themes, Linux: ~/.config/tasksmack/themes)
 - Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
 
 ## For Developers
