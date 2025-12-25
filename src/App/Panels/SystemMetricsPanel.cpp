@@ -43,13 +43,6 @@ using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
-[[nodiscard]] std::string formatBytesPerSecond(double bytesPerSec)
-{
-    const auto bytes = static_cast<uint64_t>(std::max(0.0, bytesPerSec));
-    const auto unit = UI::Format::unitForTotalBytes(bytes);
-    return UI::Format::formatBytesWithUnit(bytes, unit);
-}
-
 void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, const ImVec4& color)
 {
     const double clamped = std::clamp(fraction01, 0.0, 1.0);
