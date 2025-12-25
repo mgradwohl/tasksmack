@@ -12,6 +12,7 @@
 #include <glad/gl.h>
 // clang-format on
 #include <imgui.h>
+#include <imgui_freetype.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
@@ -83,11 +84,16 @@ void UILayer::loadAllFonts()
     auto& theme = Theme::get();
     ImGuiIO& imguiIO = ImGui::GetIO();
 
+    // Configure FreeType for better hinting at small sizes
+    // Note: IMGUI_ENABLE_FREETYPE is defined at compile time, so FreeType is always used
+    // LightHinting provides better quality for UI fonts at typical screen sizes
+    imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
+
     // Build font path relative to executable directory
     auto exeDir = getExecutableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
 
-    spdlog::info("Pre-baking fonts for all {} size presets", FONT_SIZE_COUNT);
+    spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
 
     // Load fonts for all size presets into a single atlas
     for (const auto size : ALL_FONT_SIZES)
@@ -125,7 +131,7 @@ void UILayer::loadAllFonts()
         theme.registerFonts(size, fontRegular, fontLarge);
     }
 
-    spdlog::info("Pre-baked {} fonts into atlas", imguiIO.Fonts->Fonts.Size);
+    spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
 }
 
 void UILayer::onAttach()

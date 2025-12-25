@@ -58,11 +58,12 @@ ctest --preset win-debug
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
 - Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- FreeType 2.13+ (font rendering library) - typically auto-detected from system or fetched if not found
 
 Example (Ubuntu/Debian):
 
 ```bash
-sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2
+sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
 ```
 
 ### Windows Pre-Requisites
@@ -73,6 +74,7 @@ sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake nin
 - Ninja
 - ccache 4.9.1+ (optional but recommended)
 - Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
 
 Install Python + jinja2:
 
