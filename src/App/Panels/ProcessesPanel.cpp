@@ -415,6 +415,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::PageFaults:
+                                              return compare(procA.pageFaults, procB.pageFaults);
                                           case ProcessColumn::Affinity:
                                               return compare(procA.cpuAffinityMask, procB.cpuAffinityMask);
                                           case ProcessColumn::Command:
@@ -697,6 +699,19 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             }
             break;
 
+        case ProcessColumn::PageFaults:
+            if (proc.pageFaults > 0)
+            {
+                // Format with locale for thousands separator (cached to avoid repeated allocations)
+                static thread_local std::string formatted;
+                formatted = std::format("{:L}", proc.pageFaults);
+                ImGui::TextUnformatted(formatted.c_str());
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
         case ProcessColumn::Affinity:
         {
             const std::string text = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);

@@ -263,7 +263,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
-        constexpr std::array<const char*, 9> labels = {
+        constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
             "Name",
@@ -272,6 +272,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Threads",
             "Nice",
             "CPU Time",
+            "Page Faults",
             "Affinity",
         };
 
@@ -380,7 +381,22 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         addLabel("CPU Time");
         addValueText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds).c_str());
 
-        // Row 5: CPU Affinity
+        // Row 5: Page Faults
+        ImGui::TableNextRow();
+        addLabel("Page Faults");
+        ImGui::TableNextColumn();
+        if (proc.pageFaults > 0)
+        {
+            // Format with locale for thousands separator (cached to avoid repeated allocations)
+            static thread_local std::string formatted;
+            formatted = std::format("{:L}", proc.pageFaults);
+            ImGui::TextUnformatted(formatted.c_str());
+        }
+        else
+        {
+            ImGui::TextUnformatted("-");
+        }
+        // Row 6: CPU Affinity
         ImGui::TableNextRow();
         addLabel("Affinity");
         ImGui::TableNextColumn();
