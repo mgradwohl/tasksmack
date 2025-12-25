@@ -296,7 +296,7 @@ if(NOT Freetype_FOUND)
         freetype
         DOWNLOAD_EXTRACT_TIMESTAMP OFF
         URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
-        URL_HASH SHA256:427201f5d5151670d05c1f5b45bef5dda1f2e7dd971ef54f0feaaa7ffd2ab90c
+        URL_HASH SHA256=427201f5d5151670d05c1f5b45bef5dda1f2e7dd971ef54f0feaaa7ffd2ab90c
         SYSTEM  # Treat as system headers to suppress warnings from FreeType
     )
     # Configure FreeType build options (disable optional dependencies)
