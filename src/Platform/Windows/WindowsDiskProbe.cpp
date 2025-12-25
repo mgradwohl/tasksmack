@@ -10,6 +10,8 @@
 #include <vector>
 
 // clang-format off
+#include <windows.h>
+#include <pdh.h>
 #include <winioctl.h>
 #include <pdhmsg.h>
 // clang-format on
@@ -18,6 +20,23 @@
 
 namespace Platform
 {
+
+// Pimpl struct containing Windows-specific types
+struct WindowsDiskProbe::Impl
+{
+    struct DiskCounterSet
+    {
+        std::string instanceName;
+        PDH_HCOUNTER readBytesCounter = nullptr;
+        PDH_HCOUNTER writeBytesCounter = nullptr;
+        PDH_HCOUNTER readsCounter = nullptr;
+        PDH_HCOUNTER writesCounter = nullptr;
+        PDH_HCOUNTER idleTimeCounter = nullptr;
+    };
+
+    PDH_HQUERY query = nullptr;
+    std::vector<DiskCounterSet> diskCounters;
+};
 
 namespace
 {
@@ -38,16 +57,16 @@ std::string wideToNarrow(const std::wstring& wide)
 
 } // namespace
 
-WindowsDiskProbe::WindowsDiskProbe()
+WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
 {
     spdlog::debug("WindowsDiskProbe: initialized");
 
     // Initialize PDH query
-    PDH_STATUS status = PdhOpenQuery(nullptr, 0, &m_Query);
+    PDH_STATUS status = PdhOpenQuery(nullptr, 0, &m_Impl->query);
     if (status != ERROR_SUCCESS)
     {
         spdlog::error("WindowsDiskProbe: PdhOpenQuery failed with status {}", status);
-        m_Query = nullptr;
+        m_Impl->query = nullptr;
         return;
     }
 
@@ -79,7 +98,7 @@ WindowsDiskProbe::WindowsDiskProbe()
                     continue;
                 }
 
-                DiskCounterSet counterSet;
+                Impl::DiskCounterSet counterSet;
                 counterSet.instanceName = wideToNarrow(instanceName);
 
                 // Add counters for this disk
@@ -89,13 +108,13 @@ WindowsDiskProbe::WindowsDiskProbe()
                 std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
                 std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
 
-                PdhAddCounter(m_Query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
-                PdhAddCounter(m_Query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
-                PdhAddCounter(m_Query, readsPath.c_str(), 0, &counterSet.readsCounter);
-                PdhAddCounter(m_Query, writesPath.c_str(), 0, &counterSet.writesCounter);
-                PdhAddCounter(m_Query, idleTimePath.c_str(), 0, &counterSet.idleTimeCounter);
+                PdhAddCounter(m_Impl->query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
+                PdhAddCounter(m_Impl->query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
+                PdhAddCounter(m_Impl->query, readsPath.c_str(), 0, &counterSet.readsCounter);
+                PdhAddCounter(m_Impl->query, writesPath.c_str(), 0, &counterSet.writesCounter);
+                PdhAddCounter(m_Impl->query, idleTimePath.c_str(), 0, &counterSet.idleTimeCounter);
 
-                m_DiskCounters.push_back(counterSet);
+                m_Impl->diskCounters.push_back(counterSet);
 
                 instance += instanceName.length() + 1;
             }
@@ -103,19 +122,19 @@ WindowsDiskProbe::WindowsDiskProbe()
     }
 
     // Collect initial sample
-    if (m_Query != nullptr)
+    if (m_Impl->query != nullptr)
     {
-        PdhCollectQueryData(m_Query);
+        PdhCollectQueryData(m_Impl->query);
     }
 
-    spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_DiskCounters.size());
+    spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->diskCounters.size());
 }
 
 WindowsDiskProbe::~WindowsDiskProbe()
 {
-    if (m_Query != nullptr)
+    if (m_Impl && m_Impl->query != nullptr)
     {
-        PdhCloseQuery(m_Query);
+        PdhCloseQuery(m_Impl->query);
     }
 }
 
@@ -123,7 +142,7 @@ SystemDiskCounters WindowsDiskProbe::read()
 {
     SystemDiskCounters result;
 
-    if (m_Query == nullptr || m_DiskCounters.empty())
+    if (!m_Impl || m_Impl->query == nullptr || m_Impl->diskCounters.empty())
     {
         // Fallback: enumerate logical drives
         DWORD drives = GetLogicalDrives();
@@ -172,7 +191,7 @@ SystemDiskCounters WindowsDiskProbe::read()
     }
 
     // Collect new sample from PDH
-    PDH_STATUS status = PdhCollectQueryData(m_Query);
+    PDH_STATUS status = PdhCollectQueryData(m_Impl->query);
     if (status != ERROR_SUCCESS)
     {
         spdlog::warn("WindowsDiskProbe: PdhCollectQueryData failed with status {}", status);
@@ -180,7 +199,7 @@ SystemDiskCounters WindowsDiskProbe::read()
     }
 
     // Read counter values
-    for (const auto& counterSet : m_DiskCounters)
+    for (const auto& counterSet : m_Impl->diskCounters)
     {
         DiskCounters disk;
         disk.deviceName = counterSet.instanceName;
@@ -232,8 +251,8 @@ DiskCapabilities WindowsDiskProbe::capabilities() const
 {
     DiskCapabilities caps;
     caps.hasDiskStats = true;
-    caps.hasReadWriteBytes = (m_Query != nullptr && !m_DiskCounters.empty());
-    caps.hasIoTime = (m_Query != nullptr && !m_DiskCounters.empty());
+    caps.hasReadWriteBytes = (m_Impl && m_Impl->query != nullptr && !m_Impl->diskCounters.empty());
+    caps.hasIoTime = (m_Impl && m_Impl->query != nullptr && !m_Impl->diskCounters.empty());
     caps.hasDeviceInfo = true;
     caps.canFilterPhysical = true;
     return caps;

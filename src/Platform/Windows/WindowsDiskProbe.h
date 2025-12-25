@@ -3,13 +3,7 @@
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
 
-#if defined(_WIN32)
-// clang-format off
-#include <windows.h>
-#include <pdh.h>
-// clang-format on
-#endif
-
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,18 +28,9 @@ class WindowsDiskProbe : public IDiskProbe
 
   private:
 #if defined(_WIN32)
-    struct DiskCounterSet
-    {
-        std::string instanceName;
-        PDH_HCOUNTER readBytesCounter = nullptr;
-        PDH_HCOUNTER writeBytesCounter = nullptr;
-        PDH_HCOUNTER readsCounter = nullptr;
-        PDH_HCOUNTER writesCounter = nullptr;
-        PDH_HCOUNTER idleTimeCounter = nullptr;
-    };
-
-    PDH_HQUERY m_Query = nullptr;
-    std::vector<DiskCounterSet> m_DiskCounters;
+    // Opaque implementation to avoid including Windows headers in public header
+    struct Impl;
+    std::unique_ptr<Impl> m_Impl;
 #endif
 };
 
