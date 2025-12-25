@@ -10,11 +10,7 @@
 #include <vector>
 
 // clang-format off
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
 #include <winioctl.h>
-#include <pdh.h>
 #include <pdhmsg.h>
 // clang-format on
 
