@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 
+# Enable IPO policy explicitly (avoids third-party warnings when targets set IPO properties)
+if(POLICY CMP0069)
+    cmake_policy(SET CMP0069 NEW)
+endif()
+
 # Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
 cmake_policy(SET CMP0169 OLD)
 
@@ -288,36 +293,62 @@ if(NOT glad_POPULATED)
 endif()
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 
-# FreeType for improved font rendering
-find_package(Freetype QUIET)
-if(NOT Freetype_FOUND)
-    message(STATUS "FreeType not found, fetching from source")
-    FetchContent_Declare(
-        freetype
-        DOWNLOAD_EXTRACT_TIMESTAMP OFF
-        URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
-        URL_HASH SHA256=1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5
-        SYSTEM  # Treat as system headers to suppress warnings from FreeType
-    )
-    # Configure FreeType build options (disable optional dependencies)
-    set(FT_DISABLE_ZLIB TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_BZIP2 TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_PNG TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
-    set(FT_DISABLE_BROTLI TRUE CACHE BOOL "" FORCE)
-    set(FT_REQUIRE_ZLIB FALSE CACHE BOOL "" FORCE)
-    set(FT_REQUIRE_BZIP2 FALSE CACHE BOOL "" FORCE)
-    set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
-    set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
-    set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(freetype)
-    set_target_properties(freetype PROPERTIES FOLDER "third_party")
-    # Create an alias target to match find_package(Freetype) behavior
-    if(NOT TARGET Freetype::Freetype)
-        add_library(Freetype::Freetype ALIAS freetype)
-    endif()
-else()
-    message(STATUS "Using system FreeType: ${FREETYPE_LIBRARIES}")
+# FreeType for improved font rendering (always use FetchContent to avoid noisy Findfreetype warnings)
+
+# Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
+set(FETCHCONTENT_TRY_FIND_PACKAGE_freetype FALSE)
+
+FetchContent_Declare(
+    freetype
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
+    URL_HASH SHA256=1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5
+    SYSTEM  # Treat as system headers to suppress warnings from FreeType
+)
+
+# Configure FreeType build options (disable optional dependencies)
+set(FT_DISABLE_ZLIB TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI TRUE CACHE BOOL "" FORCE)
+set(FT_REQUIRE_ZLIB FALSE CACHE BOOL "" FORCE)
+set(FT_REQUIRE_BZIP2 FALSE CACHE BOOL "" FORCE)
+set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
+set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
+set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
+
+# Prevent pkg-config warnings emitted by FreeType's optional detection; restore after
+set(_TS_OLD_PKGCONFIG_EXEC ${PKG_CONFIG_EXECUTABLE})
+set(PKG_CONFIG_EXECUTABLE ${CMAKE_COMMAND} CACHE FILEPATH "" FORCE)
+
+# Temporarily disable deprecation noise from FreeType's legacy CMake minimum; restore afterwards
+set(_TS_OLD_WARN_DEPRECATED ${CMAKE_WARN_DEPRECATED})
+set(CMAKE_WARN_DEPRECATED FALSE CACHE BOOL "" FORCE)
+
+# Ensure IPO policy defaults to NEW for third-party subdirs that touch IPO
+if(POLICY CMP0069)
+    set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+endif()
+
+FetchContent_GetProperties(freetype)
+if(NOT freetype_POPULATED)
+    FetchContent_Populate(freetype)
+    add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
+endif()
+
+set_target_properties(freetype PROPERTIES FOLDER "third_party")
+# Create an alias target to match find_package(Freetype) behavior
+if(NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype ALIAS freetype)
+endif()
+
+# Restore user-facing settings
+if(DEFINED _TS_OLD_WARN_DEPRECATED)
+    set(CMAKE_WARN_DEPRECATED ${_TS_OLD_WARN_DEPRECATED} CACHE BOOL "" FORCE)
+endif()
+if(DEFINED _TS_OLD_PKGCONFIG_EXEC)
+    set(PKG_CONFIG_EXECUTABLE ${_TS_OLD_PKGCONFIG_EXEC} CACHE FILEPATH "" FORCE)
 endif()
 
 # ImGui
@@ -645,6 +676,41 @@ add_custom_command(TARGET TaskSmack POST_BUILD
         "$<TARGET_FILE_DIR:TaskSmack>/assets/themes"
     COMMENT "Copying assets (fonts, themes) to build directory"
 )
+
+# Copy FreeType runtime (if shared/imported) next to the executable for portable layout
+if(TARGET Freetype::Freetype)
+    get_target_property(_ft_alias Freetype::Freetype ALIASED_TARGET)
+    if(_ft_alias)
+        set(_ft_target ${_ft_alias})
+    else()
+        set(_ft_target Freetype::Freetype)
+    endif()
+
+    get_target_property(_ft_imported ${_ft_target} IMPORTED)
+    if(_ft_imported)
+        set(_ft_runtime_file $<TARGET_FILE:${_ft_target}>)
+        set(_ft_needs_copy ON)
+    else()
+        get_target_property(_ft_type ${_ft_target} TYPE)
+        if(_ft_type STREQUAL "SHARED_LIBRARY" OR _ft_type STREQUAL "MODULE_LIBRARY")
+            set(_ft_runtime_file $<TARGET_FILE:${_ft_target}>)
+            set(_ft_needs_copy ON)
+        endif()
+    endif()
+
+    if(_ft_needs_copy)
+        add_custom_command(TARGET TaskSmack POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_ft_runtime_file}
+                $<TARGET_FILE_DIR:TaskSmack>
+            COMMENT "Copying FreeType runtime to build directory")
+
+        install(TARGETS ${_ft_target}
+            RUNTIME DESTINATION .
+            LIBRARY DESTINATION .
+        )
+    endif()
+endif()
 
 # Link X11 on Linux (required by ImGui GLFW backend)
 if(UNIX AND NOT APPLE)

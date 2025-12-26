@@ -17,6 +17,7 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
+#include <cstdlib>
 #include <filesystem>
 
 #ifdef __linux__
@@ -27,6 +28,40 @@
 
 namespace
 {
+// Best-effort user config directory (mirrors UserConfig logic without adding an App dependency)
+std::filesystem::path getUserConfigDir()
+{
+#ifdef _WIN32
+    if (char* appData = nullptr; _dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
+    {
+        std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
+        if (appData[0] != '\0')
+        {
+            return std::filesystem::path(appData) / "TaskSmack";
+        }
+    }
+    return std::filesystem::current_path();
+#else
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
+    {
+        if (xdg[0] != '\0')
+        {
+            return std::filesystem::path(xdg) / "tasksmack";
+        }
+    }
+
+    if (const char* home = std::getenv("HOME"))
+    {
+        if (home[0] != '\0')
+        {
+            return std::filesystem::path(home) / ".config" / "tasksmack";
+        }
+    }
+
+    return std::filesystem::current_path();
+#endif
+}
+
 // Get directory containing the executable
 std::filesystem::path getExecutableDir()
 {
@@ -138,10 +173,11 @@ void UILayer::onAttach()
 {
     spdlog::info("Initializing ImGui");
 
-    // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
+
+    spdlog::info("ImGui FreeType backend enabled (IMGUI_ENABLE_FREETYPE)");
 
     ImGuiIO& imguiIO = ImGui::GetIO();
     imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -154,9 +190,16 @@ void UILayer::onAttach()
     // Pre-bake fonts for all size presets
     loadAllFonts();
 
-    // Load themes from TOML files
+    // Load themes from TOML files (built-ins)
     auto themesDir = getExecutableDir() / "assets" / "themes";
     Theme::get().loadThemes(themesDir);
+
+    // Optional: load user-provided themes from the same directory as config.toml (../themes)
+    const auto userThemesDir = getUserConfigDir() / "themes";
+    if (std::filesystem::exists(userThemesDir))
+    {
+        Theme::get().loadThemes(userThemesDir);
+    }
 
     // Style - start with dark base, then apply theme colors
     ImGui::StyleColorsDark();
