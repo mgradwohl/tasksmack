@@ -1,19 +1,24 @@
 // Keep this translation unit parseable on non-Windows platforms
 #if defined(_WIN32)
 
-// Windows headers must be included before any project headers to avoid PCH conflicts
-// clang-format off
-#include <windows.h>
-#include <pdh.h>
-#include <winioctl.h>
-#include <pdhmsg.h>
-// clang-format on
-
-#pragma comment(lib, "pdh.lib")
-
 #include "WindowsDiskProbe.h"
 
 #include <spdlog/spdlog.h>
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <winioctl.h>
+// clang-format on
+
+#pragma comment(lib, "pdh.lib")
 
 #include <algorithm>
 #include <string>
