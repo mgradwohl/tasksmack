@@ -391,7 +391,6 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasUser = true,            // From OpenProcessToken + LookupAccountSid
         .hasCommand = true,         // From QueryFullProcessImageName
         .hasNice = true,            // From GetPriorityClass
-        .hasNetworkCounters = false // TODO: Implement using ETW or GetPerTcpConnectionEStats
         .hasPageFaults = true,      // From NtQueryInformationProcess (VM_COUNTERS)
         .hasPeakRss = true,         // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true,     // From GetProcessAffinityMask

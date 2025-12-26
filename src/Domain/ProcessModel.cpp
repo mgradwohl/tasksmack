@@ -20,16 +20,16 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: "
-                 "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, "
-                 "hasNetworkCounters={}, hasPeakRss={}, hasCpuAffinity={}",
-                 m_Capabilities.hasIoCounters,
-                 m_Capabilities.hasThreadCount,
-                 m_Capabilities.hasUserSystemTime,
-                 m_Capabilities.hasStartTime,
-                 m_Capabilities.hasUser,
-                 m_Capabilities.hasNetworkCounters,
-                 m_Capabilities.hasPeakRss,
-                 m_Capabilities.hasCpuAffinity);
+                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, "
+                     "hasNetworkCounters={}, hasPeakRss={}, hasCpuAffinity={}",
+                     m_Capabilities.hasIoCounters,
+                     m_Capabilities.hasThreadCount,
+                     m_Capabilities.hasUserSystemTime,
+                     m_Capabilities.hasStartTime,
+                     m_Capabilities.hasUser,
+                     m_Capabilities.hasNetworkCounters,
+                     m_Capabilities.hasPeakRss,
+                     m_Capabilities.hasCpuAffinity);
         spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
