@@ -789,7 +789,6 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
                                            const std::unordered_set<std::size_t>& filteredSet,
                                            std::size_t procIdx,
                                            int depth)
-
 {
     // Iterative tree rendering using explicit stack to avoid recursion
     struct StackFrame
