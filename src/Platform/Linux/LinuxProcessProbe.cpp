@@ -153,7 +153,6 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessStatm(pid, counters);
         parseProcessStatus(pid, counters);
         parseProcessCmdline(pid, counters);
-
         // CPU affinity is always safe to query; failures zero the mask
         parseProcessAffinity(pid, counters);
 
