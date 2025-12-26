@@ -24,6 +24,7 @@ struct UserSettings
     bool showProcesses = true;
     bool showMetrics = true;
     bool showDetails = true;
+    bool showStorage = true;
 
     // Process table column visibility
     ProcessColumnSettings processColumns;

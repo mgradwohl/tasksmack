@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <concepts>
-#include <limits>
 #include <utility>
 
 namespace Domain::Numeric

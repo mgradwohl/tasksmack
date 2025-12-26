@@ -48,12 +48,15 @@ if(WIN32)
         Platform/test_WindowsProcessProbe.cpp
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
+        Platform/test_WindowsDiskProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -67,12 +70,14 @@ else()
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
+        Platform/test_LinuxDiskProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -86,6 +91,7 @@ add_executable(TaskSmackTests
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_SystemModel.cpp
+    Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     UI/test_HistoryWidgets.cpp
     UI/test_Format.cpp
@@ -94,6 +100,7 @@ add_executable(TaskSmackTests
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )

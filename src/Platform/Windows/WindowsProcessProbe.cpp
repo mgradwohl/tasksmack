@@ -18,6 +18,7 @@
 #include <winternl.h>
 // clang-format on
 
+#include "WinString.h"
 #include "WindowsProcAddress.h"
 
 #include <array>
@@ -42,28 +43,6 @@ namespace
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
     return uli.QuadPart;
-}
-
-/// Convert wide string to UTF-8
-[[nodiscard]] std::string wideToUtf8(const wchar_t* wide)
-{
-    if (wide == nullptr || wide[0] == L'\0')
-    {
-        return {};
-    }
-
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-    if (sizeNeeded <= 0)
-    {
-        return {};
-    }
-
-    // WideCharToMultiByte returns size including null terminator, subtract 1 for string length
-    // Fallback to 0 (empty string) if size is unexpectedly out of range
-    const size_t strLength = Domain::Numeric::narrowOr<size_t>(sizeNeeded - 1, size_t{0});
-    std::string result(strLength, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide, -1, result.data(), sizeNeeded, nullptr, nullptr);
-    return result;
 }
 
 /// Map Windows process state to single character
@@ -140,7 +119,7 @@ namespace
     }
 
     CloseHandle(hToken);
-    return wideToUtf8(userName.data());
+    return WinString::wideToUtf8(userName.data());
 }
 
 /// Get the full command line (image path) of a process
@@ -157,7 +136,7 @@ namespace
 
     if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
     {
-        return wideToUtf8(path.data());
+        return WinString::wideToUtf8(path.data());
     }
     return {};
 }
@@ -262,7 +241,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         // Fallback to 0 for PID/parent PID if out of range (should never happen in practice)
         counters.pid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ProcessID, std::int32_t{0});
         counters.parentPid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ParentProcessID, std::int32_t{0});
-        counters.name = wideToUtf8(pe32.szExeFile);
+        counters.name = WinString::wideToUtf8(pe32.szExeFile);
         // Fallback to 0 for thread count if out of range
         counters.threadCount = Domain::Numeric::narrowOr<std::int32_t>(pe32.cntThreads, std::int32_t{0});
 

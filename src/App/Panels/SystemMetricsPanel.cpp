@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
@@ -131,8 +132,13 @@ void SystemMetricsPanel::onAttach()
     m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
 
+    m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
+    m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+
     // Initial refresh to seed histories
     m_Model->refresh();
+    m_StorageModel->sample();
+
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
     {
@@ -150,6 +156,7 @@ void SystemMetricsPanel::onAttach()
 
 void SystemMetricsPanel::onDetach()
 {
+    m_StorageModel.reset();
     m_Model.reset();
 }
 
@@ -183,6 +190,13 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     {
         m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
         m_Model->refresh();
+
+        if (m_StorageModel)
+        {
+            m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+            m_StorageModel->sample();
+        }
+
         m_TimestampsCache = m_Model->timestamps();
         if (!m_TimestampsCache.empty())
         {
@@ -281,6 +295,13 @@ void SystemMetricsPanel::renderOverview()
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
+
+    // Update smoothed disk I/O if storage model is available
+    if (m_StorageModel)
+    {
+        auto storageSnap = m_StorageModel->latestSnapshot();
+        updateSmoothedDiskIO(storageSnap, m_LastDeltaSeconds);
+    }
 
     // Header line: CPU Model | Cores | Freq | Uptime (right-aligned)
     // Format uptime string
@@ -610,6 +631,19 @@ void SystemMetricsPanel::renderOverview()
         ImVec4 swapColor = theme.progressColor(m_SmoothedMemory.swapPercent);
         drawProgressBarWithOverlay(UI::Numeric::percent01(m_SmoothedMemory.swapPercent), swapOverlay, swapColor);
     }
+
+    // Disk I/O metrics (if storage model is available)
+    if (m_StorageModel && m_SmoothedDiskIO.initialized)
+    {
+        ImGui::Text("Disk I/O:");
+        ImGui::SameLine(m_OverviewLabelWidth);
+        const std::string diskOverlay = std::format("R: {:.1f} MB/s  W: {:.1f} MB/s  Util: {:.1f}%%",
+                                                    m_SmoothedDiskIO.readMBps,
+                                                    m_SmoothedDiskIO.writeMBps,
+                                                    m_SmoothedDiskIO.avgUtilization);
+        ImVec4 diskColor = theme.progressColor(m_SmoothedDiskIO.avgUtilization);
+        drawProgressBarWithOverlay(UI::Numeric::percent01(m_SmoothedDiskIO.avgUtilization), diskOverlay, diskColor);
+    }
 }
 
 void SystemMetricsPanel::renderCpuSection()
@@ -900,6 +934,43 @@ void SystemMetricsPanel::updateSmoothedPerCore(const Domain::SystemSnapshot& sna
         }
         current = clampPercent(smoothTowards(current, target, alpha));
     }
+}
+
+void SystemMetricsPanel::updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds)
+{
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
+
+    // Aggregate disk I/O across all devices
+    double totalReadMBps = 0.0;
+    double totalWriteMBps = 0.0;
+    double avgUtilization = 0.0;
+    size_t deviceCount = 0;
+
+    for (const auto& disk : snap.disks)
+    {
+        totalReadMBps += disk.readBytesPerSec / 1048576.0; // Convert to MB/s
+        totalWriteMBps += disk.writeBytesPerSec / 1048576.0;
+        avgUtilization += disk.utilizationPercent;
+        ++deviceCount;
+    }
+
+    if (deviceCount > 0)
+    {
+        avgUtilization /= static_cast<double>(deviceCount);
+    }
+
+    if (!m_SmoothedDiskIO.initialized)
+    {
+        m_SmoothedDiskIO.readMBps = totalReadMBps;
+        m_SmoothedDiskIO.writeMBps = totalWriteMBps;
+        m_SmoothedDiskIO.avgUtilization = avgUtilization;
+        m_SmoothedDiskIO.initialized = true;
+        return;
+    }
+
+    m_SmoothedDiskIO.readMBps = smoothTowards(m_SmoothedDiskIO.readMBps, totalReadMBps, alpha);
+    m_SmoothedDiskIO.writeMBps = smoothTowards(m_SmoothedDiskIO.writeMBps, totalWriteMBps, alpha);
+    m_SmoothedDiskIO.avgUtilization = smoothTowards(m_SmoothedDiskIO.avgUtilization, avgUtilization, alpha);
 }
 
 void SystemMetricsPanel::updateCachedLayout()

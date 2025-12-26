@@ -1,5 +1,6 @@
 #include "Platform/Factory.h"
 
+#include "LinuxDiskProbe.h"
 #include "LinuxProcessActions.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxSystemProbe.h"
@@ -22,6 +23,11 @@ std::unique_ptr<IProcessActions> makeProcessActions()
 std::unique_ptr<ISystemProbe> makeSystemProbe()
 {
     return std::make_unique<LinuxSystemProbe>();
+}
+
+std::unique_ptr<IDiskProbe> makeDiskProbe()
+{
+    return std::make_unique<LinuxDiskProbe>();
 }
 
 } // namespace Platform

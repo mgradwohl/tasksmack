@@ -184,6 +184,7 @@ Copilot reads these files automatically:
 - `tasksmack.md` - Architecture + process/metrics notes
 - `CONTRIBUTING.md` - Build/test/tools workflow
 - `completed-features.md` - Shipped features list
+- Encoding: project strings are UTF-8 internally. On Windows, use wide Win32/PDH APIs and convert at the boundaries; avoid ANSI APIs.
 
 **You don't need to repeat this information in issues.**
 

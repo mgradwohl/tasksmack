@@ -448,9 +448,11 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
+    src/App/Panels/StoragePanel.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
+    src/Domain/StorageModel.cpp
 )
 
 # Platform-specific sources
@@ -458,6 +460,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -465,6 +468,8 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
+    src/Platform/Windows/WindowsDiskProbe.cpp
+    src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
 
@@ -500,6 +505,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
+        src/Platform/Windows/WinString.h
     )
 endif()
 
