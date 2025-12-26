@@ -99,7 +99,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             previous = &prevIt->second;
         }
 
-
         // Track peak RSS
         std::uint64_t peakRss = current.rssBytes;
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
@@ -156,11 +155,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
-<<<<<<< HEAD
-                                              double timeDeltaSeconds) const
-=======
                                               double elapsedSeconds) const
->>>>>>> a102ce3 (Add per-process I/O rate infrastructure)
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;

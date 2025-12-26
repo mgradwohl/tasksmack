@@ -54,9 +54,9 @@ class ProcessModel
     // Peak RSS tracking (keyed by uniqueKey)
     std::unordered_map<std::uint64_t, std::uint64_t> m_PeakRss;
     std::uint64_t m_PrevTotalCpuTime = 0;
-    std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
-    long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
-    std::chrono::steady_clock::time_point m_PrevSampleTime{}; // For rate calculations (network, I/O)
+    std::uint64_t m_SystemTotalMemory = 0;                  // For memoryPercent calculation
+    long m_TicksPerSecond = 100;                            // For cpuTimeSeconds calculation
+    std::chrono::steady_clock::time_point m_PrevSampleTime; // For rate calculations (network, I/O)
     bool m_HasPrevSampleTime = false;
 
     // Latest computed snapshots

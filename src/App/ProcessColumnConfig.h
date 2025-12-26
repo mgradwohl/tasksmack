@@ -40,25 +40,11 @@ enum class ProcessColumn : std::uint8_t
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
-        ProcessColumn::PID,
-        ProcessColumn::User,
-        ProcessColumn::CpuPercent,
-        ProcessColumn::MemPercent,
-        ProcessColumn::Virtual,
-        ProcessColumn::Resident,
-        ProcessColumn::PeakResident,
-        ProcessColumn::Shared,
-        ProcessColumn::CpuTime,
-        ProcessColumn::State,
-        ProcessColumn::Name,
-        ProcessColumn::PPID,
-        ProcessColumn::Nice,
-        ProcessColumn::Threads,
-        ProcessColumn::PageFaults,
-        ProcessColumn::Affinity,
-        ProcessColumn::Command,
-        ProcessColumn::IoRead,
-        ProcessColumn::IoWrite,
+        ProcessColumn::PID,     ProcessColumn::User,     ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
+        ProcessColumn::Virtual, ProcessColumn::Resident, ProcessColumn::PeakResident, ProcessColumn::Shared,
+        ProcessColumn::CpuTime, ProcessColumn::State,    ProcessColumn::Name,         ProcessColumn::PPID,
+        ProcessColumn::Nice,    ProcessColumn::Threads,  ProcessColumn::PageFaults,   ProcessColumn::Affinity,
+        ProcessColumn::Command, ProcessColumn::IoRead,   ProcessColumn::IoWrite,
     };
 }
 

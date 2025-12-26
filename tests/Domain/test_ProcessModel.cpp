@@ -1305,6 +1305,6 @@ TEST(ProcessModelTest, NewProcessWithSamePidGetsZeroIoRates)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].name, "new_proc");
-    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0);  // No valid previous data
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0); // No valid previous data
     EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0);
 }
