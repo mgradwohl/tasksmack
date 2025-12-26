@@ -30,33 +30,21 @@ enum class ProcessColumn : std::uint8_t
     PageFaults,
     Affinity,
     Command,
+    IoRead,
+    IoWrite,
     // Future columns (data not yet available):
-    // IoRead,
-    // IoWrite,
     Count // Must be last
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 17>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 19>
 {
     // Keep in sync with ProcessColumn enum (excluding Count).
     return {
-        ProcessColumn::PID,
-        ProcessColumn::User,
-        ProcessColumn::CpuPercent,
-        ProcessColumn::MemPercent,
-        ProcessColumn::Virtual,
-        ProcessColumn::Resident,
-        ProcessColumn::PeakResident,
-        ProcessColumn::Shared,
-        ProcessColumn::CpuTime,
-        ProcessColumn::State,
-        ProcessColumn::Name,
-        ProcessColumn::PPID,
-        ProcessColumn::Nice,
-        ProcessColumn::Threads,
-        ProcessColumn::PageFaults,
-        ProcessColumn::Affinity,
-        ProcessColumn::Command,
+        ProcessColumn::PID,     ProcessColumn::User,     ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
+        ProcessColumn::Virtual, ProcessColumn::Resident, ProcessColumn::PeakResident, ProcessColumn::Shared,
+        ProcessColumn::CpuTime, ProcessColumn::State,    ProcessColumn::Name,         ProcessColumn::PPID,
+        ProcessColumn::Nice,    ProcessColumn::Threads,  ProcessColumn::PageFaults,   ProcessColumn::Affinity,
+        ProcessColumn::Command, ProcessColumn::IoRead,   ProcessColumn::IoWrite,
     };
 }
 
@@ -121,6 +109,10 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Command
         {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
+        // I/O Read
+        {.name="I/O Read", .configKey="io_read", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk read rate (bytes/sec)"},
+        // I/O Write
+        {.name="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
     }};
     // clang-format on
 

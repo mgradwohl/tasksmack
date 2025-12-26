@@ -421,6 +421,10 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.cpuAffinityMask, procB.cpuAffinityMask);
                                           case ProcessColumn::Command:
                                               return compare(procA.command, procB.command);
+                                          case ProcessColumn::IoRead:
+                                              return compare(procA.ioReadBytesPerSec, procB.ioReadBytesPerSec);
+                                          case ProcessColumn::IoWrite:
+                                              return compare(procA.ioWriteBytesPerSec, procB.ioWriteBytesPerSec);
                                           default:
                                               return false;
                                           }
@@ -729,6 +733,24 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::Text("[%s]", proc.name.c_str());
             }
             break;
+
+        case ProcessColumn::IoRead:
+        {
+            // Format as bytes per second with appropriate unit
+            const auto unit = UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec);
+            const std::string text = UI::Format::formatBytesPerSecWithUnit(proc.ioReadBytesPerSec, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
+
+        case ProcessColumn::IoWrite:
+        {
+            // Format as bytes per second with appropriate unit
+            const auto unit = UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec);
+            const std::string text = UI::Format::formatBytesPerSecWithUnit(proc.ioWriteBytesPerSec, unit);
+            ImGui::TextUnformatted(text.c_str());
+            break;
+        }
 
         default:
             break;
