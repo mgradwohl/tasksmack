@@ -27,11 +27,9 @@ class WindowsDiskProbe : public IDiskProbe
     [[nodiscard]] DiskCapabilities capabilities() const override;
 
   private:
-#if defined(_WIN32)
     // Opaque implementation to avoid including Windows headers in public header
     struct Impl;
     std::unique_ptr<Impl> m_Impl;
-#endif
 };
 
 } // namespace Platform

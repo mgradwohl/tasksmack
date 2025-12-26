@@ -1,6 +1,3 @@
-// Keep this translation unit parseable on non-Windows platforms
-#if defined(_WIN32)
-
 #include "WindowsDiskProbe.h"
 
 #include <spdlog/spdlog.h>
@@ -265,5 +262,3 @@ DiskCapabilities WindowsDiskProbe::capabilities() const
 }
 
 } // namespace Platform
-
-#endif // _WIN32
