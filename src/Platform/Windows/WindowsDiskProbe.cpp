@@ -1,14 +1,7 @@
 // Keep this translation unit parseable on non-Windows platforms
 #if defined(_WIN32)
 
-#include "WindowsDiskProbe.h"
-
-#include <spdlog/spdlog.h>
-
-#include <algorithm>
-#include <string>
-#include <vector>
-
+// Windows headers must be included before any project headers to avoid PCH conflicts
 // clang-format off
 #include <windows.h>
 #include <pdh.h>
@@ -17,6 +10,14 @@
 // clang-format on
 
 #pragma comment(lib, "pdh.lib")
+
+#include "WindowsDiskProbe.h"
+
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <string>
+#include <vector>
 
 namespace Platform
 {
