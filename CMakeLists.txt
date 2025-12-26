@@ -469,6 +469,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
+    src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
 
@@ -504,6 +505,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
+        src/Platform/Windows/WinString.h
     )
 endif()
 

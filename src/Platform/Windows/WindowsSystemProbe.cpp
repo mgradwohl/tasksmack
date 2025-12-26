@@ -13,6 +13,7 @@
 #include <winternl.h>
 // clang-format on
 
+#include "WinString.h"
 #include "WindowsProcAddress.h"
 
 #include <array>
@@ -101,12 +102,12 @@ WindowsSystemProbe::WindowsSystemProbe()
     GetSystemInfo(&sysInfo);
     m_NumCores = sysInfo.dwNumberOfProcessors;
 
-    // Get hostname
-    std::array<char, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
+    // Get hostname (UTF-8 via wide API)
+    std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
     DWORD bufferSize = MAX_COMPUTERNAME_LENGTH + 1;
-    if (GetComputerNameA(hostBuffer.data(), &bufferSize) != 0)
+    if (GetComputerNameW(hostBuffer.data(), &bufferSize) != 0)
     {
-        m_Hostname = hostBuffer.data();
+        m_Hostname = WinString::wideToUtf8(hostBuffer.data());
     }
     else
     {
@@ -115,17 +116,17 @@ WindowsSystemProbe::WindowsSystemProbe()
 
     // Get CPU model from registry
     {
-        std::array<char, 256> cpuBuffer{};
-        DWORD cpuBufferSize = 256;
-        if (RegGetValueA(HKEY_LOCAL_MACHINE,
-                         R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         "ProcessorNameString",
+        std::array<wchar_t, 256> cpuBuffer{};
+        DWORD cpuBufferSize = sizeof(cpuBuffer);
+        if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                         L"ProcessorNameString",
                          RRF_RT_REG_SZ,
                          nullptr,
                          cpuBuffer.data(),
                          &cpuBufferSize) == ERROR_SUCCESS)
         {
-            m_CpuModel = cpuBuffer.data();
+            m_CpuModel = WinString::wideToUtf8(cpuBuffer.data());
 
             // Trim leading/trailing whitespace
             while (!m_CpuModel.empty() && m_CpuModel[0] == ' ')
@@ -305,9 +306,9 @@ void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
     {
         DWORD mhz = 0;
         DWORD dataSize = sizeof(mhz);
-        if (RegGetValueA(HKEY_LOCAL_MACHINE,
-                         R"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         "~MHz",
+        if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                         L"~MHz",
                          RRF_RT_REG_DWORD,
                          nullptr,
                          &mhz,

@@ -4,8 +4,6 @@
 #include "Platform/StorageTypes.h"
 
 #include <memory>
-#include <string>
-#include <vector>
 
 namespace Platform
 {

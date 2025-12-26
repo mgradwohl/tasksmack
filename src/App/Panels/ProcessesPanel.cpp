@@ -491,9 +491,8 @@ ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& sna
 
     // First pass: build uniqueKey lookup for parent resolution
     std::unordered_map<std::int32_t, std::uint64_t> pidToUniqueKey;
-    for (std::size_t i = 0; i < snapshots.size(); ++i)
+    for (const auto& proc : snapshots)
     {
-        const auto& proc = snapshots[i];
         pidToUniqueKey[proc.pid] = proc.uniqueKey;
     }
 
@@ -751,7 +750,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
     };
 
     std::vector<StackFrame> stack;
-    stack.push_back({procIdx, depth});
+    stack.push_back(StackFrame{.procIdx = procIdx, .depth = depth});
 
     while (!stack.empty())
     {
@@ -795,7 +794,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         {
             for (auto it = filteredChildren.rbegin(); it != filteredChildren.rend(); ++it)
             {
-                stack.push_back({*it, frame.depth + 1});
+                stack.push_back(StackFrame{.procIdx = *it, .depth = frame.depth + 1});
             }
         }
     }

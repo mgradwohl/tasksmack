@@ -110,12 +110,12 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
 #ifdef _WIN32
     // Windows: Prefer Notepad to avoid unexpected handlers (e.g., Node.js associations)
     const std::wstring wpath = filePath.wstring();
-    const HINSTANCE result = ShellExecuteW(nullptr, L"open", L"notepad.exe", wpath.c_str(), nullptr, SW_SHOWNORMAL);
+    auto* const result = ShellExecuteW(nullptr, L"open", L"notepad.exe", wpath.c_str(), nullptr, SW_SHOWNORMAL);
     // ShellExecuteW returns a value > 32 on success
     if (reinterpret_cast<intptr_t>(result) <= 32)
     {
         // Fallback to shell default association if Notepad failed to launch
-        const HINSTANCE fallback = ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        auto* const fallback = ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<intptr_t>(fallback) <= 32)
         {
             spdlog::error("Failed to open file with Notepad or default handler: {}", filePath.string());

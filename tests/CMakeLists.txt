@@ -56,6 +56,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp

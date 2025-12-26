@@ -140,6 +140,7 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ### Constants
 - Shared sampling defaults/guardrails live in `src/Domain/SamplingConfig.h` (refresh interval ms, history seconds, clamp helpers). Reuse these instead of re-declaring literals across App/Domain/UI.
 - Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, `GLFW_INCLUDE_NONE`, etc.) as `#define`.
+- **String encoding:** Internally everything is UTF-8. On Windows, call the wide-character (W) Win32/PDH APIs and convert at the boundary; do not use ANSI APIs. Keep Windows file/process/device names as UTF-8 in our code.
 
 ### GLFW/GLAD Header Order
 ```cpp
