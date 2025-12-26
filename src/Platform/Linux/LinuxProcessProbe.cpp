@@ -517,17 +517,17 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
             if (firstColon != std::string::npos && secondColon != std::string::npos)
             {
                 std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
-                std::string cgroupPath = line.substr(secondColon + 1);
+                std::string cgroupSubPath = line.substr(secondColon + 1);
 
                 // Check if this line has the freezer controller
                 if (controllers.find("freezer") != std::string::npos)
                 {
                     // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
-                    // Skip if cgroupPath is empty or doesn't start with /
-                    if (!cgroupPath.empty() && cgroupPath[0] == '/')
+                    // Skip if cgroupSubPath is empty or doesn't start with /
+                    if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
                     {
-                        std::filesystem::path freezePathV1 =
-                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
+                        std::filesystem::path freezePathV1 = std::filesystem::path("/sys/fs/cgroup/freezer")
+                                                                 / cgroupSubPath.substr(1) / "freezer.state";
                         std::ifstream freezeFileV1(freezePathV1);
                         if (freezeFileV1.is_open())
                         {
