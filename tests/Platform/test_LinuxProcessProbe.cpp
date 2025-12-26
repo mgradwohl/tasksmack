@@ -477,7 +477,6 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     auto processes1 = probe.enumerate();
     auto selfProc1 = std::find_if(processes1.begin(), processes1.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
     ASSERT_NE(selfProc1, processes1.end());
-    const uint64_t readBytes1 = selfProc1->readBytes;
     const uint64_t writeBytes1 = selfProc1->writeBytes;
 
     // Do some I/O activity (write to a temporary file)
@@ -501,7 +500,6 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     auto processes2 = probe.enumerate();
     auto selfProc2 = std::find_if(processes2.begin(), processes2.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
     ASSERT_NE(selfProc2, processes2.end());
-    const uint64_t readBytes2 = selfProc2->readBytes;
     const uint64_t writeBytes2 = selfProc2->writeBytes;
 
     // Write bytes should have increased (we wrote to a file)
