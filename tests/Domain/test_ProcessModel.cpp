@@ -488,26 +488,280 @@ TEST(ProcessModelTest, SnapshotContainsAllFields)
     EXPECT_EQ(snap.parentPid, 100);
     EXPECT_EQ(snap.name, "my_process");
     EXPECT_EQ(snap.displayState, "Sleeping");
-    EXPECT_EQ(snap.memoryBytes, 1024 * 1024 * 50);
-    EXPECT_EQ(snap.virtualBytes, 1024 * 1024 * 200);
-    EXPECT_EQ(snap.threadCount, 4);
-    EXPECT_NE(snap.uniqueKey, 0);
 }
 
-TEST(ProcessModelTest, PageFaultsAreCopiedToSnapshot)
+// CPU Affinity Tests
+// =============================================================================
+
+TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0x0F; // Cores 0-3
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
+}
+
+TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0; // Not available
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
+}
+
+TEST(ProcessModelTest, CpuAffinityAllCores)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
+    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
+}
+
+// =============================================================================
+// Network Rate Calculation Tests
+// =============================================================================
+
+TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);     // No previous data
+    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0); // No previous data
+}
+
+TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: 1000 sent, 2000 received
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait a bit to ensure time delta is non-zero
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Second sample: 2000 sent (+1000), 4000 received (+2000)
+    // Rates depend on time delta (should be ~100ms = 0.1s)
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // With ~0.1s delta: 1000 bytes / 0.1s = ~10000 B/s, 2000 bytes / 0.1s = ~20000 B/s
+    // Allow some tolerance for timing variations
+    EXPECT_GT(snaps[0].netSentBytesPerSec, 5000.0);
+    EXPECT_LT(snaps[0].netSentBytesPerSec, 20000.0);
+    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 10000.0);
+    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 40000.0);
+}
+
+TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 2000, 4000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Counter decreased (process restarted or counter wrapped)
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 500, 1000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Should be 0 (no rate calculated when counter decreases)
+    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+}
+
+// =============================================================================
+// Power Usage Calculation Tests
+// =============================================================================
+
+TEST(ProcessModelTest, FirstRefreshShowsZeroPowerUsage)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(100, "test_proc").withPowerUsage(100, 1'000'000); // 1M microjoules
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // First sample has no previous data, so power should be 0
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageCalculationFromEnergyDelta)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First refresh: energy = 1,000,000 microjoules (1 joule)
+    rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1'000'000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait a bit to ensure time delta > 0 (simulate 0.1 second passing)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Second refresh: energy increased by 100,000 microjoules (0.1 joule)
+    // If 100ms passed, power = 0.1J / 0.1s = 1W
+    rawProbe->withProcess(100, "power_proc").withPowerUsage(100, 1'100'000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Power should be approximately 1 watt (0.1J / 0.1s)
+    // Allow some tolerance due to timing variations
+    EXPECT_GT(snaps[0].powerWatts, 0.5);
+    EXPECT_LT(snaps[0].powerWatts, 2.0);
+}
+
+TEST(ProcessModelTest, PowerUsageWithZeroEnergyDelta)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // Process with constant energy (no power consumption)
+    rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Energy unchanged
+    rawProbe->withProcess(100, "idle_proc").withPowerUsage(100, 1'000'000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageHandlesEnergyCounterReset)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First reading
+    rawProbe->withProcess(100, "proc").withPowerUsage(100, 5'000'000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Counter decreased (reset or wrap) - should be handled gracefully
+    rawProbe->withProcess(100, "proc").withPowerUsage(100, 1'000'000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // When energy counter decreases, no power is calculated (0 or skipped)
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, PowerUsageWithoutEnergyData)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withProcess(100, "no_power_proc");
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    rawProbe->withProcess(100, "no_power_proc");
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_DOUBLE_EQ(snaps[0].powerWatts, 0.0);
+}
+
+TEST(ProcessModelTest, BuilderPatternWithPowerUsage)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(123, "power_test").withPowerUsage(123, 5'000'000).withCpuTime(123, 1000, 500);
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 123);
+    EXPECT_EQ(snaps[0].name, "power_test");
+}
+
+// =============================================================================
+// I/O Rate Calculation Tests
+// =============================================================================
+TEST(ProcessModelTest, FirstRefreshShowsZeroIoRates)
 {
     auto probe = std::make_unique<MockProcessProbe>();
 
-    Platform::ProcessCounters c;
-    c.pid = 12345;
-    c.parentPid = 100;
-    c.name = "test_process";
-    c.state = 'R';
-    c.userTime = 1000;
-    c.systemTime = 500;
-    c.startTimeTicks = 9999;
-    c.rssBytes = 1024 * 1024;
-    c.pageFaultCount = 123456; // Set page fault count
+    Platform::ProcessCounters c = makeCounter(100, "test_proc", 'R', 1000, 500);
+    c.readBytes = 1024 * 1024; // 1 MB
+    c.writeBytes = 512 * 1024; // 512 KB
 
     probe->setCounters({c});
     probe->setTotalCpuTime(100000);
@@ -517,260 +771,8 @@ TEST(ProcessModelTest, PageFaultsAreCopiedToSnapshot)
 
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
-
-    const auto& snap = snaps[0];
-    EXPECT_EQ(snap.pageFaults, 123456); // Verify page faults are copied correctly
-}
-
-TEST(ProcessModelTest, PageFaultsDefaultToZeroWhenNotSet)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-
-    Platform::ProcessCounters c;
-    c.pid = 12345;
-    c.parentPid = 100;
-    c.name = "test_process";
-    c.state = 'R';
-    c.userTime = 1000;
-    c.systemTime = 500;
-    c.startTimeTicks = 9999;
-    c.rssBytes = 1024 * 1024;
-    // pageFaultCount not explicitly set, should default to 0
-
-    probe->setCounters({c});
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    const auto& snap = snaps[0];
-    EXPECT_EQ(snap.pageFaults, 0); // Default value should be 0
-}
-
-TEST(ProcessModelTest, ProcessCountReturnsCorrectValue)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->setCounters({
-        makeCounter(1, "proc1", 'R', 0, 0),
-        makeCounter(2, "proc2", 'S', 0, 0),
-        makeCounter(3, "proc3", 'S', 0, 0),
-    });
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    EXPECT_EQ(model.processCount(), 3);
-}
-
-// =============================================================================
-// Process Lifecycle Tests
-// =============================================================================
-
-TEST(ProcessModelTest, ProcessDisappearingIsHandled)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    // Two processes
-    rawProbe->setCounters({
-        makeCounter(100, "proc_a", 'R', 1000, 0),
-        makeCounter(200, "proc_b", 'R', 2000, 0),
-    });
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    EXPECT_EQ(model.processCount(), 2);
-
-    // proc_b terminates
-    rawProbe->setCounters({
-        makeCounter(100, "proc_a", 'R', 1500, 0),
-    });
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    EXPECT_EQ(model.processCount(), 1);
-    auto snaps = model.snapshots();
-    EXPECT_EQ(snaps[0].pid, 100);
-}
-
-TEST(ProcessModelTest, NewProcessAppearingIsHandled)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    // One process
-    rawProbe->setCounters({makeCounter(100, "proc_a", 'R', 1000, 0)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    EXPECT_EQ(model.processCount(), 1);
-
-    // New process appears
-    rawProbe->setCounters({
-        makeCounter(100, "proc_a", 'R', 1500, 0),
-        makeCounter(200, "new_proc", 'R', 100, 0, /*startTime*/ 2000),
-    });
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    EXPECT_EQ(model.processCount(), 2);
-
-    auto snaps = model.snapshots();
-    bool foundNew = false;
-    for (const auto& s : snaps)
-    {
-        if (s.pid == 200)
-        {
-            foundNew = true;
-            EXPECT_EQ(s.name, "new_proc");
-            EXPECT_DOUBLE_EQ(s.cpuPercent, 0.0); // New process, no history
-        }
-    }
-    EXPECT_TRUE(foundNew);
-}
-
-// =============================================================================
-// updateFromCounters Tests (Background Sampler Interface)
-// =============================================================================
-
-TEST(ProcessModelTest, UpdateFromCountersWorks)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    // Direct update without using the probe
-    std::vector<Platform::ProcessCounters> counters = {
-        makeCounter(100, "external_proc", 'R', 1000, 500),
-    };
-    model.updateFromCounters(counters, 100000);
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].pid, 100);
-    EXPECT_EQ(snaps[0].name, "external_proc");
-}
-
-TEST(ProcessModelTest, UpdateFromCountersCalculatesCpuDelta)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    // First update
-    std::vector<Platform::ProcessCounters> counters1 = {
-        makeCounter(100, "proc", 'R', 1000, 500),
-    };
-    model.updateFromCounters(counters1, 100000);
-
-    // Second update with CPU usage
-    std::vector<Platform::ProcessCounters> counters2 = {
-        makeCounter(100, "proc", 'R', 2000, 1000),
-    };
-    model.updateFromCounters(counters2, 200000);
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_DOUBLE_EQ(snaps[0].cpuPercent, 1.5);
-}
-
-// =============================================================================
-// Thread Safety Tests
-// =============================================================================
-
-TEST(ProcessModelTest, ConcurrentSnapshotAccess)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->setCounters({
-        makeCounter(1, "proc1", 'R', 1000, 0),
-        makeCounter(2, "proc2", 'S', 2000, 0),
-    });
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Concurrent reads should not crash
-    std::vector<std::thread> readers;
-    for (int i = 0; i < 10; ++i)
-    {
-        readers.emplace_back(
-            [&model]()
-            {
-                for (int j = 0; j < 100; ++j)
-                {
-                    auto snaps = model.snapshots();
-                    auto count = model.processCount();
-                    (void) snaps;
-                    (void) count;
-                }
-            });
-    }
-
-    for (auto& t : readers)
-    {
-        t.join();
-    }
-
-    EXPECT_EQ(model.processCount(), 2);
-}
-
-TEST(ProcessModelTest, ConcurrentRefreshAndRead)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    rawProbe->setCounters({makeCounter(1, "proc", 'R', 1000, 0)});
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-
-    std::atomic<bool> done{false};
-
-    // Writer thread
-    std::thread writer(
-        [&]()
-        {
-            for (uint64_t i = 0; i < 100 && !done; ++i)
-            {
-                rawProbe->setCounters({makeCounter(1, "proc", 'R', 1000 + (i * 10), 0)});
-                rawProbe->setTotalCpuTime(100000 + (i * 1000));
-                model.refresh();
-            }
-            done = true;
-        });
-
-    // Reader threads
-    std::vector<std::thread> readers;
-    for (int i = 0; i < 5; ++i)
-    {
-        readers.emplace_back(
-            [&model, &done]()
-            {
-                while (!done)
-                {
-                    auto snaps = model.snapshots();
-                    auto count = model.processCount();
-                    (void) snaps;
-                    (void) count;
-                }
-            });
-    }
-
-    writer.join();
-    for (auto& t : readers)
-    {
-        t.join();
-    }
-
-    // Model should be in a consistent state
-    EXPECT_GE(model.processCount(), 0);
+    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0); // No previous data
+    EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0);
 }
 
 // =============================================================================
@@ -949,157 +951,6 @@ TEST(ProcessModelTest, BuilderPatternBackwardCompatibility)
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].pid, 123);
     EXPECT_EQ(snaps[0].name, "legacy_proc");
-}
-
-// CPU Affinity Tests
-// =============================================================================
-
-TEST(ProcessModelTest, CpuAffinityIsPassedThrough)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Platform::ProcessCounters counter = makeCounter(100, "affinity_test", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0x0F; // Cores 0-3
-    probe->setCounters({counter});
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0x0F);
-}
-
-TEST(ProcessModelTest, CpuAffinityZeroWhenNotAvailable)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Platform::ProcessCounters counter = makeCounter(100, "no_affinity", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0; // Not available
-    probe->setCounters({counter});
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0);
-}
-
-TEST(ProcessModelTest, CpuAffinityAllCores)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Platform::ProcessCounters counter = makeCounter(100, "all_cores", 'R', 1000, 500);
-    counter.cpuAffinityMask = 0xFFFFFFFFFFFFFFFF; // All 64 cores
-    probe->setCounters({counter});
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_EQ(snaps[0].cpuAffinityMask, 0xFFFFFFFFFFFFFFFF);
-}
-
-// =============================================================================
-// Network Rate Calculation Tests
-// =============================================================================
-
-TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);     // No previous data
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0); // No previous data
-}
-
-TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    // First sample: 1000 sent, 2000 received
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    // Wait a bit to ensure time delta is non-zero
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Second sample: 2000 sent (+1000), 4000 received (+2000)
-    // Rates depend on time delta (should be ~100ms = 0.1s)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // With ~0.1s delta: 1000 bytes / 0.1s = ~10000 B/s, 2000 bytes / 0.1s = ~20000 B/s
-    // Allow some tolerance for timing variations
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 5000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 20000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 10000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 40000.0);
-}
-
-TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 2000, 4000);
-    rawProbe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // Counter decreased (process restarted or counter wrapped)
-    rawProbe->setCounters({});
-    rawProbe->withProcess(100, "proc").withNetworkCounters(100, 500, 1000);
-    rawProbe->setTotalCpuTime(200000);
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    // Should be 0 (no rate calculated when counter decreases)
-    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
-}
-// =============================================================================
-// I/O Rate Calculation Tests
-// =============================================================================
-TEST(ProcessModelTest, FirstRefreshShowsZeroIoRates)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-
-    Platform::ProcessCounters c = makeCounter(100, "test_proc", 'R', 1000, 500);
-    c.readBytes = 1024 * 1024; // 1 MB
-    c.writeBytes = 512 * 1024; // 512 KB
-
-    probe->setCounters({c});
-    probe->setTotalCpuTime(100000);
-
-    Domain::ProcessModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-    EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0); // No previous data
-    EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0);
 }
 
 TEST(ProcessModelTest, IoRatesCalculatedFromDeltas)

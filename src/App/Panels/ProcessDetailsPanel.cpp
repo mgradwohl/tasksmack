@@ -189,6 +189,8 @@ void ProcessDetailsPanel::render(bool* open)
             renderIoStats(m_CachedSnapshot);
             ImGui::Separator();
             renderNetworkStats(m_CachedSnapshot);
+            ImGui::Separator();
+            renderPowerUsage(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
@@ -711,6 +713,23 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     ImGui::Text("Received:");
     ImGui::SameLine(80.0F);
     ImGui::Text("%.1f %s", recvVal, recvUnit);
+}
+
+void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
+{
+    // Only show power usage if we have data
+    if (proc.powerWatts <= 0.0)
+    {
+        return;
+    }
+
+    ImGui::Text("Power Usage");
+    ImGui::Spacing();
+
+    const std::string text = UI::Format::formatPowerCompact(proc.powerWatts);
+    ImGui::Text("Power:");
+    ImGui::SameLine(80.0F);
+    ImGui::TextUnformatted(text.c_str());
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)

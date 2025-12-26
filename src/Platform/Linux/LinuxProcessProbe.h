@@ -29,6 +29,8 @@ class LinuxProcessProbe : public IProcessProbe
     uint64_t m_PageSize;
     mutable bool m_IoCountersAvailable{false};           // Cached capability check
     mutable bool m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
+    bool m_HasPowerCap = false;
+    std::string m_PowerCapPath;
 
     /// Parse /proc/[pid]/stat for a single process
     [[nodiscard]] bool parseProcessStat(int32_t pid, ProcessCounters& counters) const;
@@ -52,6 +54,15 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
+
+    /// Check if RAPL powercap is available and find the path
+    [[nodiscard]] bool detectPowerCap();
+
+    /// Read system-wide energy from RAPL (returns microjoules, 0 if unavailable)
+    [[nodiscard]] uint64_t readSystemEnergy() const;
+
+    /// Attribute system energy to processes based on CPU usage
+    void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
 };
 
 } // namespace Platform

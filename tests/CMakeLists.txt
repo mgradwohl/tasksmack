@@ -49,6 +49,7 @@ if(WIN32)
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
         Platform/test_WindowsDiskProbe.cpp
+        Platform/test_WindowsPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
@@ -56,6 +57,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES

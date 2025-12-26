@@ -48,7 +48,7 @@ void drawProgressBarWithOverlay(double fraction01, const std::string& overlay, c
     // Convert to uint64_t for formatting (clamped to valid range)
     const auto bytes = static_cast<uint64_t>(std::max(0.0, bytesPerSec));
     const auto unit = UI::Format::unitForTotalBytes(bytes);
-    return UI::Format::formatBytesWithUnit(bytes, unit);
+    return UI::Format::formatBytesWithUnit(static_cast<double>(bytes), unit);
 }
 
 } // namespace

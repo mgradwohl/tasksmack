@@ -741,7 +741,6 @@ void SystemMetricsPanel::renderOverview()
             ImGui::TextUnformatted(infoStr.c_str());
         }
     }
-    }
 }
 
 void SystemMetricsPanel::renderCpuSection()

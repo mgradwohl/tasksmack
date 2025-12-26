@@ -40,6 +40,11 @@ struct ProcessCounters
     // Network counters (cumulative bytes)
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
+
+    // Power usage (optional, platform-dependent)
+    // On Windows: from PROCESS_POWER_THROTTLING_STATE
+    // On Linux: from powercap sysfs (per-package energy counters)
+    std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 };
 
 /// Reports what this platform's probe supports.
@@ -57,6 +62,7 @@ struct ProcessCapabilities
     bool hasPeakRss = false;         // Whether peak working set is available
     bool hasCpuAffinity = false;     // Whether CPU affinity mask is available
     bool hasNetworkCounters = false; // Whether per-process network counters are available
+    bool hasPowerUsage = false;      // Whether power consumption metrics are available
 };
 
 } // namespace Platform

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <shared_mutex>
 
 namespace Domain
 {
@@ -20,17 +21,21 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
         m_Capabilities = m_Probe->capabilities();
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
-        spdlog::info("ProcessModel initialized with probe capabilities: "
-                     "hasIoCounters={}, hasThreadCount={}, hasUserSystemTime={}, hasStartTime={}, hasUser={}, "
-                     "hasNetworkCounters={}, hasPeakRss={}, hasCpuAffinity={}",
+        spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
+                     "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
+                     "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
                      m_Capabilities.hasIoCounters,
                      m_Capabilities.hasThreadCount,
                      m_Capabilities.hasUserSystemTime,
                      m_Capabilities.hasStartTime,
                      m_Capabilities.hasUser,
-                     m_Capabilities.hasNetworkCounters,
+                     m_Capabilities.hasCommand,
+                     m_Capabilities.hasNice,
+                     m_Capabilities.hasPageFaults,
                      m_Capabilities.hasPeakRss,
-                     m_Capabilities.hasCpuAffinity);
+                     m_Capabilities.hasCpuAffinity,
+                     m_Capabilities.hasNetworkCounters,
+                     m_Capabilities.hasPowerUsage);
         spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
@@ -44,7 +49,6 @@ void ProcessModel::refresh()
         return;
     }
 
-    // Read current counters
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
 
@@ -60,24 +64,24 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 {
     std::unique_lock lock(m_Mutex);
 
-    // Calculate elapsed time since last sample for rate calculations
     const auto currentSampleTime = std::chrono::steady_clock::now();
     double elapsedSeconds = 0.0;
+    std::uint64_t timeDeltaUs = 0;
     if (m_HasPrevSampleTime)
     {
-        elapsedSeconds = std::chrono::duration<double>(currentSampleTime - m_PrevSampleTime).count();
+        const auto delta = currentSampleTime - m_PrevSampleTime;
+        elapsedSeconds = std::chrono::duration<double>(delta).count();
+        timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(delta).count());
     }
     m_PrevSampleTime = currentSampleTime;
     m_HasPrevSampleTime = true;
 
-    // Calculate total CPU delta
     std::uint64_t totalCpuDelta = 0;
     if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
     {
         totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
     }
 
-    // Build new snapshots
     std::vector<ProcessSnapshot> newSnapshots;
     newSnapshots.reserve(counters.size());
 
@@ -91,7 +95,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
 
-        // Find previous counters for this process (if exists and same instance)
         const Platform::ProcessCounters* previous = nullptr;
         auto prevIt = m_PrevCounters.find(key);
         if (prevIt != m_PrevCounters.end())
@@ -99,16 +102,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             previous = &prevIt->second;
         }
 
-        // Track peak RSS
         std::uint64_t peakRss = current.rssBytes;
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            // OS provides peak (Windows)
             peakRss = current.peakRssBytes;
         }
         else
         {
-            // Track peak ourselves (Linux)
             auto peakIt = m_PeakRss.find(key);
             if (peakIt != m_PeakRss.end())
             {
@@ -117,16 +117,14 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
         newPeakRss[key] = peakRss;
 
-        // Compute snapshot with deltas and rates, then set peak memory
-        auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds);
+        auto snapshot =
+            computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
         snapshot.peakMemoryBytes = peakRss;
         newSnapshots.push_back(std::move(snapshot));
 
-        // Store for next iteration
         newPrevCounters[key] = current;
     }
 
-    // Swap in new data
     m_Snapshots = std::move(newSnapshots);
     m_PrevCounters = std::move(newPrevCounters);
     m_PeakRss = std::move(newPeakRss);
@@ -155,7 +153,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t totalCpuDelta,
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
-                                              double elapsedSeconds) const
+                                              double elapsedSeconds,
+                                              std::uint64_t timeDeltaUs) const
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -173,21 +172,17 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.cpuAffinityMask = current.cpuAffinityMask;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
 
-    // Calculate memory percentage
     if (systemTotalMemory > 0)
     {
         snapshot.memoryPercent = (Numeric::toDouble(current.rssBytes) / Numeric::toDouble(systemTotalMemory)) * 100.0;
     }
 
-    // Calculate cumulative CPU time in seconds
     if (ticksPerSecond > 0)
     {
         const std::uint64_t totalTicks = current.userTime + current.systemTime;
         snapshot.cpuTimeSeconds = Numeric::toDouble(totalTicks) / Numeric::toDouble(ticksPerSecond);
     }
 
-    // Compute CPU% from deltas
-    // CPU% = (processCpuDelta / totalCpuDelta) * 100; totalCpuDelta already includes all cores
     if (previous != nullptr && totalCpuDelta > 0)
     {
         const std::uint64_t prevUser = previous->userTime;
@@ -208,7 +203,6 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         }
     }
 
-    // Compute network and I/O rates from deltas
     if (previous != nullptr && elapsedSeconds > 0.0)
     {
         auto computeRate = [elapsedSeconds](std::uint64_t currentValue, std::uint64_t previousValue) -> double
@@ -221,13 +215,19 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             return 0.0;
         };
 
-        // Network rates
         snapshot.netSentBytesPerSec = computeRate(current.netSentBytes, previous->netSentBytes);
         snapshot.netReceivedBytesPerSec = computeRate(current.netReceivedBytes, previous->netReceivedBytes);
-
-        // I/O rates
         snapshot.ioReadBytesPerSec = computeRate(current.readBytes, previous->readBytes);
         snapshot.ioWriteBytesPerSec = computeRate(current.writeBytes, previous->writeBytes);
+    }
+
+    if (previous != nullptr && timeDeltaUs > 0)
+    {
+        if (current.energyMicrojoules >= previous->energyMicrojoules)
+        {
+            const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
+            snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
+        }
     }
 
     return snapshot;
@@ -235,18 +235,13 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
 
 std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startTime)
 {
-    // Combine PID and start time to handle PID reuse
-    // Use a simple hash combining technique
     std::size_t hash = std::hash<std::int32_t>{}(pid);
     hash ^= std::hash<std::uint64_t>{}(startTime) + 0x9e3779b9U + (hash << 6) + (hash >> 2);
-    return static_cast<std::uint64_t>(hash);
+    return hash;
 }
 
 std::string ProcessModel::translateState(char rawState)
 {
-    // Linux /proc/[pid]/stat states:
-    // R = Running, S = Sleeping, D = Disk sleep, Z = Zombie,
-    // T = Stopped, t = Tracing stop, X = Dead
     switch (rawState)
     {
     case 'R':

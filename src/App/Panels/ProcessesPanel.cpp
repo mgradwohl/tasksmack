@@ -425,6 +425,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.ioReadBytesPerSec, procB.ioReadBytesPerSec);
                                           case ProcessColumn::IoWrite:
                                               return compare(procA.ioWriteBytesPerSec, procB.ioWriteBytesPerSec);
+                                          case ProcessColumn::Power:
+                                              return compare(procA.powerWatts, procB.powerWatts);
                                           default:
                                               return false;
                                           }
@@ -604,7 +606,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Virtual:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(proc.virtualBytes, unit);
+            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.virtualBytes), unit);
             ImGui::TextUnformatted(text.c_str());
             break;
         }
@@ -612,7 +614,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Resident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(proc.memoryBytes, unit);
+            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.memoryBytes), unit);
             ImGui::TextUnformatted(text.c_str());
             break;
         }
@@ -620,7 +622,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::PeakResident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.peakMemoryBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(proc.peakMemoryBytes, unit);
+            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.peakMemoryBytes), unit);
             ImGui::TextUnformatted(text.c_str());
             break;
         }
@@ -628,7 +630,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Shared:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(proc.sharedBytes, unit);
+            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.sharedBytes), unit);
             ImGui::TextUnformatted(text.c_str());
             break;
         }
@@ -752,6 +754,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
         }
 
+        case ProcessColumn::Power:
+            if (proc.powerWatts > 0.0)
+            {
+                const std::string text = UI::Format::formatPowerCompact(proc.powerWatts);
+                ImGui::TextUnformatted(text.c_str());
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
         default:
             break;
         }
@@ -763,6 +776,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
                                            const std::unordered_set<std::size_t>& filteredSet,
                                            std::size_t procIdx,
                                            int depth)
+
 {
     // Iterative tree rendering using explicit stack to avoid recursion
     struct StackFrame

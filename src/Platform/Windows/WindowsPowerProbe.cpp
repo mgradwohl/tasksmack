@@ -15,14 +15,6 @@
 namespace Platform
 {
 
-namespace
-{
-// Windows SYSTEM_POWER_STATUS BatteryFlag constants
-constexpr BYTE BATTERY_FLAG_NO_SYSTEM_BATTERY = 128;
-constexpr BYTE BATTERY_FLAG_UNKNOWN = 255;
-constexpr BYTE BATTERY_FLAG_CHARGING = 8;
-} // namespace
-
 WindowsPowerProbe::WindowsPowerProbe()
 {
     // Probe capabilities at construction time
@@ -30,7 +22,7 @@ WindowsPowerProbe::WindowsPowerProbe()
     if (GetSystemPowerStatus(&sps) != 0)
     {
         // Check if there's a battery
-        m_Capabilities.hasBattery = (sps.BatteryFlag != BATTERY_FLAG_NO_SYSTEM_BATTERY);
+        m_Capabilities.hasBattery = (sps.BatteryFlag & BATTERY_FLAG_NO_BATTERY) == 0;
         m_Capabilities.hasChargePercent = m_Capabilities.hasBattery && (sps.BatteryLifePercent <= 100);
         m_Capabilities.hasTimeEstimates = m_Capabilities.hasBattery && (sps.BatteryLifeTime != 0xFFFFFFFF);
 
@@ -64,7 +56,7 @@ PowerCounters WindowsPowerProbe::read()
     }
 
     // Check if battery is present
-    if (sps.BatteryFlag == BATTERY_FLAG_NO_SYSTEM_BATTERY)
+    if ((sps.BatteryFlag & BATTERY_FLAG_NO_BATTERY) != 0)
     {
         counters.state = BatteryState::NotPresent;
         counters.isOnAc = true;
@@ -79,7 +71,7 @@ PowerCounters WindowsPowerProbe::read()
     {
         counters.state = BatteryState::Unknown;
     }
-    else if (sps.BatteryFlag & BATTERY_FLAG_CHARGING)
+    else if ((sps.BatteryFlag & BATTERY_FLAG_CHARGING) != 0)
     {
         counters.state = BatteryState::Charging;
     }

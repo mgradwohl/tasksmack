@@ -39,6 +39,9 @@ struct ProcessSnapshot
     double netSentBytesPerSec = 0.0;
     double netReceivedBytesPerSec = 0.0;
 
+    // Power usage (0 if not supported)
+    double powerWatts = 0.0; // Current power consumption in watts (computed from energy delta)
+
     /// Stable identity across samples (handles PID reuse).
     /// Computed as hash(pid, startTime).
     std::uint64_t uniqueKey = 0;

@@ -32,19 +32,18 @@ enum class ProcessColumn : std::uint8_t
     Command,
     IoRead,
     IoWrite,
-    // Future columns (data not yet available):
-    Count // Must be last
+    Power,
+    Count
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 19>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 20>
 {
-    // Keep in sync with ProcessColumn enum (excluding Count).
     return {
         ProcessColumn::PID,     ProcessColumn::User,     ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
         ProcessColumn::Virtual, ProcessColumn::Resident, ProcessColumn::PeakResident, ProcessColumn::Shared,
         ProcessColumn::CpuTime, ProcessColumn::State,    ProcessColumn::Name,         ProcessColumn::PPID,
         ProcessColumn::Nice,    ProcessColumn::Threads,  ProcessColumn::PageFaults,   ProcessColumn::Affinity,
-        ProcessColumn::Command, ProcessColumn::IoRead,   ProcessColumn::IoWrite,
+        ProcessColumn::Command, ProcessColumn::IoRead,   ProcessColumn::IoWrite,      ProcessColumn::Power,
     };
 }
 
@@ -113,6 +112,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="I/O Read", .configKey="io_read", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk read rate (bytes/sec)"},
         // I/O Write
         {.name="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
+        // Power
+        {.name="Power", .configKey="power", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Power consumption in watts (platform-dependent)"},
     }};
     // clang-format on
 

@@ -1,10 +1,9 @@
 #pragma once
 
 #include "Platform/IDiskProbe.h"
-#include "Platform/IDiskProbe.h"
+#include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
-#include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>

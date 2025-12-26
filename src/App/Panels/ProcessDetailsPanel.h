@@ -47,6 +47,7 @@ class ProcessDetailsPanel : public Panel
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
     void renderIoStats(const Domain::ProcessSnapshot& proc);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc);
+    void renderPowerUsage(const Domain::ProcessSnapshot& proc);
     void renderActions();
     void trimHistory(double nowSeconds);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);

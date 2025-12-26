@@ -52,118 +52,68 @@ struct ByteUnit
     int decimals = 0;
 };
 
-[[nodiscard]] inline auto unitForTotalBytes(std::uint64_t totalBytes) -> ByteUnit
+[[nodiscard]] inline auto chooseByteUnit(double bytes) -> ByteUnit
 {
-    constexpr std::uint64_t KIB = 1024ULL;
-    constexpr std::uint64_t MIB = 1024ULL * 1024ULL;
-    constexpr std::uint64_t GIB = 1024ULL * 1024ULL * 1024ULL;
-
-    if (totalBytes >= GIB)
+    const double absBytes = std::abs(bytes);
+    if (absBytes >= 1024.0 * 1024.0 * 1024.0)
     {
-        return {.suffix = "GB", .scale = UI::Numeric::toDouble(GIB), .decimals = 1};
+        return {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 2};
     }
-    if (totalBytes >= MIB)
+    if (absBytes >= 1024.0 * 1024.0)
     {
-        return {.suffix = "MB", .scale = UI::Numeric::toDouble(MIB), .decimals = 0};
+        return {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
     }
-    if (totalBytes >= KIB)
+    if (absBytes >= 1024.0)
     {
-        return {.suffix = "KB", .scale = UI::Numeric::toDouble(KIB), .decimals = 0};
+        return {.suffix = "KB", .scale = 1024.0, .decimals = 1};
     }
     return {.suffix = "B", .scale = 1.0, .decimals = 0};
 }
 
-[[nodiscard]] inline auto bytesUsedTotalCompact(std::uint64_t usedBytes, std::uint64_t totalBytes) -> std::string
+[[nodiscard]] inline auto unitForTotalBytes(std::uint64_t bytes) -> ByteUnit
 {
-    if (totalBytes == 0)
-    {
-        return {};
-    }
-
-    const ByteUnit unit = unitForTotalBytes(totalBytes);
-    const double used = UI::Numeric::toDouble(usedBytes) / unit.scale;
-    const double total = UI::Numeric::toDouble(totalBytes) / unit.scale;
-
-    if (unit.decimals == 1)
-    {
-        return std::format("{:.1f}/{:.1f} {}", used, total, unit.suffix);
-    }
-
-    return std::format("{:.0f}/{:.0f} {}", used, total, unit.suffix);
-}
-
-[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
-{
-    const std::string usedTotal = bytesUsedTotalCompact(usedBytes, totalBytes);
-    if (usedTotal.empty())
-    {
-        return {};
-    }
-
-    return std::format("{} {}", usedTotal, percentCompact(percent));
-}
-
-[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, float percent) -> std::string
-{
-    const std::string usedTotal = bytesUsedTotalCompact(usedBytes, totalBytes);
-    if (usedTotal.empty())
-    {
-        return {};
-    }
-
-    return std::format("{} {}", usedTotal, percentCompact(percent));
-}
-
-[[nodiscard]] inline auto formatBytesWithUnit(std::uint64_t bytes, const ByteUnit& unit) -> std::string
-{
-    const double value = UI::Numeric::toDouble(bytes) / unit.scale;
-    if (unit.decimals == 1)
-    {
-        return std::format("{:.1f} {}", value, unit.suffix);
-    }
-    return std::format("{:.0f} {}", value, unit.suffix);
+    return chooseByteUnit(static_cast<double>(bytes));
 }
 
 [[nodiscard]] inline auto unitForBytesPerSecond(double bytesPerSec) -> ByteUnit
 {
-    constexpr double KIB = 1024.0;
-    constexpr double MIB = 1024.0 * 1024.0;
-    constexpr double GIB = 1024.0 * 1024.0 * 1024.0;
-
-    const double absBytesPerSec = std::abs(bytesPerSec);
-
-    if (absBytesPerSec >= GIB)
-    {
-        return {.suffix = "GB/s", .scale = GIB, .decimals = 1};
-    }
-    if (absBytesPerSec >= MIB)
-    {
-        return {.suffix = "MB/s", .scale = MIB, .decimals = 1};
-    }
-    if (absBytesPerSec >= KIB)
-    {
-        return {.suffix = "KB/s", .scale = KIB, .decimals = 0};
-    }
-    return {.suffix = "B/s", .scale = 1.0, .decimals = 0};
+    return chooseByteUnit(bytesPerSec);
 }
 
-[[nodiscard]] inline auto formatBytesPerSecWithUnit(double bytesPerSec, const ByteUnit& unit) -> std::string
+[[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
-    const double value = bytesPerSec / unit.scale;
-    if (unit.decimals == 1)
-    {
-        return std::format("{:.1f} {}", value, unit.suffix);
-    }
-    return std::format("{:.0f} {}", value, unit.suffix);
+    const double value = bytes / unit.scale;
+    return std::format("{:.{}f} {}", value, unit.decimals, unit.suffix);
 }
 
-[[nodiscard]] inline auto formatCpuTimeCompact(double seconds) -> std::string
+[[nodiscard]] inline auto formatBytes(double bytes) -> std::string
 {
-    seconds = std::max(0.0, seconds);
+    const auto unit = chooseByteUnit(bytes);
+    return formatBytesWithUnit(bytes, unit);
+}
 
-    // Explicit: UI display, truncation acceptable.
-    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::duration<double>(seconds)).count();
+[[nodiscard]] inline auto formatBytesPerSecWithUnit(double bytesPerSec, ByteUnit unit) -> std::string
+{
+    return formatBytesWithUnit(bytesPerSec, unit) + "/s";
+}
 
+[[nodiscard]] inline auto formatBytesPerSec(double bytesPerSec) -> std::string
+{
+    const auto unit = chooseByteUnit(bytesPerSec);
+    return formatBytesPerSecWithUnit(bytesPerSec, unit);
+}
+
+[[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
+{
+    const auto unit = unitForTotalBytes(std::max(usedBytes, totalBytes));
+    const std::string usedStr = formatBytesWithUnit(static_cast<double>(usedBytes), unit);
+    const std::string totalStr = formatBytesWithUnit(static_cast<double>(totalBytes), unit);
+    return std::format("{} / {} ({})", usedStr, totalStr, percentCompact(percent));
+}
+
+[[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
+{
+    const auto totalMs = static_cast<long long>(std::llround(totalSeconds * 1000.0));
     const auto hours = totalMs / (1000LL * 60LL * 60LL);
     const auto minutes = (totalMs / (1000LL * 60LL)) % 60LL;
     const auto secs = (totalMs / 1000LL) % 60LL;
@@ -184,8 +134,6 @@ struct ByteUnit
         return "-";
     }
 
-    // Build a compact representation of the affinity mask
-    // Examples: "0-3" (cores 0,1,2,3), "0,2,4" (cores 0,2,4), "All" (all cores set)
     std::string result;
     int rangeStart = -1;
     int rangeEnd = -1;
@@ -199,19 +147,16 @@ struct ByteUnit
         {
             if (rangeStart == -1)
             {
-                // Start of a new range
                 rangeStart = cpu;
                 rangeEnd = cpu;
             }
             else
             {
-                // Continue existing range
                 rangeEnd = cpu;
             }
         }
         else if (rangeStart != -1)
         {
-            // End of range, output it
             if (hasAny)
             {
                 result += ',';
@@ -236,7 +181,6 @@ struct ByteUnit
         }
     }
 
-    // Handle last range if it extends to the end
     if (rangeStart != -1)
     {
         if (hasAny)
@@ -259,6 +203,27 @@ struct ByteUnit
     }
 
     return result;
+}
+
+/// Format power value with appropriate unit (W/mW/µW) based on magnitude
+[[nodiscard]] inline auto formatPowerCompact(double watts) -> std::string
+{
+    if (watts <= 0.0)
+    {
+        return "-";
+    }
+
+    const double absWatts = std::abs(watts);
+    if (absWatts >= 1.0)
+    {
+        return std::format("{:.2f} W", watts);
+    }
+    if (absWatts >= 0.001)
+    {
+        return std::format("{:.2f} mW", watts * 1000.0);
+    }
+
+    return std::format("{:.2f} µW", watts * 1'000'000.0);
 }
 
 } // namespace UI::Format
