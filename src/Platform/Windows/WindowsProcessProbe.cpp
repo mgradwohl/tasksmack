@@ -53,6 +53,7 @@ namespace
         return '?';
     }
 
+    // TODO: Centralize WinAPI DWORD usage behind thin wrappers where practical
     DWORD exitCode = 0;
     if (GetExitCodeProcess(hProcess, &exitCode) != 0)
     {

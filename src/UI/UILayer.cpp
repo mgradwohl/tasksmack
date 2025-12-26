@@ -42,6 +42,7 @@ std::filesystem::path getUserConfigDir()
     }
     return std::filesystem::current_path();
 #else
+    // TODO: Replace getenv/char* plumbing with std::optional<std::string> + std::filesystem::path
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
     {
         if (xdg[0] != '\0')
@@ -76,6 +77,7 @@ std::filesystem::path getExecutableDir()
 #elif defined(_WIN32)
     // Use wide string API and let filesystem handle conversion
     std::wstring buffer(MAX_PATH, L'\0');
+    // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
     DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {

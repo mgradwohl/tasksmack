@@ -104,6 +104,7 @@ WindowsSystemProbe::WindowsSystemProbe()
 
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
+    // TODO: Wrap WinAPI DWORD sizing in helper to return size_t while keeping API types
     DWORD bufferSize = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameW(hostBuffer.data(), &bufferSize) != 0)
     {

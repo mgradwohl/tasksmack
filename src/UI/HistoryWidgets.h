@@ -183,6 +183,7 @@ inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mo
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
+// TODO: Accept std::string_view for IDs/text to avoid raw const char*
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,

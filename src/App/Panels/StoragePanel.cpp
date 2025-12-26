@@ -281,6 +281,7 @@ void StoragePanel::updateCachedLayout()
 {
     // Measure label widths for proper alignment
     m_OverviewLabelWidth = 0.0F;
+    // TODO: Store labels as std::string_view
     const std::array<const char*, 4> labels = {"Total Read:", "Total Write:", "Devices:", "Total Ops:"};
     for (const char* label : labels)
     {

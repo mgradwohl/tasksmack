@@ -113,6 +113,7 @@ struct ByteUnit
 
 [[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
 {
+    // TODO: Replace long long with std::chrono::milliseconds for totalMs
     const auto totalMs = static_cast<long long>(std::llround(totalSeconds * 1000.0));
     const auto hours = totalMs / (1000LL * 60LL * 60LL);
     const auto minutes = (totalMs / (1000LL * 60LL)) % 60LL;

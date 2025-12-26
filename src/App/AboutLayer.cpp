@@ -42,6 +42,7 @@ namespace
     }
 #elif defined(_WIN32)
     std::wstring buffer(MAX_PATH, L'\0');
+    // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
     DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {
@@ -235,6 +236,7 @@ void AboutLayer::loadIcon()
         cwd,                  // running from repo root
     };
 
+    // TODO: Use std::array<std::string_view, 2> for icon names
     const std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
     for (const auto& base : baseDirs)

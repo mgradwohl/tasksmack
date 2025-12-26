@@ -86,6 +86,7 @@ class ProcessesPanel : public Panel
     ProcessColumnSettings m_ColumnSettings;
 
     // Search/filter state
+    // TODO: Replace fixed char buffer with std::string + ImGui resize callback
     std::array<char, 256> m_SearchBuffer{};
 
     // Tree view state

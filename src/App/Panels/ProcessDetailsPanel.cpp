@@ -260,6 +260,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
+    // TODO: Use std::string_view for command/name and convert at ImGui boundary
     const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
     ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
@@ -267,6 +268,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
+        // TODO: Switch label table to std::string_view
         constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
@@ -650,6 +652,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     ImGui::Text("I/O Statistics");
     ImGui::Spacing();
 
+    // TODO: Return std::string_view units instead of const char*
     auto formatRate = [](double bytesPerSec) -> std::pair<double, const char*>
     {
         if (bytesPerSec >= 1024.0 * 1024.0)
@@ -686,6 +689,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     ImGui::Text("Network Statistics");
     ImGui::Spacing();
 
+    // TODO: Return std::string_view units instead of const char*
     auto formatRate = [](double bytesPerSec) -> std::pair<double, const char*>
     {
         if (bytesPerSec >= 1024.0 * 1024.0 * 1024.0)

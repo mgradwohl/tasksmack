@@ -62,6 +62,7 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     }
 
     // Enumerate physical disks
+    // TODO: Consider helper that wraps DWORD sizes for PDH into size_t while keeping WinAPI signatures
     DWORD bufferSize = 0;
     status = PdhEnumObjectItemsW(nullptr, nullptr, L"PhysicalDisk", nullptr, &bufferSize, nullptr, nullptr, PERF_DETAIL_WIZARD, 0);
 
