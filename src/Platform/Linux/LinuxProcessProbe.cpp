@@ -488,7 +488,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
 }
 
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
-{ // NOLINT(misc-no-recursion)
+{
     // Try cgroup v2 first: freezer.state
     const std::filesystem::path cgroupV2FreezerPath = std::filesystem::path("/sys/fs/cgroup") / std::to_string(pid) / "freezer.state";
     std::ifstream freezerStateV2(cgroupV2FreezerPath);
