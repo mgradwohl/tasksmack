@@ -703,3 +703,87 @@ set(TASKSMACK_SOURCES
 - PID reuse: Handled by `uniqueKey = hash(pid, startTime)`
 - Permissions: Some Linux `/proc/[pid]/io` requires same-user or root
 - Performance: Enumerate all PIDs at 1 Hz is fine; optimize if needed later
+
+## Per-Process Network and I/O Monitoring
+
+### Overview
+
+TaskSmack implements infrastructure for tracking per-process network and I/O rates. The implementation follows the same layered architecture as CPU/memory monitoring.
+
+### Architecture
+
+```
+Platform: Raw cumulative counters (netSentBytes, netReceivedBytes, readBytes, writeBytes)
+    ↓
+Domain: Time-based rate calculation (delta bytes / delta time = bytes/sec)
+    ↓
+UI: Formatted display in Process Details Overview tab
+```
+
+### Implementation Status
+
+**Completed (December 2024)**:
+- Platform types extended with network and I/O counters (`ProcessTypes.h`)
+- Domain layer computes rates from counter deltas with timestamp tracking (`ProcessModel.cpp`)
+- UI displays rates in Process Details panel with auto-scaling units (B/s, KB/s, MB/s, GB/s)
+- Comprehensive unit tests for rate calculations and edge cases
+- I/O rate calculations fixed (were previously stubbed)
+
+**Platform Probe Implementation (Future Work)**:
+- **Linux**: Per-process network requires complex implementation
+  - Parse `/proc/net/tcp*` to find socket inodes
+  - Match inodes to `/proc/[pid]/fd/*` to associate with processes
+  - Use eBPF or netlink INET_DIAG to track per-socket byte counters
+  - Alternative: System-level network interface stats from `/proc/net/dev` (not per-process)
+  - I/O: Requires reading `/proc/[pid]/io` (needs root or same-user permissions)
+
+- **Windows**:
+  - Network: Use ETW (Event Tracing for Windows) kernel providers or `GetPerTcpConnectionEStats`
+  - I/O: Available via `GetProcessIoCounters` (already implemented for Windows probe)
+
+### Rate Calculation Algorithm
+
+```cpp
+// ProcessModel tracks time between samples
+std::chrono::steady_clock::time_point m_PrevSampleTime;
+
+// On each refresh:
+auto currentTime = std::chrono::steady_clock::now();
+double timeDeltaSeconds = duration_cast<milliseconds>(currentTime - m_PrevSampleTime).count() / 1000.0;
+
+// For each process with previous counters:
+if (current.netSentBytes >= previous.netSentBytes) {
+    uint64_t bytesDelta = current.netSentBytes - previous.netSentBytes;
+    snapshot.netSentBytesPerSec = bytesDelta / timeDeltaSeconds;
+}
+```
+
+### Usage in UI
+
+The Process Details panel automatically displays network and I/O sections when rates are non-zero:
+
+```cpp
+void ProcessDetailsPanel::renderNetworkStats(const ProcessSnapshot& proc) {
+    if (proc.netSentBytesPerSec == 0.0 && proc.netReceivedBytesPerSec == 0.0)
+        return;  // Hide section if no network activity
+
+    // Display sent/received rates with auto-scaling units
+}
+```
+
+### Testing
+
+Comprehensive unit tests in `tests/Domain/test_ProcessModel.cpp`:
+- Zero rates on first sample (no previous data)
+- Correct rate calculation from counter deltas
+- Counter rollback handling (process restart, overflow)
+- Combined network + I/O monitoring
+- Thread-safe concurrent access
+
+### Future Enhancements
+
+1. **Linux eBPF Implementation**: Most accurate per-process network tracking
+2. **Windows ETW Integration**: Real-time network event tracing
+3. **Historical Charts**: Add network/IO rate history graphs to Process Details
+4. **Table Columns**: Add network/IO rate columns to main process table
+5. **Aggregation**: Total network/IO usage across selected processes

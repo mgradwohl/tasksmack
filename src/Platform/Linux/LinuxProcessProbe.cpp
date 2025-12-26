@@ -171,11 +171,13 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasThreadCount = true,
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,         // From /proc/[pid]/status Uid field
-                               .hasCommand = true,      // From /proc/[pid]/cmdline
-                               .hasNice = true,         // From /proc/[pid]/stat
-                               .hasPageFaults = true,   // From /proc/[pid]/stat (minflt + majflt)
-                               .hasCpuAffinity = true}; // From sched_getaffinity
+                               .hasUser = true,       // From /proc/[pid]/status Uid field
+                               .hasCommand = true,    // From /proc/[pid]/cmdline
+                               .hasNice = true,       // From /proc/[pid]/stat
+                               .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = false,
+                               .hasCpuAffinity = true,       // From sched_getaffinity
+                               .hasNetworkCounters = false}; // Would need socket inode matching + eBPF/netlink
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const

@@ -35,6 +35,10 @@ struct ProcessSnapshot
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 
+    // Network rates (0 if not supported)
+    double netSentBytesPerSec = 0.0;
+    double netReceivedBytesPerSec = 0.0;
+
     /// Stable identity across samples (handles PID reuse).
     /// Computed as hash(pid, startTime).
     std::uint64_t uniqueKey = 0;

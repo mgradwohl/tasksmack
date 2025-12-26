@@ -388,12 +388,13 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,     // From QueryFullProcessImageName
-        .hasNice = true,        // From GetPriorityClass
-        .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
-        .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
-        .hasCpuAffinity = true, // From GetProcessAffinityMask
+        .hasUser = true,            // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,         // From QueryFullProcessImageName
+        .hasNice = true,            // From GetPriorityClass
+        .hasPageFaults = true,      // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasPeakRss = true,         // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
+        .hasCpuAffinity = true,     // From GetProcessAffinityMask
+        .hasNetworkCounters = false // TODO: Implement using ETW or GetPerTcpConnectionEStats
     };
 }
 

@@ -187,6 +187,8 @@ void ProcessDetailsPanel::render(bool* open)
             renderResourceUsage(m_CachedSnapshot);
             ImGui::Separator();
             renderIoStats(m_CachedSnapshot);
+            ImGui::Separator();
+            renderNetworkStats(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
@@ -669,6 +671,46 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     ImGui::Text("Write:");
     ImGui::SameLine(80.0F);
     ImGui::Text("%.1f %s", writeVal, writeUnit);
+}
+
+void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc)
+{
+    // Only show network stats if we have data
+    if (proc.netSentBytesPerSec == 0.0 && proc.netReceivedBytesPerSec == 0.0)
+    {
+        return;
+    }
+
+    ImGui::Text("Network Statistics");
+    ImGui::Spacing();
+
+    auto formatRate = [](double bytesPerSec) -> std::pair<double, const char*>
+    {
+        if (bytesPerSec >= 1024.0 * 1024.0 * 1024.0)
+        {
+            return {bytesPerSec / (1024.0 * 1024.0 * 1024.0), "GB/s"};
+        }
+        if (bytesPerSec >= 1024.0 * 1024.0)
+        {
+            return {bytesPerSec / (1024.0 * 1024.0), "MB/s"};
+        }
+        if (bytesPerSec >= 1024.0)
+        {
+            return {bytesPerSec / 1024.0, "KB/s"};
+        }
+        return {bytesPerSec, "B/s"};
+    };
+
+    auto [sentVal, sentUnit] = formatRate(proc.netSentBytesPerSec);
+    auto [recvVal, recvUnit] = formatRate(proc.netReceivedBytesPerSec);
+
+    ImGui::Text("Sent:");
+    ImGui::SameLine(80.0F);
+    ImGui::Text("%.1f %s", sentVal, sentUnit);
+
+    ImGui::Text("Received:");
+    ImGui::SameLine(80.0F);
+    ImGui::Text("%.1f %s", recvVal, recvUnit);
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)
