@@ -177,6 +177,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             parseProcessIo(pid, counters);
         }
+        counters.status = getProcessStatus(pid); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
@@ -212,9 +213,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,          // From sched_getaffinity
-                               .hasNetworkCounters = false,     // Would need socket inode matching + eBPF/netlink
-                               .hasPowerUsage = m_HasPowerCap}; // Available if RAPL is detected
+                               .hasCpuAffinity = true,         // From sched_getaffinity
+                               .hasNetworkCounters = false,    // Would need socket inode matching + eBPF/netlink
+                               .hasPowerUsage = m_HasPowerCap, // Available if RAPL is detected
+                               .hasStatus = true};             // From cgroup freezer state
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -431,6 +433,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
         counters.cpuAffinityMask = 0;
     }
 }
+
 void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/io
@@ -484,16 +487,65 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     }
 }
 
-bool LinuxProcessProbe::checkIoCountersAvailability() const
-{
-    // Try to read our own process's I/O counters to check availability
-    // Use getpid() to get our own PID
-    const int32_t selfPid = getpid();
-    std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(selfPid) / "io";
-    std::ifstream ioFile(ioPath);
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
+{ // NOLINT(misc-no-recursion)
+    // Try cgroup v2 first: freezer.state
+    const std::filesystem::path cgroupV2FreezerPath = std::filesystem::path("/sys/fs/cgroup") / std::to_string(pid) / "freezer.state";
+    std::ifstream freezerStateV2(cgroupV2FreezerPath);
+    if (freezerStateV2.is_open())
+    {
+        std::string state;
+        freezerStateV2 >> state;
+        if (state == "FROZEN" || state == "FREEZING")
+        {
+            return "Suspended";
+        }
+    }
 
-    // If we can open it, we have the necessary permissions
-    return ioFile.is_open();
+    // Fallback to cgroup v1 freezer hierarchy
+    // /proc/[pid]/cgroup lists all cgroups for the process
+    const std::filesystem::path cgroupPath = std::filesystem::path("/proc") / std::to_string(pid) / "cgroup";
+    std::ifstream cgroupFile(cgroupPath);
+    if (cgroupFile.is_open())
+    {
+        std::string line;
+        while (std::getline(cgroupFile, line))
+        {
+            // Format: hierarchy-ID:controllers:cgroup-path
+            const auto firstColon = line.find(':');
+            const auto secondColon = line.find(':', firstColon + 1);
+            if (firstColon != std::string::npos && secondColon != std::string::npos)
+            {
+                std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
+                std::string cgroupPath = line.substr(secondColon + 1);
+
+                // Check if this line has the freezer controller
+                if (controllers.find("freezer") != std::string::npos)
+                {
+                    // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
+                    // Skip if cgroupPath is empty or doesn't start with /
+                    if (!cgroupPath.empty() && cgroupPath[0] == '/')
+                    {
+                        std::filesystem::path freezePathV1 =
+                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupPath.substr(1) / "freezer.state";
+                        std::ifstream freezeFileV1(freezePathV1);
+                        if (freezeFileV1.is_open())
+                        {
+                            std::string state;
+                            freezeFileV1 >> state;
+                            if (state == "FROZEN" || state == "FREEZING")
+                            {
+                                return "Suspended";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No special status
+    return {};
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

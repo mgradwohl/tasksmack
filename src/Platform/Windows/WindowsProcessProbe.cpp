@@ -207,6 +207,73 @@ struct ProcessVmInfo
     return info;
 }
 
+// Structure for ProcessExtendedBasicInformation
+// Available since Windows 8/10, contains IsFrozen and IsBackground flags
+struct ProcessExtendedBasicInformation
+{
+    SIZE_T size = 0;
+    PROCESS_BASIC_INFORMATION basicInfo{};
+    ULONG flags = 0;
+};
+
+// Some Windows SDKs cap PROCESSINFOCLASS enum to a smaller range; use a non-constexpr
+// conversion to allow the extended value used by ProcessExtendedBasicInformation.
+const PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFOCLASS>(64);
+
+// Bit flags for ProcessExtendedBasicInformation.flags (only keep flags we use)
+constexpr ULONG PEBI_IS_FROZEN = 0x00000010;     // Process is suspended (UWP apps, frozen by OS)
+constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficiency mode)
+
+/// Query process status (Suspended, Efficiency Mode)
+[[nodiscard]] std::string getProcessStatus(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr)
+    {
+        return {};
+    }
+
+    auto* fn = Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
+    if (fn == nullptr)
+    {
+        return {};
+    }
+
+    ProcessExtendedBasicInformation extInfo{};
+    extInfo.size = sizeof(extInfo);
+    ULONG returnLen = 0;
+
+    static_assert(sizeof(extInfo) <= std::numeric_limits<ULONG>::max(), "ProcessExtendedBasicInformation size exceeds ULONG range");
+    const ULONG extInfoSize = Domain::Numeric::narrowOr<ULONG>(sizeof(extInfo), ULONG{0});
+
+    const NTSTATUS status = fn(hProcess, PROCESS_INFO_EXTENDED_BASIC, &extInfo, extInfoSize, &returnLen);
+    if (status < 0)
+    {
+        // API not available or process not accessible
+        return {};
+    }
+
+    // Check for frozen state (Suspended)
+    if ((extInfo.flags & PEBI_IS_FROZEN) != 0)
+    {
+        return "Suspended";
+    }
+
+    // Check for background/efficiency mode
+    if ((extInfo.flags & PEBI_IS_BACKGROUND) != 0)
+    {
+        return "Efficiency Mode";
+    }
+
+    // No special status
+    return {};
+}
+
 } // namespace
 
 WindowsProcessProbe::WindowsProcessProbe()
@@ -286,6 +353,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     // Get process state
     counters.state = getProcessState(hProcess);
+
+    // Get process status (Suspended, Efficiency Mode)
+    counters.status = getProcessStatus(hProcess);
 
     // Get process owner (username)
     counters.user = getProcessOwner(hProcess);
@@ -410,6 +480,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasCpuAffinity = true,                // From GetProcessAffinityMask
         .hasNetworkCounters = false,           // TODO: Implement using ETW or GetPerTcpConnectionEStats
         .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
+        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
     };
 }
 

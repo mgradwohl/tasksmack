@@ -16,6 +16,7 @@ This file lists features that are already implemented in TaskSmack.
 | **PPID Column** | htop | Parent process ID |
 | **SHR Column** | htop | Shared memory size |
 | **State Color Coding** | htop | Color-code process states based on theme |
+| **Status Column** | Task Manager | Display process status (Suspended, Efficiency Mode) |
 | **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
 | **Process Tree View** | btop++, htop | Hierarchical view showing parent-child relationships with collapsible nodes |
 | **Peak Working Set** | Task Manager | Horizontal reference line on memory graph showing historical peak RSS; OS-provided on Windows, tracked on Linux |

@@ -16,6 +16,7 @@ struct ProcessSnapshot
     std::string command;      // Full command line
     std::string user;         // Username (owner) of the process
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
+    std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
 
     double cpuPercent = 0.0;           // Computed from deltas
     double cpuUserPercent = 0.0;       // Computed from deltas (user mode)

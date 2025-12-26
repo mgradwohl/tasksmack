@@ -407,6 +407,8 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
                                           case ProcessColumn::State:
                                               return compare(procA.displayState, procB.displayState);
+                                          case ProcessColumn::Status:
+                                              return compare(procA.status, procB.status);
                                           case ProcessColumn::Name:
                                               return compare(procA.name, procB.name);
                                           case ProcessColumn::PPID:
@@ -680,6 +682,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             ImGui::PopStyleColor();
             break;
         }
+
+        case ProcessColumn::Status:
+            if (!proc.status.empty())
+            {
+                ImGui::TextUnformatted(proc.status.c_str());
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
 
         case ProcessColumn::Name:
             ImGui::TextUnformatted(proc.name.c_str());

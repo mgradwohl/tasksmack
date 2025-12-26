@@ -52,6 +52,9 @@ class LinuxProcessProbe : public IProcessProbe
     /// Check if we can read I/O counters (checks own process)
     [[nodiscard]] bool checkIoCountersAvailability() const;
 
+    /// Get process status from cgroups (Suspended state detection)
+    [[nodiscard]] std::string getProcessStatus(int32_t pid) const;
+
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;
 

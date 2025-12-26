@@ -163,6 +163,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.command = current.command;
     snapshot.user = current.user;
     snapshot.displayState = translateState(current.state);
+    snapshot.status = current.status; // Pass through status from platform probe
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.sharedBytes = current.sharedBytes;
