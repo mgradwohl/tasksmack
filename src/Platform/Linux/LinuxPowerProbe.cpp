@@ -158,9 +158,9 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
         // Try energy first (Wh)
         if (std::filesystem::exists(batteryPath + "/energy_now"))
         {
-            counters.chargeNowWh = readSysfsUInt64(batteryPath + "/energy_now") / 1000000; // µWh to Wh
-            counters.chargeFullWh = readSysfsUInt64(batteryPath + "/energy_full") / 1000000;
-            counters.chargeDesignWh = readSysfsUInt64(batteryPath + "/energy_full_design") / 1000000;
+            counters.chargeNowWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_now")) / 1000000.0; // µWh to Wh
+            counters.chargeFullWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full")) / 1000000.0;
+            counters.chargeDesignWh = static_cast<double>(readSysfsUInt64(batteryPath + "/energy_full_design")) / 1000000.0;
         }
         // Fall back to charge (Ah) - need voltage to convert to Wh
         else if (std::filesystem::exists(batteryPath + "/charge_now"))

@@ -27,10 +27,10 @@ struct PowerCounters
     // Battery percentage (0-100, or -1 if unavailable)
     int chargePercent = -1;
 
-    // Battery charge/capacity in Wh or mWh (platform dependent)
-    std::uint64_t chargeNowWh = 0;
-    std::uint64_t chargeFullWh = 0;
-    std::uint64_t chargeDesignWh = 0;
+    // Battery charge/capacity in Wh (fractional values like 45.5 Wh)
+    double chargeNowWh = 0.0;
+    double chargeFullWh = 0.0;
+    double chargeDesignWh = 0.0;
 
     // Power consumption/rate in Watts or milliwatts (platform dependent)
     // Positive = discharging/consuming, negative = charging
