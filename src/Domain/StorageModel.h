@@ -37,6 +37,11 @@ class StorageModel
     /// Returns snapshots in chronological order (oldest first).
     [[nodiscard]] std::vector<StorageSnapshot> history() const;
 
+    // System-level history helpers (aligned to timestamps)
+    [[nodiscard]] std::vector<double> totalReadHistory() const;
+    [[nodiscard]] std::vector<double> totalWriteHistory() const;
+    [[nodiscard]] std::vector<double> historyTimestamps() const;
+
     /// Configure history retention.
     void setMaxHistorySeconds(double seconds);
 

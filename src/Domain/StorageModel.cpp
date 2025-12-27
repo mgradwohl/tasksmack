@@ -32,7 +32,8 @@ void StorageModel::sample()
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const double nowSeconds = std::chrono::duration<double>(now - m_StartTime).count();
+    // Use absolute time (since epoch) to match SystemModel's timestamp format
+    const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
     Platform::SystemDiskCounters counters = m_Probe->read();
     Platform::DiskCapabilities caps = m_Probe->capabilities();
@@ -80,7 +81,7 @@ void StorageModel::sample()
         m_PrevSampleTime = now;
     }
 
-    spdlog::debug("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
+    spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
                   snapshot.disks.size(),
                   snapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
                   snapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
@@ -177,6 +178,36 @@ std::vector<StorageSnapshot> StorageModel::history() const
 {
     std::shared_lock lock(m_Mutex);
     return std::vector<StorageSnapshot>(m_History.begin(), m_History.end());
+}
+
+std::vector<double> StorageModel::totalReadHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<double> out;
+    out.reserve(m_History.size());
+    for (const auto& snap : m_History)
+    {
+        out.push_back(snap.totalReadBytesPerSec);
+    }
+    return out;
+}
+
+std::vector<double> StorageModel::totalWriteHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    std::vector<double> out;
+    out.reserve(m_History.size());
+    for (const auto& snap : m_History)
+    {
+        out.push_back(snap.totalWriteBytesPerSec);
+    }
+    return out;
+}
+
+std::vector<double> StorageModel::historyTimestamps() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)

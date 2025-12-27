@@ -266,8 +266,11 @@ class Theme
     /// Get the current large/heading font (based on font size setting)
     [[nodiscard]] auto largeFont() const -> ImFont*;
 
+    /// Get the current monospace font (based on font size setting); falls back to regular if unset
+    [[nodiscard]] auto monospaceFont() const -> ImFont*;
+
     /// Register pre-baked fonts (called by UILayer during initialization)
-    void registerFonts(FontSize size, ImFont* regular, ImFont* large);
+    void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
 
   private:
     Theme();
@@ -285,6 +288,7 @@ class Theme
     {
         ImFont* regular = nullptr;
         ImFont* large = nullptr;
+        ImFont* monospace = nullptr;
     };
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
 

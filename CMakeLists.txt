@@ -448,7 +448,6 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
-    src/App/Panels/StoragePanel.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
@@ -671,6 +670,10 @@ target_link_libraries(TaskSmack PRIVATE
     tomlplusplus::tomlplusplus
     OpenGL::GL
 )
+
+if(WIN32)
+    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32)
+endif()
 
 # Copy assets (fonts and themes) to build directory
 set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")

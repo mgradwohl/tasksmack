@@ -11,22 +11,30 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winsock2.h>
 #include <windows.h>
+#include <iphlpapi.h>
+#include <mstcpip.h>
 #include <psapi.h>
 #include <sddl.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 // clang-format on
 
+#undef max
+#undef min
+
 #include "WinString.h"
 #include "WindowsProcAddress.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -277,9 +285,8 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 
 } // namespace
 
-WindowsProcessProbe::WindowsProcessProbe()
+WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMonitoring())
 {
-    m_HasPowerMonitoring = detectPowerMonitoring();
     if (m_HasPowerMonitoring)
     {
         spdlog::info("Power monitoring available on Windows");
@@ -287,6 +294,16 @@ WindowsProcessProbe::WindowsProcessProbe()
     else
     {
         spdlog::debug("Power monitoring not available on Windows");
+    }
+
+    m_HasNetworkCounters = detectNetworkCounters();
+    if (m_HasNetworkCounters)
+    {
+        spdlog::info("Per-process network counters available via TCP EStats");
+    }
+    else
+    {
+        spdlog::debug("Per-process network counters not available (EStats unsupported or access denied)");
     }
 }
 
@@ -335,6 +352,9 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     {
         attributeEnergyToProcesses(results);
     }
+
+    // Attach per-process network counters if available (best effort)
+    applyNetworkCounters(results);
 
     spdlog::trace("Enumerated {} processes", results.size());
     return results;
@@ -473,13 +493,13 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasThreadCount = true,
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,                       // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,                    // From QueryFullProcessImageName
-        .hasNice = true,                       // From GetPriorityClass
-        .hasPageFaults = true,                 // From NtQueryInformationProcess (VM_COUNTERS)
-        .hasPeakRss = true,                    // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
-        .hasCpuAffinity = true,                // From GetProcessAffinityMask
-        .hasNetworkCounters = false,           // TODO: Implement using ETW or GetPerTcpConnectionEStats
+        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,     // From QueryFullProcessImageName
+        .hasNice = true,        // From GetPriorityClass
+        .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
+        .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
+        .hasCpuAffinity = true, // From GetProcessAffinityMask
+        .hasNetworkCounters = m_HasNetworkCounters,
         .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
         .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
     };
@@ -561,7 +581,7 @@ uint64_t WindowsProcessProbe::readSystemEnergy() const
     // Estimate energy based on battery percentage and system state
     // This is a rough approximation - actual implementation would need more sophisticated tracking
     // Battery life percent: 0-100, 255 = unknown
-    if (powerStatus.BatteryLifePercent == 255 || powerStatus.BatteryLifePercent > 100)
+    if (powerStatus.BatteryLifePercent > 100)
     {
         return 0;
     }
@@ -606,6 +626,134 @@ void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters
         const uint64_t processCpuTime = proc.userTime + proc.systemTime;
         const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
         proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
+    }
+}
+
+bool WindowsProcessProbe::detectNetworkCounters()
+{
+    HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
+    if (iphlp == nullptr)
+    {
+        iphlp = LoadLibraryW(L"iphlpapi.dll");
+        if (iphlp == nullptr)
+        {
+            return false;
+        }
+    }
+
+    m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");
+
+    if (m_GetPerTcpConnectionEStats == nullptr)
+    {
+        return false;
+    }
+
+    // EStats requires elevated privileges on some systems; attempt a no-op call to detect access issues.
+    // Use a minimal row to probe support and ignore failure codes other than access denied/not supported.
+    if (m_GetPerTcpConnectionEStats != nullptr)
+    {
+        MIB_TCPROW dummy{};
+        TCP_ESTATS_DATA_RW_v0 rw{};
+        rw.EnableCollection = TRUE;
+        const DWORD status = m_GetPerTcpConnectionEStats(
+            &dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), nullptr, 0, 0, nullptr, 0, 0);
+        if (status == ERROR_ACCESS_DENIED || status == ERROR_NOT_SUPPORTED)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> WindowsProcessProbe::collectNetworkByteCounts() const
+{
+    std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> perPid;
+
+    if (!m_HasNetworkCounters)
+    {
+        return perPid;
+    }
+
+    collectTcp4ByteCounts(perPid);
+
+    return perPid;
+}
+
+void WindowsProcessProbe::collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const
+{
+    if (m_GetPerTcpConnectionEStats == nullptr)
+    {
+        return;
+    }
+
+    DWORD tableSize = 0;
+    DWORD status = GetExtendedTcpTable(nullptr, &tableSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (status != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
+    {
+        return;
+    }
+
+    std::vector<unsigned char> buffer(tableSize);
+    status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (status != NO_ERROR)
+    {
+        return;
+    }
+
+    const auto* table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(buffer.data());
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
+        const MIB_TCPROW_OWNER_PID& ownerRow = table->table[i];
+        MIB_TCPROW ownerRowBase{};
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - Windows API requires union access
+        ownerRowBase.dwState = ownerRow.dwState;
+        ownerRowBase.dwLocalAddr = ownerRow.dwLocalAddr;
+        ownerRowBase.dwLocalPort = ownerRow.dwLocalPort;
+        ownerRowBase.dwRemoteAddr = ownerRow.dwRemoteAddr;
+        ownerRowBase.dwRemotePort = ownerRow.dwRemotePort;
+
+        TCP_ESTATS_DATA_RW_v0 rw{};
+        rw.EnableCollection = TRUE;
+        (void) m_GetPerTcpConnectionEStats(
+            &ownerRowBase, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), nullptr, 0, 0, nullptr, 0, 0);
+
+        TCP_ESTATS_DATA_ROD_v0 rod{};
+        const DWORD estats = m_GetPerTcpConnectionEStats(
+            &ownerRowBase, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
+
+        if (estats != NO_ERROR)
+        {
+            continue;
+        }
+
+        auto& agg = perPid[ownerRow.dwOwningPid];
+        agg.first += rod.DataBytesOut;
+        agg.second += rod.DataBytesIn;
+    }
+}
+
+void WindowsProcessProbe::applyNetworkCounters(std::vector<ProcessCounters>& processes) const
+{
+    if (!m_HasNetworkCounters)
+    {
+        return;
+    }
+
+    const auto perPid = collectNetworkByteCounts();
+    if (perPid.empty())
+    {
+        return;
+    }
+
+    for (auto& proc : processes)
+    {
+        auto it = perPid.find(static_cast<uint32_t>(proc.pid));
+        if (it != perPid.end())
+        {
+            proc.netSentBytes = it->second.first;
+            proc.netReceivedBytes = it->second.second;
+        }
     }
 }
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
@@ -65,6 +66,11 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     std::unique_lock lock(m_Mutex);
 
     const auto currentSampleTime = std::chrono::steady_clock::now();
+    if (!m_HasStartTime)
+    {
+        m_StartTime = currentSampleTime;
+        m_HasStartTime = true;
+    }
     double elapsedSeconds = 0.0;
     std::uint64_t timeDeltaUs = 0;
     if (m_HasPrevSampleTime)
@@ -91,6 +97,15 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     std::unordered_map<std::uint64_t, std::uint64_t> newPeakRss;
     newPeakRss.reserve(counters.size());
 
+    // Carry forward network baselines for existing processes, add new ones
+    std::unordered_map<std::uint64_t, NetworkBaseline> newNetworkBaselines;
+    newNetworkBaselines.reserve(counters.size());
+
+    double aggNetSent = 0.0;
+    double aggNetRecv = 0.0;
+    double aggPageFaults = 0.0;
+    double aggThreads = 0.0;
+
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
@@ -101,6 +116,28 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         {
             previous = &prevIt->second;
         }
+
+        // Track network baseline for this process (see ProcessModel.h for rationale)
+        // The baseline approach computes average rate since first seen, avoiding
+        // wild spikes from TCP connection churn in Windows EStats.
+        NetworkBaseline baseline;
+        auto baselineIt = m_NetworkBaselines.find(key);
+        if (baselineIt != m_NetworkBaselines.end())
+        {
+            // Existing process - keep the original baseline so we compute
+            // rate = (current - original_baseline) / time_since_first_seen
+            baseline = baselineIt->second;
+        }
+        else
+        {
+            // New process - record current counters as baseline
+            // This absorbs any pre-existing cumulative values from TCP connections
+            // that were open before we started monitoring this process
+            baseline.netSentBytes = current.netSentBytes;
+            baseline.netReceivedBytes = current.netReceivedBytes;
+            baseline.firstSeenTime = currentSampleTime;
+        }
+        newNetworkBaselines[key] = baseline;
 
         std::uint64_t peakRss = current.rssBytes;
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
@@ -120,7 +157,51 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
         snapshot.peakMemoryBytes = peakRss;
+
+        // =======================================================================
+        // Network Rate Calculation (Baseline Approach)
+        // =======================================================================
+        // Formula: rate = (currentCounters - baselineCounters) / timeSinceFirstSeen
+        //
+        // This gives us average bytes/sec since we started monitoring this process.
+        // See ProcessModel.h for detailed explanation of why we use this approach
+        // instead of delta-based rates (TL;DR: Windows TCP EStats connection churn).
+        //
+        // We require a minimum time elapsed (0.5s) before computing rates to avoid
+        // division by tiny time values on first sample causing huge rate spikes.
+        // We also apply a sanity check ceiling (100 Gbps) as a safety net.
+        //
+        // TODO: If we find a more accurate approach (ETW, eBPF, etc.), replace this
+        // with instantaneous rate calculation similar to I/O rates below.
+        // =======================================================================
+        constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
+        constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
+        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - baseline.firstSeenTime).count();
+        if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
+        {
+            // Only compute rate if current >= baseline (counter should never decrease
+            // for the same process, but handle it gracefully if it does)
+            if (current.netSentBytes >= baseline.netSentBytes)
+            {
+                const std::uint64_t sentDelta = current.netSentBytes - baseline.netSentBytes;
+                const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
+                snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
+            }
+            if (current.netReceivedBytes >= baseline.netReceivedBytes)
+            {
+                const std::uint64_t recvDelta = current.netReceivedBytes - baseline.netReceivedBytes;
+                const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
+                snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
+            }
+        }
+
         newSnapshots.push_back(std::move(snapshot));
+
+        const ProcessSnapshot& snapRef = newSnapshots.back();
+        aggNetSent += snapRef.netSentBytesPerSec;
+        aggNetRecv += snapRef.netReceivedBytesPerSec;
+        aggPageFaults += snapRef.pageFaultsPerSec;
+        aggThreads += static_cast<double>(snapRef.threadCount);
 
         newPrevCounters[key] = current;
     }
@@ -128,13 +209,63 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     m_Snapshots = std::move(newSnapshots);
     m_PrevCounters = std::move(newPrevCounters);
     m_PeakRss = std::move(newPeakRss);
+    m_NetworkBaselines = std::move(newNetworkBaselines);
     m_PrevTotalCpuTime = totalCpuTime;
+
+    if (m_HasPrevSampleTime && elapsedSeconds > 0.0)
+    {
+        // Use absolute time (since epoch) to match SystemModel's timestamp format
+        const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
+        m_Timestamps.push_back(nowSeconds);
+        m_SystemNetSentHistory.push_back(aggNetSent);
+        m_SystemNetRecvHistory.push_back(aggNetRecv);
+        m_SystemPageFaultsHistory.push_back(aggPageFaults);
+        m_SystemThreadCountHistory.push_back(aggThreads);
+        trimHistory();
+    }
 }
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex);
     return m_Snapshots;
+}
+
+std::vector<double> ProcessModel::systemNetSentHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_SystemNetSentHistory.begin(), m_SystemNetSentHistory.end());
+}
+
+std::vector<double> ProcessModel::systemNetRecvHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_SystemNetRecvHistory.begin(), m_SystemNetRecvHistory.end());
+}
+
+std::vector<double> ProcessModel::systemPageFaultsHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_SystemPageFaultsHistory.begin(), m_SystemPageFaultsHistory.end());
+}
+
+std::vector<double> ProcessModel::systemThreadCountHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end());
+}
+
+std::vector<double> ProcessModel::historyTimestamps() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
+}
+
+void ProcessModel::setMaxHistorySeconds(double seconds)
+{
+    std::unique_lock lock(m_Mutex);
+    m_MaxHistorySeconds = std::max(0.0, seconds);
+    trimHistory();
 }
 
 std::size_t ProcessModel::processCount() const
@@ -216,10 +347,18 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             return 0.0;
         };
 
-        snapshot.netSentBytesPerSec = computeRate(current.netSentBytes, previous->netSentBytes);
-        snapshot.netReceivedBytesPerSec = computeRate(current.netReceivedBytes, previous->netReceivedBytes);
+        // I/O and page fault rates use delta-based calculation:
+        //   rate = (currentCounter - previousCounter) / elapsedSeconds
+        //
+        // This works correctly for I/O because GetProcessIoCounters returns per-process
+        // cumulative counters that are stable and monotonically increasing (not affected
+        // by file handle churn the way network counters are affected by TCP connection churn).
+        //
+        // Network rates are computed separately in computeSnapshots() using the baseline
+        // approach - see comments there and in ProcessModel.h for details.
         snapshot.ioReadBytesPerSec = computeRate(current.readBytes, previous->readBytes);
         snapshot.ioWriteBytesPerSec = computeRate(current.writeBytes, previous->writeBytes);
+        snapshot.pageFaultsPerSec = computeRate(current.pageFaultCount, previous->pageFaultCount);
     }
 
     if (previous != nullptr && timeDeltaUs > 0)
@@ -239,6 +378,45 @@ std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startT
     std::size_t hash = std::hash<std::int32_t>{}(pid);
     hash ^= std::hash<std::uint64_t>{}(startTime) + 0x9e3779b9U + (hash << 6) + (hash >> 2);
     return hash;
+}
+
+void ProcessModel::trimHistory()
+{
+    if (m_Timestamps.empty())
+    {
+        return;
+    }
+
+    const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
+
+    // Find how many timestamps are older than cutoff
+    size_t trimCount = 0;
+    for (const auto& ts : m_Timestamps)
+    {
+        if (ts < cutoff)
+        {
+            ++trimCount;
+        }
+        else
+        {
+            break; // Timestamps are in order, so we can stop early
+        }
+    }
+
+    // Trim the same count from all history deques to keep them synchronized
+    auto trimFront = [trimCount](auto& dq)
+    {
+        for (size_t i = 0; i < trimCount && !dq.empty(); ++i)
+        {
+            dq.pop_front();
+        }
+    };
+
+    trimFront(m_Timestamps);
+    trimFront(m_SystemNetSentHistory);
+    trimFront(m_SystemNetRecvHistory);
+    trimFront(m_SystemPageFaultsHistory);
+    trimFront(m_SystemThreadCountHistory);
 }
 
 std::string ProcessModel::translateState(char rawState)

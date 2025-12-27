@@ -562,21 +562,22 @@ TEST(ProcessModelTest, NetworkRatesZeroOnFirstRefresh)
 
 TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
 {
+    // Note: Network rates now use baseline approach with 0.5s minimum time
+    // This test verifies rates are computed correctly after minimum time elapsed
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
-    // First sample: 1000 sent, 2000 received
+    // First sample: 1000 sent, 2000 received (establishes baseline)
     rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
     rawProbe->setTotalCpuTime(100000);
 
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
-    // Wait a bit to ensure time delta is non-zero
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Wait minimum time (0.5s) for rates to be computed
+    std::this_thread::sleep_for(std::chrono::milliseconds(550));
 
-    // Second sample: 2000 sent (+1000), 4000 received (+2000)
-    // Rates depend on time delta (should be ~100ms = 0.1s)
+    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
     rawProbe->setCounters({});
     rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
     rawProbe->setTotalCpuTime(200000);
@@ -585,12 +586,13 @@ TEST(ProcessModelTest, NetworkRatesCalculatedFromDeltas)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
 
-    // With ~0.1s delta: 1000 bytes / 0.1s = ~10000 B/s, 2000 bytes / 0.1s = ~20000 B/s
-    // Allow some tolerance for timing variations
-    EXPECT_GT(snaps[0].netSentBytesPerSec, 5000.0);
-    EXPECT_LT(snaps[0].netSentBytesPerSec, 20000.0);
-    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 10000.0);
-    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 40000.0);
+    // With ~550ms elapsed and baseline approach:
+    // sent: 1000 bytes / 0.55s = ~1800 B/s
+    // recv: 2000 bytes / 0.55s = ~3600 B/s
+    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
+    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
+    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
+    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
 }
 
 TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
@@ -604,7 +606,8 @@ TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Wait minimum time for rates
+    std::this_thread::sleep_for(std::chrono::milliseconds(550));
 
     // Counter decreased (process restarted or counter wrapped)
     rawProbe->setCounters({});
@@ -615,6 +618,70 @@ TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
     // Should be 0 (no rate calculated when counter decreases)
+    EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
+}
+
+TEST(ProcessModelTest, NetworkRatesUseBaselineApproach)
+{
+    // Test that network rates are computed as average since first seen
+    // This handles TCP connection churn by using (current - baseline) / timeSinceFirstSeen
+    // Note: Minimum time of 0.5s required before rates are computed
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: baseline is established at 1000 sent, 2000 received
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait minimum time (0.5s) before rates can be computed
+    std::this_thread::sleep_for(std::chrono::milliseconds(550));
+
+    // Second sample: 2000 sent (+1000 from baseline), 4000 received (+2000 from baseline)
+    // Time since first seen is ~550ms, so rates should be ~1800 B/s and ~3600 B/s
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 2000, 4000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // Rates should be reasonable (baseline approach: delta from first seen / time since first seen)
+    // With ~550ms elapsed and 1000 bytes sent delta: ~1800 B/s (allow range for timing variance)
+    EXPECT_GT(snaps[0].netSentBytesPerSec, 1000.0);
+    EXPECT_LT(snaps[0].netSentBytesPerSec, 3000.0);
+    EXPECT_GT(snaps[0].netReceivedBytesPerSec, 2000.0);
+    EXPECT_LT(snaps[0].netReceivedBytesPerSec, 6000.0);
+}
+
+TEST(ProcessModelTest, NetworkRatesZeroBeforeMinimumTime)
+{
+    // Test that network rates remain 0 until minimum time (0.5s) has elapsed
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 1000, 2000);
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    // Wait less than minimum time
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    rawProbe->setCounters({});
+    rawProbe->withProcess(100, "network_proc").withNetworkCounters(100, 5000, 10000);
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // Rates should still be 0 because minimum time hasn't elapsed
     EXPECT_DOUBLE_EQ(snaps[0].netSentBytesPerSec, 0.0);
     EXPECT_DOUBLE_EQ(snaps[0].netReceivedBytesPerSec, 0.0);
 }

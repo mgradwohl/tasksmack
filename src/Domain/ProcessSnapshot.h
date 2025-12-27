@@ -32,6 +32,7 @@ struct ProcessSnapshot
     // Optional (0 if not supported)
     double ioReadBytesPerSec = 0.0;
     double ioWriteBytesPerSec = 0.0;
+    double pageFaultsPerSec = 0.0;
     std::int32_t threadCount = 0;
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)

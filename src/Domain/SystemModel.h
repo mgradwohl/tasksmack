@@ -60,6 +60,7 @@ class SystemModel
     [[nodiscard]] std::vector<float> memoryHistory() const;
     [[nodiscard]] std::vector<float> swapHistory() const;
     [[nodiscard]] std::vector<float> memoryCachedHistory() const;
+    [[nodiscard]] std::vector<float> powerHistory() const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
     [[nodiscard]] std::vector<double> timestamps() const;
 
@@ -85,6 +86,7 @@ class SystemModel
     std::deque<float> m_MemoryHistory;
     std::deque<float> m_MemoryCachedHistory;
     std::deque<float> m_SwapHistory;
+    std::deque<float> m_PowerHistory;
     std::deque<double> m_Timestamps;
     std::vector<std::deque<float>> m_PerCoreHistory;
 

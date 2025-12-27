@@ -495,9 +495,15 @@ auto Theme::largeFont() const -> ImFont*
     return m_Fonts[fontSizeIndex(m_CurrentFontSize)].large;
 }
 
-void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large)
+auto Theme::monospaceFont() const -> ImFont*
 {
-    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large};
+    const auto& fonts = m_Fonts[fontSizeIndex(m_CurrentFontSize)];
+    return fonts.monospace != nullptr ? fonts.monospace : fonts.regular;
+}
+
+void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)
+{
+    m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
 }
 
 } // namespace UI

@@ -5,10 +5,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace UI::Format
@@ -23,26 +26,90 @@ namespace UI::Format
     return static_cast<int>(value); // Safe: checked by std::in_range
 }
 
-[[nodiscard]] inline auto percentToInt(double percent) -> int
+template<std::floating_point T> [[nodiscard]] inline auto percentToInt(T percent) -> int
 {
-    const double clamped = std::max(percent, 0.0);
-    return toIntSaturated(std::lround(clamped));
+    const T clamped = std::max(percent, static_cast<T>(0));
+    return toIntSaturated(std::lround(static_cast<double>(clamped)));
 }
 
-[[nodiscard]] inline auto percentToInt(float percent) -> int
+template<std::floating_point T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
 {
-    const float clamped = std::max(percent, 0.0F);
-    return toIntSaturated(std::lroundf(clamped));
+    return std::format("{:L}%", percentToInt(percent));
 }
 
-[[nodiscard]] inline auto percentCompact(double percent) -> std::string
+template<std::integral T> [[nodiscard]] inline auto percentCompact(T percent) -> std::string
 {
-    return std::format("{}%", percentToInt(percent));
+    return std::format("{:L}%", percent);
 }
 
-[[nodiscard]] inline auto percentCompact(float percent) -> std::string
+[[nodiscard]] inline auto formatId(std::int64_t value) -> std::string
 {
-    return std::format("{}%", percentToInt(percent));
+    return std::format("{}", value);
+}
+
+template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) -> std::string
+{
+    return std::format("{:L}", value);
+}
+
+[[nodiscard]] inline auto formatUIntLocalized(std::uint64_t value) -> std::string
+{
+    return formatIntLocalized(value);
+}
+
+[[nodiscard]] inline auto formatDoubleLocalized(double value, int decimals) -> std::string
+{
+    return std::format("{:.{}Lf}", static_cast<long double>(value), decimals);
+}
+
+template<std::floating_point T> [[nodiscard]] inline auto percentOneDecimalLocalized(T percent) -> std::string
+{
+    return std::format("{:.1Lf}%", static_cast<long double>(percent));
+}
+
+template<std::integral T> [[nodiscard]] inline auto formatCountWithLabel(T value, std::string_view label) -> std::string
+{
+    return std::format("{} {}", formatIntLocalized(value), label);
+}
+
+template<typename T, typename Formatter>
+    requires std::invocable<Formatter, const T&>
+[[nodiscard]] inline auto formatOrDash(const T& value, Formatter&& formatter) -> std::string
+{
+    if (value <= T{0})
+    {
+        return "-";
+    }
+
+    return std::invoke(std::forward<Formatter>(formatter), value);
+}
+
+[[nodiscard]] inline auto formatHoursMinutes(std::uint64_t hours, std::uint64_t minutes) -> std::string
+{
+    return std::format("{}h {}m", hours, minutes);
+}
+
+[[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
+{
+    if (seconds == 0)
+    {
+        return {};
+    }
+
+    const std::uint64_t days = seconds / 86400;
+    const std::uint64_t hours = (seconds % 86400) / 3600;
+    const std::uint64_t minutes = (seconds % 3600) / 60;
+
+    if (days > 0)
+    {
+        return std::format("Up: {}d {}h {}m", days, hours, minutes);
+    }
+    if (hours > 0)
+    {
+        return std::format("Up: {}h {}m", hours, minutes);
+    }
+
+    return std::format("Up: {}m", minutes);
 }
 
 struct ByteUnit
@@ -57,7 +124,7 @@ struct ByteUnit
     const double absBytes = std::abs(bytes);
     if (absBytes >= 1024.0 * 1024.0 * 1024.0)
     {
-        return {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 2};
+        return {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
     }
     if (absBytes >= 1024.0 * 1024.0)
     {
@@ -67,7 +134,7 @@ struct ByteUnit
     {
         return {.suffix = "KB", .scale = 1024.0, .decimals = 1};
     }
-    return {.suffix = "B", .scale = 1.0, .decimals = 0};
+    return {.suffix = "B", .scale = 1.0, .decimals = 1};
 }
 
 [[nodiscard]] inline auto unitForTotalBytes(std::uint64_t bytes) -> ByteUnit
@@ -83,7 +150,7 @@ struct ByteUnit
 [[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
     const double value = bytes / unit.scale;
-    return std::format("{:.{}f} {}", value, unit.decimals, unit.suffix);
+    return std::format("{:.{}Lf} {}", static_cast<long double>(value), unit.decimals, unit.suffix);
 }
 
 [[nodiscard]] inline auto formatBytes(double bytes) -> std::string
@@ -101,6 +168,129 @@ struct ByteUnit
 {
     const auto unit = chooseByteUnit(bytesPerSec);
     return formatBytesPerSecWithUnit(bytesPerSec, unit);
+}
+
+// ============================================================================
+// Decimal-aligned numeric parts for table column rendering
+// ============================================================================
+
+/// Parts of a numeric value split for decimal-point alignment.
+/// The three parts should be rendered as: [wholePart right-aligned][decimalPart][unitPart]
+/// This allows decimal points to align vertically regardless of digit count.
+struct AlignedNumericParts
+{
+    std::string wholePart;   ///< Digits + decimal point, e.g. "123,456." (render right-aligned)
+    std::string decimalPart; ///< Fractional digits only, e.g. "98" (fixed width, left-aligned)
+    std::string unitPart;    ///< Unit suffix like " MB" or "%" (fixed width, left-aligned)
+};
+
+/// Split a byte value into parts for decimal-aligned rendering
+[[nodiscard]] inline auto splitBytesForAlignment(double bytes, ByteUnit unit) -> AlignedNumericParts
+{
+    const double value = bytes / unit.scale;
+    const auto wholeValue = static_cast<std::int64_t>(value);
+
+    AlignedNumericParts parts;
+
+    if (unit.decimals > 0)
+    {
+        // Whole part includes decimal point
+        parts.wholePart = std::format("{:L}.", wholeValue);
+        // Extract fractional part (just digits, no decimal point)
+        const double fractional = std::abs(value - static_cast<double>(wholeValue));
+        parts.decimalPart = std::format("{:0{}d}", static_cast<int>(std::round(fractional * std::pow(10.0, unit.decimals))), unit.decimals);
+    }
+    else
+    {
+        parts.wholePart = std::format("{:L}", wholeValue);
+    }
+
+    parts.unitPart = std::format(" {}", unit.suffix);
+    return parts;
+}
+
+/// Split a bytes-per-second value into parts for decimal-aligned rendering
+[[nodiscard]] inline auto splitBytesPerSecForAlignment(double bytesPerSec, ByteUnit unit) -> AlignedNumericParts
+{
+    auto parts = splitBytesForAlignment(bytesPerSec, unit);
+    parts.unitPart = std::format(" {}/s", unit.suffix);
+    return parts;
+}
+
+/// Split a percentage value (0-100) into parts for decimal-aligned rendering
+[[nodiscard]] inline auto splitPercentForAlignment(double percent, int decimals = 1) -> AlignedNumericParts
+{
+    const auto wholeValue = static_cast<std::int64_t>(percent);
+
+    AlignedNumericParts parts;
+
+    if (decimals > 0)
+    {
+        // Whole part includes decimal point
+        parts.wholePart = std::format("{:L}.", wholeValue);
+        // Fractional part (just digits, no decimal point)
+        const double fractional = std::abs(percent - static_cast<double>(wholeValue));
+        parts.decimalPart = std::format("{:0{}d}", static_cast<int>(std::round(fractional * std::pow(10.0, decimals))), decimals);
+    }
+    else
+    {
+        parts.wholePart = std::format("{:L}", wholeValue);
+    }
+
+    parts.unitPart = "%";
+    return parts;
+}
+
+/// Split a power value (watts) into parts for decimal-aligned rendering
+[[nodiscard]] inline auto splitPowerForAlignment(double watts) -> AlignedNumericParts
+{
+    if (watts <= 0.0)
+    {
+        return {.wholePart = "0.", .decimalPart = "0", .unitPart = " W"};
+    }
+
+    const double absWatts = std::abs(watts);
+    double displayValue = watts;
+    const char* unitSuffix = "W";
+
+    if (absWatts >= 1.0)
+    {
+        // Keep as watts
+    }
+    else if (absWatts >= 0.001)
+    {
+        displayValue = watts * 1000.0;
+        unitSuffix = "mW";
+    }
+    else
+    {
+        displayValue = watts * 1'000'000.0;
+        unitSuffix = "µW";
+    }
+
+    const auto wholeValue = static_cast<std::int64_t>(displayValue);
+    const double fractional = std::abs(displayValue - static_cast<double>(wholeValue));
+
+    AlignedNumericParts parts;
+    // Whole part includes decimal point
+    parts.wholePart = std::format("{:L}.", wholeValue);
+    // Fractional part (1 digit)
+    parts.decimalPart = std::format("{:01d}", static_cast<int>(std::round(fractional * 10.0)));
+    parts.unitPart = std::format(" {}", unitSuffix);
+    return parts;
+}
+
+[[nodiscard]] inline auto formatCountPerSecond(double value) -> std::string
+{
+    if (value >= 1'000'000.0)
+    {
+        return std::format("{:.1Lf}M/s", static_cast<long double>(value) / 1'000'000.0);
+    }
+    if (value >= 1'000.0)
+    {
+        return std::format("{:.1Lf}K/s", static_cast<long double>(value) / 1'000.0);
+    }
+    return std::format("{:.1Lf}/s", static_cast<long double>(value));
 }
 
 [[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
@@ -217,14 +407,14 @@ struct ByteUnit
     const double absWatts = std::abs(watts);
     if (absWatts >= 1.0)
     {
-        return std::format("{:.2f} W", watts);
+        return std::format("{:.2Lf} W", static_cast<long double>(watts));
     }
     if (absWatts >= 0.001)
     {
-        return std::format("{:.2f} mW", watts * 1000.0);
+        return std::format("{:.2Lf} mW", static_cast<long double>(watts) * 1000.0L);
     }
 
-    return std::format("{:.2f} µW", watts * 1'000'000.0);
+    return std::format("{:.2Lf} µW", static_cast<long double>(watts) * 1'000'000.0L);
 }
 
 } // namespace UI::Format

@@ -526,8 +526,8 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
                     // Skip if cgroupSubPath is empty or doesn't start with /
                     if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
                     {
-                        std::filesystem::path freezePathV1 = std::filesystem::path("/sys/fs/cgroup/freezer")
-                                                                 / cgroupSubPath.substr(1) / "freezer.state";
+                        std::filesystem::path freezePathV1 =
+                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
                         std::ifstream freezeFileV1(freezePathV1);
                         if (freezeFileV1.is_open())
                         {

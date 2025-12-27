@@ -134,6 +134,8 @@ if(WIN32)
     target_link_libraries(TaskSmackTests PRIVATE
         pdh
         psapi
+        iphlpapi
+        ws2_32
         userenv
     )
 endif()

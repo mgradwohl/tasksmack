@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <functional>
 #include <optional>
 #include <string>
@@ -44,6 +45,125 @@ inline double computeAlpha(float deltaTimeSeconds, std::chrono::milliseconds ref
 inline double smoothTowards(double current, double target, double alpha)
 {
     return current + (alpha * (target - current));
+}
+
+inline std::string formatAgeSeconds(double relativeSeconds)
+{
+    const double ageSeconds = std::abs(relativeSeconds);
+    return std::format("Age: {:.1f}s", ageSeconds);
+}
+
+template<typename TX, typename TY>
+inline void plotLineWithFill(const char* label,
+                             const TX* xData,
+                             const TY* yData,
+                             int count,
+                             const ImVec4& lineColor,
+                             std::optional<ImVec4> fillColor = std::nullopt,
+                             float lineThickness = 2.0F)
+{
+    if (count <= 0)
+    {
+        return;
+    }
+
+    ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+    const std::string shadedLabel = std::format("##{}Fill", label);
+
+    ImPlot::SetNextFillStyle(fill);
+    ImPlot::PlotShaded(shadedLabel.c_str(), xData, yData, count, 0.0);
+
+    ImPlot::SetNextLineStyle(lineColor, lineThickness);
+    ImPlot::PlotLine(label, xData, yData, count);
+}
+
+// ============================================================================
+// Axis formatters for ImPlot Y-axis tick labels
+// These use C callbacks required by ImPlot::SetupAxisFormat
+// ============================================================================
+
+/// Format large numbers with thousands separators (e.g., 400000 -> "400,000")
+/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized)
+inline int formatAxisLocalized(double value, char* buff, int size, void* /*userData*/)
+{
+    // Use locale-aware formatting with thousands separators
+    const auto str = std::format("{:.0Lf}", static_cast<long double>(value));
+    const int len = static_cast<int>(str.size());
+    if (len < size)
+    {
+        std::copy(str.begin(), str.end(), buff);
+        buff[len] = '\0';
+        return len;
+    }
+    return 0;
+}
+
+/// Format values as bytes/s with appropriate unit scaling (B/s, KB/s, MB/s, GB/s)
+/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec)
+inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*userData*/)
+{
+    const double absValue = std::abs(value);
+    std::string str;
+
+    if (absValue >= 1024.0 * 1024.0 * 1024.0)
+    {
+        str = std::format("{:.1Lf} GB/s", static_cast<long double>(value) / (1024.0L * 1024.0L * 1024.0L));
+    }
+    else if (absValue >= 1024.0 * 1024.0)
+    {
+        str = std::format("{:.1Lf} MB/s", static_cast<long double>(value) / (1024.0L * 1024.0L));
+    }
+    else if (absValue >= 1024.0)
+    {
+        str = std::format("{:.1Lf} KB/s", static_cast<long double>(value) / 1024.0L);
+    }
+    else
+    {
+        str = std::format("{:.0Lf} B/s", static_cast<long double>(value));
+    }
+
+    const int len = static_cast<int>(str.size());
+    if (len < size)
+    {
+        std::copy(str.begin(), str.end(), buff);
+        buff[len] = '\0';
+        return len;
+    }
+    return 0;
+}
+
+/// Format values as watts with appropriate unit scaling (W, mW, µW)
+/// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts)
+inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*/)
+{
+    const double absValue = std::abs(value);
+    std::string str;
+
+    if (absValue >= 1.0)
+    {
+        str = std::format("{:.2Lf} W", static_cast<long double>(value));
+    }
+    else if (absValue >= 0.001)
+    {
+        str = std::format("{:.1Lf} mW", static_cast<long double>(value) * 1000.0L);
+    }
+    else if (absValue > 0.0)
+    {
+        str = std::format("{:.0Lf} µW", static_cast<long double>(value) * 1'000'000.0L);
+    }
+    else
+    {
+        str = "0 W";
+    }
+
+    const int len = static_cast<int>(str.size());
+    if (len < size)
+    {
+        std::copy(str.begin(), str.end(), buff);
+        buff[len] = '\0';
+        return len;
+    }
+    return 0;
 }
 
 struct NowBar
@@ -184,6 +304,11 @@ inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mo
 }
 
 // TODO: Accept std::string_view for IDs/text to avoid raw const char*
+inline void setupLegendDefault()
+{
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoHighlightItem);
+}
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,

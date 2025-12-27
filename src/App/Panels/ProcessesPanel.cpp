@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <memory>
 #include <optional>
@@ -32,7 +33,13 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
-constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
+
+// Fixed widths for decimal-aligned rendering (in character widths)
+// These ensure consistent alignment across all rows
+constexpr int MAX_DECIMAL_CHARS = 2; // ".X" for 1 decimal place
+constexpr int MAX_UNIT_CHARS = 5;    // " GB/s" is longest unit
+
+constexpr int MAX_TREE_DEPTH = 1000; // Maximum tree depth to detect cycles or malformed data
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -61,6 +68,74 @@ constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycle
     return std::nullopt;
 }
 
+void renderRightAlignedText(const std::string& text)
+{
+    // GetContentRegionAvail() properly returns space from cursor to right edge of cell
+    const float textWidth = ImGui::CalcTextSize(text.c_str()).x;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float currentX = ImGui::GetCursorPosX();
+    ImGui::SetCursorPosX(currentX + std::max(0.0F, availWidth - textWidth));
+    ImGui::TextUnformatted(text.c_str());
+}
+
+/// Render a numeric value with decimal-point alignment.
+/// Layout (right to left):
+/// 1. Unit part - fixed width region at right edge, contents left-aligned within region
+/// 2. Decimal part - fixed width region to left of unit, contents left-aligned within region
+/// 3. Whole part - right-aligned to fill remaining space, ends at decimal region start
+///
+/// This ensures decimal points align vertically across all rows.
+void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts)
+{
+    // Use "0" width as our character unit for fixed-width regions
+    const float charWidth = ImGui::CalcTextSize("0").x;
+    const float unitRegionWidth = charWidth * static_cast<float>(MAX_UNIT_CHARS);
+    const float decimalRegionWidth = charWidth * static_cast<float>(MAX_DECIMAL_CHARS);
+    const float lineHeight = ImGui::GetTextLineHeight();
+
+    const float cellStartX = ImGui::GetCursorPosX();
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float cellEndX = cellStartX + availWidth;
+
+    // Calculate region boundaries (working right to left)
+    const float unitRegionStart = cellEndX - unitRegionWidth;
+    const float decimalRegionStart = unitRegionStart - decimalRegionWidth;
+
+    // Calculate whole part positioning
+    const float wholeWidth = ImGui::CalcTextSize(parts.wholePart.c_str()).x;
+    const float wholeStartX = decimalRegionStart - wholeWidth;
+
+    // Render whole part (right-aligned, ending at decimal region)
+    ImGui::SetCursorPosX(std::max(cellStartX, wholeStartX));
+    ImGui::TextUnformatted(parts.wholePart.c_str());
+
+    // Render decimal part (fixed position, left-aligned content)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(decimalRegionStart);
+    if (!parts.decimalPart.empty())
+    {
+        ImGui::TextUnformatted(parts.decimalPart.c_str());
+    }
+    else
+    {
+        // Empty placeholder to maintain layout - must have size to grow parent bounds
+        ImGui::Dummy(ImVec2(decimalRegionWidth, lineHeight));
+    }
+
+    // Render unit part (fixed position, left-aligned content)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(unitRegionStart);
+    if (!parts.unitPart.empty())
+    {
+        ImGui::TextUnformatted(parts.unitPart.c_str());
+    }
+    else
+    {
+        // Empty placeholder to grow parent bounds after SetCursorPosX
+        ImGui::Dummy(ImVec2(unitRegionWidth, lineHeight));
+    }
+}
+
 } // namespace
 
 ProcessesPanel::ProcessesPanel() : Panel("Processes")
@@ -85,7 +160,9 @@ void ProcessesPanel::onAttach()
     // Create process model with platform probe; refresh is driven by onUpdate().
     m_ProcessModel = std::make_unique<Domain::ProcessModel>(Platform::makeProcessProbe());
 
-    // Initial population
+    // Initial population - call refresh twice to seed history
+    // First call sets up m_HasPrevSampleTime, second call populates history
+    m_ProcessModel->refresh();
     m_ProcessModel->refresh();
     m_ForceRefresh = false;
 
@@ -261,11 +338,13 @@ void ProcessesPanel::render(bool* open)
     std::string summaryStr;
     if (searchTerm.empty())
     {
-        summaryStr = std::format("{} processes, {} running", currentSnapshots.size(), runningCount);
+        summaryStr = std::format(
+            "{:L} processes, {:L} running", static_cast<long long>(currentSnapshots.size()), static_cast<long long>(runningCount));
     }
     else
     {
-        summaryStr = std::format("{} / {} processes", filteredIndices.size(), currentSnapshots.size());
+        summaryStr = std::format(
+            "{:L} / {:L} processes", static_cast<long long>(filteredIndices.size()), static_cast<long long>(currentSnapshots.size()));
     }
 
     // Get a stable button width based on the widest possible label so layout doesn't shift when toggling
@@ -340,17 +419,49 @@ void ProcessesPanel::render(bool* open)
             // Command column stretches, others have initial width (all can be resized/auto-fitted)
             if (info.defaultWidth > 0.0F)
             {
-                // Use enum value as user_id for stable column identification
-                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, info.defaultWidth, toImGuiId(col));
+                // Use menuName for TableSetupColumn (shown in context menu)
+                // We render custom headers with info.name below
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, info.defaultWidth, toImGuiId(col));
             }
             else
             {
                 flags |= ImGuiTableColumnFlags_WidthStretch;
-                ImGui::TableSetupColumn(std::string(info.name).c_str(), flags, 0.0F, toImGuiId(col));
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, 0.0F, toImGuiId(col));
             }
         }
 
-        ImGui::TableHeadersRow();
+        // Center headers within their columns for better readability
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        int headerIdx = 0;
+        const ImGuiStyle& headerStyle = ImGui::GetStyle();
+        for (const ProcessColumn col : allProcessColumns())
+        {
+            if (!ImGui::TableSetColumnIndex(headerIdx))
+            {
+                ++headerIdx;
+                continue;
+            }
+
+            const auto info = getColumnInfo(col);
+            const float colWidth = ImGui::GetColumnWidth();
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literal is null-terminated
+            const float textWidth = ImGui::CalcTextSize(info.name.data()).x;
+            const float startX = ImGui::GetCursorPosX();
+            const float paddingX = headerStyle.CellPadding.x;
+            const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
+            ImGui::SetCursorPosX(targetX);
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literal is null-terminated
+            ImGui::TableHeader(info.name.data());
+
+            // Show tooltip with full column name and description on hover
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            {
+                // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literals are null-terminated
+                ImGui::SetTooltip("%s\n%s", info.menuName.data(), info.description.data());
+            }
+
+            ++headerIdx;
+        }
 
         // Handle sorting: Disable in tree view mode to maintain parent-child hierarchy
         if (!m_TreeViewEnabled)
@@ -427,6 +538,10 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.ioReadBytesPerSec, procB.ioReadBytesPerSec);
                                           case ProcessColumn::IoWrite:
                                               return compare(procA.ioWriteBytesPerSec, procB.ioWriteBytesPerSec);
+                                          case ProcessColumn::NetSent:
+                                              return compare(procA.netSentBytesPerSec, procB.netSentBytesPerSec);
+                                          case ProcessColumn::NetReceived:
+                                              return compare(procA.netReceivedBytesPerSec, procB.netReceivedBytesPerSec);
                                           case ProcessColumn::Power:
                                               return compare(procA.powerWatts, procB.powerWatts);
                                           default:
@@ -576,11 +691,15 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::SameLine();
             }
 
-            const std::string label = std::format("{}", proc.pid);
-            if (ImGui::Selectable(label.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+            const std::string label = UI::Format::formatId(proc.pid);
+            const std::string selectableId = std::format("##pid_select_{}", proc.uniqueKey);
+            if (ImGui::Selectable(
+                    selectableId.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
             {
                 m_SelectedPid = proc.pid;
             }
+            ImGui::SameLine(0.0F, 0.0F);
+            renderRightAlignedText(label);
 
             if (m_TreeViewEnabled && depth > 0)
             {
@@ -598,49 +717,55 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::CpuPercent:
-            ImGui::Text("%.1f", proc.cpuPercent);
+        {
+            const auto parts = UI::Format::splitPercentForAlignment(proc.cpuPercent);
+            renderDecimalAligned(parts);
             break;
+        }
 
         case ProcessColumn::MemPercent:
-            ImGui::Text("%.1f", proc.memoryPercent);
+        {
+            const auto parts = UI::Format::splitPercentForAlignment(proc.memoryPercent);
+            renderDecimalAligned(parts);
             break;
+        }
 
         case ProcessColumn::Virtual:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.virtualBytes), unit);
-            ImGui::TextUnformatted(text.c_str());
+            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.virtualBytes), unit);
+            renderDecimalAligned(parts);
             break;
         }
 
         case ProcessColumn::Resident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.memoryBytes), unit);
-            ImGui::TextUnformatted(text.c_str());
+            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.memoryBytes), unit);
+            renderDecimalAligned(parts);
             break;
         }
 
         case ProcessColumn::PeakResident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.peakMemoryBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.peakMemoryBytes), unit);
-            ImGui::TextUnformatted(text.c_str());
+            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.peakMemoryBytes), unit);
+            renderDecimalAligned(parts);
             break;
         }
 
         case ProcessColumn::Shared:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
-            const std::string text = UI::Format::formatBytesWithUnit(static_cast<double>(proc.sharedBytes), unit);
-            ImGui::TextUnformatted(text.c_str());
+            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.sharedBytes), unit);
+            renderDecimalAligned(parts);
             break;
         }
 
         case ProcessColumn::CpuTime:
         {
             const std::string text = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
-            ImGui::TextUnformatted(text.c_str());
+            renderRightAlignedText(text);
             break;
         }
 
@@ -699,41 +824,38 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::PPID:
-            ImGui::Text("%d", proc.parentPid);
+        {
+            const std::string text = UI::Format::formatId(proc.parentPid);
+            renderRightAlignedText(text);
             break;
+        }
 
         case ProcessColumn::Nice:
-            ImGui::Text("%d", proc.nice);
+        {
+            const std::string text = UI::Format::formatId(proc.nice);
+            renderRightAlignedText(text);
             break;
+        }
 
         case ProcessColumn::Threads:
-            if (proc.threadCount > 0)
-            {
-                ImGui::Text("%d", proc.threadCount);
-            }
-            else
-            {
-                ImGui::TextUnformatted("-");
-            }
+        {
+            const std::string text =
+                UI::Format::formatOrDash(proc.threadCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            renderRightAlignedText(text);
             break;
+        }
 
         case ProcessColumn::PageFaults:
-            if (proc.pageFaults > 0)
-            {
-                // Format with locale for thousands separator (cached to avoid repeated allocations)
-                static thread_local std::string formatted;
-                formatted = std::format("{:L}", proc.pageFaults);
-                ImGui::TextUnformatted(formatted.c_str());
-            }
-            else
-            {
-                ImGui::TextUnformatted("-");
-            }
+        {
+            const std::string formatted =
+                UI::Format::formatOrDash(proc.pageFaults, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            renderRightAlignedText(formatted);
             break;
+        }
         case ProcessColumn::Affinity:
         {
             const std::string text = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
-            ImGui::TextUnformatted(text.c_str());
+            renderRightAlignedText(text);
             break;
         }
 
@@ -751,33 +873,70 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::IoRead:
         {
-            // Format as bytes per second with appropriate unit
-            const auto unit = UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec);
-            const std::string text = UI::Format::formatBytesPerSecWithUnit(proc.ioReadBytesPerSec, unit);
-            ImGui::TextUnformatted(text.c_str());
+            if (proc.ioReadBytesPerSec > 0.0)
+            {
+                const auto unit = UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec);
+                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioReadBytesPerSec, unit);
+                renderDecimalAligned(parts);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
             break;
         }
 
         case ProcessColumn::IoWrite:
         {
-            // Format as bytes per second with appropriate unit
-            const auto unit = UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec);
-            const std::string text = UI::Format::formatBytesPerSecWithUnit(proc.ioWriteBytesPerSec, unit);
-            ImGui::TextUnformatted(text.c_str());
+            if (proc.ioWriteBytesPerSec > 0.0)
+            {
+                const auto unit = UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec);
+                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioWriteBytesPerSec, unit);
+                renderDecimalAligned(parts);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::NetSent:
+        {
+            if (proc.netSentBytesPerSec > 0.0)
+            {
+                const auto unit = UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec);
+                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netSentBytesPerSec, unit);
+                renderDecimalAligned(parts);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::NetReceived:
+        {
+            if (proc.netReceivedBytesPerSec > 0.0)
+            {
+                const auto unit = UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec);
+                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netReceivedBytesPerSec, unit);
+                renderDecimalAligned(parts);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
             break;
         }
 
         case ProcessColumn::Power:
-            if (proc.powerWatts > 0.0)
-            {
-                const std::string text = UI::Format::formatPowerCompact(proc.powerWatts);
-                ImGui::TextUnformatted(text.c_str());
-            }
-            else
-            {
-                ImGui::TextUnformatted("-");
-            }
+        {
+            const auto parts = UI::Format::splitPowerForAlignment(proc.powerWatts);
+            renderDecimalAligned(parts);
             break;
+        }
         default:
             break;
         }

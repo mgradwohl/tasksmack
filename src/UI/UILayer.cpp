@@ -17,6 +17,7 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 
@@ -105,6 +106,42 @@ float pointsToPixels(float points)
     // pixels = points * (DPI / 72), where effective DPI = BASE_DPI * scale
     return points * (BASE_DPI * scaleX) / 72.0F;
 }
+
+// Best-effort system monospace font discovery (platform-specific, prefers widely available defaults)
+std::filesystem::path getMonospaceFontPath()
+{
+#ifdef _WIN32
+    // Prefer Consolas, fall back to Cascadia Mono if available
+    constexpr std::array<const wchar_t*, 2> CANDIDATES = {
+        L"C:/Windows/Fonts/consola.ttf",
+        L"C:/Windows/Fonts/CascadiaMono.ttf",
+    };
+    for (const auto* candidate : CANDIDATES)
+    {
+        std::filesystem::path path(candidate);
+        if (std::filesystem::exists(path))
+        {
+            return path;
+        }
+    }
+#else
+    // Prefer DejaVu Sans Mono, fall back to Liberation Mono
+    constexpr std::array<const char*, 2> CANDIDATES = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    };
+    for (const auto* candidate : CANDIDATES)
+    {
+        std::filesystem::path path(candidate);
+        if (std::filesystem::exists(path))
+        {
+            return path;
+        }
+    }
+#endif
+
+    return {};
+}
 } // namespace
 
 namespace UI
@@ -129,6 +166,7 @@ void UILayer::loadAllFonts()
     // Build font path relative to executable directory
     auto exeDir = getExecutableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
+    const auto monospaceFontPath = getMonospaceFontPath();
 
     spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
 
@@ -164,8 +202,29 @@ void UILayer::loadAllFonts()
             fontLarge = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
         }
 
+        ImFont* fontMonospace = nullptr;
+        if (!monospaceFontPath.empty())
+        {
+            ImFontConfig monoConfig;
+            monoConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
+            monoConfig.SizePixels = fontSizeRegular;
+            fontMonospace = imguiIO.Fonts->AddFontFromFileTTF(monospaceFontPath.string().c_str(), fontSizeRegular, &monoConfig);
+            if (fontMonospace == nullptr)
+            {
+                spdlog::warn("Could not load monospace font from {}, falling back to default", monospaceFontPath.string());
+            }
+        }
+
+        if (fontMonospace == nullptr)
+        {
+            ImFontConfig monoFallbackConfig;
+            monoFallbackConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_MonoHinting;
+            monoFallbackConfig.SizePixels = fontSizeRegular;
+            fontMonospace = imguiIO.Fonts->AddFontDefault(&monoFallbackConfig);
+        }
+
         // Register with theme for instant switching
-        theme.registerFonts(size, fontRegular, fontLarge);
+        theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
     }
 
     spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);

@@ -74,6 +74,12 @@ class ProcessesPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
+    /// Access the underlying process model (non-owning).
+    [[nodiscard]] Domain::ProcessModel* processModel() const
+    {
+        return m_ProcessModel.get();
+    }
+
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::int32_t m_SelectedPid = -1;

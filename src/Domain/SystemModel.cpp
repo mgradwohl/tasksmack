@@ -62,6 +62,7 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_MemoryHistory);
     trimSamples(m_MemoryCachedHistory);
     trimSamples(m_SwapHistory);
+    trimSamples(m_PowerHistory);
 
     for (auto& coreHist : m_PerCoreHistory)
     {
@@ -87,6 +88,7 @@ void SystemModel::trimHistory(double nowSeconds)
     updateMin(m_MemoryHistory.size());
     updateMin(m_MemoryCachedHistory.size());
     updateMin(m_SwapHistory.size());
+    updateMin(m_PowerHistory.size());
     for (const auto& coreHist : m_PerCoreHistory)
     {
         updateMin(coreHist.size());
@@ -111,6 +113,7 @@ void SystemModel::trimHistory(double nowSeconds)
         trimToMin(m_MemoryHistory);
         trimToMin(m_MemoryCachedHistory);
         trimToMin(m_SwapHistory);
+        trimToMin(m_PowerHistory);
         for (auto& coreHist : m_PerCoreHistory)
         {
             trimToMin(coreHist);
@@ -143,6 +146,17 @@ void SystemModel::refresh()
     {
         auto powerCounters = m_PowerProbe->read();
         auto powerStatus = computePowerStatus(powerCounters);
+
+        // Debug logging for power status
+        if (powerStatus.hasBattery)
+        {
+            spdlog::debug("SystemModel: battery {}% ({:.1f}W), AC={}, charging={}, health={}%",
+                          powerStatus.chargePercent,
+                          powerStatus.powerWatts,
+                          powerStatus.isOnAc,
+                          powerStatus.isCharging,
+                          powerStatus.healthPercent);
+        }
 
         // Only lock to update the snapshot
         std::unique_lock lock(m_Mutex);
@@ -211,6 +225,12 @@ std::vector<float> SystemModel::memoryHistory() const
 {
     std::shared_lock lock(m_Mutex);
     return std::vector<float>(m_MemoryHistory.begin(), m_MemoryHistory.end());
+}
+
+std::vector<float> SystemModel::powerHistory() const
+{
+    std::shared_lock lock(m_Mutex);
+    return std::vector<float>(m_PowerHistory.begin(), m_PowerHistory.end());
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
@@ -337,6 +357,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
         m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
         m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+        m_PowerHistory.push_back(static_cast<float>(snap.power.powerWatts));
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)

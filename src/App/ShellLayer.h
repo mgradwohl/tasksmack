@@ -3,7 +3,6 @@
 #include "Core/Layer.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
-#include "Panels/StoragePanel.h"
 #include "Panels/SystemMetricsPanel.h"
 
 namespace App
@@ -34,13 +33,11 @@ class ShellLayer : public Core::Layer
     ProcessesPanel m_ProcessesPanel;
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
-    StoragePanel m_StoragePanel;
 
     // Panel visibility
     bool m_ShowProcesses = true;
     bool m_ShowMetrics = true;
     bool m_ShowDetails = true;
-    bool m_ShowStorage = true;
 
     // Frame timing
     float m_FrameTime = 0.0F;
