@@ -487,6 +487,15 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     }
 }
 
+bool LinuxProcessProbe::checkIoCountersAvailability() const
+{
+    // Check if we can read /proc/self/io to determine I/O counter availability.
+    // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
+    // or being the owner of the target process.
+    std::ifstream selfIo("/proc/self/io");
+    return selfIo.is_open();
+}
+
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
 {
     // Try cgroup v2 first: freezer.state
