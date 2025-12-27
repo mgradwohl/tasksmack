@@ -284,11 +284,11 @@ struct AlignedNumericParts
 {
     if (value >= 1'000'000.0)
     {
-        return std::format("{:.1Lf}M/s", static_cast<long double>(value) / 1'000'000.0);
+        return std::format("{:.1Lf}M/s", static_cast<long double>(value) / 1'000'000.0L);
     }
     if (value >= 1'000.0)
     {
-        return std::format("{:.1Lf}K/s", static_cast<long double>(value) / 1'000.0);
+        return std::format("{:.1Lf}K/s", static_cast<long double>(value) / 1'000.0L);
     }
     return std::format("{:.1Lf}/s", static_cast<long double>(value));
 }
