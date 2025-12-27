@@ -298,6 +298,12 @@ set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 # Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
 set(FETCHCONTENT_TRY_FIND_PACKAGE_freetype FALSE)
 
+# CMake 4.2 dropped compatibility for projects declaring cmake_minimum_required(<3.5).
+# FreeType 2.13.2 still requests 3.0. Temporarily raise the policy minimum while
+# configuring the FreeType subproject, then restore the previous value.
+set(_TS_OLD_POLICY_VERSION_MINIMUM ${CMAKE_POLICY_VERSION_MINIMUM})
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 FetchContent_Declare(
     freetype
     DOWNLOAD_EXTRACT_TIMESTAMP OFF
@@ -335,6 +341,13 @@ FetchContent_GetProperties(freetype)
 if(NOT freetype_POPULATED)
     FetchContent_Populate(freetype)
     add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
+endif()
+
+# Restore the user's policy minimum to avoid global side effects
+if(DEFINED _TS_OLD_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM ${_TS_OLD_POLICY_VERSION_MINIMUM})
+else()
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
 endif()
 
 set_target_properties(freetype PROPERTIES FOLDER "third_party")
