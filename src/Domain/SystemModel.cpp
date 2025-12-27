@@ -63,6 +63,7 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_MemoryCachedHistory);
     trimSamples(m_SwapHistory);
     trimSamples(m_PowerHistory);
+    trimSamples(m_BatteryChargeHistory);
 
     for (auto& coreHist : m_PerCoreHistory)
     {
@@ -89,6 +90,7 @@ void SystemModel::trimHistory(double nowSeconds)
     updateMin(m_MemoryCachedHistory.size());
     updateMin(m_SwapHistory.size());
     updateMin(m_PowerHistory.size());
+    updateMin(m_BatteryChargeHistory.size());
     for (const auto& coreHist : m_PerCoreHistory)
     {
         updateMin(coreHist.size());
@@ -114,6 +116,7 @@ void SystemModel::trimHistory(double nowSeconds)
         trimToMin(m_MemoryCachedHistory);
         trimToMin(m_SwapHistory);
         trimToMin(m_PowerHistory);
+        trimToMin(m_BatteryChargeHistory);
         for (auto& coreHist : m_PerCoreHistory)
         {
             trimToMin(coreHist);
@@ -146,17 +149,6 @@ void SystemModel::refresh()
     {
         auto powerCounters = m_PowerProbe->read();
         auto powerStatus = computePowerStatus(powerCounters);
-
-        // Debug logging for power status
-        if (powerStatus.hasBattery)
-        {
-            spdlog::debug("SystemModel: battery {}% ({:.1f}W), AC={}, charging={}, health={}%",
-                          powerStatus.chargePercent,
-                          powerStatus.powerWatts,
-                          powerStatus.isOnAc,
-                          powerStatus.isCharging,
-                          powerStatus.healthPercent);
-        }
 
         // Only lock to update the snapshot
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -231,6 +223,12 @@ std::vector<float> SystemModel::powerHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_PowerHistory.begin(), m_PowerHistory.end());
+}
+
+std::vector<float> SystemModel::batteryChargeHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return std::vector<float>(m_BatteryChargeHistory.begin(), m_BatteryChargeHistory.end());
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
@@ -343,8 +341,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         }
     }
 
-    // Store snapshot
+    // Store snapshot (preserve power status that was set separately in refresh())
+    const auto preservedPower = m_Snapshot.power;
     m_Snapshot = snap;
+    m_Snapshot.power = preservedPower;
 
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
@@ -357,7 +357,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
         m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
         m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-        m_PowerHistory.push_back(static_cast<float>(snap.power.powerWatts));
+        m_PowerHistory.push_back(static_cast<float>(preservedPower.powerWatts));
+        // Track battery charge % if available (0-100 range, use -1 as "no data")
+        const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
+        m_BatteryChargeHistory.push_back(chargeVal);
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)

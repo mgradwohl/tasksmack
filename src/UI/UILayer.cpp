@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -166,7 +167,22 @@ void UILayer::loadAllFonts()
     // Build font path relative to executable directory
     auto exeDir = getExecutableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
+    auto iconFontPath = (exeDir / "assets" / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = getMonospaceFontPath();
+
+    // Check if icon font exists
+    const bool hasIconFont = std::filesystem::exists(iconFontPath);
+    if (!hasIconFont)
+    {
+        spdlog::warn("Icon font not found at {}, icons will not be available", iconFontPath);
+    }
+    else
+    {
+        spdlog::info("Found icon font: {}", iconFontPath);
+    }
+
+    // Icon font glyph range (Font Awesome 6)
+    static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
 
     spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
 
@@ -194,12 +210,32 @@ void UILayer::loadAllFonts()
             fontRegular = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
         }
 
+        // Merge icon font into regular font
+        if (hasIconFont)
+        {
+            ImFontConfig iconConfig;
+            iconConfig.MergeMode = true;
+            iconConfig.PixelSnapH = true;
+            iconConfig.GlyphMinAdvanceX = fontSizeRegular; // Make icons monospaced
+            imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), fontSizeRegular, &iconConfig, ICON_RANGES);
+        }
+
         ImFont* fontLarge = imguiIO.Fonts->AddFontFromFileTTF(fontPath.c_str(), fontSizeLarge);
         if (fontLarge == nullptr)
         {
             ImFontConfig defaultFontConfig;
             defaultFontConfig.SizePixels = fontSizeLarge;
             fontLarge = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
+        }
+
+        // Merge icon font into large font
+        if (hasIconFont)
+        {
+            ImFontConfig iconConfig;
+            iconConfig.MergeMode = true;
+            iconConfig.PixelSnapH = true;
+            iconConfig.GlyphMinAdvanceX = fontSizeLarge;
+            imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), fontSizeLarge, &iconConfig, ICON_RANGES);
         }
 
         ImFont* fontMonospace = nullptr;

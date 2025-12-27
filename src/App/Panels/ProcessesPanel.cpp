@@ -6,6 +6,7 @@
 #include "Domain/ProcessModel.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Numeric.h"
 #include "UI/Theme.h"
 
@@ -34,12 +35,15 @@ namespace
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
 
-// Fixed widths for decimal-aligned rendering (in character widths)
-// These ensure consistent alignment across all rows
-constexpr int MAX_DECIMAL_CHARS = 2; // ".X" for 1 decimal place
-constexpr int MAX_UNIT_CHARS = 5;    // " GB/s" is longest unit
-
 constexpr int MAX_TREE_DEPTH = 1000; // Maximum tree depth to detect cycles or malformed data
+
+// Column-specific unit widths (based on longest unit that can appear)
+// Unit widths measured by longest unit string that column can display
+// using "W" as a wide character placeholder.
+constexpr std::string_view UNIT_PERCENT = "W";           // CPU %, MEM %
+constexpr std::string_view UNIT_BYTES = " WW";           // VIRT, RES, PEAK, SHR (longest: " GB")
+constexpr std::string_view UNIT_BYTES_PER_SEC = " WW/W"; // I/O, Net (longest: " GB/s")
+constexpr std::string_view UNIT_POWER = " WW";           // Power (mW is wider than µW in most fonts)
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
 {
@@ -80,22 +84,25 @@ void renderRightAlignedText(const std::string& text)
 
 /// Render a numeric value with decimal-point alignment.
 /// Layout (right to left):
-/// 1. Unit part - fixed width region at right edge, contents left-aligned within region
-/// 2. Decimal part - fixed width region to left of unit, contents left-aligned within region
-/// 3. Whole part - right-aligned to fill remaining space, ends at decimal region start
+/// 1. Unit part - width based on maxUnitStr (the longest unit for this column)
+/// 2. Decimal part - width of "X" (one digit for fractional, if hasDecimals)
+/// 3. Whole part - right-aligned to fill remaining space
 ///
-/// This ensures decimal points align vertically across all rows.
-void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts)
+/// @param parts The split numeric parts to render
+/// @param maxUnitStr The longest unit string that can appear in this column (for width calculation)
+/// @param hasDecimals Whether to reserve space for decimal part (e.g., ".X")
+void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts, std::string_view maxUnitStr, bool hasDecimals)
 {
-    // Use "0" width as our character unit for fixed-width regions
-    const float charWidth = ImGui::CalcTextSize("0").x;
-    const float unitRegionWidth = charWidth * static_cast<float>(MAX_UNIT_CHARS);
-    const float decimalRegionWidth = charWidth * static_cast<float>(MAX_DECIMAL_CHARS);
     const float lineHeight = ImGui::GetTextLineHeight();
-
     const float cellStartX = ImGui::GetCursorPosX();
     const float availWidth = ImGui::GetContentRegionAvail().x;
     const float cellEndX = cellStartX + availWidth;
+
+    // Calculate unit region width from the longest unit for this column type
+    const float unitRegionWidth = ImGui::CalcTextSize(maxUnitStr.data(), maxUnitStr.data() + maxUnitStr.size()).x;
+
+    // Decimal region: just "X" width (1 digit after decimal point)
+    const float decimalRegionWidth = hasDecimals ? ImGui::CalcTextSize("0").x : 0.0F;
 
     // Calculate region boundaries (working right to left)
     const float unitRegionStart = cellEndX - unitRegionWidth;
@@ -110,16 +117,18 @@ void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts)
     ImGui::TextUnformatted(parts.wholePart.c_str());
 
     // Render decimal part (fixed position, left-aligned content)
-    ImGui::SameLine(0.0F, 0.0F);
-    ImGui::SetCursorPosX(decimalRegionStart);
-    if (!parts.decimalPart.empty())
+    if (hasDecimals)
     {
-        ImGui::TextUnformatted(parts.decimalPart.c_str());
-    }
-    else
-    {
-        // Empty placeholder to maintain layout - must have size to grow parent bounds
-        ImGui::Dummy(ImVec2(decimalRegionWidth, lineHeight));
+        ImGui::SameLine(0.0F, 0.0F);
+        ImGui::SetCursorPosX(decimalRegionStart);
+        if (!parts.decimalPart.empty())
+        {
+            ImGui::TextUnformatted(parts.decimalPart.c_str());
+        }
+        else
+        {
+            ImGui::Dummy(ImVec2(decimalRegionWidth, lineHeight));
+        }
     }
 
     // Render unit part (fixed position, left-aligned content)
@@ -131,7 +140,6 @@ void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts)
     }
     else
     {
-        // Empty placeholder to grow parent bounds after SetCursorPosX
         ImGui::Dummy(ImVec2(unitRegionWidth, lineHeight));
     }
 }
@@ -242,7 +250,7 @@ int ProcessesPanel::visibleColumnCount() const
 
 void ProcessesPanel::render(bool* open)
 {
-    if (!ImGui::Begin("Processes", open))
+    if (!ImGui::Begin(ICON_FA_LIST " Processes", open))
     {
         ImGui::End();
         return;
@@ -273,9 +281,13 @@ void ProcessesPanel::render(bool* open)
     ImGui::SameLine();
     if (m_SearchBuffer[0] != '\0')
     {
-        if (ImGui::SmallButton("X"))
+        if (ImGui::SmallButton(ICON_FA_XMARK))
         {
             m_SearchBuffer.fill('\0');
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Clear filter");
         }
     }
 
@@ -719,14 +731,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::CpuPercent:
         {
             const auto parts = UI::Format::splitPercentForAlignment(proc.cpuPercent);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_PERCENT, true);
             break;
         }
 
         case ProcessColumn::MemPercent:
         {
             const auto parts = UI::Format::splitPercentForAlignment(proc.memoryPercent);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_PERCENT, true);
             break;
         }
 
@@ -734,7 +746,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
             const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.virtualBytes), unit);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_BYTES, true);
             break;
         }
 
@@ -742,7 +754,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
             const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.memoryBytes), unit);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_BYTES, true);
             break;
         }
 
@@ -750,7 +762,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.peakMemoryBytes);
             const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.peakMemoryBytes), unit);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_BYTES, true);
             break;
         }
 
@@ -758,7 +770,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
             const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.sharedBytes), unit);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_BYTES, true);
             break;
         }
 
@@ -802,8 +814,15 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 break;
             }
 
+            // Center the state character in the column
+            const char stateStr[2] = {stateChar, '\0'};
+            const float textWidth = ImGui::CalcTextSize(stateStr).x;
+            const float availWidth = ImGui::GetContentRegionAvail().x;
+            const float offset = std::max(0.0F, (availWidth - textWidth) * 0.5F);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+
             ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
-            ImGui::Text("%c", stateChar);
+            ImGui::TextUnformatted(stateStr);
             ImGui::PopStyleColor();
             break;
         }
@@ -877,7 +896,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec);
                 const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioReadBytesPerSec, unit);
-                renderDecimalAligned(parts);
+                renderDecimalAligned(parts, UNIT_BYTES_PER_SEC, true);
             }
             else
             {
@@ -892,7 +911,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec);
                 const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioWriteBytesPerSec, unit);
-                renderDecimalAligned(parts);
+                renderDecimalAligned(parts, UNIT_BYTES_PER_SEC, true);
             }
             else
             {
@@ -907,7 +926,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec);
                 const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netSentBytesPerSec, unit);
-                renderDecimalAligned(parts);
+                renderDecimalAligned(parts, UNIT_BYTES_PER_SEC, true);
             }
             else
             {
@@ -922,7 +941,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec);
                 const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netReceivedBytesPerSec, unit);
-                renderDecimalAligned(parts);
+                renderDecimalAligned(parts, UNIT_BYTES_PER_SEC, true);
             }
             else
             {
@@ -934,7 +953,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Power:
         {
             const auto parts = UI::Format::splitPowerForAlignment(proc.powerWatts);
-            renderDecimalAligned(parts);
+            renderDecimalAligned(parts, UNIT_POWER, true);
             break;
         }
         default:

@@ -118,7 +118,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // I/O Write
         {.name="I/O Write", .menuName="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
         // Power
-        {.name="Power", .menuName="Power", .configKey="power", .defaultWidth=70.0F, .defaultVisible=true, .canHide=true, .description="Power consumption in watts (platform-dependent)"},
+        {.name="Power", .menuName="Power", .configKey="power", .defaultWidth=100.0F, .defaultVisible=true, .canHide=true, .description="Power consumption in watts (platform-dependent)"},
         // Net Sent
         {.name="Net Sent", .menuName="Net Sent", .configKey="net_sent", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network send rate (bytes/sec)"},
         // Net Received

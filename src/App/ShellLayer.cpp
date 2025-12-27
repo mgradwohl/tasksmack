@@ -5,6 +5,7 @@
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
@@ -332,20 +333,20 @@ void ShellLayer::renderMenuBar()
 
     if (ImGui::BeginMainMenuBar())
     {
-        if (ImGui::BeginMenu("File"))
+        if (ImGui::BeginMenu(ICON_FA_FILE " File"))
         {
-            if (ImGui::MenuItem("Exit", "Alt+F4"))
+            if (ImGui::MenuItem(ICON_FA_DOOR_OPEN " Exit", "Alt+F4"))
             {
                 Core::Application::get().stop();
             }
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("View"))
+        if (ImGui::BeginMenu(ICON_FA_EYE " View"))
         {
-            ImGui::MenuItem("Processes", nullptr, &m_ShowProcesses);
-            ImGui::MenuItem("System Metrics", nullptr, &m_ShowMetrics);
-            ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
+            ImGui::MenuItem(ICON_FA_LIST " Processes", nullptr, &m_ShowProcesses);
+            ImGui::MenuItem(ICON_FA_COMPUTER " System Metrics", nullptr, &m_ShowMetrics);
+            ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details", nullptr, &m_ShowDetails);
             ImGui::Separator();
 
             // Sampling / refresh interval (shared)
@@ -391,7 +392,7 @@ void ShellLayer::renderMenuBar()
             ImGui::Separator();
 
             // Theme submenu (dynamically loaded from TOML files)
-            if (ImGui::BeginMenu("Theme"))
+            if (ImGui::BeginMenu(ICON_FA_PALETTE " Theme"))
             {
                 auto& theme = UI::Theme::get();
                 const auto& themes = theme.discoveredThemes();
@@ -409,7 +410,7 @@ void ShellLayer::renderMenuBar()
             }
 
             // Font size submenu
-            if (ImGui::BeginMenu("Font Size"))
+            if (ImGui::BeginMenu(ICON_FA_FONT " Font Size"))
             {
                 auto& theme = UI::Theme::get();
                 auto currentSize = theme.currentFontSize();
@@ -428,11 +429,11 @@ void ShellLayer::renderMenuBar()
                 ImGui::Separator();
 
                 // Quick adjust shortcuts
-                if (ImGui::MenuItem("Increase", "Ctrl++"))
+                if (ImGui::MenuItem(ICON_FA_PLUS " Increase", "Ctrl++"))
                 {
                     theme.increaseFontSize();
                 }
-                if (ImGui::MenuItem("Decrease", "Ctrl+-"))
+                if (ImGui::MenuItem(ICON_FA_MINUS " Decrease", "Ctrl+-"))
                 {
                     theme.decreaseFontSize();
                 }
@@ -443,9 +444,9 @@ void ShellLayer::renderMenuBar()
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Tools"))
+        if (ImGui::BeginMenu(ICON_FA_WRENCH " Tools"))
         {
-            if (ImGui::MenuItem("Open Config File..."))
+            if (ImGui::MenuItem(ICON_FA_FILE_PEN " Open Config File..."))
             {
                 const auto& configPath = UserConfig::get().configPath();
                 openFileWithDefaultEditor(configPath);
@@ -453,16 +454,16 @@ void ShellLayer::renderMenuBar()
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Options..."))
+            if (ImGui::MenuItem(ICON_FA_GEARS " Options..."))
             {
                 // TODO: Open options dialog
             }
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Help"))
+        if (ImGui::BeginMenu(ICON_FA_CIRCLE_QUESTION " Help"))
         {
-            if (ImGui::MenuItem("About TaskSmack"))
+            if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " About TaskSmack"))
             {
                 if (auto* about = AboutLayer::instance(); about != nullptr)
                 {

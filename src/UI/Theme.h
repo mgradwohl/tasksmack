@@ -269,6 +269,9 @@ class Theme
     /// Get the current monospace font (based on font size setting); falls back to regular if unset
     [[nodiscard]] auto monospaceFont() const -> ImFont*;
 
+    /// Get a smaller font for chart axis labels and legends (one size below current)
+    [[nodiscard]] auto smallerFont() const -> ImFont*;
+
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
 

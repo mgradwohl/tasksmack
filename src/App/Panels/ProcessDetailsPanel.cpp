@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "UI/Format.h"
 #include "UI/HistoryWidgets.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Numeric.h"
 #include "UI/Theme.h"
 
@@ -176,12 +177,12 @@ void ProcessDetailsPanel::render(bool* open)
     std::string windowLabel;
     if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
     {
-        windowLabel = m_CachedSnapshot.name;
+        windowLabel = std::string(ICON_FA_CIRCLE_INFO) + " " + m_CachedSnapshot.name;
         windowLabel += "###ProcessDetails";
     }
     else
     {
-        windowLabel = "Process Details###ProcessDetails";
+        windowLabel = ICON_FA_CIRCLE_INFO " Process Details###ProcessDetails";
     }
 
     if (!ImGui::Begin(windowLabel.c_str(), open))
@@ -209,7 +210,7 @@ void ProcessDetailsPanel::render(bool* open)
     // Tabs for different info sections
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
-        if (ImGui::BeginTabItem("Overview"))
+        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO " Overview"))
         {
             renderBasicInfo(m_CachedSnapshot);
             ImGui::Separator();
@@ -225,7 +226,7 @@ void ProcessDetailsPanel::render(bool* open)
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Actions"))
+        if (ImGui::BeginTabItem(ICON_FA_GEARS " Actions"))
         {
             renderActions();
             ImGui::EndTabItem();
@@ -445,7 +446,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
 
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textMuted, "Identity");
+    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_ID_CARD " Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable("BasicInfoLeftTable",
                     {
@@ -461,7 +462,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::SameLine();
 
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textMuted, "Runtime");
+    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CLOCK " Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable(
         "BasicInfoRightTable",
@@ -514,10 +515,12 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         auto cpuPlot = [&]()
         {
+            const UI::Widgets::PlotFontGuard fontGuard;
             if (ImPlot::BeginPlot("##ProcOverviewCPU", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
             {
                 setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
                 ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
 
@@ -581,7 +584,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             }
         };
 
-        ImGui::Text("CPU (%zu samples)", alignedCount);
+        ImGui::Text(ICON_FA_MICROCHIP " CPU (%zu samples)", alignedCount);
         renderHistoryWithNowBars("ProcessCPUHistoryOverview",
                                  HISTORY_PLOT_HEIGHT_DEFAULT,
                                  cpuPlot,
@@ -625,10 +628,12 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
             auto memoryPlot = [&]()
             {
+                const UI::Widgets::PlotFontGuard fontGuard;
                 if (ImPlot::BeginPlot("##ProcOverviewMemory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
                 {
                     setupLegendDefault();
-                    ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                     ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -714,7 +719,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             };
 
             ImGui::Spacing();
-            ImGui::Text("Memory (%zu samples)", alignedCount);
+            ImGui::Text(ICON_FA_MEMORY " Memory (%zu samples)", alignedCount);
             renderHistoryWithNowBars(
                 "ProcessMemoryOverviewLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
             ImGui::Spacing();
@@ -759,10 +764,11 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
 
     auto plot = [&]()
     {
+        const UI::Widgets::PlotFontGuard fontGuard;
         if (ImPlot::BeginPlot("##ProcThreadsFaults", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", "Count", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -797,7 +803,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
         }
     };
 
-    ImGui::Text("Threads & Page Faults (%zu samples)", alignedCount);
+    ImGui::Text(ICON_FA_GEARS " Threads & Page Faults (%zu samples)", alignedCount);
     renderHistoryWithNowBars(
         "ProcessThreadFaultHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
@@ -844,10 +850,11 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
 
     auto plot = [&]()
     {
+        const UI::Widgets::PlotFontGuard fontGuard;
         if (ImPlot::BeginPlot("##ProcIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", "Bytes/s", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -877,7 +884,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    ImGui::Text("I/O Statistics (%zu samples)", alignedCount);
+    ImGui::Text(ICON_FA_HARD_DRIVE " I/O Statistics (%zu samples)", alignedCount);
     renderHistoryWithNowBars("ProcessIoHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 }
@@ -923,10 +930,11 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
 
     auto plot = [&]()
     {
+        const UI::Widgets::PlotFontGuard fontGuard;
         if (ImPlot::BeginPlot("##ProcNetworkHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", "Bytes/s", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -957,7 +965,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
         }
     };
 
-    ImGui::Text("Network - Avg Rate (%zu samples)", alignedCount);
+    ImGui::Text(ICON_FA_NETWORK_WIRED " Network - Avg Rate (%zu samples)", alignedCount);
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip("Average network bytes/sec since monitoring started for this process.");
@@ -998,10 +1006,11 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
 
     auto plot = [&]()
     {
+        const UI::Widgets::PlotFontGuard fontGuard;
         if (ImPlot::BeginPlot("##ProcPowerHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", "Watts", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -1036,7 +1045,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    ImGui::Text("Power Usage (%zu samples)", alignedCount);
+    ImGui::Text(ICON_FA_BOLT " Power Usage (%zu samples)", alignedCount);
     renderHistoryWithNowBars("ProcessPowerHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 }
@@ -1213,7 +1222,7 @@ void ProcessDetailsPanel::renderActions()
     // Terminate (SIGTERM) - graceful
     if (m_ActionCapabilities.canTerminate)
     {
-        if (ImGui::Button("Terminate (SIGTERM)", ImVec2(180, 0)))
+        if (ImGui::Button(ICON_FA_XMARK " Terminate (SIGTERM)", ImVec2(200, 0)))
         {
             m_ConfirmAction = "terminate";
             m_ShowConfirmDialog = true;
@@ -1232,7 +1241,7 @@ void ProcessDetailsPanel::renderActions()
         ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().dangerButton);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().dangerButtonHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().dangerButtonActive);
-        if (ImGui::Button("Kill (SIGKILL)", ImVec2(180, 0)))
+        if (ImGui::Button(ICON_FA_SKULL " Kill (SIGKILL)", ImVec2(200, 0)))
         {
             m_ConfirmAction = "kill";
             m_ShowConfirmDialog = true;

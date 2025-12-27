@@ -188,17 +188,27 @@ struct AlignedNumericParts
 [[nodiscard]] inline auto splitBytesForAlignment(double bytes, ByteUnit unit) -> AlignedNumericParts
 {
     const double value = bytes / unit.scale;
-    const auto wholeValue = static_cast<std::int64_t>(value);
+    auto wholeValue = static_cast<std::int64_t>(value);
 
     AlignedNumericParts parts;
 
     if (unit.decimals > 0)
     {
+        // Extract fractional part and round to 1 decimal place
+        const double fractional = std::abs(value - static_cast<double>(wholeValue));
+        auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+
+        // Handle rounding overflow (e.g., 0.95 -> 10 -> carry to whole part)
+        if (fractionalDigit >= 10)
+        {
+            fractionalDigit = 0;
+            wholeValue += (value >= 0) ? 1 : -1;
+        }
+
         // Whole part includes decimal point
         parts.wholePart = std::format("{:L}.", wholeValue);
-        // Extract fractional part (just digits, no decimal point)
-        const double fractional = std::abs(value - static_cast<double>(wholeValue));
-        parts.decimalPart = std::format("{:0{}d}", static_cast<int>(std::round(fractional * std::pow(10.0, unit.decimals))), unit.decimals);
+        // Single digit for fractional part
+        parts.decimalPart = std::format("{}", fractionalDigit);
     }
     else
     {
@@ -220,17 +230,27 @@ struct AlignedNumericParts
 /// Split a percentage value (0-100) into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitPercentForAlignment(double percent, int decimals = 1) -> AlignedNumericParts
 {
-    const auto wholeValue = static_cast<std::int64_t>(percent);
+    auto wholeValue = static_cast<std::int64_t>(percent);
 
     AlignedNumericParts parts;
 
     if (decimals > 0)
     {
+        // Extract fractional part and round to 1 decimal place
+        const double fractional = std::abs(percent - static_cast<double>(wholeValue));
+        auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+
+        // Handle rounding overflow (e.g., 0.95 -> 10 -> carry to whole part)
+        if (fractionalDigit >= 10)
+        {
+            fractionalDigit = 0;
+            wholeValue += (percent >= 0) ? 1 : -1;
+        }
+
         // Whole part includes decimal point
         parts.wholePart = std::format("{:L}.", wholeValue);
-        // Fractional part (just digits, no decimal point)
-        const double fractional = std::abs(percent - static_cast<double>(wholeValue));
-        parts.decimalPart = std::format("{:0{}d}", static_cast<int>(std::round(fractional * std::pow(10.0, decimals))), decimals);
+        // Single digit for fractional part
+        parts.decimalPart = std::format("{}", fractionalDigit);
     }
     else
     {
@@ -268,14 +288,22 @@ struct AlignedNumericParts
         unitSuffix = "µW";
     }
 
-    const auto wholeValue = static_cast<std::int64_t>(displayValue);
+    auto wholeValue = static_cast<std::int64_t>(displayValue);
     const double fractional = std::abs(displayValue - static_cast<double>(wholeValue));
+    auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+
+    // Handle rounding overflow (e.g., 0.95 -> 10 -> carry to whole part)
+    if (fractionalDigit >= 10)
+    {
+        fractionalDigit = 0;
+        wholeValue += (displayValue >= 0) ? 1 : -1;
+    }
 
     AlignedNumericParts parts;
     // Whole part includes decimal point
     parts.wholePart = std::format("{:L}.", wholeValue);
-    // Fractional part (1 digit)
-    parts.decimalPart = std::format("{:01d}", static_cast<int>(std::round(fractional * 10.0)));
+    // Single digit for fractional part
+    parts.decimalPart = std::format("{}", fractionalDigit);
     parts.unitPart = std::format(" {}", unitSuffix);
     return parts;
 }
@@ -303,19 +331,17 @@ struct AlignedNumericParts
 
 [[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
 {
-    // TODO: Replace long long with std::chrono::milliseconds for totalMs
-    const auto totalMs = static_cast<long long>(std::llround(totalSeconds * 1000.0));
-    const auto hours = totalMs / (1000LL * 60LL * 60LL);
-    const auto minutes = (totalMs / (1000LL * 60LL)) % 60LL;
-    const auto secs = (totalMs / 1000LL) % 60LL;
-    const auto centis = (totalMs / 10LL) % 100LL;
+    const auto totalSecs = static_cast<long long>(std::llround(totalSeconds));
+    const auto hours = totalSecs / (60LL * 60LL);
+    const auto minutes = (totalSecs / 60LL) % 60LL;
+    const auto secs = totalSecs % 60LL;
 
     if (hours > 0)
     {
-        return std::format("{}:{:02}:{:02}.{:02}", hours, minutes, secs, centis);
+        return std::format("{}:{:02}:{:02}", hours, minutes, secs);
     }
 
-    return std::format("{}:{:02}.{:02}", minutes, secs, centis);
+    return std::format("{}:{:02}", minutes, secs);
 }
 
 [[nodiscard]] inline auto formatCpuAffinityMask(std::uint64_t mask) -> std::string

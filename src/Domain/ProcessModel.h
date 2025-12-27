@@ -45,6 +45,7 @@ class ProcessModel
     [[nodiscard]] std::vector<double> systemNetRecvHistory() const;
     [[nodiscard]] std::vector<double> systemPageFaultsHistory() const;
     [[nodiscard]] std::vector<double> systemThreadCountHistory() const;
+    [[nodiscard]] std::vector<double> systemPowerHistory() const;
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
     void setMaxHistorySeconds(double seconds);
@@ -117,6 +118,7 @@ class ProcessModel
     std::deque<double> m_SystemNetRecvHistory;
     std::deque<double> m_SystemPageFaultsHistory;
     std::deque<double> m_SystemThreadCountHistory;
+    std::deque<double> m_SystemPowerHistory;
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
 

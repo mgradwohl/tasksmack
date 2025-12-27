@@ -103,6 +103,7 @@ class SystemMetricsPanel : public Panel
     struct SmoothedPower
     {
         double watts = 0.0;
+        double batteryChargePercent = 0.0;
         bool initialized = false;
     } m_SmoothedPower;
 
@@ -144,7 +145,7 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
-    void updateSmoothedPower(float targetWatts, float deltaTimeSeconds);
+    void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
     void updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds);
     void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds);

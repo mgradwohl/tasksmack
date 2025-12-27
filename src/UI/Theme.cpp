@@ -501,6 +501,35 @@ auto Theme::monospaceFont() const -> ImFont*
     return fonts.monospace != nullptr ? fonts.monospace : fonts.regular;
 }
 
+auto Theme::smallerFont() const -> ImFont*
+{
+    // Return font one size smaller than current, or smallest if already at minimum
+    FontSize smallerSize{};
+    switch (m_CurrentFontSize)
+    {
+    case FontSize::Small:
+    case FontSize::Medium:
+        smallerSize = FontSize::Small;
+        break;
+    case FontSize::Large:
+        smallerSize = FontSize::Medium;
+        break;
+    case FontSize::ExtraLarge:
+        smallerSize = FontSize::Large;
+        break;
+    case FontSize::Huge:
+        smallerSize = FontSize::ExtraLarge;
+        break;
+    case FontSize::EvenHuger:
+        smallerSize = FontSize::Huge;
+        break;
+    case FontSize::Count:
+        smallerSize = FontSize::Small;
+        break;
+    }
+    return m_Fonts[fontSizeIndex(smallerSize)].regular;
+}
+
 void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace)
 {
     m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
