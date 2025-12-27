@@ -136,7 +136,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     glfwMakeContextCurrent(m_Handle);
 
     // Load OpenGL functions using GLAD
-    int version = gladLoadGL(glfwGetProcAddress);
+    const int version = gladLoadGL(glfwGetProcAddress);
     if (version == 0)
     {
         spdlog::critical("Failed to initialize GLAD");

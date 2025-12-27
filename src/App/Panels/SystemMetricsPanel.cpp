@@ -329,9 +329,9 @@ void SystemMetricsPanel::renderOverview()
                                      : std::string{};
 
     const ImGuiStyle& style = ImGui::GetStyle();
-    float availWidth = ImGui::GetContentRegionAvail().x;
-    float uptimeWidth = uptimeStr.empty() ? 0.0F : ImGui::CalcTextSize(uptimeStr.c_str()).x;
-    float processWidth = processStr.empty() ? 0.0F : ImGui::CalcTextSize(processStr.c_str()).x;
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float uptimeWidth = uptimeStr.empty() ? 0.0F : ImGui::CalcTextSize(uptimeStr.c_str()).x;
+    const float processWidth = processStr.empty() ? 0.0F : ImGui::CalcTextSize(processStr.c_str()).x;
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
 
@@ -647,15 +647,15 @@ void SystemMetricsPanel::renderOverview()
             updateSmoothedPower(targetPower, m_LastDeltaSeconds);
 
             double powerMaxAbs = 1.0;
-            for (float v : powerHist)
+            for (const float v : powerHist)
             {
                 powerMaxAbs = std::max(powerMaxAbs, static_cast<double>(std::abs(v)));
             }
             powerMaxAbs = std::max(powerMaxAbs, std::abs(m_SmoothedPower.watts));
 
-            NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
-                            .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
-                            .color = theme.scheme().chartCpu};
+            const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
+                                  .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
+                                  .color = theme.scheme().chartCpu};
 
             auto plot = [&]()
             {
@@ -728,12 +728,12 @@ void SystemMetricsPanel::renderOverview()
                                   ? 1.0
                                   : std::max(m_SmoothedThreadsFaults.pageFaults, static_cast<double>(*std::ranges::max_element(faultData)));
 
-        NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedThreadsFaults.threads), "threads"),
-                          .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.threads / threadMax, 0.0, 1.0) : 0.0,
-                          .color = theme.scheme().chartCpu};
-        NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedThreadsFaults.pageFaults),
-                         .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.pageFaults / faultMax, 0.0, 1.0) : 0.0,
-                         .color = theme.accentColor(3)};
+        const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedThreadsFaults.threads), "threads"),
+                                .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.threads / threadMax, 0.0, 1.0) : 0.0,
+                                .color = theme.scheme().chartCpu};
+        const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedThreadsFaults.pageFaults),
+                               .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.pageFaults / faultMax, 0.0, 1.0) : 0.0,
+                               .color = theme.accentColor(3)};
 
         auto plot = [&]()
         {
@@ -813,12 +813,12 @@ void SystemMetricsPanel::renderOverview()
                                        m_SmoothedSystemIO.readBytesPerSec,
                                        m_SmoothedSystemIO.writeBytesPerSec,
                                        1.0});
-        NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
-                       .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
-                       .color = theme.scheme().chartCpu};
-        NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
-                        .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
-                        .color = theme.scheme().chartIo};
+        const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
+                             .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
+                             .color = theme.scheme().chartCpu};
+        const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
+                              .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
+                              .color = theme.scheme().chartIo};
 
         auto plot = [&]()
         {
@@ -899,12 +899,12 @@ void SystemMetricsPanel::renderOverview()
                                         m_SmoothedNetwork.sentBytesPerSec,
                                         m_SmoothedNetwork.recvBytesPerSec,
                                         1.0});
-        NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
-                       .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
-                       .color = theme.scheme().chartCpu};
-        NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
-                       .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
-                       .color = theme.accentColor(2)};
+        const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
+                             .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
+                             .color = theme.scheme().chartCpu};
+        const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
+                             .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
+                             .color = theme.accentColor(2)};
 
         auto plot = [&]()
         {
@@ -985,7 +985,7 @@ void SystemMetricsPanel::renderOverview()
             ImGui::SameLine(m_OverviewLabelWidth);
             const std::string chargeOverlay = UI::Format::percentCompact(snap.power.chargePercent);
             const double chargePercentDouble = static_cast<double>(snap.power.chargePercent);
-            ImVec4 chargeColor = theme.progressColor(chargePercentDouble);
+            const ImVec4 chargeColor = theme.progressColor(chargePercentDouble);
             drawProgressBarWithOverlay(UI::Numeric::percent01(chargePercentDouble), chargeOverlay, chargeColor);
         }
 
@@ -1176,7 +1176,7 @@ void SystemMetricsPanel::renderPerCoreSection()
 
     // Grid layout
     {
-        float gridWidth = ImGui::GetContentRegionAvail().x;
+        const float gridWidth = ImGui::GetContentRegionAvail().x;
         constexpr float minCellWidth = 240.0F;
         const float barWidth = ImGui::GetFrameHeight(); // Match prior horizontal bar height for visual consistency
         const float cellWidth = minCellWidth + barWidth;
@@ -1259,11 +1259,11 @@ void SystemMetricsPanel::renderPerCoreSection()
                             }
                         };
 
-                        double smoothed =
+                        const double smoothed =
                             (coreIdx < m_SmoothedPerCore.size()) ? m_SmoothedPerCore[coreIdx] : snap.cpuPerCore[coreIdx].totalPercent;
-                        NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
-                                   .value01 = UI::Numeric::percent01(smoothed),
-                                   .color = theme.progressColor(smoothed)};
+                        const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
+                                         .value01 = UI::Numeric::percent01(smoothed),
+                                         .color = theme.progressColor(smoothed)};
 
                         std::vector<NowBar> bars;
                         bars.push_back(bar);

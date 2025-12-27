@@ -35,8 +35,8 @@ void StorageModel::sample()
     // Use absolute time (since epoch) to match SystemModel's timestamp format
     const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
-    Platform::SystemDiskCounters counters = m_Probe->read();
-    Platform::DiskCapabilities caps = m_Probe->capabilities();
+    const Platform::SystemDiskCounters counters = m_Probe->read();
+    const Platform::DiskCapabilities caps = m_Probe->capabilities();
 
     StorageSnapshot snapshot;
     snapshot.hasDiskStats = caps.hasDiskStats;
@@ -52,7 +52,7 @@ void StorageModel::sample()
         auto& state = m_DiskStates[deviceName];
         state.deviceName = deviceName;
 
-        DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state);
+        const DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state);
         snapshot.disks.push_back(diskSnap);
 
         // Update state for next sample
@@ -72,7 +72,7 @@ void StorageModel::sample()
 
     // Update shared state
     {
-        std::unique_lock lock(m_Mutex);
+        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_LatestSnapshot = snapshot;
         m_History.push_back(snapshot);
         m_Timestamps.push_back(nowSeconds);
@@ -170,19 +170,19 @@ void StorageModel::trimHistory(double nowSeconds)
 
 StorageSnapshot StorageModel::latestSnapshot() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_LatestSnapshot;
 }
 
 std::vector<StorageSnapshot> StorageModel::history() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<StorageSnapshot>(m_History.begin(), m_History.end());
 }
 
 std::vector<double> StorageModel::totalReadHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
     for (const auto& snap : m_History)
@@ -194,7 +194,7 @@ std::vector<double> StorageModel::totalReadHistory() const
 
 std::vector<double> StorageModel::totalWriteHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
     for (const auto& snap : m_History)
@@ -206,13 +206,13 @@ std::vector<double> StorageModel::totalWriteHistory() const
 
 std::vector<double> StorageModel::historyTimestamps() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = seconds;
 }
 

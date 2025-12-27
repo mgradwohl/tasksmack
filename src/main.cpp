@@ -37,7 +37,7 @@ void initializeLocale()
     // Use user-preferred locale ("" picks up OS locale) and force UTF-8 I/O where possible.
     try
     {
-        std::locale userLocale("");
+        const std::locale userLocale("");
         std::locale::global(userLocale);
         std::cout.imbue(userLocale);
         std::cerr.imbue(userLocale);
@@ -70,7 +70,9 @@ auto runApp() -> int
     {
         AllocConsole();
         // Redirect stdout/stderr to the new console
+        // NOLINTNEXTLINE(misc-const-correctness) - freopen_s writes to these pointers
         FILE* out = nullptr;
+        // NOLINTNEXTLINE(misc-const-correctness) - freopen_s writes to these pointers
         FILE* err = nullptr;
         if (freopen_s(&out, "CONOUT$", "w", stdout) != 0)
         {

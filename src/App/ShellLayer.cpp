@@ -48,7 +48,7 @@ namespace
     int best = value;
     int bestDist = std::numeric_limits<int>::max();
 
-    for (int stop : stops)
+    for (const int stop : stops)
     {
         const int dist = std::abs(value - stop);
         // Make it "at least twice as sticky":
@@ -82,7 +82,7 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
     // Keep ticks inside the slider frame.
     ImGui::PushClipRect(frameMin, frameMax, true);
 
-    for (int stop : stops)
+    for (const int stop : stops)
     {
         if (stop < minValue || stop > maxValue)
         {
@@ -234,7 +234,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_SystemMetricsPanel.onUpdate(deltaTime);
 
     // Sync selected PID from processes panel to details panel
-    std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
+    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     m_ProcessDetailsPanel.setSelectedPid(selectedPid);
 
     // Find the selected process snapshot
@@ -257,7 +257,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, deltaTime);
 
     // Handle keyboard shortcuts for font size
-    ImGuiIO& io = ImGui::GetIO();
+    const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
@@ -299,15 +299,15 @@ void ShellLayer::setupDockspace()
 
     // Account for status bar at bottom. The main menu bar already adjusts the viewport work area.
     // Calculate height dynamically based on font size for proper scaling
-    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+    const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                   ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
@@ -317,7 +317,7 @@ void ShellLayer::setupDockspace()
     ImGui::PopStyleVar(3);
 
     // Create the dockspace
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    const ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
     ImGui::DockSpace(dockspaceId, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
 
     ImGui::End();
@@ -326,8 +326,8 @@ void ShellLayer::setupDockspace()
 void ShellLayer::renderMenuBar()
 {
     // Increase vertical padding for menu items to center text better
-    float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
-    float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
+    const float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
+    const float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
 
     if (ImGui::BeginMainMenuBar())
@@ -399,7 +399,7 @@ void ShellLayer::renderMenuBar()
 
                 for (std::size_t i = 0; i < themes.size(); ++i)
                 {
-                    bool selected = (currentIndex == i);
+                    const bool selected = (currentIndex == i);
                     if (ImGui::MenuItem(themes[i].name.c_str(), nullptr, selected))
                     {
                         theme.setTheme(i);
@@ -417,7 +417,7 @@ void ShellLayer::renderMenuBar()
                 for (const auto fontSize : UI::ALL_FONT_SIZES)
                 {
                     const auto& cfg = theme.fontConfig(fontSize);
-                    bool selected = (currentSize == fontSize);
+                    const bool selected = (currentSize == fontSize);
                     const std::string label(cfg.name);
                     if (ImGui::MenuItem(label.c_str(), nullptr, selected))
                     {
@@ -481,15 +481,15 @@ void ShellLayer::renderStatusBar()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     // Calculate height dynamically based on font size for proper scaling
-    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+    const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
-                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav |
-                                   ImGuiWindowFlags_NoDocking;
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
+                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
 
     // Use theme colors for status bar
     const auto& theme = UI::Theme::get();
@@ -498,7 +498,7 @@ void ShellLayer::renderStatusBar()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F); // Show top border
     // Center text vertically within the status bar
-    float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
+    const float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, verticalPadding));
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
@@ -507,7 +507,7 @@ void ShellLayer::renderStatusBar()
 
         // Right-align FPS display
         const char* fpsText = "%.1f FPS (%.2f ms)";
-        float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
+        const float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
         ImGui::SameLine(ImGui::GetWindowWidth() - fpsWidth);
         ImGui::Text("%.1f FPS (%.2f ms)", static_cast<double>(m_DisplayedFps), static_cast<double>(m_FrameTime * 1000.0F));
     }

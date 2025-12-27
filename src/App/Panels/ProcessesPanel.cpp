@@ -280,7 +280,7 @@ void ProcessesPanel::render(bool* open)
     }
 
     // Filter snapshots based on search
-    std::string_view searchTerm(m_SearchBuffer.data());
+    const std::string_view searchTerm(m_SearchBuffer.data());
     std::vector<size_t> filteredIndices;
     filteredIndices.reserve(currentSnapshots.size());
 
@@ -356,7 +356,7 @@ void ProcessesPanel::render(bool* open)
     const float maxLabelWidth = std::max(treeTextSize.x, listTextSize.x);
 
     const ImGuiStyle& style = ImGui::GetStyle();
-    float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
+    const float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
@@ -561,7 +561,7 @@ void ProcessesPanel::render(bool* open)
         else
         {
             // Render flat list
-            for (size_t idx : filteredIndices)
+            for (const size_t idx : filteredIndices)
             {
                 const auto& proc = currentSnapshots[idx];
                 renderProcessRow(proc, 0, false, false);
@@ -771,7 +771,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::State:
         {
-            char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
+            const char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
             const auto& scheme = UI::Theme::get().scheme();
 
             // Color based on process state
@@ -981,7 +981,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         if (childrenIt != tree.end())
         {
             // Only count children that are in the filtered set
-            for (std::size_t childIdx : childrenIt->second)
+            for (const std::size_t childIdx : childrenIt->second)
             {
                 if (filteredSet.contains(childIdx))
                 {
@@ -1012,18 +1012,18 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
                                     const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree)
 {
     // Convert filtered indices to a set for O(1) lookups
-    std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
+    const std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
 
     // Build a uniqueKey-to-index map for O(1) parent lookups within the filtered set
     std::unordered_map<std::uint64_t, std::size_t> keyToIndex;
-    for (std::size_t idx : filteredIndices)
+    for (const std::size_t idx : filteredIndices)
     {
         keyToIndex[snapshots[idx].uniqueKey] = idx;
     }
 
     // Build parent uniqueKey lookup for filtering roots
     std::unordered_set<std::uint64_t> parentKeys;
-    for (std::size_t idx : filteredIndices)
+    for (const std::size_t idx : filteredIndices)
     {
         const auto& proc = snapshots[idx];
         if (proc.parentPid > 0)
@@ -1041,7 +1041,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     }
 
     // Render root processes and their descendants (in the order of filteredIndices to respect PID/natural order)
-    for (std::size_t idx : filteredIndices)
+    for (const std::size_t idx : filteredIndices)
     {
         const auto& proc = snapshots[idx];
 

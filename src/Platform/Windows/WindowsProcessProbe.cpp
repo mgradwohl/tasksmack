@@ -389,7 +389,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     }
 
     // Get process priority class and map to nice-like value
-    DWORD priorityClass = GetPriorityClass(hProcess);
+    const DWORD priorityClass = GetPriorityClass(hProcess);
     switch (priorityClass)
     {
     case IDLE_PRIORITY_CLASS:

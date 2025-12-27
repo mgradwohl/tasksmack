@@ -493,7 +493,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         const size_t alignedCount =
             std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
 
-        std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+        const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
         std::vector<double> cpuData = tailVector(m_CpuHistory, alignedCount);
         std::vector<double> cpuUserData = tailVector(m_CpuUserHistory, alignedCount);
         std::vector<double> cpuSystemData = tailVector(m_CpuSystemHistory, alignedCount);
@@ -502,15 +502,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         std::vector<double> cpuTimeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
         // Use smoothed values for NowBars for consistent animation
-        NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
-                           .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuPercent),
-                           .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
-        NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
-                          .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuUserPercent),
-                          .color = theme.scheme().cpuUser};
-        NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
-                            .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuSystemPercent),
-                            .color = theme.scheme().cpuSystem};
+        const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
+                                 .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuPercent),
+                                 .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
+        const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
+                                .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuUserPercent),
+                                .color = theme.scheme().cpuUser};
+        const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
+                                  .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuSystemPercent),
+                                  .color = theme.scheme().cpuSystem};
 
         auto cpuPlot = [&]()
         {
@@ -600,7 +600,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         if (alignedCount > 0)
         {
-            std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+            const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
             std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
             std::vector<double> sharedData = tailVector(m_SharedHistory, alignedCount);
             std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
@@ -738,7 +738,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
 
     const auto& theme = UI::Theme::get();
 
-    std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> threadData = tailVector(m_ThreadHistory, alignedCount);
     std::vector<double> faultData = tailVector(m_PageFaultHistory, alignedCount);
 
@@ -749,13 +749,13 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
     const double threadMax = seriesMax(threadData, m_SmoothedUsage.threadCount);
     const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
 
-    NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
-                      .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
-                      .color = theme.scheme().chartCpu};
+    const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
+                            .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
+                            .color = theme.scheme().chartCpu};
 
-    NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
-                     .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
-                     .color = theme.scheme().chartIo};
+    const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
+                           .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
+                           .color = theme.scheme().chartIo};
 
     auto plot = [&]()
     {
@@ -820,7 +820,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> readData = tailVector(m_IoReadHistory, alignedCount);
     std::vector<double> writeData = tailVector(m_IoWriteHistory, alignedCount);
 
@@ -834,13 +834,13 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
 
-    NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
-                   .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
-                   .color = theme.scheme().chartIo};
+    const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
+                         .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
+                         .color = theme.scheme().chartIo};
 
-    NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
-                    .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
-                    .color = theme.accentColor(1)};
+    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
+                          .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
+                          .color = theme.accentColor(1)};
 
     auto plot = [&]()
     {
@@ -899,7 +899,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> sentData = tailVector(m_NetSentHistory, alignedCount);
     std::vector<double> recvData = tailVector(m_NetRecvHistory, alignedCount);
 
@@ -913,13 +913,13 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
     const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
 
-    NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
-                   .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
-                   .color = theme.scheme().chartCpu};
+    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
+                         .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
+                         .color = theme.scheme().chartCpu};
 
-    NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
-                   .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
-                   .color = theme.accentColor(2)};
+    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
+                         .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
+                         .color = theme.accentColor(2)};
 
     auto plot = [&]()
     {
@@ -985,16 +985,16 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
     std::vector<double> powerData = tailVector(m_PowerHistory, alignedCount);
-    std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
     // Use smoothed value for NowBar
     const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
 
-    NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
-                    .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
-                    .color = theme.scheme().textInfo};
+    const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
+                          .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
+                          .color = theme.scheme().textInfo};
 
     auto plot = [&]()
     {
@@ -1141,8 +1141,8 @@ void ProcessDetailsPanel::renderActions()
     // Action result feedback
     if (!m_LastActionResult.empty())
     {
-        bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
-        ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
+        const bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
+        const ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
         ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
         ImGui::Spacing();
     }

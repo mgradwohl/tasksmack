@@ -55,7 +55,7 @@ bool BackgroundSampler::isRunning() const
 
 void BackgroundSampler::setCallback(SnapshotCallback callback)
 {
-    std::lock_guard lock(m_CallbackMutex);
+    std::lock_guard lock(m_CallbackMutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_Callback = std::move(callback);
 }
 
@@ -76,13 +76,13 @@ void BackgroundSampler::requestRefresh()
 
 std::chrono::milliseconds BackgroundSampler::interval() const
 {
-    std::lock_guard lock(m_ConfigMutex);
+    std::lock_guard lock(m_ConfigMutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Config.interval;
 }
 
 void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
 {
-    std::lock_guard lock(m_ConfigMutex);
+    std::lock_guard lock(m_ConfigMutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_Config.interval = newInterval;
     spdlog::info("BackgroundSampler: interval changed to {}ms", newInterval.count());
 }
@@ -101,7 +101,7 @@ void BackgroundSampler::samplerLoop(std::stop_token stopToken)
 
         // Invoke callback
         {
-            std::lock_guard lock(m_CallbackMutex);
+            std::lock_guard lock(m_CallbackMutex); // NOLINT(misc-const-correctness) - lock guard pattern
             if (m_Callback)
             {
                 m_Callback(counters, totalCpuTime);
@@ -114,7 +114,7 @@ void BackgroundSampler::samplerLoop(std::stop_token stopToken)
         // Get current interval
         std::chrono::milliseconds currentInterval;
         {
-            std::lock_guard lock(m_ConfigMutex);
+            std::lock_guard lock(m_ConfigMutex); // NOLINT(misc-const-correctness) - lock guard pattern
             currentInterval = m_Config.interval;
         }
 

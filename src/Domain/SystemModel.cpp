@@ -123,7 +123,7 @@ void SystemModel::trimHistory(double nowSeconds)
 
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
 
     if (!m_Timestamps.empty())
@@ -159,7 +159,7 @@ void SystemModel::refresh()
         }
 
         // Only lock to update the snapshot
-        std::unique_lock lock(m_Mutex);
+        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_Snapshot.power = powerStatus;
     }
 
@@ -174,7 +174,7 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters)
 
 void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
@@ -182,7 +182,7 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
 
 SystemSnapshot SystemModel::snapshot() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshot;
 }
 
@@ -193,61 +193,61 @@ const Platform::SystemCapabilities& SystemModel::capabilities() const
 
 std::vector<float> SystemModel::cpuHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuHistory.begin(), m_CpuHistory.end());
 }
 
 std::vector<float> SystemModel::cpuUserHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
 }
 
 std::vector<float> SystemModel::cpuSystemHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIowaitHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIdleHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuIdleHistory.begin(), m_CpuIdleHistory.end());
 }
 
 std::vector<float> SystemModel::memoryHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_MemoryHistory.begin(), m_MemoryHistory.end());
 }
 
 std::vector<float> SystemModel::powerHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_PowerHistory.begin(), m_PowerHistory.end());
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end());
 }
 
 std::vector<float> SystemModel::swapHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_SwapHistory.begin(), m_SwapHistory.end());
 }
 
 std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<std::vector<float>> result;
     result.reserve(m_PerCoreHistory.size());
 
@@ -261,7 +261,7 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 
 std::vector<double> SystemModel::timestamps() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
 }
 

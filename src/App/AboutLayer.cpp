@@ -43,7 +43,7 @@ namespace
 #elif defined(_WIN32)
     std::wstring buffer(MAX_PATH, L'\0');
     // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
-    DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {
         buffer.resize(len);
@@ -268,7 +268,7 @@ void AboutLayer::loadIcon()
 void AboutLayer::openUrl(const std::string& url) const
 {
 #ifdef _WIN32
-    std::wstring wideUrl(url.begin(), url.end());
+    const std::wstring wideUrl(url.begin(), url.end());
     ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
     pid_t pid = ::fork();

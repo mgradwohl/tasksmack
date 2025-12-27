@@ -285,7 +285,7 @@ void UserConfig::load()
 void UserConfig::save() const
 {
     // Ensure config directory exists
-    std::filesystem::path configDir = m_ConfigPath.parent_path();
+    const std::filesystem::path configDir = m_ConfigPath.parent_path();
     if (!std::filesystem::exists(configDir))
     {
         std::error_code ec;

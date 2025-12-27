@@ -35,7 +35,7 @@ std::filesystem::path getUserConfigDir()
 #ifdef _WIN32
     if (char* appData = nullptr; _dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
     {
-        std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
+        const std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
         if (appData[0] != '\0')
         {
             return std::filesystem::path(appData) / "TaskSmack";
@@ -79,7 +79,7 @@ std::filesystem::path getExecutableDir()
     // Use wide string API and let filesystem handle conversion
     std::wstring buffer(MAX_PATH, L'\0');
     // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
-    DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {
         buffer.resize(len);
@@ -332,7 +332,7 @@ void UILayer::beginFrame()
 void UILayer::endFrame()
 {
     // Pop the font we pushed in beginFrame()
-    ImFont* font = Theme::get().regularFont();
+    const ImFont* font = Theme::get().regularFont();
     if (font != nullptr)
     {
         ImGui::PopFont();
@@ -342,7 +342,7 @@ void UILayer::endFrame()
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     // Handle multi-viewport
-    ImGuiIO& imguiIO = ImGui::GetIO();
+    const ImGuiIO& imguiIO = ImGui::GetIO();
     if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
     {
         GLFWwindow* backupCurrentContext = glfwGetCurrentContext();

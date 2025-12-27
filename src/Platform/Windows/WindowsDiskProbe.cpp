@@ -81,7 +81,7 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
             const wchar_t* instance = instanceBuffer.data();
             while (*instance != L'\0')
             {
-                std::wstring instanceName(instance);
+                const std::wstring instanceName(instance);
 
                 // Skip "_Total" instance
                 if (instanceName == L"_Total")
@@ -94,11 +94,11 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                 counterSet.instanceName = WinString::wideToUtf8(instanceName);
 
                 // Add counters for this disk
-                std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
-                std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
-                std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
-                std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
-                std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
+                const std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
+                const std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
+                const std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
+                const std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
+                const std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
 
                 PdhAddCounterW(m_Impl->query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
                 PdhAddCounterW(m_Impl->query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
@@ -137,7 +137,7 @@ SystemDiskCounters WindowsDiskProbe::read()
     if (!m_Impl || m_Impl->query == nullptr || m_Impl->diskCounters.empty())
     {
         // Fallback: enumerate logical drives
-        DWORD drives = GetLogicalDrives();
+        const DWORD drives = GetLogicalDrives();
         if (drives == 0)
         {
             spdlog::warn("WindowsDiskProbe: GetLogicalDrives failed");
@@ -151,10 +151,10 @@ SystemDiskCounters WindowsDiskProbe::read()
                 continue;
             }
 
-            wchar_t driveLetter = static_cast<wchar_t>('A' + i);
-            std::wstring drivePath = std::wstring{driveLetter} + L":\\";
+            const wchar_t driveLetter = static_cast<wchar_t>('A' + i);
+            const std::wstring drivePath = std::wstring{driveLetter} + L":\\";
 
-            UINT driveType = GetDriveTypeW(drivePath.c_str());
+            const UINT driveType = GetDriveTypeW(drivePath.c_str());
 
             // Only include fixed drives
             if (driveType != DRIVE_FIXED)
@@ -232,7 +232,7 @@ SystemDiskCounters WindowsDiskProbe::read()
         {
             // Idle time is a percentage; busy time = 100 - idle
             const double idlePercent = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-            double busyPercent = std::clamp(100.0 - idlePercent, 0.0, 100.0);
+            const double busyPercent = std::clamp(100.0 - idlePercent, 0.0, 100.0);
             // Convert to milliseconds (approximate based on sample interval)
             disk.ioTimeMs = static_cast<uint64_t>(busyPercent * 10.0); // Rough approximation
         }

@@ -63,7 +63,7 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
 
     const auto currentSampleTime = std::chrono::steady_clock::now();
     if (!m_HasStartTime)
@@ -227,50 +227,50 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshots;
 }
 
 std::vector<double> ProcessModel::systemNetSentHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_SystemNetSentHistory.begin(), m_SystemNetSentHistory.end());
 }
 
 std::vector<double> ProcessModel::systemNetRecvHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_SystemNetRecvHistory.begin(), m_SystemNetRecvHistory.end());
 }
 
 std::vector<double> ProcessModel::systemPageFaultsHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_SystemPageFaultsHistory.begin(), m_SystemPageFaultsHistory.end());
 }
 
 std::vector<double> ProcessModel::systemThreadCountHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end());
 }
 
 std::vector<double> ProcessModel::historyTimestamps() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
 }
 
 void ProcessModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = std::max(0.0, seconds);
     trimHistory();
 }
 
 std::size_t ProcessModel::processCount() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshots.size();
 }
 
