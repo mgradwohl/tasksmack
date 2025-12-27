@@ -15,6 +15,14 @@
 namespace Platform
 {
 
+namespace
+{
+// Windows SYSTEM_POWER_STATUS BatteryFlag constants
+constexpr BYTE BATTERY_FLAG_NO_BATTERY = 128; // No system battery (same as BATTERY_FLAG_NO_SYSTEM_BATTERY)
+constexpr BYTE BATTERY_FLAG_UNKNOWN = 255;    // Unknown battery status
+constexpr BYTE BATTERY_FLAG_CHARGING = 8;     // Battery is charging
+} // namespace
+
 WindowsPowerProbe::WindowsPowerProbe()
 {
     // Probe capabilities at construction time
