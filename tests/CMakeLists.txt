@@ -45,6 +45,7 @@ if(WIN32)
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PowerProbeContract.cpp
         Platform/test_WindowsProcessProbe.cpp
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
@@ -69,10 +70,12 @@ else()
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PowerProbeContract.cpp
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
         Platform/test_LinuxDiskProbe.cpp
+        Platform/test_LinuxPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
@@ -80,6 +83,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
