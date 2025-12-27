@@ -116,6 +116,17 @@ LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
     }
+
+    // Detect and initialize power monitoring if available
+    m_HasPowerCap = detectPowerCap();
+    if (m_HasPowerCap)
+    {
+        spdlog::info("Power monitoring available via RAPL at: {}", m_PowerCapPath);
+    }
+    else
+    {
+        spdlog::debug("Power monitoring not available (RAPL not found)");
+    }
 }
 
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
@@ -166,12 +177,19 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             parseProcessIo(pid, counters);
         }
+        counters.status = getProcessStatus(pid); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
     if (errorCode)
     {
         spdlog::warn("Error iterating /proc: {}", errorCode.message());
+    }
+
+    // Attribute energy to processes if power monitoring is available
+    if (m_HasPowerCap)
+    {
+        attributeEnergyToProcesses(processes);
     }
 
     return processes;
@@ -195,8 +213,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,       // From sched_getaffinity
-                               .hasNetworkCounters = false}; // Would need socket inode matching + eBPF/netlink
+                               .hasCpuAffinity = true,         // From sched_getaffinity
+                               .hasNetworkCounters = false,    // Would need socket inode matching + eBPF/netlink
+                               .hasPowerUsage = m_HasPowerCap, // Available if RAPL is detected
+                               .hasStatus = true};             // From cgroup freezer state
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -413,6 +433,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
         counters.cpuAffinityMask = 0;
     }
 }
+
 void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/io
@@ -468,14 +489,72 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
 
 bool LinuxProcessProbe::checkIoCountersAvailability() const
 {
-    // Try to read our own process's I/O counters to check availability
-    // Use getpid() to get our own PID
-    const int32_t selfPid = getpid();
-    std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(selfPid) / "io";
-    std::ifstream ioFile(ioPath);
+    // Check if we can read /proc/self/io to determine I/O counter availability.
+    // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
+    // or being the owner of the target process.
+    std::ifstream selfIo("/proc/self/io");
+    return selfIo.is_open();
+}
 
-    // If we can open it, we have the necessary permissions
-    return ioFile.is_open();
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
+{
+    // Try cgroup v2 first: freezer.state
+    const std::filesystem::path cgroupV2FreezerPath = std::filesystem::path("/sys/fs/cgroup") / std::to_string(pid) / "freezer.state";
+    std::ifstream freezerStateV2(cgroupV2FreezerPath);
+    if (freezerStateV2.is_open())
+    {
+        std::string state;
+        freezerStateV2 >> state;
+        if (state == "FROZEN" || state == "FREEZING")
+        {
+            return "Suspended";
+        }
+    }
+
+    // Fallback to cgroup v1 freezer hierarchy
+    // /proc/[pid]/cgroup lists all cgroups for the process
+    const std::filesystem::path cgroupPath = std::filesystem::path("/proc") / std::to_string(pid) / "cgroup";
+    std::ifstream cgroupFile(cgroupPath);
+    if (cgroupFile.is_open())
+    {
+        std::string line;
+        while (std::getline(cgroupFile, line))
+        {
+            // Format: hierarchy-ID:controllers:cgroup-path
+            const auto firstColon = line.find(':');
+            const auto secondColon = line.find(':', firstColon + 1);
+            if (firstColon != std::string::npos && secondColon != std::string::npos)
+            {
+                std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
+                std::string cgroupSubPath = line.substr(secondColon + 1);
+
+                // Check if this line has the freezer controller
+                if (controllers.find("freezer") != std::string::npos)
+                {
+                    // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
+                    // Skip if cgroupSubPath is empty or doesn't start with /
+                    if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
+                    {
+                        std::filesystem::path freezePathV1 =
+                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
+                        std::ifstream freezeFileV1(freezePathV1);
+                        if (freezeFileV1.is_open())
+                        {
+                            std::string state;
+                            freezeFileV1 >> state;
+                            if (state == "FROZEN" || state == "FREEZING")
+                            {
+                                return "Suspended";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No special status
+    return {};
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
@@ -550,6 +629,112 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
 
     spdlog::warn("MemTotal not found in /proc/meminfo");
     return 0;
+}
+
+bool LinuxProcessProbe::detectPowerCap()
+{
+    // Try to find Intel RAPL package energy file
+    // Common paths: /sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj
+    const std::vector<std::string> possiblePaths = {
+        "/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj",
+        "/sys/class/powercap/intel-rapl:0/energy_uj",
+    };
+
+    for (const auto& path : possiblePaths)
+    {
+        std::ifstream file(path);
+        if (file.good())
+        {
+            m_PowerCapPath = path;
+            return true;
+        }
+    }
+
+    // Try to enumerate powercap directory
+    std::error_code ec;
+    std::filesystem::path powercapDir("/sys/class/powercap");
+    if (std::filesystem::exists(powercapDir, ec) && std::filesystem::is_directory(powercapDir, ec))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(powercapDir, ec))
+        {
+            if (entry.is_directory() && entry.path().filename().string().find("intel-rapl") == 0)
+            {
+                std::filesystem::path energyFile = entry.path() / "energy_uj";
+                if (std::filesystem::exists(energyFile, ec))
+                {
+                    m_PowerCapPath = energyFile.string();
+                    return true;
+                }
+
+                // Try package:0 subdirectory
+                std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
+                energyFile = packageDir / "energy_uj";
+                if (std::filesystem::exists(energyFile, ec))
+                {
+                    m_PowerCapPath = energyFile.string();
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+uint64_t LinuxProcessProbe::readSystemEnergy() const
+{
+    if (m_PowerCapPath.empty())
+    {
+        return 0;
+    }
+
+    std::ifstream file(m_PowerCapPath);
+    if (!file.is_open())
+    {
+        return 0;
+    }
+
+    uint64_t energyUj = 0;
+    file >> energyUj;
+
+    if (file.fail())
+    {
+        return 0;
+    }
+
+    return energyUj; // Already in microjoules
+}
+
+void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
+{
+    // Read system-wide energy
+    const uint64_t systemEnergy = readSystemEnergy();
+    if (systemEnergy == 0)
+    {
+        return;
+    }
+
+    // Calculate total CPU time across all processes
+    uint64_t totalProcessCpuTime = 0;
+    for (const auto& proc : processes)
+    {
+        totalProcessCpuTime += (proc.userTime + proc.systemTime);
+    }
+
+    // Avoid division by zero
+    if (totalProcessCpuTime == 0)
+    {
+        return;
+    }
+
+    // Attribute energy proportionally based on CPU usage
+    // This is an approximation: energy per process = systemEnergy * (processCpuTime / totalCpuTime)
+    for (auto& proc : processes)
+    {
+        const uint64_t processCpuTime = proc.userTime + proc.systemTime;
+        const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
+        proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
+    }
 }
 
 } // namespace Platform

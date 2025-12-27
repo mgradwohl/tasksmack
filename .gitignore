@@ -67,3 +67,4 @@ imgui.ini
 
 # Generated cast audit output
 cast-audit.md
+build.log

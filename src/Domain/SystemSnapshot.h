@@ -18,6 +18,33 @@ struct CpuUsage
     double stealPercent = 0.0;  // Stolen by hypervisor %
 };
 
+/// Battery/power state snapshot for UI.
+struct PowerStatus
+{
+    bool hasBattery = false;
+    bool isOnAc = false;
+    bool isCharging = false;
+    bool isDischarging = false;
+    bool isFull = false;
+
+    // Charge percentage (0-100, or -1 if unavailable)
+    int chargePercent = -1;
+
+    // Power consumption in watts (positive = consuming, negative = charging)
+    double powerWatts = 0.0;
+
+    // Battery health (0-100, or -1 if unavailable)
+    int healthPercent = -1;
+
+    // Time remaining in seconds (0 if unavailable)
+    std::uint64_t timeToEmptySec = 0;
+    std::uint64_t timeToFullSec = 0;
+
+    // Battery details
+    std::string technology;
+    std::string model;
+};
+
 /// Immutable, UI-ready system metrics snapshot.
 /// Computed from raw counter deltas by SystemModel.
 struct SystemSnapshot
@@ -55,6 +82,9 @@ struct SystemSnapshot
 
     // CPU frequency in MHz
     std::uint64_t cpuFreqMHz = 0;
+
+    // Power/battery status
+    PowerStatus power;
 };
 
 } // namespace Domain

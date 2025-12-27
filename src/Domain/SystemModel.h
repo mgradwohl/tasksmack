@@ -1,6 +1,7 @@
 #pragma once
 
 #include "History.h"
+#include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
@@ -19,7 +20,7 @@ namespace Domain
 class SystemModel
 {
   public:
-    explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe);
+    explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
     ~SystemModel() = default;
 
     SystemModel(const SystemModel&) = delete;
@@ -59,12 +60,16 @@ class SystemModel
     [[nodiscard]] std::vector<float> memoryHistory() const;
     [[nodiscard]] std::vector<float> swapHistory() const;
     [[nodiscard]] std::vector<float> memoryCachedHistory() const;
+    [[nodiscard]] std::vector<float> powerHistory() const;
+    [[nodiscard]] std::vector<float> batteryChargeHistory() const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
     [[nodiscard]] std::vector<double> timestamps() const;
 
   private:
     std::unique_ptr<Platform::ISystemProbe> m_Probe;
+    std::unique_ptr<Platform::IPowerProbe> m_PowerProbe;
     Platform::SystemCapabilities m_Capabilities;
+    Platform::PowerCapabilities m_PowerCapabilities;
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;
@@ -82,6 +87,8 @@ class SystemModel
     std::deque<float> m_MemoryHistory;
     std::deque<float> m_MemoryCachedHistory;
     std::deque<float> m_SwapHistory;
+    std::deque<float> m_PowerHistory;
+    std::deque<float> m_BatteryChargeHistory;
     std::deque<double> m_Timestamps;
     std::vector<std::deque<float>> m_PerCoreHistory;
 
@@ -94,6 +101,7 @@ class SystemModel
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
     void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
+    [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
 };
 
 } // namespace Domain

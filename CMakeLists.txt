@@ -298,6 +298,12 @@ set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 # Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
 set(FETCHCONTENT_TRY_FIND_PACKAGE_freetype FALSE)
 
+# CMake 4.2 dropped compatibility for projects declaring cmake_minimum_required(<3.5).
+# FreeType 2.13.2 still requests 3.0. Temporarily raise the policy minimum while
+# configuring the FreeType subproject, then restore the previous value.
+set(_TS_OLD_POLICY_VERSION_MINIMUM ${CMAKE_POLICY_VERSION_MINIMUM})
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 FetchContent_Declare(
     freetype
     DOWNLOAD_EXTRACT_TIMESTAMP OFF
@@ -335,6 +341,13 @@ FetchContent_GetProperties(freetype)
 if(NOT freetype_POPULATED)
     FetchContent_Populate(freetype)
     add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
+endif()
+
+# Restore the user's policy minimum to avoid global side effects
+if(DEFINED _TS_OLD_POLICY_VERSION_MINIMUM)
+    set(CMAKE_POLICY_VERSION_MINIMUM ${_TS_OLD_POLICY_VERSION_MINIMUM})
+else()
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
 endif()
 
 set_target_properties(freetype PROPERTIES FOLDER "third_party")
@@ -448,7 +461,6 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
-    src/App/Panels/StoragePanel.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
@@ -461,6 +473,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
+    src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -469,6 +482,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
+    src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -488,9 +502,14 @@ set(TASKSMACK_HEADERS
     src/UI/UILayer.h
     src/App/ShellLayer.h
     src/App/Panels/ProcessesPanel.h
-    src/Platform/ProcessTypes.h
-    src/Platform/IProcessProbe.h
     src/Platform/Factory.h
+    src/Platform/IDiskProbe.h
+    src/Platform/IPowerProbe.h
+    src/Platform/IProcessProbe.h
+    src/Platform/IProcessActions.h
+    src/Platform/ISystemProbe.h
+    src/Platform/PowerTypes.h
+    src/Platform/ProcessTypes.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
 )
@@ -499,12 +518,16 @@ set(TASKSMACK_HEADERS
 if(UNIX AND NOT APPLE)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Linux/LinuxProcessProbe.h
+        src/Platform/Linux/LinuxDiskProbe.h
+        src/Platform/Linux/LinuxPowerProbe.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
+        src/Platform/Windows/WindowsDiskProbe.h
+        src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WinString.h
     )
 endif()
@@ -660,6 +683,10 @@ target_link_libraries(TaskSmack PRIVATE
     tomlplusplus::tomlplusplus
     OpenGL::GL
 )
+
+if(WIN32)
+    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32)
+endif()
 
 # Copy assets (fonts and themes) to build directory
 set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")

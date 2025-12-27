@@ -60,12 +60,30 @@ class MockProcessProbe : public Platform::IProcessProbe
     // Builder pattern methods for fluent API
     MockProcessProbe& withProcess(int32_t pid, const std::string& name)
     {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter = makeProcessCounters(pid, name);
+                return *this;
+            }
+        }
+
         m_Counters.push_back(makeProcessCounters(pid, name));
         return *this;
     }
 
     MockProcessProbe& withProcess(Platform::ProcessCounters counter)
     {
+        for (auto& existing : m_Counters)
+        {
+            if (existing.pid == counter.pid)
+            {
+                existing = std::move(counter);
+                return *this;
+            }
+        }
+
         m_Counters.push_back(std::move(counter));
         return *this;
     }
@@ -177,6 +195,23 @@ class MockProcessProbe : public Platform::IProcessProbe
         // If process doesn't exist, create it
         auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
         c.parentPid = parentPid;
+        m_Counters.push_back(c);
+        return *this;
+    }
+
+    MockProcessProbe& withPowerUsage(int32_t pid, uint64_t energyMicrojoules)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.pid == pid)
+            {
+                counter.energyMicrojoules = energyMicrojoules;
+                return *this;
+            }
+        }
+        // If process doesn't exist, create it
+        auto c = makeProcessCounters(pid, "process_" + std::to_string(pid));
+        c.energyMicrojoules = energyMicrojoules;
         m_Counters.push_back(c);
         return *this;
     }
@@ -447,6 +482,7 @@ inline Platform::ProcessCapabilities makeFullProcessCapabilities()
     caps.hasThreadCount = true;
     caps.hasUserSystemTime = true;
     caps.hasStartTime = true;
+    caps.hasPowerUsage = true;
     return caps;
 }
 

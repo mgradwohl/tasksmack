@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IDiskProbe.h"
+#include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -21,5 +22,8 @@ namespace Platform
 
 /// Creates the platform-appropriate IDiskProbe implementation.
 [[nodiscard]] std::unique_ptr<IDiskProbe> makeDiskProbe();
+
+/// Creates the platform-appropriate IPowerProbe implementation.
+[[nodiscard]] std::unique_ptr<IPowerProbe> makePowerProbe();
 
 } // namespace Platform

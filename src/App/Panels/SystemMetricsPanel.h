@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "UI/Theme.h"
@@ -41,6 +42,16 @@ class SystemMetricsPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
+    /// Inject process model for aggregated system histories (non-owning).
+    void setProcessModel(Domain::ProcessModel* model)
+    {
+        m_ProcessModel = model;
+        if (m_ProcessModel != nullptr)
+        {
+            m_ProcessModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+        }
+    }
+
     /// Render the panel.
     void render(bool* open) override;
 
@@ -51,6 +62,7 @@ class SystemMetricsPanel : public Panel
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
+    Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
 
     double m_MaxHistorySeconds = 300.0;
     double m_HistoryScrollSeconds = 0.0;
@@ -75,6 +87,7 @@ class SystemMetricsPanel : public Panel
     struct SmoothedMemory
     {
         double usedPercent = 0.0;
+        double cachedPercent = 0.0;
         double swapPercent = 0.0;
         bool initialized = false;
     } m_SmoothedMemory;
@@ -86,6 +99,34 @@ class SystemMetricsPanel : public Panel
         double avgUtilization = 0.0;
         bool initialized = false;
     } m_SmoothedDiskIO;
+
+    struct SmoothedPower
+    {
+        double watts = 0.0;
+        double batteryChargePercent = 0.0;
+        bool initialized = false;
+    } m_SmoothedPower;
+
+    struct SmoothedThreadsFaults
+    {
+        double threads = 0.0;
+        double pageFaults = 0.0;
+        bool initialized = false;
+    } m_SmoothedThreadsFaults;
+
+    struct SmoothedSystemIO
+    {
+        double readBytesPerSec = 0.0;
+        double writeBytesPerSec = 0.0;
+        bool initialized = false;
+    } m_SmoothedSystemIO;
+
+    struct SmoothedNetwork
+    {
+        double sentBytesPerSec = 0.0;
+        double recvBytesPerSec = 0.0;
+        bool initialized = false;
+    } m_SmoothedNetwork;
 
     std::vector<double> m_SmoothedPerCore;
 
@@ -104,6 +145,10 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
+    void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
+    void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
+    void updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds);
+    void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds);
 };
 
 } // namespace App

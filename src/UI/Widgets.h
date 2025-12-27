@@ -12,6 +12,7 @@ namespace UI::Widgets
 /// providing visual feedback that the bar exists and is capable of showing data.
 constexpr float MIN_BAR_FILL_HEIGHT = 1.0F;
 
+/// TODO: Switch widget text params to std::string_view and convert at ImGui boundary.
 /// Draw right-aligned text overlay on the previous ImGui item (e.g., plot, progress bar).
 /// Shadow-free to avoid double-vision; relies on theme contrast instead.
 /// @param text The text to display (null or empty is a no-op)

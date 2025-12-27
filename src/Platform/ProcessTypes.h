@@ -16,6 +16,7 @@ struct ProcessCounters
     std::string command;   // Full command line
     std::string user;      // Username (owner) of the process
     char state = '?';      // Raw state character from OS (e.g., 'R', 'S', 'Z')
+    std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection
@@ -40,6 +41,11 @@ struct ProcessCounters
     // Network counters (cumulative bytes)
     std::uint64_t netSentBytes = 0;
     std::uint64_t netReceivedBytes = 0;
+
+    // Power usage (optional, platform-dependent)
+    // On Windows: from PROCESS_POWER_THROTTLING_STATE
+    // On Linux: from powercap sysfs (per-package energy counters)
+    std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 };
 
 /// Reports what this platform's probe supports.
@@ -57,6 +63,8 @@ struct ProcessCapabilities
     bool hasPeakRss = false;         // Whether peak working set is available
     bool hasCpuAffinity = false;     // Whether CPU affinity mask is available
     bool hasNetworkCounters = false; // Whether per-process network counters are available
+    bool hasPowerUsage = false;      // Whether power consumption metrics are available
+    bool hasStatus = false;          // Whether process status (Suspended, Efficiency Mode) is available
 };
 
 } // namespace Platform

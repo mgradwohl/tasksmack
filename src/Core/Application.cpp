@@ -81,7 +81,7 @@ void Application::run()
             break;
         }
 
-        float currentTime = getTime();
+        const float currentTime = getTime();
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
 

@@ -1,0 +1,35 @@
+# Generated files and build directories
+build/
+build-*/
+out/
+Debug/
+Release/
+debug/
+release/
+optimized/
+.cache/
+_deps/
+
+# CMake generated files
+CMakeFiles/
+cmake-build*/
+
+# CPack and distribution
+dist/
+packaging/dist/
+
+# Coverage output
+coverage/
+
+# Third-party dependencies (fetched by CMake)
+**/gladsources/
+**/glad_cmake/
+**/vcpkg/
+**/vcpkg_installed/
+
+# Generated version header
+**/generated/version.h
+
+# IDE/Editor files
+.vscode/
+.idea/

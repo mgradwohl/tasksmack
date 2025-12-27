@@ -16,6 +16,7 @@
 namespace Platform::Windows
 {
 
+// TODO: Accept std::string_view and pass .data() to GetProcAddress
 template<typename T> [[nodiscard]] T getProcAddress(HMODULE module, const char* procName) noexcept
 {
     static_assert(std::is_pointer_v<T>, "getProcAddress<T>: T must be a pointer type");
