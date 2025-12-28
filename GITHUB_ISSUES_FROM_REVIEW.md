@@ -104,28 +104,27 @@ return std::atomic_load(&m_Snapshots);
 
 ## Testing
 
-### Issue 4: Add unit tests for App layer
-**Title**: Increase test coverage for App layer (UserConfig, ProcessColumnConfig)
+### Issue 4: Add UserConfig unit tests
+**Title**: Add unit tests for UserConfig in App layer
 
 **Labels**: `testing`, `enhancement`, `good-first-issue`
 
 **Description**:
-The App layer currently has no unit tests (0 test files for 16 source files). Add tests for critical components.
+The App layer needs comprehensive unit tests for UserConfig. Note: test_ProcessColumnConfig.cpp is being completed in PR #281 (this PR).
 
 **Tests to add**:
 
-1. **test_UserConfig.cpp**
+1. **test_UserConfig.cpp** (NEW - priority)
    - Config loading from TOML file
    - Default value handling
    - Invalid config recovery
    - Config saving
    - Platform-specific paths (XDG_CONFIG_HOME, APPDATA)
 
-2. **test_ProcessColumnConfig.cpp**
-   - Column index conversions (`toIndex`, `processColumnFromIndex`)
-   - Column visibility toggling
-   - Boundary conditions (invalid column indices)
-   - Column count validation
+**Status**:
+- ✅ test_ProcessColumnConfig.cpp - Completed in this PR
+  - 10 comprehensive tests covering column operations
+  - Column index conversions, visibility toggling, boundary conditions
 
 **Setup required**:
 - Use temporary directories for config file tests
@@ -134,7 +133,6 @@ The App layer currently has no unit tests (0 test files for 16 source files). Ad
 
 **Files to create**:
 - `tests/App/test_UserConfig.cpp`
-- `tests/App/test_ProcessColumnConfig.cpp`
 
 **Priority**: Medium (improves maintainability)
 
