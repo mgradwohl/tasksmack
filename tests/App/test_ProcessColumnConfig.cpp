@@ -65,10 +65,10 @@ TEST(ProcessColumnSettingsTest, DefaultConstructorHasDefaultVisibility)
     const ProcessColumnSettings settings;
 
     // Most columns should be visible by default
-    EXPECT_TRUE(settings.isVisible(ProcessColumn::Pid));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.isVisible(ProcessColumn::Name));
-    EXPECT_TRUE(settings.isVisible(ProcessColumn::Cpu));
-    EXPECT_TRUE(settings.isVisible(ProcessColumn::Memory));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::CpuPercent));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::MemPercent));
 }
 
 TEST(ProcessColumnSettingsTest, SetVisibilityChangesState)
@@ -76,12 +76,12 @@ TEST(ProcessColumnSettingsTest, SetVisibilityChangesState)
     ProcessColumnSettings settings;
 
     // Hide a column
-    settings.setVisible(ProcessColumn::Pid, false);
-    EXPECT_FALSE(settings.isVisible(ProcessColumn::Pid));
+    settings.setVisible(ProcessColumn::PID, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::PID));
 
     // Show it again
-    settings.setVisible(ProcessColumn::Pid, true);
-    EXPECT_TRUE(settings.isVisible(ProcessColumn::Pid));
+    settings.setVisible(ProcessColumn::PID, true);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
 }
 
 TEST(ProcessColumnSettingsTest, ToggleVisibilityFlipsState)
