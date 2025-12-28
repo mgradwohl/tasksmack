@@ -43,10 +43,12 @@ class ProcessDetailsPanel : public Panel
     }
 
   private:
-    void renderBasicInfo(const Domain::ProcessSnapshot& proc);
+    static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
+    void renderThreadAndFaultHistory(const Domain::ProcessSnapshot& proc);
     void renderIoStats(const Domain::ProcessSnapshot& proc);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc);
+    void renderPowerUsage(const Domain::ProcessSnapshot& proc);
     void renderActions();
     void trimHistory(double nowSeconds);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
@@ -63,6 +65,13 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_MemoryHistory;    // Used memory percent (RSS)
     std::deque<double> m_SharedHistory;    // Shared memory percent (best effort)
     std::deque<double> m_VirtualHistory;   // Virtual memory percent (best effort)
+    std::deque<double> m_ThreadHistory;    // Thread count history
+    std::deque<double> m_PageFaultHistory; // Page faults per second history
+    std::deque<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
+    std::deque<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
+    std::deque<double> m_NetSentHistory;   // Network send rate (bytes/sec)
+    std::deque<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
+    std::deque<double> m_PowerHistory;     // Power usage history (watts)
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
@@ -84,8 +93,17 @@ class ProcessDetailsPanel : public Panel
     struct SmoothedUsage
     {
         double cpuPercent = 0.0;
+        double cpuUserPercent = 0.0;
+        double cpuSystemPercent = 0.0;
         double residentBytes = 0.0;
         double virtualBytes = 0.0;
+        double threadCount = 0.0;
+        double pageFaultsPerSec = 0.0;
+        double ioReadBytesPerSec = 0.0;
+        double ioWriteBytesPerSec = 0.0;
+        double netSentBytesPerSec = 0.0;
+        double netRecvBytesPerSec = 0.0;
+        double powerWatts = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
 };

@@ -45,10 +45,12 @@ if(WIN32)
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PowerProbeContract.cpp
         Platform/test_WindowsProcessProbe.cpp
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
         Platform/test_WindowsDiskProbe.cpp
+        Platform/test_WindowsPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
@@ -56,6 +58,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
@@ -67,10 +70,12 @@ else()
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PowerProbeContract.cpp
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
         Platform/test_LinuxDiskProbe.cpp
+        Platform/test_LinuxPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
@@ -78,6 +83,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -90,6 +96,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -131,6 +138,8 @@ if(WIN32)
     target_link_libraries(TaskSmackTests PRIVATE
         pdh
         psapi
+        iphlpapi
+        ws2_32
         userenv
     )
 endif()

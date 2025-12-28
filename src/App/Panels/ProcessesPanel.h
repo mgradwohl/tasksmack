@@ -74,6 +74,12 @@ class ProcessesPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
+    /// Access the underlying process model (non-owning).
+    [[nodiscard]] Domain::ProcessModel* processModel() const
+    {
+        return m_ProcessModel.get();
+    }
+
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::int32_t m_SelectedPid = -1;
@@ -86,6 +92,7 @@ class ProcessesPanel : public Panel
     ProcessColumnSettings m_ColumnSettings;
 
     // Search/filter state
+    // TODO: Replace fixed char buffer with std::string + ImGui resize callback
     std::array<char, 256> m_SearchBuffer{};
 
     // Tree view state
@@ -101,8 +108,8 @@ class ProcessesPanel : public Panel
     /// Build parent-child process tree structure
     /// @param snapshots The full list of process snapshots.
     /// @return Map of parent uniqueKey to vector of child indices
-    [[nodiscard]] std::unordered_map<std::uint64_t, std::vector<std::size_t>>
-    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
+    [[nodiscard]] static std::unordered_map<std::uint64_t, std::vector<std::size_t>>
+    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots);
 
     /// Render process rows in tree view mode
     /// @param snapshots The full list of process snapshots.

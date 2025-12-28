@@ -22,7 +22,7 @@ class LinuxDiskProbe : public IDiskProbe
     [[nodiscard]] DiskCapabilities capabilities() const override;
 
   private:
-    bool shouldIncludeDevice(const std::string& deviceName) const;
+    [[nodiscard]] static bool shouldIncludeDevice(const std::string& deviceName);
 };
 
 } // namespace Platform

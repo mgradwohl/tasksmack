@@ -5,6 +5,7 @@
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
@@ -48,7 +49,7 @@ namespace
     int best = value;
     int bestDist = std::numeric_limits<int>::max();
 
-    for (int stop : stops)
+    for (const int stop : stops)
     {
         const int dist = std::abs(value - stop);
         // Make it "at least twice as sticky":
@@ -82,7 +83,7 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
     // Keep ticks inside the slider frame.
     ImGui::PushClipRect(frameMin, frameMax, true);
 
-    for (int stop : stops)
+    for (const int stop : stops)
     {
         if (stop < minValue || stop > maxValue)
         {
@@ -126,7 +127,10 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
 #else
     // Linux: Use xdg-open to open the file with the default editor
     const std::string command = "xdg-open \"" + filePath.string() + "\" &";
-    const int result = std::system(command.c_str()); // NOLINT(concurrency-mt-unsafe)
+    // NOLINTBEGIN(concurrency-mt-unsafe,bugprone-command-processor)
+    // Intentional: Using shell for URL/file opening is expected behavior on Linux
+    const int result = std::system(command.c_str());
+    // NOLINTEND(concurrency-mt-unsafe,bugprone-command-processor)
     if (result != 0)
     {
         spdlog::error("Failed to open file with default editor: {}", filePath.string());
@@ -163,7 +167,6 @@ void ShellLayer::onAttach()
     m_ShowProcesses = settings.showProcesses;
     m_ShowMetrics = settings.showMetrics;
     m_ShowDetails = settings.showDetails;
-    m_ShowStorage = settings.showStorage;
 
     // Configure ImGui for docking
     ImGuiIO& io = ImGui::GetIO();
@@ -172,7 +175,12 @@ void ShellLayer::onAttach()
     // Initialize panels
     m_ProcessesPanel.onAttach();
     m_SystemMetricsPanel.onAttach();
-    m_StoragePanel.onAttach();
+
+    // Share the process model with panels that render system-level aggregates
+    if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
+    {
+        m_SystemMetricsPanel.setProcessModel(processModel);
+    }
 
     spdlog::info("Panels initialized");
 }
@@ -191,7 +199,6 @@ void ShellLayer::onDetach()
     settings.showProcesses = m_ShowProcesses;
     settings.showMetrics = m_ShowMetrics;
     settings.showDetails = m_ShowDetails;
-    settings.showStorage = m_ShowStorage;
 
     // Capture current window geometry/state.
     auto& window = Core::Application::get().getWindow();
@@ -207,7 +214,6 @@ void ShellLayer::onDetach()
 
     config.save();
 
-    m_StoragePanel.onDetach();
     m_SystemMetricsPanel.onDetach();
     m_ProcessesPanel.onDetach();
     spdlog::info("ShellLayer detached");
@@ -230,10 +236,9 @@ void ShellLayer::onUpdate(float deltaTime)
     // Update panels
     m_ProcessesPanel.onUpdate(deltaTime);
     m_SystemMetricsPanel.onUpdate(deltaTime);
-    m_StoragePanel.onUpdate(deltaTime);
 
     // Sync selected PID from processes panel to details panel
-    std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
+    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     m_ProcessDetailsPanel.setSelectedPid(selectedPid);
 
     // Find the selected process snapshot
@@ -256,7 +261,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, deltaTime);
 
     // Handle keyboard shortcuts for font size
-    ImGuiIO& io = ImGui::GetIO();
+    const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
@@ -284,10 +289,6 @@ void ShellLayer::onRender()
     {
         m_SystemMetricsPanel.render(&m_ShowMetrics);
     }
-    if (m_ShowStorage)
-    {
-        m_StoragePanel.render(&m_ShowStorage);
-    }
     if (m_ShowDetails)
     {
         m_ProcessDetailsPanel.render(&m_ShowDetails);
@@ -302,15 +303,15 @@ void ShellLayer::setupDockspace()
 
     // Account for status bar at bottom. The main menu bar already adjusts the viewport work area.
     // Calculate height dynamically based on font size for proper scaling
-    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+    const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                   ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
@@ -320,7 +321,7 @@ void ShellLayer::setupDockspace()
     ImGui::PopStyleVar(3);
 
     // Create the dockspace
-    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    const ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
     ImGui::DockSpace(dockspaceId, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
 
     ImGui::End();
@@ -329,27 +330,26 @@ void ShellLayer::setupDockspace()
 void ShellLayer::renderMenuBar()
 {
     // Increase vertical padding for menu items to center text better
-    float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
-    float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
+    const float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
+    const float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
 
     if (ImGui::BeginMainMenuBar())
     {
-        if (ImGui::BeginMenu("File"))
+        if (ImGui::BeginMenu(ICON_FA_FILE " File"))
         {
-            if (ImGui::MenuItem("Exit", "Alt+F4"))
+            if (ImGui::MenuItem(ICON_FA_DOOR_OPEN " Exit", "Alt+F4"))
             {
                 Core::Application::get().stop();
             }
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("View"))
+        if (ImGui::BeginMenu(ICON_FA_EYE " View"))
         {
-            ImGui::MenuItem("Processes", nullptr, &m_ShowProcesses);
-            ImGui::MenuItem("System Metrics", nullptr, &m_ShowMetrics);
-            ImGui::MenuItem("Storage", nullptr, &m_ShowStorage);
-            ImGui::MenuItem("Details", nullptr, &m_ShowDetails);
+            ImGui::MenuItem(ICON_FA_LIST " Processes", nullptr, &m_ShowProcesses);
+            ImGui::MenuItem(ICON_FA_COMPUTER " System Metrics", nullptr, &m_ShowMetrics);
+            ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details", nullptr, &m_ShowDetails);
             ImGui::Separator();
 
             // Sampling / refresh interval (shared)
@@ -385,19 +385,17 @@ void ShellLayer::renderMenuBar()
                     const auto interval = std::chrono::milliseconds(settings.refreshIntervalMs);
                     m_ProcessesPanel.setSamplingInterval(interval);
                     m_SystemMetricsPanel.setSamplingInterval(interval);
-                    m_StoragePanel.setSamplingInterval(interval);
 
                     // Ensure the change takes effect without waiting a full interval.
                     m_ProcessesPanel.requestRefresh();
                     m_SystemMetricsPanel.requestRefresh();
-                    m_StoragePanel.requestRefresh();
                 }
             }
 
             ImGui::Separator();
 
             // Theme submenu (dynamically loaded from TOML files)
-            if (ImGui::BeginMenu("Theme"))
+            if (ImGui::BeginMenu(ICON_FA_PALETTE " Theme"))
             {
                 auto& theme = UI::Theme::get();
                 const auto& themes = theme.discoveredThemes();
@@ -405,7 +403,7 @@ void ShellLayer::renderMenuBar()
 
                 for (std::size_t i = 0; i < themes.size(); ++i)
                 {
-                    bool selected = (currentIndex == i);
+                    const bool selected = (currentIndex == i);
                     if (ImGui::MenuItem(themes[i].name.c_str(), nullptr, selected))
                     {
                         theme.setTheme(i);
@@ -415,7 +413,7 @@ void ShellLayer::renderMenuBar()
             }
 
             // Font size submenu
-            if (ImGui::BeginMenu("Font Size"))
+            if (ImGui::BeginMenu(ICON_FA_FONT " Font Size"))
             {
                 auto& theme = UI::Theme::get();
                 auto currentSize = theme.currentFontSize();
@@ -423,7 +421,7 @@ void ShellLayer::renderMenuBar()
                 for (const auto fontSize : UI::ALL_FONT_SIZES)
                 {
                     const auto& cfg = theme.fontConfig(fontSize);
-                    bool selected = (currentSize == fontSize);
+                    const bool selected = (currentSize == fontSize);
                     const std::string label(cfg.name);
                     if (ImGui::MenuItem(label.c_str(), nullptr, selected))
                     {
@@ -434,11 +432,11 @@ void ShellLayer::renderMenuBar()
                 ImGui::Separator();
 
                 // Quick adjust shortcuts
-                if (ImGui::MenuItem("Increase", "Ctrl++"))
+                if (ImGui::MenuItem(ICON_FA_PLUS " Increase", "Ctrl++"))
                 {
                     theme.increaseFontSize();
                 }
-                if (ImGui::MenuItem("Decrease", "Ctrl+-"))
+                if (ImGui::MenuItem(ICON_FA_MINUS " Decrease", "Ctrl+-"))
                 {
                     theme.decreaseFontSize();
                 }
@@ -449,9 +447,9 @@ void ShellLayer::renderMenuBar()
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Tools"))
+        if (ImGui::BeginMenu(ICON_FA_WRENCH " Tools"))
         {
-            if (ImGui::MenuItem("Open Config File..."))
+            if (ImGui::MenuItem(ICON_FA_FILE_PEN " Open Config File..."))
             {
                 const auto& configPath = UserConfig::get().configPath();
                 openFileWithDefaultEditor(configPath);
@@ -459,16 +457,16 @@ void ShellLayer::renderMenuBar()
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Options..."))
+            if (ImGui::MenuItem(ICON_FA_GEARS " Options..."))
             {
                 // TODO: Open options dialog
             }
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Help"))
+        if (ImGui::BeginMenu(ICON_FA_CIRCLE_QUESTION " Help"))
         {
-            if (ImGui::MenuItem("About TaskSmack"))
+            if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " About TaskSmack"))
             {
                 if (auto* about = AboutLayer::instance(); about != nullptr)
                 {
@@ -483,19 +481,19 @@ void ShellLayer::renderMenuBar()
     ImGui::PopStyleVar();
 }
 
-void ShellLayer::renderStatusBar()
+void ShellLayer::renderStatusBar() const
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     // Calculate height dynamically based on font size for proper scaling
-    float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+    const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
-                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav |
-                                   ImGuiWindowFlags_NoDocking;
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
+                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
 
     // Use theme colors for status bar
     const auto& theme = UI::Theme::get();
@@ -504,7 +502,7 @@ void ShellLayer::renderStatusBar()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0F); // Show top border
     // Center text vertically within the status bar
-    float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
+    const float verticalPadding = (statusBarHeight - ImGui::GetFontSize()) * 0.5F;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, verticalPadding));
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
@@ -513,7 +511,7 @@ void ShellLayer::renderStatusBar()
 
         // Right-align FPS display
         const char* fpsText = "%.1f FPS (%.2f ms)";
-        float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
+        const float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
         ImGui::SameLine(ImGui::GetWindowWidth() - fpsWidth);
         ImGui::Text("%.1f FPS (%.2f ms)", static_cast<double>(m_DisplayedFps), static_cast<double>(m_FrameTime * 1000.0F));
     }

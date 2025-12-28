@@ -39,6 +39,7 @@ namespace App
 namespace
 {
 
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
     const auto count = std::to_underlying(ProcessColumn::Count);
@@ -58,6 +59,7 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 }
 
 #ifndef _WIN32
+// TODO: Replace const char* env handling with std::string_view/std::optional and avoid raw getenv
 [[nodiscard]] auto readEnvVarString(const char* name) -> std::optional<std::string>
 {
     const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
@@ -284,7 +286,7 @@ void UserConfig::load()
 void UserConfig::save() const
 {
     // Ensure config directory exists
-    std::filesystem::path configDir = m_ConfigPath.parent_path();
+    const std::filesystem::path configDir = m_ConfigPath.parent_path();
     if (!std::filesystem::exists(configDir))
     {
         std::error_code ec;
