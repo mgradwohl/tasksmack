@@ -394,7 +394,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPageFaults = true,      // From NtQueryInformationProcess (VM_COUNTERS)
         .hasPeakRss = true,         // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true,     // From GetProcessAffinityMask
-        .hasNetworkCounters = false // TODO: Implement using ETW or GetPerTcpConnectionEStats
+        // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
+        // See GitHub issue for implementation tracking
+        .hasNetworkCounters = false
     };
 }
 

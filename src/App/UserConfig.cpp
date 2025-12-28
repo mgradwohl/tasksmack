@@ -60,6 +60,8 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 #ifndef _WIN32
 [[nodiscard]] auto readEnvVarString(const char* name) -> std::optional<std::string>
 {
+    // NOLINT(concurrency-mt-unsafe): std::getenv is not thread-safe, but this function
+    // is only called during single-threaded initialization (UserConfig constructor).
     const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
     if (value == nullptr || value[0] == '\0')
     {
