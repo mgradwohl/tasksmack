@@ -9,11 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <system_error>
-#include <tuple>
 
 #ifdef __linux__
 #include <unistd.h>
@@ -42,7 +40,8 @@ namespace
     }
 #elif defined(_WIN32)
     std::wstring buffer(MAX_PATH, L'\0');
-    DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
+    const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {
         buffer.resize(len);
@@ -235,6 +234,7 @@ void AboutLayer::loadIcon()
         cwd,                  // running from repo root
     };
 
+    // TODO: Use std::array<std::string_view, 2> for icon names
     const std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
     for (const auto& base : baseDirs)
@@ -263,13 +263,13 @@ void AboutLayer::loadIcon()
     spdlog::warn("About dialog icon not found; continuing without image");
 }
 
-void AboutLayer::openUrl(const std::string& url) const
+void AboutLayer::openUrl(const std::string& url)
 {
 #ifdef _WIN32
-    std::wstring wideUrl(url.begin(), url.end());
+    const std::wstring wideUrl(url.begin(), url.end());
     ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
-    pid_t pid = ::fork();
+    const pid_t pid = ::fork();
     if (pid == 0)
     {
         // Child: exec xdg-open; if it fails, exit quietly.

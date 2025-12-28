@@ -257,7 +257,7 @@ Already well-optimized, but consider:
 
 If showing only top N processes:
 ```cpp
-std::partial_sort(processes.begin(), 
+std::partial_sort(processes.begin(),
                   processes.begin() + N,
                   processes.end(),
                   comparator);

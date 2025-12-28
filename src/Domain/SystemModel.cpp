@@ -1,6 +1,7 @@
 #include "SystemModel.h"
 
 #include "Numeric.h"
+#include "Platform/PowerTypes.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -14,7 +15,8 @@
 namespace Domain
 {
 
-SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Probe(std::move(probe))
+SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe)
+    : m_Probe(std::move(probe)), m_PowerProbe(std::move(powerProbe))
 {
     if (m_Probe)
     {
@@ -24,6 +26,12 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe) : m_Prob
     else
     {
         spdlog::warn("SystemModel: initialized without probe");
+    }
+
+    if (m_PowerProbe)
+    {
+        m_PowerCapabilities = m_PowerProbe->capabilities();
+        spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
     }
 }
 
@@ -54,6 +62,8 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_MemoryHistory);
     trimSamples(m_MemoryCachedHistory);
     trimSamples(m_SwapHistory);
+    trimSamples(m_PowerHistory);
+    trimSamples(m_BatteryChargeHistory);
 
     for (auto& coreHist : m_PerCoreHistory)
     {
@@ -79,6 +89,8 @@ void SystemModel::trimHistory(double nowSeconds)
     updateMin(m_MemoryHistory.size());
     updateMin(m_MemoryCachedHistory.size());
     updateMin(m_SwapHistory.size());
+    updateMin(m_PowerHistory.size());
+    updateMin(m_BatteryChargeHistory.size());
     for (const auto& coreHist : m_PerCoreHistory)
     {
         updateMin(coreHist.size());
@@ -103,6 +115,8 @@ void SystemModel::trimHistory(double nowSeconds)
         trimToMin(m_MemoryHistory);
         trimToMin(m_MemoryCachedHistory);
         trimToMin(m_SwapHistory);
+        trimToMin(m_PowerHistory);
+        trimToMin(m_BatteryChargeHistory);
         for (auto& coreHist : m_PerCoreHistory)
         {
             trimToMin(coreHist);
@@ -112,7 +126,7 @@ void SystemModel::trimHistory(double nowSeconds)
 
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
 
     if (!m_Timestamps.empty())
@@ -129,6 +143,18 @@ void SystemModel::refresh()
     }
 
     auto counters = m_Probe->read();
+
+    // Also read power data if probe is available (outside mutex - it's I/O)
+    if (m_PowerProbe)
+    {
+        auto powerCounters = m_PowerProbe->read();
+        auto powerStatus = computePowerStatus(powerCounters);
+
+        // Only lock to update the snapshot
+        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+        m_Snapshot.power = powerStatus;
+    }
+
     updateFromCounters(counters);
 }
 
@@ -140,7 +166,7 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters)
 
 void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds)
 {
-    std::unique_lock lock(m_Mutex);
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
@@ -148,7 +174,7 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
 
 SystemSnapshot SystemModel::snapshot() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshot;
 }
 
@@ -159,55 +185,67 @@ const Platform::SystemCapabilities& SystemModel::capabilities() const
 
 std::vector<float> SystemModel::cpuHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuHistory.begin(), m_CpuHistory.end());
 }
 
 std::vector<float> SystemModel::cpuUserHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
 }
 
 std::vector<float> SystemModel::cpuSystemHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIowaitHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end());
 }
 
 std::vector<float> SystemModel::cpuIdleHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_CpuIdleHistory.begin(), m_CpuIdleHistory.end());
 }
 
 std::vector<float> SystemModel::memoryHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_MemoryHistory.begin(), m_MemoryHistory.end());
+}
+
+std::vector<float> SystemModel::powerHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return std::vector<float>(m_PowerHistory.begin(), m_PowerHistory.end());
+}
+
+std::vector<float> SystemModel::batteryChargeHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return std::vector<float>(m_BatteryChargeHistory.begin(), m_BatteryChargeHistory.end());
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end());
 }
 
 std::vector<float> SystemModel::swapHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_SwapHistory.begin(), m_SwapHistory.end());
 }
 
 std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<std::vector<float>> result;
     result.reserve(m_PerCoreHistory.size());
 
@@ -221,7 +259,7 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 
 std::vector<double> SystemModel::timestamps() const
 {
-    std::shared_lock lock(m_Mutex);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
 }
 
@@ -303,8 +341,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         }
     }
 
-    // Store snapshot
+    // Store snapshot (preserve power status that was set separately in refresh())
+    const auto preservedPower = m_Snapshot.power;
     m_Snapshot = snap;
+    m_Snapshot.power = preservedPower;
 
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
@@ -317,6 +357,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
         m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
         m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+        m_PowerHistory.push_back(static_cast<float>(preservedPower.powerWatts));
+        // Track battery charge % if available (0-100 range, use -1 as "no data")
+        const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
+        m_BatteryChargeHistory.push_back(chargeVal);
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
@@ -364,6 +408,43 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
     usage.stealPercent = std::clamp(usage.stealPercent, 0.0, 100.0);
 
     return usage;
+}
+
+PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& counters) const
+{
+    PowerStatus status;
+
+    status.hasBattery = m_PowerCapabilities.hasBattery;
+
+    if (!status.hasBattery)
+    {
+        return status;
+    }
+
+    // Basic state
+    status.isOnAc = counters.isOnAc;
+    status.isCharging = (counters.state == Platform::BatteryState::Charging);
+    status.isDischarging = (counters.state == Platform::BatteryState::Discharging);
+    status.isFull = (counters.state == Platform::BatteryState::Full);
+
+    // Charge percentage
+    status.chargePercent = counters.chargePercent;
+
+    // Power consumption
+    status.powerWatts = counters.powerNowW;
+
+    // Health percentage
+    status.healthPercent = counters.healthPercent;
+
+    // Time estimates
+    status.timeToEmptySec = counters.timeToEmptySec;
+    status.timeToFullSec = counters.timeToFullSec;
+
+    // Battery details
+    status.technology = counters.technology;
+    status.model = counters.model;
+
+    return status;
 }
 
 } // namespace Domain

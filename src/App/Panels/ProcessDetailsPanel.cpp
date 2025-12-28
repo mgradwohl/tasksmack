@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "UI/Format.h"
 #include "UI/HistoryWidgets.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UI/Numeric.h"
 #include "UI/Theme.h"
 
@@ -17,9 +18,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,14 +33,22 @@ namespace
 
 using UI::Widgets::buildTimeAxisDoubles;
 using UI::Widgets::computeAlpha;
+using UI::Widgets::formatAgeSeconds;
+using UI::Widgets::formatAxisBytesPerSec;
+using UI::Widgets::formatAxisLocalized;
+using UI::Widgets::formatAxisWatts;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::setupLegendDefault;
 using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
+
+constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
 
 template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, std::size_t count) -> std::vector<T>
 {
@@ -52,6 +64,17 @@ template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, st
     }
 
     return out;
+}
+
+[[nodiscard]] auto seriesMax(const std::vector<double>& values, double current) -> double
+{
+    if (values.empty())
+    {
+        return current;
+    }
+
+    const double historyMax = *std::ranges::max_element(values);
+    return std::max(current, historyMax);
 }
 
 // ImPlot series counts are int; keep conversion explicit + checked.
@@ -123,6 +146,13 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_MemoryHistory.push_back(usedPercent);
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
             m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
+            m_ThreadHistory.push_back(UI::Numeric::toDouble(snapshot->threadCount));
+            m_PageFaultHistory.push_back(snapshot->pageFaultsPerSec);
+            m_IoReadHistory.push_back(snapshot->ioReadBytesPerSec);
+            m_IoWriteHistory.push_back(snapshot->ioWriteBytesPerSec);
+            m_NetSentHistory.push_back(snapshot->netSentBytesPerSec);
+            m_NetRecvHistory.push_back(snapshot->netReceivedBytesPerSec);
+            m_PowerHistory.push_back(snapshot->powerWatts);
             m_Timestamps.push_back(nowSeconds);
 
             // Update peak memory percent (from snapshot's peak value)
@@ -147,12 +177,12 @@ void ProcessDetailsPanel::render(bool* open)
     std::string windowLabel;
     if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
     {
-        windowLabel = m_CachedSnapshot.name;
+        windowLabel = std::string(ICON_FA_CIRCLE_INFO) + " " + m_CachedSnapshot.name;
         windowLabel += "###ProcessDetails";
     }
     else
     {
-        windowLabel = "Process Details###ProcessDetails";
+        windowLabel = ICON_FA_CIRCLE_INFO " Process Details###ProcessDetails";
     }
 
     if (!ImGui::Begin(windowLabel.c_str(), open))
@@ -180,11 +210,15 @@ void ProcessDetailsPanel::render(bool* open)
     // Tabs for different info sections
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
-        if (ImGui::BeginTabItem("Overview"))
+        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO " Overview"))
         {
             renderBasicInfo(m_CachedSnapshot);
             ImGui::Separator();
             renderResourceUsage(m_CachedSnapshot);
+            ImGui::Separator();
+            renderPowerUsage(m_CachedSnapshot);
+            ImGui::Separator();
+            renderThreadAndFaultHistory(m_CachedSnapshot);
             ImGui::Separator();
             renderIoStats(m_CachedSnapshot);
             ImGui::Separator();
@@ -192,7 +226,7 @@ void ProcessDetailsPanel::render(bool* open)
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Actions"))
+        if (ImGui::BeginTabItem(ICON_FA_GEARS " Actions"))
         {
             renderActions();
             ImGui::EndTabItem();
@@ -215,6 +249,13 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_MemoryHistory.clear();
         m_SharedHistory.clear();
         m_VirtualHistory.clear();
+        m_ThreadHistory.clear();
+        m_PageFaultHistory.clear();
+        m_IoReadHistory.clear();
+        m_IoWriteHistory.clear();
+        m_NetSentHistory.clear();
+        m_NetRecvHistory.clear();
+        m_PowerHistory.clear();
         m_Timestamps.clear();
         m_HistoryTimer = 0.0F;
         m_HasSnapshot = false;
@@ -238,12 +279,30 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetCpu = UI::Numeric::clampPercent(snapshot.cpuPercent);
     const double targetResident = UI::Numeric::toDouble(snapshot.memoryBytes);
     const double targetVirtual = UI::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
+    const double targetCpuUser = UI::Numeric::clampPercent(snapshot.cpuUserPercent);
+    const double targetCpuSystem = UI::Numeric::clampPercent(snapshot.cpuSystemPercent);
+    const double targetThreads = UI::Numeric::toDouble(snapshot.threadCount);
+    const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
+    const double targetIoRead = std::max(0.0, snapshot.ioReadBytesPerSec);
+    const double targetIoWrite = std::max(0.0, snapshot.ioWriteBytesPerSec);
+    const double targetNetSent = std::max(0.0, snapshot.netSentBytesPerSec);
+    const double targetNetRecv = std::max(0.0, snapshot.netReceivedBytesPerSec);
+    const double targetPower = std::max(0.0, snapshot.powerWatts);
 
     if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
     {
         m_SmoothedUsage.cpuPercent = targetCpu;
         m_SmoothedUsage.residentBytes = targetResident;
         m_SmoothedUsage.virtualBytes = targetVirtual;
+        m_SmoothedUsage.cpuUserPercent = targetCpuUser;
+        m_SmoothedUsage.cpuSystemPercent = targetCpuSystem;
+        m_SmoothedUsage.threadCount = targetThreads;
+        m_SmoothedUsage.pageFaultsPerSec = targetFaults;
+        m_SmoothedUsage.ioReadBytesPerSec = targetIoRead;
+        m_SmoothedUsage.ioWriteBytesPerSec = targetIoWrite;
+        m_SmoothedUsage.netSentBytesPerSec = targetNetSent;
+        m_SmoothedUsage.netRecvBytesPerSec = targetNetRecv;
+        m_SmoothedUsage.powerWatts = targetPower;
         m_SmoothedUsage.initialized = true;
         return;
     }
@@ -252,19 +311,28 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.residentBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.residentBytes, targetResident, alpha));
     m_SmoothedUsage.virtualBytes = smoothTowards(m_SmoothedUsage.virtualBytes, targetVirtual, alpha);
     m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
+    m_SmoothedUsage.cpuUserPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha));
+    m_SmoothedUsage.cpuSystemPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha));
+    m_SmoothedUsage.threadCount = std::max(0.0, smoothTowards(m_SmoothedUsage.threadCount, targetThreads, alpha));
+    m_SmoothedUsage.pageFaultsPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha));
+    m_SmoothedUsage.ioReadBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioReadBytesPerSec, targetIoRead, alpha));
+    m_SmoothedUsage.ioWriteBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioWriteBytesPerSec, targetIoWrite, alpha));
+    m_SmoothedUsage.netSentBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netSentBytesPerSec, targetNetSent, alpha));
+    m_SmoothedUsage.netRecvBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netRecvBytesPerSec, targetNetRecv, alpha));
+    m_SmoothedUsage.powerWatts = std::max(0.0, smoothTowards(m_SmoothedUsage.powerWatts, targetPower, alpha));
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
+    // TODO: Use std::string_view for command/name and convert at ImGui boundary
     const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
     ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
 
     const auto computeLabelColumnWidth = []() -> float
     {
-        // Keep labels from wrapping at large font sizes (prevents width/scrollbar jitter).
         constexpr std::array<const char*, 10> labels = {
             "PID",
             "Parent",
@@ -285,128 +353,128 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
 
         const ImGuiStyle& style = ImGui::GetStyle();
-        return maxTextWidth + (style.CellPadding.x * 2.0F) + 6.0F;
+        return maxTextWidth + (style.CellPadding.x * 2.0F) + 8.0F;
     };
 
     const float labelColWidth = computeLabelColumnWidth();
+    const float contentWidth = ImGui::GetContentRegionAvail().x;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float halfWidth = (contentWidth - spacing) * 0.5F;
 
-    if (ImGui::BeginTable("BasicInfo",
-                          4,
-                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
-                              ImGuiTableFlags_SizingStretchProp))
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+    const float basePadding = ImGui::GetStyle().WindowPadding.y * 2.0F;
+    const float leftHeight = (rowHeight * 5.0F) + basePadding;  // Identity rows
+    const float rightHeight = (rowHeight * 5.0F) + basePadding; // Runtime rows
+
+    auto rightAlignedText = [](const std::string& text, const ImVec4& color)
     {
-        ImGui::TableSetupColumn("Label1", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, labelColWidth);
-        ImGui::TableSetupColumn("Value1", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Label2", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, labelColWidth);
-        ImGui::TableSetupColumn("Value2", ImGuiTableColumnFlags_WidthStretch);
+        const float colWidth = ImGui::GetColumnWidth();
+        const float textWidth = ImGui::CalcTextSize(text.c_str()).x;
+        const float padding = ImGui::GetStyle().CellPadding.x * 2.0F;
+        const float targetX = ImGui::GetCursorPosX() + std::max(0.0F, colWidth - textWidth - padding);
+        ImGui::SetCursorPosX(targetX);
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::PopStyleColor();
+    };
 
-        auto renderStatusValue = [&]()
+    auto renderStatusValue = [&]() -> std::pair<std::string, ImVec4>
+    {
+        ImVec4 statusColor = theme.scheme().textInfo;
+        if (proc.displayState == "Running")
         {
-            ImVec4 statusColor = theme.scheme().textInfo;
-            if (proc.displayState == "Running")
-            {
-                statusColor = theme.scheme().statusRunning;
-            }
-            else if (proc.displayState == "Sleeping")
-            {
-                statusColor = theme.scheme().statusSleeping;
-            }
-            else if (proc.displayState == "Disk Sleep")
-            {
-                statusColor = theme.scheme().statusDiskSleep;
-            }
-            else if (proc.displayState == "Zombie")
-            {
-                statusColor = theme.scheme().statusZombie;
-            }
-            else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
-            {
-                statusColor = theme.scheme().statusStopped;
-            }
-            else if (proc.displayState == "Idle")
-            {
-                statusColor = theme.scheme().statusIdle;
-            }
-
-            ImGui::TextColored(statusColor, "%s", proc.displayState.c_str());
-        };
-
-        auto addLabel = [](const char* text)
-        {
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(text);
-        };
-
-        auto addValueText = [](const char* text)
-        {
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(text);
-        };
-
-        // Row 1: PID / Parent PID
-        ImGui::TableNextRow();
-        addLabel("PID");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.pid);
-        addLabel("Parent");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.parentPid);
-
-        // Row 2: Name / Status
-        ImGui::TableNextRow();
-        addLabel("Name");
-        addValueText(proc.name.c_str());
-        addLabel("Status");
-        ImGui::TableNextColumn();
-        renderStatusValue();
-
-        // Row 3: User / Threads
-        ImGui::TableNextRow();
-        addLabel("User");
-        addValueText(proc.user.empty() ? "-" : proc.user.c_str());
-        addLabel("Threads");
-        ImGui::TableNextColumn();
-        if (proc.threadCount > 0)
-        {
-            ImGui::Text("%d", proc.threadCount);
+            statusColor = theme.scheme().statusRunning;
         }
-        else
+        else if (proc.displayState == "Sleeping")
         {
-            ImGui::TextUnformatted("-");
+            statusColor = theme.scheme().statusSleeping;
+        }
+        else if (proc.displayState == "Disk Sleep")
+        {
+            statusColor = theme.scheme().statusDiskSleep;
+        }
+        else if (proc.displayState == "Zombie")
+        {
+            statusColor = theme.scheme().statusZombie;
+        }
+        else if (proc.displayState == "Stopped" || proc.displayState == "Tracing")
+        {
+            statusColor = theme.scheme().statusStopped;
+        }
+        else if (proc.displayState == "Idle")
+        {
+            statusColor = theme.scheme().statusIdle;
         }
 
-        // Row 4: Nice / CPU Time
-        ImGui::TableNextRow();
-        addLabel("Nice");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", proc.nice);
-        addLabel("CPU Time");
-        addValueText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds).c_str());
+        return {proc.displayState, statusColor};
+    };
 
-        // Row 5: Page Faults
-        ImGui::TableNextRow();
-        addLabel("Page Faults");
-        ImGui::TableNextColumn();
-        if (proc.pageFaults > 0)
+    auto renderInfoTable = [&](const char* tableId, const std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>>& rows)
+    {
+        if (ImGui::BeginTable(tableId, 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody))
         {
-            // Format with locale for thousands separator (cached to avoid repeated allocations)
-            static thread_local std::string formatted;
-            formatted = std::format("{:L}", proc.pageFaults);
-            ImGui::TextUnformatted(formatted.c_str());
-        }
-        else
-        {
-            ImGui::TextUnformatted("-");
-        }
-        // Row 6: CPU Affinity
-        ImGui::TableNextRow();
-        addLabel("Affinity");
-        ImGui::TableNextColumn();
-        const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
-        ImGui::TextUnformatted(affinityText.c_str());
+            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, labelColWidth);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
 
-        ImGui::EndTable();
-    }
+            for (const auto& row : rows)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+                ImGui::TextUnformatted(row.first.c_str());
+                ImGui::PopStyleColor();
+                ImGui::TableNextColumn();
+                rightAlignedText(row.second.first, row.second.second);
+            }
+
+            ImGui::EndTable();
+        }
+    };
+
+    auto formatPageFaults = [&]() -> std::string
+    {
+        return UI::Format::formatOrDash(proc.pageFaults, [](auto value) { return UI::Format::formatIntLocalized(value); });
+    };
+
+    auto formatCountLocale = [](std::int64_t value) -> std::string
+    {
+        return UI::Format::formatOrDash(value, [](auto v) { return UI::Format::formatIntLocalized(v); });
+    };
+
+    const auto [statusText, statusColor] = renderStatusValue();
+    const std::string userText = proc.user.empty() ? "-" : proc.user;
+    const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
+
+    ImGui::BeginGroup();
+    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_ID_CARD " Identity");
+    ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    renderInfoTable("BasicInfoLeftTable",
+                    {
+                        {"Name", {proc.name, theme.scheme().textPrimary}},
+                        {"PID", {std::to_string(proc.pid), theme.scheme().textPrimary}},
+                        {"Parent", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
+                        {"Status", {statusText, statusColor}},
+                        {"User", {userText, theme.scheme().textPrimary}},
+                    });
+    ImGui::EndChild();
+    ImGui::EndGroup();
+
+    ImGui::SameLine();
+
+    ImGui::BeginGroup();
+    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CLOCK " Runtime");
+    ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+    renderInfoTable(
+        "BasicInfoRightTable",
+        {
+            {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
+            {"Nice", {std::to_string(proc.nice), theme.scheme().textPrimary}},
+            {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
+            {"Page Faults", {formatPageFaults(), theme.scheme().textPrimary}},
+            {"Affinity", {affinityText, theme.scheme().textPrimary}},
+        });
+    ImGui::EndChild();
+    ImGui::EndGroup();
 }
 
 void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc)
@@ -419,9 +487,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         updateSmoothedUsage(proc, m_LastDeltaSeconds);
     }
 
-    const double cpuPercent = m_SmoothedUsage.initialized ? m_SmoothedUsage.cpuPercent : proc.cpuPercent;
-    const double cpuClamped = std::clamp(cpuPercent, 0.0, 100.0);
-
     // Inline CPU history with paired now bar
     if (!m_Timestamps.empty() && !m_CpuHistory.empty())
     {
@@ -429,7 +494,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         const size_t alignedCount =
             std::min({m_Timestamps.size(), m_CpuHistory.size(), m_CpuUserHistory.size(), m_CpuSystemHistory.size()});
 
-        std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+        const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
         std::vector<double> cpuData = tailVector(m_CpuHistory, alignedCount);
         std::vector<double> cpuUserData = tailVector(m_CpuUserHistory, alignedCount);
         std::vector<double> cpuSystemData = tailVector(m_CpuSystemHistory, alignedCount);
@@ -437,21 +502,25 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         std::vector<double> cpuTimeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-        NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(cpuClamped),
-                           .value01 = UI::Numeric::percent01(cpuClamped),
-                           .color = theme.progressColor(cpuClamped)};
-        NowBar cpuUserNow{.valueText = UI::Format::percentCompact(proc.cpuUserPercent),
-                          .value01 = UI::Numeric::percent01(proc.cpuUserPercent),
-                          .color = theme.scheme().cpuUser};
-        NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(proc.cpuSystemPercent),
-                            .value01 = UI::Numeric::percent01(proc.cpuSystemPercent),
-                            .color = theme.scheme().cpuSystem};
+        // Use smoothed values for NowBars for consistent animation
+        const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
+                                 .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuPercent),
+                                 .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
+        const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
+                                .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuUserPercent),
+                                .color = theme.scheme().cpuUser};
+        const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
+                                  .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuSystemPercent),
+                                  .color = theme.scheme().cpuSystem};
 
         auto cpuPlot = [&]()
         {
-            if (ImPlot::BeginPlot("##ProcOverviewCPU", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+            const UI::Widgets::PlotFontGuard fontGuard;
+            if (ImPlot::BeginPlot("##ProcOverviewCPU", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
             {
-                ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                setupLegendDefault();
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
                 ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
 
@@ -491,7 +560,8 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                             if (*idxVal < alignedCount)
                             {
                                 ImGui::BeginTooltip();
-                                ImGui::Text("t: %.1fs", cpuTimeData[*idxVal]);
+                                const auto ageText = formatAgeSeconds(cpuTimeData[*idxVal]);
+                                ImGui::TextUnformatted(ageText.c_str());
                                 ImGui::Separator();
                                 const double totalValue = cpuData[*idxVal];
                                 const ImVec4 totalColor = theme.progressColor(totalValue);
@@ -514,9 +584,13 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             }
         };
 
-        ImGui::Text("CPU (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessCPUHistoryOverview", HISTORY_PLOT_HEIGHT_DEFAULT, cpuPlot, {cpuTotalNow, cpuUserNow, cpuSystemNow});
+        ImGui::Text(ICON_FA_MICROCHIP " CPU (%zu samples)", alignedCount);
+        renderHistoryWithNowBars("ProcessCPUHistoryOverview",
+                                 HISTORY_PLOT_HEIGHT_DEFAULT,
+                                 cpuPlot,
+                                 {cpuTotalNow, cpuUserNow, cpuSystemNow},
+                                 false,
+                                 PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
 
@@ -529,7 +603,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         if (alignedCount > 0)
         {
-            std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+            const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
             std::vector<double> usedData = tailVector(m_MemoryHistory, alignedCount);
             std::vector<double> sharedData = tailVector(m_SharedHistory, alignedCount);
             std::vector<double> virtData = tailVector(m_VirtualHistory, alignedCount);
@@ -554,10 +628,12 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
             auto memoryPlot = [&]()
             {
-                if (ImPlot::BeginPlot(
-                        "##ProcOverviewMemory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus))
+                const UI::Widgets::PlotFontGuard fontGuard;
+                if (ImPlot::BeginPlot("##ProcOverviewMemory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
                 {
-                    ImPlot::SetupAxes("Time (s)", "%", X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    setupLegendDefault();
+                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                     ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
@@ -578,20 +654,32 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
                     if (!usedData.empty())
                     {
-                        ImPlot::SetNextLineStyle(theme.scheme().chartMemory, 2.0F);
-                        ImPlot::PlotLine("Used", timeData.data(), usedData.data(), UI::Numeric::checkedCount(usedData.size()));
+                        plotLineWithFill("Used",
+                                         timeData.data(),
+                                         usedData.data(),
+                                         UI::Numeric::checkedCount(usedData.size()),
+                                         theme.scheme().chartMemory,
+                                         theme.scheme().chartMemoryFill);
                     }
 
                     if (!sharedData.empty())
                     {
-                        ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                        ImPlot::PlotLine("Shared", timeData.data(), sharedData.data(), UI::Numeric::checkedCount(sharedData.size()));
+                        plotLineWithFill("Shared",
+                                         timeData.data(),
+                                         sharedData.data(),
+                                         UI::Numeric::checkedCount(sharedData.size()),
+                                         theme.scheme().chartCpu,
+                                         theme.scheme().chartCpuFill);
                     }
 
                     if (!virtData.empty())
                     {
-                        ImPlot::SetNextLineStyle(theme.scheme().chartIo, 2.0F);
-                        ImPlot::PlotLine("Virtual", timeData.data(), virtData.data(), UI::Numeric::checkedCount(virtData.size()));
+                        plotLineWithFill("Virtual",
+                                         timeData.data(),
+                                         virtData.data(),
+                                         UI::Numeric::checkedCount(virtData.size()),
+                                         theme.scheme().chartIo,
+                                         theme.scheme().chartIoFill);
                     }
 
                     if (ImPlot::IsPlotHovered())
@@ -600,7 +688,8 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                         {
                             ImGui::BeginTooltip();
-                            ImGui::Text("t: %.1fs", timeData[*idxVal]);
+                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                            ImGui::TextUnformatted(ageText.c_str());
                             if (*idxVal < usedData.size())
                             {
                                 ImGui::TextColored(
@@ -630,87 +719,335 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             };
 
             ImGui::Spacing();
-            ImGui::Text("Memory (%zu samples)", alignedCount);
-            renderHistoryWithNowBars("ProcessMemoryOverviewLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars);
+            ImGui::Text(ICON_FA_MEMORY " Memory (%zu samples)", alignedCount);
+            renderHistoryWithNowBars(
+                "ProcessMemoryOverviewLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
             ImGui::Spacing();
         }
     }
 }
 
-void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Domain::ProcessSnapshot& proc)
 {
-    // Only show I/O stats if we have data
-    if (proc.ioReadBytesPerSec == 0.0 && proc.ioWriteBytesPerSec == 0.0)
+    if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_PageFaultHistory.empty()))
     {
         return;
     }
 
-    ImGui::Text("I/O Statistics");
-    ImGui::Spacing();
-
-    auto formatRate = [](double bytesPerSec) -> std::pair<double, const char*>
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_PageFaultHistory.size()});
+    if (alignedCount == 0)
     {
-        if (bytesPerSec >= 1024.0 * 1024.0)
+        return;
+    }
+
+    const auto& theme = UI::Theme::get();
+
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    std::vector<double> threadData = tailVector(m_ThreadHistory, alignedCount);
+    std::vector<double> faultData = tailVector(m_PageFaultHistory, alignedCount);
+
+    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+
+    // Use smoothed values for NowBars
+    const double threadMax = seriesMax(threadData, m_SmoothedUsage.threadCount);
+    const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
+
+    const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
+                            .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
+                            .color = theme.scheme().chartCpu};
+
+    const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
+                           .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
+                           .color = theme.scheme().chartIo};
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##ProcThreadsFaults", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
-            return {bytesPerSec / (1024.0 * 1024.0), "MB/s"};
+            setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+
+            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            plotLineWithFill(
+                "Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+
+            plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
+
+            if (ImPlot::IsPlotHovered())
+            {
+                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                {
+                    if (*idxVal < alignedCount)
+                    {
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
+                        ImGui::TextColored(theme.scheme().chartCpu,
+                                           "Threads: %s",
+                                           UI::Format::formatIntLocalized(std::llround(threadData[*idxVal])).c_str());
+                        ImGui::TextColored(
+                            theme.accentColor(3), "Page Faults: %s", UI::Format::formatCountPerSecond(faultData[*idxVal]).c_str());
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+
+            ImPlot::EndPlot();
         }
-        if (bytesPerSec >= 1024.0)
-        {
-            return {bytesPerSec / 1024.0, "KB/s"};
-        }
-        return {bytesPerSec, "B/s"};
     };
 
-    auto [readVal, readUnit] = formatRate(proc.ioReadBytesPerSec);
-    auto [writeVal, writeUnit] = formatRate(proc.ioWriteBytesPerSec);
+    ImGui::Text(ICON_FA_GEARS " Threads & Page Faults (%zu samples)", alignedCount);
+    renderHistoryWithNowBars(
+        "ProcessThreadFaultHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
+}
 
-    ImGui::Text("Read:");
-    ImGui::SameLine(80.0F);
-    ImGui::Text("%.1f %s", readVal, readUnit);
+void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
+{
+    const bool hasCurrent = (proc.ioReadBytesPerSec > 0.0 || proc.ioWriteBytesPerSec > 0.0);
+    if (m_Timestamps.empty() && !hasCurrent)
+    {
+        return;
+    }
 
-    ImGui::Text("Write:");
-    ImGui::SameLine(80.0F);
-    ImGui::Text("%.1f %s", writeVal, writeUnit);
+    const size_t alignedCount = std::min({m_Timestamps.size(), m_IoReadHistory.size(), m_IoWriteHistory.size()});
+    if (alignedCount == 0)
+    {
+        return;
+    }
+
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    std::vector<double> readData = tailVector(m_IoReadHistory, alignedCount);
+    std::vector<double> writeData = tailVector(m_IoWriteHistory, alignedCount);
+
+    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+
+    // Use smoothed values for NowBars
+    const double readMax = seriesMax(readData, m_SmoothedUsage.ioReadBytesPerSec);
+    const double writeMax = seriesMax(writeData, m_SmoothedUsage.ioWriteBytesPerSec);
+
+    const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
+    const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
+
+    const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
+                         .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
+                         .color = theme.scheme().chartIo};
+
+    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
+                          .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
+                          .color = theme.accentColor(1)};
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##ProcIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        {
+            setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+
+            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            plotLineWithFill("Read", timeData.data(), readData.data(), plotCount, theme.scheme().chartIo, theme.scheme().chartIoFill);
+
+            plotLineWithFill("Write", timeData.data(), writeData.data(), plotCount, theme.accentColor(1));
+
+            if (ImPlot::IsPlotHovered())
+            {
+                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                {
+                    if (*idxVal < alignedCount)
+                    {
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::TextColored(theme.scheme().chartIo, "Read: %s", UI::Format::formatBytesPerSec(readData[*idxVal]).c_str());
+                        ImGui::TextColored(theme.accentColor(1), "Write: %s", UI::Format::formatBytesPerSec(writeData[*idxVal]).c_str());
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
+    };
+
+    ImGui::Text(ICON_FA_HARD_DRIVE " I/O Statistics (%zu samples)", alignedCount);
+    renderHistoryWithNowBars("ProcessIoHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
 }
 
 void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc)
 {
-    // Only show network stats if we have data
-    if (proc.netSentBytesPerSec == 0.0 && proc.netReceivedBytesPerSec == 0.0)
+    const bool hasCurrent = (proc.netSentBytesPerSec > 0.0 || proc.netReceivedBytesPerSec > 0.0);
+    if (m_Timestamps.empty() && !hasCurrent)
     {
         return;
     }
 
-    ImGui::Text("Network Statistics");
-    ImGui::Spacing();
-
-    auto formatRate = [](double bytesPerSec) -> std::pair<double, const char*>
+    const size_t alignedCount = std::min({m_Timestamps.size(), m_NetSentHistory.size(), m_NetRecvHistory.size()});
+    if (alignedCount == 0)
     {
-        if (bytesPerSec >= 1024.0 * 1024.0 * 1024.0)
+        return;
+    }
+
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    std::vector<double> sentData = tailVector(m_NetSentHistory, alignedCount);
+    std::vector<double> recvData = tailVector(m_NetRecvHistory, alignedCount);
+
+    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+
+    // Use smoothed values for NowBars
+    const double sentMax = seriesMax(sentData, m_SmoothedUsage.netSentBytesPerSec);
+    const double recvMax = seriesMax(recvData, m_SmoothedUsage.netRecvBytesPerSec);
+
+    const auto sentUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netSentBytesPerSec);
+    const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
+
+    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
+                         .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
+                         .color = theme.scheme().chartCpu};
+
+    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
+                         .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
+                         .color = theme.accentColor(2)};
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##ProcNetworkHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
-            return {bytesPerSec / (1024.0 * 1024.0 * 1024.0), "GB/s"};
+            setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+
+            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+
+            plotLineWithFill("Received", timeData.data(), recvData.data(), plotCount, theme.accentColor(2));
+
+            if (ImPlot::IsPlotHovered())
+            {
+                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                {
+                    if (*idxVal < alignedCount)
+                    {
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::TextColored(
+                            theme.scheme().chartCpu, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
+                        ImGui::TextColored(theme.accentColor(2), "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+
+            ImPlot::EndPlot();
         }
-        if (bytesPerSec >= 1024.0 * 1024.0)
-        {
-            return {bytesPerSec / (1024.0 * 1024.0), "MB/s"};
-        }
-        if (bytesPerSec >= 1024.0)
-        {
-            return {bytesPerSec / 1024.0, "KB/s"};
-        }
-        return {bytesPerSec, "B/s"};
     };
 
-    auto [sentVal, sentUnit] = formatRate(proc.netSentBytesPerSec);
-    auto [recvVal, recvUnit] = formatRate(proc.netReceivedBytesPerSec);
+    ImGui::Text(ICON_FA_NETWORK_WIRED " Network - Avg Rate (%zu samples)", alignedCount);
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Average network bytes/sec since monitoring started for this process.");
+    }
+    renderHistoryWithNowBars(
+        "ProcessNetworkHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
+}
 
-    ImGui::Text("Sent:");
-    ImGui::SameLine(80.0F);
-    ImGui::Text("%.1f %s", sentVal, sentUnit);
+void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
+{
+    const bool hasCurrent = proc.powerWatts > 0.0;
+    if (m_Timestamps.empty() && m_PowerHistory.empty() && !hasCurrent)
+    {
+        return;
+    }
 
-    ImGui::Text("Received:");
-    ImGui::SameLine(80.0F);
-    ImGui::Text("%.1f %s", recvVal, recvUnit);
+    const size_t alignedCount = std::min(m_Timestamps.size(), m_PowerHistory.size());
+    if (alignedCount == 0 && !hasCurrent)
+    {
+        return;
+    }
+
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    std::vector<double> powerData = tailVector(m_PowerHistory, alignedCount);
+    const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+    std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+
+    // Use smoothed value for NowBar
+    const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
+
+    const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
+                          .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
+                          .color = theme.scheme().textInfo};
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##ProcPowerHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        {
+            setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
+
+            if (!powerData.empty())
+            {
+                plotLineWithFill(
+                    "Power", timeData.data(), powerData.data(), UI::Numeric::checkedCount(powerData.size()), theme.scheme().textInfo);
+
+                if (ImPlot::IsPlotHovered())
+                {
+                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                    {
+                        if (*idxVal < powerData.size())
+                        {
+                            ImGui::BeginTooltip();
+                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                            ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::TextColored(
+                                theme.scheme().textInfo, "Power: %s", UI::Format::formatPowerCompact(powerData[*idxVal]).c_str());
+                            ImGui::EndTooltip();
+                        }
+                    }
+                }
+            }
+            else
+            {
+                ImPlot::PlotDummy("Power");
+            }
+
+            ImPlot::EndPlot();
+        }
+    };
+
+    ImGui::Text(ICON_FA_BOLT " Power Usage (%zu samples)", alignedCount);
+    renderHistoryWithNowBars("ProcessPowerHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
 }
 
 void ProcessDetailsPanel::trimHistory(double nowSeconds)
@@ -737,6 +1074,13 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     trimDeque(m_MemoryHistory);
     trimDeque(m_SharedHistory);
     trimDeque(m_VirtualHistory);
+    trimDeque(m_ThreadHistory);
+    trimDeque(m_PageFaultHistory);
+    trimDeque(m_IoReadHistory);
+    trimDeque(m_IoWriteHistory);
+    trimDeque(m_NetSentHistory);
+    trimDeque(m_NetRecvHistory);
+    trimDeque(m_PowerHistory);
 
     // Keep all history buffers aligned to the smallest non-empty length.
     size_t minSize = std::numeric_limits<size_t>::max();
@@ -755,6 +1099,13 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     updateMin(m_MemoryHistory.size());
     updateMin(m_SharedHistory.size());
     updateMin(m_VirtualHistory.size());
+    updateMin(m_ThreadHistory.size());
+    updateMin(m_PageFaultHistory.size());
+    updateMin(m_IoReadHistory.size());
+    updateMin(m_IoWriteHistory.size());
+    updateMin(m_NetSentHistory.size());
+    updateMin(m_NetRecvHistory.size());
+    updateMin(m_PowerHistory.size());
 
     if (minSize != std::numeric_limits<size_t>::max())
     {
@@ -773,6 +1124,13 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
         trimToMin(m_MemoryHistory);
         trimToMin(m_SharedHistory);
         trimToMin(m_VirtualHistory);
+        trimToMin(m_ThreadHistory);
+        trimToMin(m_PageFaultHistory);
+        trimToMin(m_IoReadHistory);
+        trimToMin(m_IoWriteHistory);
+        trimToMin(m_NetSentHistory);
+        trimToMin(m_NetRecvHistory);
+        trimToMin(m_PowerHistory);
     }
 }
 
@@ -792,8 +1150,8 @@ void ProcessDetailsPanel::renderActions()
     // Action result feedback
     if (!m_LastActionResult.empty())
     {
-        bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
-        ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
+        const bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
+        const ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
         ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
         ImGui::Spacing();
     }
@@ -864,7 +1222,7 @@ void ProcessDetailsPanel::renderActions()
     // Terminate (SIGTERM) - graceful
     if (m_ActionCapabilities.canTerminate)
     {
-        if (ImGui::Button("Terminate (SIGTERM)", ImVec2(180, 0)))
+        if (ImGui::Button(ICON_FA_XMARK " Terminate (SIGTERM)", ImVec2(200, 0)))
         {
             m_ConfirmAction = "terminate";
             m_ShowConfirmDialog = true;
@@ -883,7 +1241,7 @@ void ProcessDetailsPanel::renderActions()
         ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().dangerButton);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().dangerButtonHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().dangerButtonActive);
-        if (ImGui::Button("Kill (SIGKILL)", ImVec2(180, 0)))
+        if (ImGui::Button(ICON_FA_SKULL " Kill (SIGKILL)", ImVec2(200, 0)))
         {
             m_ConfirmAction = "kill";
             m_ShowConfirmDialog = true;

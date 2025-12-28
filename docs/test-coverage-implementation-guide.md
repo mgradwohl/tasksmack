@@ -34,7 +34,7 @@ namespace Platform {
         virtual ~IFileOpener() = default;
         virtual bool openFileWithDefaultEditor(const std::filesystem::path& path) = 0;
     };
-    
+
     std::unique_ptr<IFileOpener> makeFileOpener();
 }
 ```
@@ -63,7 +63,7 @@ Start with basic construction test:
 TEST(ApplicationTest, ConstructsWithDefaultSpec) {
     Core::ApplicationSpecification spec;
     Core::Application app(spec);
-    
+
     EXPECT_EQ(&app, &Core::Application::get());
 }
 ```
@@ -88,9 +88,9 @@ TEST(WindowTest, GetSizeMatchesSpecification) {
     Core::WindowSpecification spec;
     spec.Width = 1024;
     spec.Height = 768;
-    
+
     Core::Window window(spec);
-    
+
     auto [w, h] = window.getSize();
     EXPECT_EQ(w, 1024);
     EXPECT_EQ(h, 768);
@@ -121,18 +121,18 @@ Set up test fixture with temporary config directory:
 class UserConfigTest : public ::testing::Test {
 protected:
     std::filesystem::path testConfigPath;
-    
+
     void SetUp() override {
-        testConfigPath = std::filesystem::temp_directory_path() 
-                       / "tasksmack_test" 
+        testConfigPath = std::filesystem::temp_directory_path()
+                       / "tasksmack_test"
                        / "config.toml";
         std::filesystem::create_directories(testConfigPath.parent_path());
     }
-    
+
     void TearDown() override {
         std::filesystem::remove_all(testConfigPath.parent_path());
     }
-    
+
     void writeConfigFile(const std::string& content) {
         std::ofstream file(testConfigPath);
         file << content;
@@ -146,7 +146,7 @@ protected:
 ```cpp
 TEST_F(UserConfigTest, MalformedTOMLUsesDefaults) {
     writeConfigFile("invalid toml {{{");
-    
+
     // UserConfig should not crash, should log error, use defaults
     // Note: Current UserConfig is singleton, may need refactoring for testability
 }
@@ -160,7 +160,7 @@ TEST_F(UserConfigTest, OutOfRangeValuesAreClamped) {
 interval_ms = -100
 history_max_seconds = 999999
 )");
-    
+
     // Load and verify values are clamped
 }
 ```
@@ -206,7 +206,7 @@ constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
 ```cpp
 namespace {
     constexpr std::array REFRESH_INTERVAL_STOPS = {100, 250, 500, 1000};
-    
+
     // Use REFRESH_INTERVAL_STOPS in both functions
 }
 ```
@@ -307,13 +307,13 @@ TEST(UserConfigTest, LoadTest)
 TEST(HistoryTest, PushBeyondCapacityDropsOldest) {
     // Arrange
     Domain::History<int, 3> history;
-    
+
     // Act
     history.push(1);
     history.push(2);
     history.push(3);
     history.push(4);  // Should drop 1
-    
+
     // Assert
     EXPECT_EQ(history.size(), 3);
     EXPECT_EQ(history[0], 2);  // Oldest remaining
@@ -327,9 +327,9 @@ TEST(HistoryTest, PushBeyondCapacityDropsOldest) {
 TEST(BackgroundSamplerTest, StartSetsRunningFlag) {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
-    
+
     sampler.start();
-    
+
     EXPECT_TRUE(sampler.isRunning());
 }
 ```
@@ -340,7 +340,7 @@ TEST(BackgroundSamplerTest, StartSetsRunningFlag) {
 class ProcessModelTest : public ::testing::Test {
 protected:
     std::unique_ptr<MockProcessProbe> probe;
-    
+
     void SetUp() override {
         probe = std::make_unique<MockProcessProbe>();
         probe->withProcess(1, "test").withCpuTime(1, 1000, 500);
@@ -350,7 +350,7 @@ protected:
 TEST_F(ProcessModelTest, InitialRefreshPopulatesSnapshots) {
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
-    
+
     EXPECT_EQ(model.snapshots().size(), 1);
 }
 ```

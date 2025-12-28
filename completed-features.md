@@ -16,13 +16,16 @@ This file lists features that are already implemented in TaskSmack.
 | **PPID Column** | htop | Parent process ID |
 | **SHR Column** | htop | Shared memory size |
 | **State Color Coding** | htop | Color-code process states based on theme |
+| **Status Column** | Task Manager | Display process status (Suspended, Efficiency Mode) |
 | **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
 | **Process Tree View** | btop++, htop | Hierarchical view showing parent-child relationships with collapsible nodes |
 | **Peak Working Set** | Task Manager | Horizontal reference line on memory graph showing historical peak RSS; OS-provided on Windows, tracked on Linux |
 | **CPU Affinity Column** | Task Manager | Shows which CPU cores a process can run on (e.g., "0-3", "0,2,4") |
+| **Power Usage Column** | Task Manager | Process power consumption (infrastructure ready, platform implementations pending) |
 | **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 | **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; infrastructure ready for probe implementation |
 | **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
+| **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
 
 ## Developer Tooling / Infrastructure
 

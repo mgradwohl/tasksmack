@@ -104,6 +104,7 @@ WindowsSystemProbe::WindowsSystemProbe()
 
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
+    // TODO: Wrap WinAPI DWORD sizing in helper to return size_t while keeping API types
     DWORD bufferSize = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameW(hostBuffer.data(), &bufferSize) != 0)
     {
@@ -180,10 +181,10 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
     //
     // To get actual kernel time: kernel - idle
 
-    uint64_t idle = filetimeToTicks(ftIdle);
-    uint64_t kernel = filetimeToTicks(ftKernel);
-    uint64_t user = filetimeToTicks(ftUser);
-    uint64_t system = kernel - idle; // Actual kernel time
+    const uint64_t idle = filetimeToTicks(ftIdle);
+    const uint64_t kernel = filetimeToTicks(ftKernel);
+    const uint64_t user = filetimeToTicks(ftUser);
+    const uint64_t system = kernel - idle; // Actual kernel time
 
     counters.cpuTotal.idle = idle;
     counters.cpuTotal.system = system;
@@ -228,9 +229,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
 
         CpuCounters core{};
         // KernelTime includes idle, so subtract to get actual kernel/system time
-        uint64_t kernelTicks = largeIntegerToTicks(info.KernelTime);
-        uint64_t idleTicks = largeIntegerToTicks(info.IdleTime);
-        uint64_t userTicks = largeIntegerToTicks(info.UserTime);
+        const uint64_t kernelTicks = largeIntegerToTicks(info.KernelTime);
+        const uint64_t idleTicks = largeIntegerToTicks(info.IdleTime);
+        const uint64_t userTicks = largeIntegerToTicks(info.UserTime);
 
         core.idle = idleTicks;
         core.system = kernelTicks - idleTicks; // Actual kernel time
@@ -282,7 +283,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
 void WindowsSystemProbe::readUptime(SystemCounters& counters) const
 {
     // GetTickCount64 returns milliseconds since system start
-    uint64_t uptimeMs = GetTickCount64();
+    const uint64_t uptimeMs = GetTickCount64();
     counters.uptimeSeconds = uptimeMs / 1000;
 
     // Calculate boot timestamp

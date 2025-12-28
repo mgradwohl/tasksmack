@@ -78,6 +78,7 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     }
 
     // Enumerate physical disks
+    // TODO: Consider helper that wraps DWORD sizes for PDH into size_t while keeping WinAPI signatures
     DWORD bufferSize = 0;
     status = PdhEnumObjectItemsW(nullptr, nullptr, L"PhysicalDisk", nullptr, &bufferSize, nullptr, nullptr, PERF_DETAIL_WIZARD, 0);
 
@@ -96,7 +97,7 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
             const wchar_t* instance = instanceBuffer.data();
             while (*instance != L'\0')
             {
-                std::wstring instanceName(instance);
+                const std::wstring instanceName(instance);
 
                 // Skip "_Total" instance
                 if (instanceName == L"_Total")
@@ -109,11 +110,11 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                 counterSet.instanceName = WinString::wideToUtf8(instanceName);
 
                 // Add counters for this disk
-                std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
-                std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
-                std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
-                std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
-                std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
+                const std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
+                const std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
+                const std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
+                const std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
+                const std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
 
                 PdhAddCounterW(m_Impl->query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
                 PdhAddCounterW(m_Impl->query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
@@ -152,7 +153,7 @@ SystemDiskCounters WindowsDiskProbe::read()
     if (!m_Impl || m_Impl->query == nullptr || m_Impl->diskCounters.empty())
     {
         // Fallback: enumerate logical drives
-        DWORD drives = GetLogicalDrives();
+        const DWORD drives = GetLogicalDrives();
         if (drives == 0)
         {
             spdlog::warn("WindowsDiskProbe: GetLogicalDrives failed");
@@ -166,10 +167,10 @@ SystemDiskCounters WindowsDiskProbe::read()
                 continue;
             }
 
-            wchar_t driveLetter = static_cast<wchar_t>('A' + i);
-            std::wstring drivePath = std::wstring{driveLetter} + L":\\";
+            const wchar_t driveLetter = static_cast<wchar_t>('A' + i);
+            const std::wstring drivePath = std::wstring{driveLetter} + L":\\";
 
-            UINT driveType = GetDriveTypeW(drivePath.c_str());
+            const UINT driveType = GetDriveTypeW(drivePath.c_str());
 
             // Only include fixed drives
             if (driveType != DRIVE_FIXED)
