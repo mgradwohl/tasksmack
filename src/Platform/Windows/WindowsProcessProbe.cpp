@@ -383,21 +383,19 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
-    return ProcessCapabilities{
-        .hasIoCounters = true,
-        .hasThreadCount = true,
-        .hasUserSystemTime = true,
-        .hasStartTime = true,
-        .hasUser = true,            // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,         // From QueryFullProcessImageName
-        .hasNice = true,            // From GetPriorityClass
-        .hasPageFaults = true,      // From NtQueryInformationProcess (VM_COUNTERS)
-        .hasPeakRss = true,         // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
-        .hasCpuAffinity = true,     // From GetProcessAffinityMask
-        // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
-        // See GitHub issue for implementation tracking
-        .hasNetworkCounters = false
-    };
+    return ProcessCapabilities{.hasIoCounters = true,
+                               .hasThreadCount = true,
+                               .hasUserSystemTime = true,
+                               .hasStartTime = true,
+                               .hasUser = true,        // From OpenProcessToken + LookupAccountSid
+                               .hasCommand = true,     // From QueryFullProcessImageName
+                               .hasNice = true,        // From GetPriorityClass
+                               .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
+                               .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
+                               .hasCpuAffinity = true, // From GetProcessAffinityMask
+                               // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
+                               // See GitHub issue for implementation tracking
+                               .hasNetworkCounters = false};
 }
 
 uint64_t WindowsProcessProbe::totalCpuTime() const
