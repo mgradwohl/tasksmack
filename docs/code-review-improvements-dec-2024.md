@@ -394,16 +394,17 @@ Layer boundaries are clean:
 |--------|--------|-------|--------|
 | Source Files | 77 | 77 | - |
 | Test Files | 22 | 22 | 35+ |
-| Test Coverage (Platform) | 90%+ | 90%+ | 90%+ |
-| Test Coverage (Domain) | 85%+ | 85%+ | 90%+ |
-| Test Coverage (UI) | 15% | 15% | 60%+ |
-| Test Coverage (App) | 0% | 0% | 70%+ |
-| Test Coverage (Core) | 0% | 0% | 80%+ |
+| Test Coverage (Platform, est.) | ~90% (estimate) | ~90% (estimate) | 90%+ (target) |
+| Test Coverage (Domain, est.) | ~85% (estimate) | ~85% (estimate) | 90%+ (target) |
+| Test Coverage (UI) | 15% | 15% | 60%+ (target) |
+| Test Coverage (App) | 0% | 0% | 70%+ (target) |
+| Test Coverage (Core) | 0% | 0% | 80%+ (target) |
 | NOLINT Count | 20 | 15 | 10-12 |
 | TODO Count | 2 | 2 | 0-1 |
 | [[nodiscard]] Coverage | Excellent | Excellent | - |
 | C++23 Adoption | Strong | Strong | - |
 
+_Note_: Coverage percentages in this table are engineering estimates and targets. At the time of this review, no LLVM/GCOV coverage run was captured for the referenced main commit; future work should link metrics to generated coverage reports where available.
 ## Conclusion
 
 TaskSmack demonstrates excellent code quality with strong architecture, modern C++23 adoption, and good test coverage in critical layers (Platform, Domain). The main opportunities for improvement are:
