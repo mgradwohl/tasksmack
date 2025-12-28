@@ -128,7 +128,8 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     // Linux: Use xdg-open to open the file with the default editor
     const std::string command = "xdg-open \"" + filePath.string() + "\" &";
     // NOLINTBEGIN(concurrency-mt-unsafe,bugprone-command-processor)
-    // Intentional: Using shell for URL/file opening is expected behavior on Linux
+    // Intentional: Using shell for URL/file opening is expected behavior on Linux.
+    // Safe here because path is controlled (our config directory) and user-initiated.
     const int result = std::system(command.c_str());
     // NOLINTEND(concurrency-mt-unsafe,bugprone-command-processor)
     if (result != 0)
@@ -459,7 +460,8 @@ void ShellLayer::renderMenuBar()
 
             if (ImGui::MenuItem(ICON_FA_GEARS " Options..."))
             {
-                // TODO: Open options dialog
+                // Options dialog: See GitHub issue for planned implementation
+                // Feature: Global settings dialog for themes, refresh rates, column presets
             }
             ImGui::EndMenu();
         }

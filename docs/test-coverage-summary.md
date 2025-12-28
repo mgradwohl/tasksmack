@@ -55,7 +55,7 @@
 1. **Security Fix**: Replace `std::system()` in `ShellLayer.cpp:129` with platform-specific APIs
 2. **Add Core Tests**: Create `tests/Core/test_Application.cpp` and `tests/Core/test_Window.cpp`
 3. **Add UserConfig Tests**: Create `tests/App/test_UserConfig.cpp` with TOML parsing tests
-4. **Code Cleanup**: 
+4. **Code Cleanup**:
    - Add `[[nodiscard]]` to `BackgroundSampler::isRunning()` and `interval()`
    - Extract PDH helper in `WindowsDiskProbe.cpp` to reduce duplication
    - Consolidate refresh interval constants in `ShellLayer.cpp`

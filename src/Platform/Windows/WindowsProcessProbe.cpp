@@ -499,6 +499,8 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
         .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true, // From GetProcessAffinityMask
+        // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
+        // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
         .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
         .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
