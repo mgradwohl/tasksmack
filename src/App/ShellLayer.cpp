@@ -46,8 +46,8 @@ namespace App
 namespace
 {
 
-// Common refresh rate presets (ms) used for snapping and UI tick marks
-constexpr std::array<int, 4> REFRESH_INTERVAL_STOPS = {100, 250, 500, 1000};
+// Import common refresh intervals from Domain config
+using Domain::Sampling::COMMON_REFRESH_INTERVALS_MS;
 
 [[nodiscard]] int snapRefreshIntervalMs(int value)
 {
@@ -57,7 +57,7 @@ constexpr std::array<int, 4> REFRESH_INTERVAL_STOPS = {100, 250, 500, 1000};
     int best = value;
     int bestDist = std::numeric_limits<int>::max();
 
-    for (const int stop : REFRESH_INTERVAL_STOPS)
+    for (const int stop : COMMON_REFRESH_INTERVALS_MS)
     {
         const int dist = std::abs(value - stop);
         // Make it "at least twice as sticky":
@@ -90,7 +90,7 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
     // Keep ticks inside the slider frame.
     ImGui::PushClipRect(frameMin, frameMax, true);
 
-    for (const int stop : REFRESH_INTERVAL_STOPS)
+    for (const int stop : COMMON_REFRESH_INTERVALS_MS)
     {
         if (stop < minValue || stop > maxValue)
         {
@@ -172,9 +172,25 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     {
         spdlog::error("waitpid failed while waiting for xdg-open child process: {}", strerror(errno));
     }
+    else if (WIFEXITED(status))
+    {
+        const int exitCode = WEXITSTATUS(status);
+        if (exitCode != 0)
+        {
+            spdlog::error("xdg-open launcher child exited with code {}", exitCode);
+        }
+        else
+        {
+            spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+        }
+    }
+    else if (WIFSIGNALED(status))
+    {
+        spdlog::error("xdg-open launcher child killed by signal {}", WTERMSIG(status));
+    }
     else
     {
-        spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+        spdlog::warn("xdg-open launcher child in unexpected state after waitpid (status={})", status);
     }
 #endif
 }

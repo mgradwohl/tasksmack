@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -129,8 +130,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     if (m_Handle == nullptr)
     {
         spdlog::critical("Failed to create GLFW window");
-        assert(false);
-        return;
+        throw std::runtime_error("Failed to create GLFW window");
     }
 
     glfwMakeContextCurrent(m_Handle);
@@ -140,8 +140,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     if (version == 0)
     {
         spdlog::critical("Failed to initialize GLAD");
-        assert(false);
-        return;
+        throw std::runtime_error("Failed to initialize GLAD");
     }
 
     spdlog::info("OpenGL Info:");
@@ -186,9 +185,9 @@ void Window::swapBuffers() const
     glfwSwapBuffers(m_Handle);
 }
 
-bool Window::shouldClose() const
+bool Window::shouldClose() const noexcept
 {
-    return glfwWindowShouldClose(m_Handle) != 0;
+    return m_Handle != nullptr && glfwWindowShouldClose(m_Handle) != 0;
 }
 
 void Window::setPosition(int x, int y) const

@@ -47,14 +47,25 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     const char* hexData = hexString.data();
 
     // Parse RGB components
-    std::from_chars(hexData, hexData + 2, r, 16);
-    std::from_chars(hexData + 2, hexData + 4, g, 16);
-    std::from_chars(hexData + 4, hexData + 6, b, 16);
+    auto [ptr1, ec1] = std::from_chars(hexData, hexData + 2, r, 16);
+    auto [ptr2, ec2] = std::from_chars(hexData + 2, hexData + 4, g, 16);
+    auto [ptr3, ec3] = std::from_chars(hexData + 4, hexData + 6, b, 16);
+
+    if (ec1 != std::errc{} || ec2 != std::errc{} || ec3 != std::errc{})
+    {
+        spdlog::warn("Invalid hex color: {} (contains non-hex characters)", hex);
+        return errorColor();
+    }
 
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
     {
-        std::from_chars(hexData + 6, hexData + 8, a, 16);
+        auto [ptrA, ecA] = std::from_chars(hexData + 6, hexData + 8, a, 16);
+        if (ecA != std::errc{})
+        {
+            spdlog::warn("Invalid hex color alpha: {}", hex);
+            return errorColor();
+        }
     }
 
     constexpr float INV_MAX_COMPONENT = 1.0F / 255.0F;

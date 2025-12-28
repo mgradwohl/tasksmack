@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <ranges>
+#include <stdexcept>
 
 // clang-format off
 #define GLFW_INCLUDE_NONE
@@ -36,7 +37,7 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     if (glfwInit() == GLFW_FALSE)
     {
         spdlog::critical("Failed to initialize GLFW");
-        return;
+        throw std::runtime_error("Failed to initialize GLFW");
     }
 
     WindowSpecification windowSpec;
