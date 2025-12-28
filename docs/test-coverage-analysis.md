@@ -267,7 +267,7 @@ Current NOLINTs are generally justified but some can be eliminated:
    ```cpp
    // Current
    deltaTime = std::min(deltaTime, 0.1F);
-   
+
    // Better
    constexpr float MAX_DELTA_TIME = 0.1F;
    deltaTime = std::min(deltaTime, MAX_DELTA_TIME);
@@ -277,7 +277,7 @@ Current NOLINTs are generally justified but some can be eliminated:
    ```cpp
    // Current
    constexpr int WINDOW_POS_ABS_MAX = 100'000;
-   
+
    // Already constexpr ✓
    ```
 
@@ -285,7 +285,7 @@ Current NOLINTs are generally justified but some can be eliminated:
    ```cpp
    // Current: Duplicated in snapRefreshIntervalMs and drawRefreshPresetTicks
    constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
-   
+
    // Better: Define once at namespace scope
    ```
 
@@ -420,14 +420,14 @@ TEST_F(MockGLFWFixture, ApplicationConstructsSuccessfully) {
     spec.Name = "TestApp";
     spec.Width = 800;
     spec.Height = 600;
-    
+
     Core::Application app(spec);
     EXPECT_EQ(&app, &Core::Application::get());
 }
 
 TEST_F(MockGLFWFixture, ApplicationPushLayerCallsOnAttach) {
     Core::Application app;
-    
+
     class MockLayer : public Core::Layer {
         bool attachCalled = false;
     public:
@@ -435,7 +435,7 @@ TEST_F(MockGLFWFixture, ApplicationPushLayerCallsOnAttach) {
         void onAttach() override { attachCalled = true; }
         bool wasAttached() const { return attachCalled; }
     };
-    
+
     app.pushLayer<MockLayer>();
     // Verify layer->onAttach() was called
 }
@@ -461,7 +461,7 @@ TEST(WindowTest, ConstructionFailsGracefullyWithInvalidSpec) {
     Core::WindowSpecification spec;
     spec.Width = -1;  // Invalid
     spec.Height = -1;  // Invalid
-    
+
     // Should not crash, but create a window with clamped values
     // or throw/return error
 }
@@ -470,9 +470,9 @@ TEST(WindowTest, WindowSizeGettersMatchSpecification) {
     Core::WindowSpecification spec;
     spec.Width = 1024;
     spec.Height = 768;
-    
+
     Core::Window window(spec);
-    
+
     auto [w, h] = window.getSize();
     EXPECT_EQ(w, 1024);
     EXPECT_EQ(h, 768);
@@ -492,18 +492,18 @@ TEST(WindowTest, WindowSizeGettersMatchSpecification) {
 class UserConfigTest : public ::testing::Test {
 protected:
     std::filesystem::path testConfigPath;
-    
+
     void SetUp() override {
         // Create temp config path
         testConfigPath = std::filesystem::temp_directory_path() / "tasksmack_test" / "config.toml";
         std::filesystem::create_directories(testConfigPath.parent_path());
     }
-    
+
     void TearDown() override {
         // Clean up test config
         std::filesystem::remove_all(testConfigPath.parent_path());
     }
-    
+
     void writeConfigFile(const std::string& content) {
         std::ofstream file(testConfigPath);
         file << content;
@@ -522,14 +522,14 @@ size = "large"
 interval_ms = 500
 history_max_seconds = 600
 )");
-    
+
     // Create UserConfig with test path
     // Load and verify values
 }
 
 TEST_F(UserConfigTest, LoadMalformedConfigUsesDefaults) {
     writeConfigFile("invalid toml syntax {{{");
-    
+
     // Should not crash, should log error, should use defaults
 }
 
@@ -539,7 +539,7 @@ TEST_F(UserConfigTest, OutOfRangeValuesAreClamped) {
 interval_ms = -100
 history_max_seconds = 999999
 )");
-    
+
     // Load and verify values are clamped to valid ranges
 }
 
@@ -548,13 +548,13 @@ TEST_F(UserConfigTest, SaveLoadRoundTripPreservesSettings) {
     settings.themeId = "custom-theme";
     settings.fontSize = UI::FontSize::Large;
     settings.refreshIntervalMs = 250;
-    
+
     // Save, load, verify all fields match
 }
 
 TEST_F(UserConfigTest, ImGuiLayoutStatePersists) {
     const std::string mockLayout = "[Window][TestWindow]\nPos=100,200\n";
-    
+
     // Set layout, save, load, verify it matches
 }
 
@@ -733,7 +733,7 @@ TEST(ProcessesPanelTest, SortingByCpuPercentDescending) {
         {/* pid=2, cpu=50% */},
         {/* pid=3, cpu=5% */},
     };
-    
+
     // Apply CPU% sort descending
     // Verify order is: 50%, 10%, 5%
 }
@@ -767,52 +767,52 @@ TEST(ProcessesPanelTest, ColumnVisibilityAffectsRendering) {
 TEST(BackgroundSamplerEdgeCaseTest, RapidStartStopCycles) {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
-    
+
     for (int i = 0; i < 100; ++i) {
         sampler.start();
         sampler.stop();
     }
-    
+
     // Should not crash or leak resources
 }
 
 TEST(BackgroundSamplerEdgeCaseTest, IntervalChangeWhileRunning) {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
-    
+
     sampler.start();
     sampler.setInterval(std::chrono::milliseconds(100));
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     sampler.stop();
-    
+
     // Verify new interval is applied
 }
 
 TEST(BackgroundSamplerEdgeCaseTest, CallbackThrowsException) {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::BackgroundSampler sampler(std::move(probe));
-    
+
     sampler.setCallback([](auto&, auto) {
         throw std::runtime_error("Test exception");
     });
-    
+
     sampler.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     sampler.stop();
-    
+
     // Sampler should continue running despite exception
 }
 
 TEST(BackgroundSamplerEdgeCaseTest, ProbeEnumerateThrows) {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setEnumerateThrows(true);
-    
+
     Domain::BackgroundSampler sampler(std::move(probe));
-    
+
     sampler.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     sampler.stop();
-    
+
     // Should handle gracefully, not crash
 }
 ```
@@ -836,9 +836,9 @@ namespace ImGui {
         std::vector<std::string> beginCalls;
         std::vector<std::string> endCalls;
     };
-    
+
     extern MockContext* g_MockContext;
-    
+
     inline void SetMockContext(MockContext* ctx) {
         g_MockContext = ctx;
     }
@@ -864,7 +864,7 @@ class NumericPropertyTest : public ::testing::TestWithParam<std::int64_t> {};
 TEST_P(NumericPropertyTest, NarrowOrAlwaysReturnsValidInt) {
     std::int64_t input = GetParam();
     int result = Domain::Numeric::narrowOr<int>(input, 0);
-    
+
     // Property: result is always a valid int
     EXPECT_GE(result, std::numeric_limits<int>::min());
     EXPECT_LE(result, std::numeric_limits<int>::max());
@@ -947,7 +947,7 @@ struct CachedColors {
 **ProcessesPanel** - Use partial_sort if only top N needed:
 ```cpp
 // If only showing top 50 processes:
-std::partial_sort(processes.begin(), 
+std::partial_sort(processes.begin(),
                   processes.begin() + 50,
                   processes.end(),
                   comparator);
@@ -1042,4 +1042,3 @@ std::partial_sort(processes.begin(),
 3. Replace std::system() with platform-specific APIs
 4. Add [[nodiscard]] to BackgroundSampler methods
 5. Extract PDH helper to reduce duplication
-

@@ -16,6 +16,7 @@ struct ProcessSnapshot
     std::string command;      // Full command line
     std::string user;         // Username (owner) of the process
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
+    std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
 
     double cpuPercent = 0.0;           // Computed from deltas
     double cpuUserPercent = 0.0;       // Computed from deltas (user mode)
@@ -31,6 +32,7 @@ struct ProcessSnapshot
     // Optional (0 if not supported)
     double ioReadBytesPerSec = 0.0;
     double ioWriteBytesPerSec = 0.0;
+    double pageFaultsPerSec = 0.0;
     std::int32_t threadCount = 0;
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
@@ -38,6 +40,9 @@ struct ProcessSnapshot
     // Network rates (0 if not supported)
     double netSentBytesPerSec = 0.0;
     double netReceivedBytesPerSec = 0.0;
+
+    // Power usage (0 if not supported)
+    double powerWatts = 0.0; // Current power consumption in watts (computed from energy delta)
 
     /// Stable identity across samples (handles PID reuse).
     /// Computed as hash(pid, startTime).

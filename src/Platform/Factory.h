@@ -2,6 +2,7 @@
 
 #include "Platform/IDiskProbe.h"
 #include "Platform/IPathProvider.h"
+#include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -25,5 +26,8 @@ namespace Platform
 
 /// Creates the platform-appropriate IPathProvider implementation.
 [[nodiscard]] std::unique_ptr<IPathProvider> makePathProvider();
+
+/// Creates the platform-appropriate IPowerProbe implementation.
+[[nodiscard]] std::unique_ptr<IPowerProbe> makePowerProbe();
 
 } // namespace Platform

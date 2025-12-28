@@ -11,6 +11,7 @@ BackgroundSampler::BackgroundSampler(std::unique_ptr<Platform::IProcessProbe> pr
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging in stop() may theoretically throw; acceptable in practice
 BackgroundSampler::~BackgroundSampler()
 {
     stop();
@@ -26,7 +27,7 @@ void BackgroundSampler::start()
 
     spdlog::info("BackgroundSampler: starting with {}ms interval", m_Config.interval.count());
     m_Running.store(true);
-    m_SamplerThread = std::jthread([this](std::stop_token st) { samplerLoop(st); });
+    m_SamplerThread = std::jthread([this](const std::stop_token& st) { samplerLoop(st); });
 }
 
 void BackgroundSampler::stop()
@@ -55,7 +56,7 @@ bool BackgroundSampler::isRunning() const
 
 void BackgroundSampler::setCallback(SnapshotCallback callback)
 {
-    std::lock_guard lock(m_CallbackMutex);
+    const std::scoped_lock lock(m_CallbackMutex);
     m_Callback = std::move(callback);
 }
 
@@ -76,18 +77,18 @@ void BackgroundSampler::requestRefresh()
 
 std::chrono::milliseconds BackgroundSampler::interval() const
 {
-    std::lock_guard lock(m_ConfigMutex);
+    const std::scoped_lock lock(m_ConfigMutex);
     return m_Config.interval;
 }
 
 void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
 {
-    std::lock_guard lock(m_ConfigMutex);
+    const std::scoped_lock lock(m_ConfigMutex);
     m_Config.interval = newInterval;
     spdlog::info("BackgroundSampler: interval changed to {}ms", newInterval.count());
 }
 
-void BackgroundSampler::samplerLoop(std::stop_token stopToken)
+void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 {
     spdlog::debug("BackgroundSampler: thread started");
 
@@ -101,7 +102,7 @@ void BackgroundSampler::samplerLoop(std::stop_token stopToken)
 
         // Invoke callback
         {
-            std::lock_guard lock(m_CallbackMutex);
+            const std::scoped_lock lock(m_CallbackMutex);
             if (m_Callback)
             {
                 m_Callback(counters, totalCpuTime);
@@ -114,7 +115,7 @@ void BackgroundSampler::samplerLoop(std::stop_token stopToken)
         // Get current interval
         std::chrono::milliseconds currentInterval;
         {
-            std::lock_guard lock(m_ConfigMutex);
+            const std::scoped_lock lock(m_ConfigMutex);
             currentInterval = m_Config.interval;
         }
 

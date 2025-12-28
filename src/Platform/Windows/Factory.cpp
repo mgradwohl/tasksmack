@@ -2,6 +2,7 @@
 
 #include "WindowsDiskProbe.h"
 #include "WindowsPathProvider.h"
+#include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessProbe.h"
 #include "WindowsSystemProbe.h"
@@ -34,6 +35,11 @@ std::unique_ptr<IDiskProbe> makeDiskProbe()
 std::unique_ptr<IPathProvider> makePathProvider()
 {
     return std::make_unique<WindowsPathProvider>();
+}
+
+std::unique_ptr<IPowerProbe> makePowerProbe()
+{
+    return std::make_unique<WindowsPowerProbe>();
 }
 
 } // namespace Platform

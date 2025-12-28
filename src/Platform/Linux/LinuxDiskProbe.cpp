@@ -18,7 +18,7 @@ LinuxDiskProbe::LinuxDiskProbe()
     spdlog::debug("LinuxDiskProbe: initialized");
 }
 
-bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName) const
+bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
 {
     // Filter out loop devices, ram disks, and partitions for a cleaner view
     // Users can still see partitions by checking detailed device info if needed
@@ -47,11 +47,8 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName) const
     if (!deviceName.empty() && std::isdigit(static_cast<unsigned char>(deviceName.back())))
     {
         // Exception: NVMe devices like "nvme0n1" end with a digit but are whole devices
-        if (deviceName.find("nvme") != std::string::npos && deviceName.find('p') == std::string::npos)
-        {
-            return true; // Include nvme0n1, nvme1n1, etc.
-        }
-        return false; // Skip sda1, sda2, nvme0n1p1, etc.
+        // Include nvme0n1, nvme1n1, etc. but skip partitions like sda1, sda2, nvme0n1p1
+        return deviceName.contains("nvme") && !deviceName.contains('p');
     }
 
     return true;

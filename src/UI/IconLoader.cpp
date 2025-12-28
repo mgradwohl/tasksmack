@@ -24,7 +24,6 @@
 #pragma clang diagnostic pop
 #endif
 
-#include <cstdint>
 #include <filesystem>
 #include <utility>
 

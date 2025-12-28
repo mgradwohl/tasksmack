@@ -280,11 +280,11 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     const std::string pathStr = filePath.string();
     const char* argv[] = {"xdg-open", pathStr.c_str(), nullptr};
     extern char** environ;
-    
+
     pid_t pid;
-    int status = posix_spawnp(&pid, "xdg-open", nullptr, nullptr, 
+    int status = posix_spawnp(&pid, "xdg-open", nullptr, nullptr,
                                const_cast<char**>(argv), environ);
-    
+
     if (status == 0)
     {
         spdlog::info("Opened config file: {}", pathStr);
@@ -515,9 +515,9 @@ inline bool checkPdhStatus(PDH_STATUS status, std::string_view operation) {
 **Example - Texture RAII** (`src/UI/IconLoader.h:17-45`):
 ```cpp
 class Texture {
-    // ... 
+    // ...
     Texture(Texture&& other) noexcept { /* proper move */ }
-    ~Texture() { 
+    ~Texture() {
         if (m_Id != 0) glDeleteTextures(1, &m_Id);  // ✅ RAII cleanup
     }
 };

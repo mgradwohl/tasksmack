@@ -63,7 +63,7 @@ if (status != ERROR_SUCCESS) {
 // Platform/Windows/PdhHelper.h
 namespace Platform::Windows
 {
-    [[nodiscard]] inline bool checkPdhStatus(PDH_STATUS status, 
+    [[nodiscard]] inline bool checkPdhStatus(PDH_STATUS status,
                                               std::string_view operation)
     {
         if (status != ERROR_SUCCESS)

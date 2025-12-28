@@ -95,7 +95,7 @@ TEST(LinuxPathProviderTest, GetUserConfigDirRespectsXDG_CONFIG_HOME)
     // affect parallel test execution. The test restores original values but
     // there's a brief window of modification. If this causes flakiness in CI,
     // consider skipping this test or using a test fixture with proper isolation.
-    
+
     LinuxPathProvider provider;
 
     // Save original value
@@ -129,7 +129,7 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToHome)
     // which could affect parallel test execution. The test restores original values
     // but there's a brief window of modification. If this causes flakiness in CI,
     // consider skipping this test or using a test fixture with proper isolation.
-    
+
     LinuxPathProvider provider;
 
     // Save original values
@@ -168,7 +168,7 @@ TEST(LinuxPathProviderTest, GetUserConfigDirHandlesEmptyXDG)
     // which could affect parallel test execution. The test restores original values
     // but there's a brief window of modification. If this causes flakiness in CI,
     // consider skipping this test or using a test fixture with proper isolation.
-    
+
     LinuxPathProvider provider;
 
     // Save original value
