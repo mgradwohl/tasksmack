@@ -26,11 +26,11 @@ class LinuxSystemProbe : public ISystemProbe
     [[nodiscard]] long ticksPerSecond() const override;
 
   private:
-    void readCpuCounters(SystemCounters& counters) const;
-    void readMemoryCounters(SystemCounters& counters) const;
-    void readUptime(SystemCounters& counters) const;
-    void readLoadAvg(SystemCounters& counters) const;
-    void readCpuFreq(SystemCounters& counters) const;
+    static void readCpuCounters(SystemCounters& counters);
+    static void readMemoryCounters(SystemCounters& counters);
+    static void readUptime(SystemCounters& counters);
+    static void readLoadAvg(SystemCounters& counters);
+    static void readCpuFreq(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
 
     long m_TicksPerSecond;

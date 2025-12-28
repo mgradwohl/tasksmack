@@ -21,16 +21,47 @@
 
 #ifdef _WIN32
 #include <filesystem>
+#include <locale>
 #include <memory>
 #include <vector>
 #endif
+#include <clocale>
 #include <cstdio>
+#include <iostream>
 #include <print>
 
 namespace
 {
+void initializeLocale()
+{
+    // Use user-preferred locale ("" picks up OS locale) and force UTF-8 I/O where possible.
+    try
+    {
+        const std::locale userLocale("");
+        std::locale::global(userLocale);
+        std::cout.imbue(userLocale);
+        std::cerr.imbue(userLocale);
+        std::cin.imbue(userLocale);
+    }
+    catch (const std::exception& e)
+    {
+        std::println(stderr, "Failed to set global locale: {}", e.what());
+    }
+
+    // Ensure C locale uses UTF-8
+    setlocale(LC_ALL, "");
+
+#ifdef _WIN32
+    // On Windows, also set the console code page to UTF-8 for wide output.
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+}
+
 auto runApp() -> int
 {
+    initializeLocale();
+
 // Required on Windows to see console output when launching from an IDE or debugger
 #if defined(_WIN32) && !defined(NDEBUG)
     // Try to attach to parent console if it's a console app
@@ -39,7 +70,9 @@ auto runApp() -> int
     {
         AllocConsole();
         // Redirect stdout/stderr to the new console
+        // NOLINTNEXTLINE(misc-const-correctness) - freopen_s writes to these pointers
         FILE* out = nullptr;
+        // NOLINTNEXTLINE(misc-const-correctness) - freopen_s writes to these pointers
         FILE* err = nullptr;
         if (freopen_s(&out, "CONOUT$", "w", stdout) != 0)
         {
@@ -150,6 +183,7 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
 }
 #else
 // Standard entry point for Linux/macOS
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
 auto main() -> int
 {
     return runApp();

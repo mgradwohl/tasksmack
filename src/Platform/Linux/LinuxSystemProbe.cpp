@@ -123,7 +123,7 @@ long LinuxSystemProbe::ticksPerSecond() const
     return m_TicksPerSecond;
 }
 
-void LinuxSystemProbe::readCpuCounters(SystemCounters& counters) const
+void LinuxSystemProbe::readCpuCounters(SystemCounters& counters)
 {
     // Format: /proc/stat
     // cpu  user nice system idle iowait irq softirq steal guest guest_nice
@@ -181,7 +181,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters) const
     }
 }
 
-void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters) const
+void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters)
 {
     // Format: /proc/meminfo
     // MemTotal:       16384000 kB
@@ -250,7 +250,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters) const
     }
 }
 
-void LinuxSystemProbe::readUptime(SystemCounters& counters) const
+void LinuxSystemProbe::readUptime(SystemCounters& counters)
 {
     // Format: /proc/uptime
     // uptime_seconds idle_seconds
@@ -277,7 +277,7 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.cpuCoreCount = m_NumCores;
 }
 
-void LinuxSystemProbe::readLoadAvg(SystemCounters& counters) const
+void LinuxSystemProbe::readLoadAvg(SystemCounters& counters)
 {
     // Format: /proc/loadavg
     // 0.31 0.65 0.97 1/330 12345
@@ -292,7 +292,7 @@ void LinuxSystemProbe::readLoadAvg(SystemCounters& counters) const
     loadFile >> counters.loadAvg1 >> counters.loadAvg5 >> counters.loadAvg15;
 }
 
-void LinuxSystemProbe::readCpuFreq(SystemCounters& counters) const
+void LinuxSystemProbe::readCpuFreq(SystemCounters& counters)
 {
     // Try to read current CPU frequency from scaling driver
     // /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq (in kHz)
