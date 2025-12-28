@@ -27,7 +27,11 @@ namespace
 // Cached as static local to avoid repeated allocations
 std::filesystem::path getUserConfigDir()
 {
-    static const auto dir = Platform::makePathProvider()->getUserConfigDir();
+    static const auto dir = []
+    {
+        auto provider = Platform::makePathProvider();
+        return provider->getUserConfigDir();
+    }();
     return dir;
 }
 
@@ -35,7 +39,11 @@ std::filesystem::path getUserConfigDir()
 // Cached as static local to avoid repeated allocations
 std::filesystem::path getExecutableDir()
 {
-    static const auto dir = Platform::makePathProvider()->getExecutableDir();
+    static const auto dir = []
+    {
+        auto provider = Platform::makePathProvider();
+        return provider->getExecutableDir();
+    }();
     return dir;
 }
 

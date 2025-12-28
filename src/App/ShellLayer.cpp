@@ -141,7 +141,14 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     if (pid == 0)
     {
         // First child: fork again to create grandchild
-        if (fork() == 0)
+        const pid_t grandchild = fork();
+        if (grandchild == -1)
+        {
+            spdlog::error("Failed to fork grandchild: {}", strerror(errno));
+            _exit(EXIT_FAILURE);
+        }
+
+        if (grandchild == 0)
         {
             // Grandchild: exec xdg-open (will be adopted by init when first child exits)
             const std::string pathStr = filePath.string();
@@ -157,8 +164,15 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
 
     // Parent: wait for first child to prevent zombie
     int status = 0;
-    waitpid(pid, &status, 0);
-    spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+    const pid_t waited = waitpid(pid, &status, 0);
+    if (waited == -1)
+    {
+        spdlog::error("waitpid failed while waiting for xdg-open child process: {}", strerror(errno));
+    }
+    else
+    {
+        spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+    }
 #endif
 }
 
