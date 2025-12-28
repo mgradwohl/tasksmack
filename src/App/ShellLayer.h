@@ -25,9 +25,9 @@ class ShellLayer : public Core::Layer
     void onRender() override;
 
   private:
-    void setupDockspace();
+    static void setupDockspace();
     void renderMenuBar();
-    void renderStatusBar();
+    void renderStatusBar() const;
 
     // Panels
     ProcessesPanel m_ProcessesPanel;

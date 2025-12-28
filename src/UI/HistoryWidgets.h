@@ -14,6 +14,7 @@
 #include <format>
 #include <functional>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -100,7 +101,7 @@ inline void plotLineWithFill(const char* label,
         return;
     }
 
-    ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+    const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
     const std::string shadedLabel = std::format("##{}Fill", label);
 
     ImPlot::SetNextFillStyle(fill);
@@ -152,7 +153,7 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
     const int len = static_cast<int>(str.size());
     if (len < size)
     {
-        std::copy(str.begin(), str.end(), buff);
+        std::ranges::copy(str, buff);
         buff[len] = '\0';
         return len;
     }
@@ -192,7 +193,7 @@ inline int formatAxisBytesPerSec(double value, char* buff, int size, void* /*use
     const int len = static_cast<int>(str.size());
     if (len < size)
     {
-        std::copy(str.begin(), str.end(), buff);
+        std::ranges::copy(str, buff);
         buff[len] = '\0';
         return len;
     }
@@ -213,11 +214,7 @@ inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*
     const double absValue = std::abs(value);
 
     // Always use W with 1 decimal place for visual consistency
-    if (absValue >= 100.0)
-    {
-        str = std::format("{:.1f}W", value);
-    }
-    else if (absValue >= 1.0)
+    if (absValue >= 1.0)
     {
         str = std::format("{:.1f}W", value);
     }
@@ -230,7 +227,7 @@ inline int formatAxisWatts(double value, char* buff, int size, void* /*userData*
     const int len = static_cast<int>(str.size());
     if (len < size)
     {
-        std::copy(str.begin(), str.end(), buff);
+        std::ranges::copy(str, buff);
         buff[len] = '\0';
         return len;
     }
@@ -252,7 +249,7 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
     const int len = static_cast<int>(str.size());
     if (len < size)
     {
-        std::copy(str.begin(), str.end(), buff);
+        std::ranges::copy(str, buff);
         buff[len] = '\0';
         return len;
     }

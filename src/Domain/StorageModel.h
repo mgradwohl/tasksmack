@@ -57,7 +57,7 @@ class StorageModel
         bool hasPrev = false;
     };
 
-    DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);
+    static DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);
     void trimHistory(double nowSeconds);
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;

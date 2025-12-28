@@ -108,8 +108,8 @@ class ProcessesPanel : public Panel
     /// Build parent-child process tree structure
     /// @param snapshots The full list of process snapshots.
     /// @return Map of parent uniqueKey to vector of child indices
-    [[nodiscard]] std::unordered_map<std::uint64_t, std::vector<std::size_t>>
-    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const;
+    [[nodiscard]] static std::unordered_map<std::uint64_t, std::vector<std::size_t>>
+    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots);
 
     /// Render process rows in tree view mode
     /// @param snapshots The full list of process snapshots.

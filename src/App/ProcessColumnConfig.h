@@ -137,7 +137,7 @@ struct ProcessColumnSettings
     ProcessColumnSettings()
     {
         // Initialize with defaults
-        for (ProcessColumn col : allProcessColumns())
+        for (const auto col : allProcessColumns())
         {
             visible[toIndex(col)] = getColumnInfo(col).defaultVisible;
         }

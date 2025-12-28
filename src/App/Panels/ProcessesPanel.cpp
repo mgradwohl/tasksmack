@@ -21,6 +21,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -503,7 +504,7 @@ void ProcessesPanel::render(bool* open)
                                           const auto& procA = currentSnapshots[a];
                                           const auto& procB = currentSnapshots[b];
 
-                                          auto compare = [ascending](auto lhs, auto rhs) -> bool
+                                          auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
                                           {
                                               return ascending ? (lhs < rhs) : (rhs < lhs);
                                           };
@@ -620,7 +621,7 @@ std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
 }
 
 std::unordered_map<std::uint64_t, std::vector<std::size_t>>
-ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots) const
+ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots)
 {
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> tree;
 
@@ -1018,9 +1019,9 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         // Add children to stack if expanded (in reverse order for correct rendering)
         if (hasChildren && isExpanded)
         {
-            for (auto it = filteredChildren.rbegin(); it != filteredChildren.rend(); ++it)
+            for (const auto& childIdx : std::views::reverse(filteredChildren))
             {
-                stack.push_back(StackFrame{.procIdx = *it, .depth = frame.depth + 1});
+                stack.push_back(StackFrame{.procIdx = childIdx, .depth = frame.depth + 1});
             }
         }
     }

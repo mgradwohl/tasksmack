@@ -131,13 +131,13 @@ class ProcessModel
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    [[nodiscard]] ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
-                                                  const Platform::ProcessCounters* previous,
-                                                  std::uint64_t totalCpuDelta,
-                                                  std::uint64_t systemTotalMemory,
-                                                  long ticksPerSecond,
-                                                  double elapsedSeconds,
-                                                  std::uint64_t timeDeltaUs) const;
+    [[nodiscard]] static ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
+                                                         const Platform::ProcessCounters* previous,
+                                                         std::uint64_t totalCpuDelta,
+                                                         std::uint64_t systemTotalMemory,
+                                                         long ticksPerSecond,
+                                                         double elapsedSeconds,
+                                                         std::uint64_t timeDeltaUs);
 
     void trimHistory();
 

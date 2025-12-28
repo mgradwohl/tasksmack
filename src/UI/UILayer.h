@@ -23,9 +23,9 @@ class UILayer : public Core::Layer
     void onPostRender() override;
 
   private:
-    void beginFrame();
-    void endFrame();
-    void loadAllFonts();
+    static void beginFrame();
+    static void endFrame();
+    static void loadAllFonts();
 };
 
 } // namespace UI

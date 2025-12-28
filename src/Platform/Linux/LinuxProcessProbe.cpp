@@ -82,7 +82,7 @@ std::mutex& getUsernameCacheMutex()
 /// Get username from UID, with caching
 [[nodiscard]] std::string getUsername(uid_t uid)
 {
-    std::lock_guard<std::mutex> lock(getUsernameCacheMutex());
+    const std::scoped_lock lock(getUsernameCacheMutex());
     auto& cache = getUsernameCache();
     auto it = cache.find(uid);
     if (it != cache.end())
@@ -91,7 +91,7 @@ std::mutex& getUsernameCacheMutex()
     }
 
     // Look up username from passwd database
-    struct passwd* pwd = getpwuid(uid);
+    const struct passwd* pwd = getpwuid(uid);
     std::string username;
     if (pwd != nullptr && pwd->pw_name != nullptr)
     {
@@ -134,7 +134,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     std::vector<ProcessCounters> processes;
     processes.reserve(500); // Reasonable initial size
 
-    std::filesystem::path procPath("/proc");
+    const std::filesystem::path procPath("/proc");
     std::error_code errorCode;
 
     for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
@@ -236,7 +236,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    std::filesystem::path statPath = std::filesystem::path("/proc") / std::to_string(pid) / "stat";
+    const std::filesystem::path statPath = std::filesystem::path("/proc") / std::to_string(pid) / "stat";
     std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
@@ -319,7 +319,7 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    std::filesystem::path statmPath = std::filesystem::path("/proc") / std::to_string(pid) / "statm";
+    const std::filesystem::path statmPath = std::filesystem::path("/proc") / std::to_string(pid) / "statm";
     std::ifstream statmFile(statmPath);
     if (!statmFile.is_open())
     {
@@ -339,13 +339,13 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     }
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters)
 {
     // Read /proc/[pid]/status for UID (owner) information
     // Format is key:value pairs, one per line
     // We need: Uid: <real> <effective> <saved> <filesystem>
 
-    std::filesystem::path statusPath = std::filesystem::path("/proc") / std::to_string(pid) / "status";
+    const std::filesystem::path statusPath = std::filesystem::path("/proc") / std::to_string(pid) / "status";
     std::ifstream statusFile(statusPath);
     if (!statusFile.is_open())
     {
@@ -370,12 +370,12 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     }
 }
 
-void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters)
 {
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by null bytes
 
-    std::filesystem::path cmdlinePath = std::filesystem::path("/proc") / std::to_string(pid) / "cmdline";
+    const std::filesystem::path cmdlinePath = std::filesystem::path("/proc") / std::to_string(pid) / "cmdline";
     std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
     if (!cmdlineFile.is_open())
     {
@@ -404,7 +404,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     }
 }
 
-void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
 {
     // Use sched_getaffinity to read CPU affinity mask for the process
     // This returns which CPU cores the process is allowed to run on
@@ -434,7 +434,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
     }
 }
 
-void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
 {
     // Format: /proc/[pid]/io
     // Key-value pairs, one per line:
@@ -450,7 +450,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     // or being the owner of the process. If we can't read it, we silently skip
     // (capabilities() already reports hasIoCounters = false by default).
 
-    std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(pid) / "io";
+    const std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(pid) / "io";
     std::ifstream ioFile(ioPath);
     if (!ioFile.is_open())
     {
@@ -487,16 +487,16 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters) c
     }
 }
 
-bool LinuxProcessProbe::checkIoCountersAvailability() const
+bool LinuxProcessProbe::checkIoCountersAvailability()
 {
     // Check if we can read /proc/self/io to determine I/O counter availability.
     // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
     // or being the owner of the target process.
-    std::ifstream selfIo("/proc/self/io");
+    const std::ifstream selfIo("/proc/self/io");
     return selfIo.is_open();
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
 {
     // Try cgroup v2 first: freezer.state
     const std::filesystem::path cgroupV2FreezerPath = std::filesystem::path("/sys/fs/cgroup") / std::to_string(pid) / "freezer.state";
@@ -525,17 +525,17 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
             const auto secondColon = line.find(':', firstColon + 1);
             if (firstColon != std::string::npos && secondColon != std::string::npos)
             {
-                std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
-                std::string cgroupSubPath = line.substr(secondColon + 1);
+                const std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
+                const std::string cgroupSubPath = line.substr(secondColon + 1);
 
                 // Check if this line has the freezer controller
-                if (controllers.find("freezer") != std::string::npos)
+                if (controllers.contains("freezer"))
                 {
                     // Build path: /sys/fs/cgroup/freezer/<cgroup-path>/freezer.state
                     // Skip if cgroupSubPath is empty or doesn't start with /
                     if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
                     {
-                        std::filesystem::path freezePathV1 =
+                        const std::filesystem::path freezePathV1 =
                             std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
                         std::ifstream freezeFileV1(freezePathV1);
                         if (freezeFileV1.is_open())
@@ -556,7 +556,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid) const
     // No special status
     return {};
 }
-uint64_t LinuxProcessProbe::readTotalCpuTime() const
+uint64_t LinuxProcessProbe::readTotalCpuTime()
 {
     // Format: /proc/stat
     // First line: cpu user nice system idle iowait irq softirq steal guest guest_nice
@@ -642,7 +642,7 @@ bool LinuxProcessProbe::detectPowerCap()
 
     for (const auto& path : possiblePaths)
     {
-        std::ifstream file(path);
+        const std::ifstream file(path);
         if (file.good())
         {
             m_PowerCapPath = path;
@@ -652,12 +652,12 @@ bool LinuxProcessProbe::detectPowerCap()
 
     // Try to enumerate powercap directory
     std::error_code ec;
-    std::filesystem::path powercapDir("/sys/class/powercap");
+    const std::filesystem::path powercapDir("/sys/class/powercap");
     if (std::filesystem::exists(powercapDir, ec) && std::filesystem::is_directory(powercapDir, ec))
     {
         for (const auto& entry : std::filesystem::directory_iterator(powercapDir, ec))
         {
-            if (entry.is_directory() && entry.path().filename().string().find("intel-rapl") == 0)
+            if (entry.is_directory() && entry.path().filename().string().starts_with("intel-rapl"))
             {
                 std::filesystem::path energyFile = entry.path() / "energy_uj";
                 if (std::filesystem::exists(energyFile, ec))
@@ -667,7 +667,7 @@ bool LinuxProcessProbe::detectPowerCap()
                 }
 
                 // Try package:0 subdirectory
-                std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
+                const std::filesystem::path packageDir = entry.path() / "intel-rapl:0";
                 energyFile = packageDir / "energy_uj";
                 if (std::filesystem::exists(energyFile, ec))
                 {

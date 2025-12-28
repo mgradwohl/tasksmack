@@ -183,6 +183,7 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
 }
 #else
 // Standard entry point for Linux/macOS
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
 auto main() -> int
 {
     return runApp();

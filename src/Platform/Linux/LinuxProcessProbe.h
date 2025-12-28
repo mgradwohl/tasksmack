@@ -39,24 +39,24 @@ class LinuxProcessProbe : public IProcessProbe
     void parseProcessStatm(int32_t pid, ProcessCounters& counters) const;
 
     /// Parse /proc/[pid]/status for owner (UID) info
-    void parseProcessStatus(int32_t pid, ProcessCounters& counters) const;
+    static void parseProcessStatus(int32_t pid, ProcessCounters& counters);
 
     /// Parse /proc/[pid]/cmdline for full command line
-    void parseProcessCmdline(int32_t pid, ProcessCounters& counters) const;
+    static void parseProcessCmdline(int32_t pid, ProcessCounters& counters);
 
     /// Parse CPU affinity mask for a process using sched_getaffinity
-    void parseProcessAffinity(int32_t pid, ProcessCounters& counters) const;
+    static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
     /// Parse /proc/[pid]/io for I/O counters (requires permissions)
-    void parseProcessIo(int32_t pid, ProcessCounters& counters) const;
+    static void parseProcessIo(int32_t pid, ProcessCounters& counters);
 
     /// Check if we can read I/O counters (checks own process)
-    [[nodiscard]] bool checkIoCountersAvailability() const;
+    [[nodiscard]] static bool checkIoCountersAvailability();
 
     /// Get process status from cgroups (Suspended state detection)
-    [[nodiscard]] std::string getProcessStatus(int32_t pid) const;
+    [[nodiscard]] static std::string getProcessStatus(int32_t pid);
 
     /// Read total CPU time from /proc/stat
-    [[nodiscard]] uint64_t readTotalCpuTime() const;
+    [[nodiscard]] static uint64_t readTotalCpuTime();
 
     /// Check if RAPL powercap is available and find the path
     [[nodiscard]] bool detectPowerCap();

@@ -3,7 +3,6 @@
 #include "UI/Numeric.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
@@ -331,10 +330,12 @@ struct AlignedNumericParts
 
 [[nodiscard]] inline auto formatCpuTimeCompact(double totalSeconds) -> std::string
 {
-    const auto totalSecs = static_cast<long long>(std::llround(totalSeconds));
-    const auto hours = totalSecs / (60LL * 60LL);
-    const auto minutes = (totalSecs / 60LL) % 60LL;
-    const auto secs = totalSecs % 60LL;
+    const auto totalSecs = std::llround(totalSeconds);
+    constexpr long long secondsPerHour = 60LL * 60LL;
+    constexpr long long secondsPerMinute = 60LL;
+    const auto hours = totalSecs / secondsPerHour;
+    const auto minutes = (totalSecs / secondsPerMinute) % 60;
+    const auto secs = totalSecs % 60;
 
     if (hours > 0)
     {

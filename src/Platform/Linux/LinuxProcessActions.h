@@ -26,7 +26,7 @@ class LinuxProcessActions : public IProcessActions
 
   private:
     // TODO: Use std::string_view for signalName
-    [[nodiscard]] ProcessActionResult sendSignal(int32_t pid, int signal, const char* signalName);
+    [[nodiscard]] static ProcessActionResult sendSignal(int32_t pid, int signal, const char* signalName);
 };
 
 } // namespace Platform

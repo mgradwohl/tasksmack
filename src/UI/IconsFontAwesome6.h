@@ -2,18 +2,25 @@
 // Icon font: Font Awesome 6 Free Solid (fa-solid-900.ttf)
 // Generated from IconFontCppHeaders: https://github.com/juliettef/IconFontCppHeaders
 //
-// Usage: Include this header and use ICON_FA_* defines in ImGui text strings
+// Usage: Include this header and use ICON_FA_* constants in ImGui text strings
 // Example: ImGui::Text(ICON_FA_BOLT " Power");
+//
+// Note: Icon string macros remain as #define because they need to support
+// compile-time string literal concatenation (e.g., ICON_FA_BOLT " Power").
+// C++ does not support constexpr string literal concatenation.
 
 #pragma once
 
+#include <cstdint>
+
 // Font file name (relative to assets/fonts/)
-#define FONT_ICON_FILE_NAME_FAS "fa-solid-900.ttf"
+inline constexpr const char* FONT_ICON_FILE_NAME_FAS = "fa-solid-900.ttf";
 
 // Icon font Unicode range
-#define ICON_MIN_FA 0xe005
-#define ICON_MAX_FA 0xf8ff
+inline constexpr uint32_t ICON_MIN_FA = 0xe005;
+inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 
+// NOLINTBEGIN(cppcoreguidelines-macro-usage) - Macros required for string literal concatenation
 // ============================================================================
 // Battery & Power Icons
 // ============================================================================
@@ -119,3 +126,4 @@
 #define ICON_FA_COMPUTER "\xef\x84\x88" // U+f108 - Desktop computer
 #define ICON_FA_DESKTOP "\xef\x84\x88"  // U+f108 - Desktop (alias)
 #define ICON_FA_ID_CARD "\xef\x8b\x82"  // U+f2c2 - ID card
+// NOLINTEND(cppcoreguidelines-macro-usage)

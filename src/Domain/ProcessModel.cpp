@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
@@ -294,7 +293,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
                                               double elapsedSeconds,
-                                              std::uint64_t timeDeltaUs) const
+                                              std::uint64_t timeDeltaUs)
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;

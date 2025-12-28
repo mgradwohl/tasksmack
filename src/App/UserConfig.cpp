@@ -39,6 +39,7 @@ namespace App
 namespace
 {
 
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
     const auto count = std::to_underlying(ProcessColumn::Count);

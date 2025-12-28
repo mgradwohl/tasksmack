@@ -27,9 +27,9 @@ class LinuxPowerProbe : public IPowerProbe
   private:
     void discoverBatteries();
     void readBattery(PowerCounters& counters, const std::string& batteryPath) const;
-    [[nodiscard]] std::string readSysfsFile(const std::string& path) const;
-    [[nodiscard]] std::uint64_t readSysfsUInt64(const std::string& path, std::uint64_t fallback = 0) const;
-    [[nodiscard]] int readSysfsInt(const std::string& path, int fallback = -1) const;
+    [[nodiscard]] static std::string readSysfsFile(const std::string& path);
+    [[nodiscard]] static std::uint64_t readSysfsUInt64(const std::string& path, std::uint64_t fallback = 0);
+    [[nodiscard]] static int readSysfsInt(const std::string& path, int fallback = -1);
 
     std::vector<std::string> m_BatteryPaths; // Paths like "/sys/class/power_supply/BAT0"
     PowerCapabilities m_Capabilities;

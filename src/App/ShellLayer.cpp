@@ -127,7 +127,10 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
 #else
     // Linux: Use xdg-open to open the file with the default editor
     const std::string command = "xdg-open \"" + filePath.string() + "\" &";
-    const int result = std::system(command.c_str()); // NOLINT(concurrency-mt-unsafe)
+    // NOLINTBEGIN(concurrency-mt-unsafe,bugprone-command-processor)
+    // Intentional: Using shell for URL/file opening is expected behavior on Linux
+    const int result = std::system(command.c_str());
+    // NOLINTEND(concurrency-mt-unsafe,bugprone-command-processor)
     if (result != 0)
     {
         spdlog::error("Failed to open file with default editor: {}", filePath.string());
@@ -478,7 +481,7 @@ void ShellLayer::renderMenuBar()
     ImGui::PopStyleVar();
 }
 
-void ShellLayer::renderStatusBar()
+void ShellLayer::renderStatusBar() const
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     // Calculate height dynamically based on font size for proper scaling

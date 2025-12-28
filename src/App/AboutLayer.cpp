@@ -9,11 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <system_error>
-#include <tuple>
 
 #ifdef __linux__
 #include <unistd.h>
@@ -265,13 +263,13 @@ void AboutLayer::loadIcon()
     spdlog::warn("About dialog icon not found; continuing without image");
 }
 
-void AboutLayer::openUrl(const std::string& url) const
+void AboutLayer::openUrl(const std::string& url)
 {
 #ifdef _WIN32
     const std::wstring wideUrl(url.begin(), url.end());
     ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
-    pid_t pid = ::fork();
+    const pid_t pid = ::fork();
     if (pid == 0)
     {
         // Child: exec xdg-open; if it fails, exit quietly.

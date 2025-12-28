@@ -258,7 +258,7 @@ void LinuxPowerProbe::readBattery(PowerCounters& counters, const std::string& ba
     }
 }
 
-std::string LinuxPowerProbe::readSysfsFile(const std::string& path) const
+std::string LinuxPowerProbe::readSysfsFile(const std::string& path)
 {
     std::ifstream file(path);
     if (!file.is_open())
@@ -291,7 +291,7 @@ std::string LinuxPowerProbe::readSysfsFile(const std::string& path) const
     return value;
 }
 
-std::uint64_t LinuxPowerProbe::readSysfsUInt64(const std::string& path, std::uint64_t fallback) const
+std::uint64_t LinuxPowerProbe::readSysfsUInt64(const std::string& path, std::uint64_t fallback)
 {
     const auto str = readSysfsFile(path);
     if (str.empty())
@@ -309,7 +309,7 @@ std::uint64_t LinuxPowerProbe::readSysfsUInt64(const std::string& path, std::uin
     return value;
 }
 
-int LinuxPowerProbe::readSysfsInt(const std::string& path, int fallback) const
+int LinuxPowerProbe::readSysfsInt(const std::string& path, int fallback)
 {
     const auto str = readSysfsFile(path);
     if (str.empty())

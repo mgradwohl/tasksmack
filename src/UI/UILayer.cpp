@@ -70,7 +70,7 @@ std::filesystem::path getExecutableDir()
 {
 #ifdef __linux__
     // C++17: read_symlink handles /proc/self/exe directly
-    std::error_code errorCode;
+    std::error_code errorCode; // NOLINT(misc-const-correctness) - output parameter
     auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
     if (!errorCode)
     {
