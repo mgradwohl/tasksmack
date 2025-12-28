@@ -32,9 +32,10 @@
 #include <shellapi.h>
 // clang-format on
 #else
-#include <unistd.h> // fork, execlp, _exit
-#include <cerrno>   // errno
-#include <cstring>  // strerror
+#include <unistd.h>    // fork, execlp, _exit
+#include <sys/wait.h>  // waitpid
+#include <cerrno>      // errno
+#include <cstring>     // strerror
 #endif
 
 namespace App
@@ -128,7 +129,8 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     }
     spdlog::info("Opened config file: {}", filePath.string());
 #else
-    // Linux: Use fork/exec to safely spawn xdg-open (avoids shell injection)
+    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
+    // First fork creates a child that will be reaped
     const pid_t pid = fork();
     if (pid == -1)
     {
@@ -138,17 +140,25 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
 
     if (pid == 0)
     {
-        // Child process: exec xdg-open
-        const std::string pathStr = filePath.string();
-        // Safe: no shell involved, arguments are separate
-        execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
-        // execlp only returns on error
-        spdlog::error("Failed to exec xdg-open: {}", strerror(errno));
-        _exit(EXIT_FAILURE); // Use _exit in child to avoid flushing parent's buffers
+        // First child: fork again to create grandchild
+        if (fork() == 0)
+        {
+            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
+            const std::string pathStr = filePath.string();
+            // Safe: no shell involved, arguments are separate
+            execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
+            // execlp only returns on error
+            spdlog::error("Failed to exec xdg-open: {}", strerror(errno));
+            _exit(EXIT_FAILURE);
+        }
+        // First child exits immediately (grandchild will be adopted by init)
+        _exit(0);
     }
 
-    // Parent process: don't wait (fire and forget)
-    spdlog::info("Opened config file with xdg-open (PID {}): {}", pid, filePath.string());
+    // Parent: wait for first child to prevent zombie
+    int status = 0;
+    waitpid(pid, &status, 0);
+    spdlog::info("Opened config file with xdg-open: {}", filePath.string());
 #endif
 }
 

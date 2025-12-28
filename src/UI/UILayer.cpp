@@ -24,17 +24,19 @@
 namespace
 {
 // Get user config directory using platform abstraction
+// Cached as static local to avoid repeated allocations
 std::filesystem::path getUserConfigDir()
 {
-    auto pathProvider = Platform::makePathProvider();
-    return pathProvider->getUserConfigDir();
+    static const auto dir = Platform::makePathProvider()->getUserConfigDir();
+    return dir;
 }
 
 // Get directory containing the executable using platform abstraction
+// Cached as static local to avoid repeated allocations
 std::filesystem::path getExecutableDir()
 {
-    auto pathProvider = Platform::makePathProvider();
-    return pathProvider->getExecutableDir();
+    static const auto dir = Platform::makePathProvider()->getExecutableDir();
+    return dir;
 }
 
 // Convert typographic points to pixels based on display DPI
