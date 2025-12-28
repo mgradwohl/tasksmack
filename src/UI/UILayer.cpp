@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -22,72 +23,30 @@
 #include <cstdlib>
 #include <filesystem>
 
-#ifdef __linux__
-// No additional includes needed - std::filesystem handles it
-#elif defined(_WIN32)
-#include <windows.h>
-#endif
-
 namespace
 {
-// Best-effort user config directory (mirrors UserConfig logic without adding an App dependency)
+// Get user config directory using platform abstraction
+// Cached as static local to avoid repeated allocations
 std::filesystem::path getUserConfigDir()
 {
-#ifdef _WIN32
-    if (char* appData = nullptr; _dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
+    static const auto dir = []
     {
-        const std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
-        if (appData[0] != '\0')
-        {
-            return std::filesystem::path(appData) / "TaskSmack";
-        }
-    }
-    return std::filesystem::current_path();
-#else
-    // TODO: Replace getenv/char* plumbing with std::optional<std::string> + std::filesystem::path
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
-    {
-        if (xdg[0] != '\0')
-        {
-            return std::filesystem::path(xdg) / "tasksmack";
-        }
-    }
-
-    if (const char* home = std::getenv("HOME"))
-    {
-        if (home[0] != '\0')
-        {
-            return std::filesystem::path(home) / ".config" / "tasksmack";
-        }
-    }
-
-    return std::filesystem::current_path();
-#endif
+        auto provider = Platform::makePathProvider();
+        return provider->getUserConfigDir();
+    }();
+    return dir;
 }
 
-// Get directory containing the executable
+// Get directory containing the executable using platform abstraction
+// Cached as static local to avoid repeated allocations
 std::filesystem::path getExecutableDir()
 {
-#ifdef __linux__
-    // C++17: read_symlink handles /proc/self/exe directly
-    std::error_code errorCode; // NOLINT(misc-const-correctness) - output parameter
-    auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
-    if (!errorCode)
+    static const auto dir = []
     {
-        return exePath.parent_path();
-    }
-#elif defined(_WIN32)
-    // Use wide string API and let filesystem handle conversion
-    std::wstring buffer(MAX_PATH, L'\0');
-    // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
-    const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (len > 0 && len < buffer.size())
-    {
-        buffer.resize(len);
-        return std::filesystem::path(buffer).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
+        auto provider = Platform::makePathProvider();
+        return provider->getExecutableDir();
+    }();
+    return dir;
 }
 
 // Convert typographic points to pixels based on display DPI

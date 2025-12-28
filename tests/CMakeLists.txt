@@ -45,11 +45,13 @@ if(WIN32)
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PathProviderContract.cpp
         Platform/test_PowerProbeContract.cpp
         Platform/test_WindowsProcessProbe.cpp
         Platform/test_WindowsSystemProbe.cpp
         Platform/test_WindowsProcessActions.cpp
         Platform/test_WindowsDiskProbe.cpp
+        Platform/test_WindowsPathProvider.cpp
         Platform/test_WindowsPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
@@ -58,6 +60,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
@@ -70,11 +73,13 @@ else()
         Platform/test_ProcessProbeContract.cpp
         Platform/test_SystemProbeContract.cpp
         Platform/test_ProcessActionsContract.cpp
+        Platform/test_PathProviderContract.cpp
         Platform/test_PowerProbeContract.cpp
         Platform/test_LinuxProcessProbe.cpp
         Platform/test_LinuxSystemProbe.cpp
         Platform/test_LinuxProcessActions.cpp
         Platform/test_LinuxDiskProbe.cpp
+        Platform/test_LinuxPathProvider.cpp
         Platform/test_LinuxPowerProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
@@ -83,6 +88,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES

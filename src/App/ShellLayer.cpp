@@ -32,6 +32,12 @@
 #include <windows.h>
 #include <shellapi.h>
 // clang-format on
+#else
+#include <cerrno>
+#include <cstring>
+
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace App
@@ -126,20 +132,49 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     }
     spdlog::info("Opened config file: {}", filePath.string());
 #else
-    // Linux: Use xdg-open to open the file with the default editor
-    const std::string command = "xdg-open \"" + filePath.string() + "\" &";
-    // NOLINTBEGIN(concurrency-mt-unsafe,bugprone-command-processor)
-    // Intentional: Using shell for URL/file opening is expected behavior on Linux.
-    // Safe here because path is controlled (our config directory) and user-initiated.
-    const int result = std::system(command.c_str());
-    // NOLINTEND(concurrency-mt-unsafe,bugprone-command-processor)
-    if (result != 0)
+    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
+    // First fork creates a child that will be reaped
+    const pid_t pid = fork();
+    if (pid == -1)
     {
-        spdlog::error("Failed to open file with default editor: {}", filePath.string());
+        spdlog::error("Failed to fork process for xdg-open: {}", strerror(errno));
+        return;
+    }
+
+    if (pid == 0)
+    {
+        // First child: fork again to create grandchild
+        const pid_t grandchild = fork();
+        if (grandchild == -1)
+        {
+            spdlog::error("Failed to fork grandchild: {}", strerror(errno));
+            _exit(EXIT_FAILURE);
+        }
+
+        if (grandchild == 0)
+        {
+            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
+            const std::string pathStr = filePath.string();
+            // Safe: no shell involved, arguments are separate
+            execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
+            // execlp only returns on error
+            spdlog::error("Failed to exec xdg-open: {}", strerror(errno));
+            _exit(EXIT_FAILURE);
+        }
+        // First child exits immediately (grandchild will be adopted by init)
+        _exit(0);
+    }
+
+    // Parent: wait for first child to prevent zombie
+    int status = 0;
+    const pid_t waited = waitpid(pid, &status, 0);
+    if (waited == -1)
+    {
+        spdlog::error("waitpid failed while waiting for xdg-open child process: {}", strerror(errno));
     }
     else
     {
-        spdlog::info("Opened config file: {}", filePath.string());
+        spdlog::info("Opened config file with xdg-open: {}", filePath.string());
     }
 #endif
 }

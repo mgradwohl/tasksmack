@@ -1,6 +1,7 @@
 #include "Platform/Factory.h"
 
 #include "LinuxDiskProbe.h"
+#include "LinuxPathProvider.h"
 #include "LinuxPowerProbe.h"
 #include "LinuxProcessActions.h"
 #include "LinuxProcessProbe.h"
@@ -29,6 +30,11 @@ std::unique_ptr<ISystemProbe> makeSystemProbe()
 std::unique_ptr<IDiskProbe> makeDiskProbe()
 {
     return std::make_unique<LinuxDiskProbe>();
+}
+
+std::unique_ptr<IPathProvider> makePathProvider()
+{
+    return std::make_unique<LinuxPathProvider>();
 }
 
 std::unique_ptr<IPowerProbe> makePowerProbe()
