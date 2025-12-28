@@ -172,9 +172,21 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     {
         spdlog::error("waitpid failed while waiting for xdg-open child process: {}", strerror(errno));
     }
-    else
+    else if (WIFEXITED(status))
     {
-        spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+        const int exitCode = WEXITSTATUS(status);
+        if (exitCode != 0)
+        {
+            spdlog::error("xdg-open launcher child exited with code {}", exitCode);
+        }
+        else
+        {
+            spdlog::info("Opened config file with xdg-open: {}", filePath.string());
+        }
+    }
+    else if (WIFSIGNALED(status))
+    {
+        spdlog::error("xdg-open launcher child killed by signal {}", WTERMSIG(status));
     }
 #endif
 }
