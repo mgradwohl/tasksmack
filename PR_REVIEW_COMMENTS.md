@@ -125,7 +125,7 @@ newNetworkBaselines.reserve(counters.size());
 **Status:** No code change required. This comment exists solely to correct the earlier, inaccurate leak description.
 ```
 
-**Test:** 
+**Test:**
 ```cpp
 TEST(ProcessModelTest, NetworkBaselinesPruned) {
     // Create 1000 processes
@@ -210,13 +210,13 @@ void UserConfig::load() {
     } catch (const toml::parse_error& err) {
         spdlog::error("Failed to parse config file: {}", err.what());
         spdlog::info("Creating backup and using defaults");
-        
+
         // Backup corrupt file
         auto backupPath = m_ConfigPath;
         backupPath.replace_extension(".toml.backup");
-        std::filesystem::copy_file(m_ConfigPath, backupPath, 
+        std::filesystem::copy_file(m_ConfigPath, backupPath,
                                     std::filesystem::copy_options::overwrite_existing);
-        
+
         // Use defaults
         return;
     }
@@ -252,7 +252,7 @@ if (waited == -1)
 
 **Issue:** First child could fail to fork grandchild or exit abnormally. Status is ignored.
 
-**Impact:** 
+**Impact:**
 - Silent failures launching xdg-open
 - Potential zombie processes if first child hangs
 
@@ -297,7 +297,7 @@ bool Window::shouldClose() const
 }
 ```
 
-**Issue:** 
+**Issue:**
 - Called in main loop every frame (Application.cpp:78)
 - `glfwWindowShouldClose` is noexcept (GLFW C API)
 - If exception escapes here, entire application terminates
@@ -464,7 +464,7 @@ WCHAR exePath[MAX_PATH];
 **Fix:**
 ```cpp
 std::array<WCHAR, MAX_PATH> exePath{};
-DWORD pathLen = GetModuleFileNameW(nullptr, exePath.data(), 
+DWORD pathLen = GetModuleFileNameW(nullptr, exePath.data(),
                                     static_cast<DWORD>(exePath.size()));
 ```
 
