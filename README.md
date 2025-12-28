@@ -39,6 +39,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
 - Architecture overview: [tasksmack.md](tasksmack.md)
 - Process/metrics implementation notes: [tasksmack.md](tasksmack.md)
+- Test coverage analysis: [docs/test-coverage-summary.md](docs/test-coverage-summary.md)
 - Security policy: [SECURITY.md](SECURITY.md)
 
 ## License

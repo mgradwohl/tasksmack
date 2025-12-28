@@ -12,6 +12,8 @@ To avoid duplication and doc drift, these are the canonical docs:
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
 - [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
 - [completed-features.md](completed-features.md): canonical shipped-features list
+- [docs/test-coverage-summary.md](docs/test-coverage-summary.md): test coverage analysis (executive summary)
+- [docs/test-coverage-analysis.md](docs/test-coverage-analysis.md): comprehensive test coverage review (full report)
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
 
 ## Quick Start
