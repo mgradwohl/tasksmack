@@ -82,14 +82,14 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     m_Snapshots.clear();
     m_Snapshots.reserve(counters.size());
 
-    // Track active keys to prune stale entries
-    std::unordered_set<std::uint64_t> activeKeys;
-    activeKeys.reserve(counters.size());
+    // Track active keys to prune stale entries (reuse existing set)
+    m_ActiveKeys.clear();
+    m_ActiveKeys.reserve(counters.size());
 
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
-        activeKeys.insert(key);
+        m_ActiveKeys.insert(key);
 
         // Find previous counters for this process (if exists and same instance)
         const Platform::ProcessCounters* previous = nullptr;
@@ -127,8 +127,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     }
 
     // Prune stale entries from tracking maps (dead processes)
-    std::erase_if(m_PrevCounters, [&activeKeys](const auto& entry) { return !activeKeys.contains(entry.first); });
-    std::erase_if(m_PeakRss, [&activeKeys](const auto& entry) { return !activeKeys.contains(entry.first); });
+    std::erase_if(m_PrevCounters, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
+    std::erase_if(m_PeakRss, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
 
     m_PrevTotalCpuTime = totalCpuTime;
 }
