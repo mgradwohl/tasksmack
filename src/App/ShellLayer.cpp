@@ -188,6 +188,10 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     {
         spdlog::error("xdg-open launcher child killed by signal {}", WTERMSIG(status));
     }
+    else
+    {
+        spdlog::warn("xdg-open launcher child in unexpected state after waitpid (status={})", status);
+    }
 #endif
 }
 
