@@ -32,7 +32,8 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     // Test known columns (indices based on ProcessColumn enum definition)
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::User), 1);
-    EXPECT_EQ(toIndex(ProcessColumn::Name), 10);
+    EXPECT_EQ(toIndex(ProcessColumn::Status), 10);
+    EXPECT_EQ(toIndex(ProcessColumn::Name), 11);
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
