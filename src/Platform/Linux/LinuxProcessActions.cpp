@@ -56,7 +56,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(int32_t pid, int signal, con
     }
 
     // Handle error
-    int err = errno;
+    const int err = errno;
     std::string errorMsg;
 
     switch (err)

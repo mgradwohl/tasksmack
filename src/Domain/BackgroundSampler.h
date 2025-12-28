@@ -63,7 +63,7 @@ class BackgroundSampler
     void setInterval(std::chrono::milliseconds interval);
 
   private:
-    void samplerLoop(std::stop_token stopToken);
+    void samplerLoop(const std::stop_token& stopToken);
 
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     Platform::ProcessCapabilities m_Capabilities;

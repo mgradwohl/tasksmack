@@ -23,6 +23,7 @@ enum class ProcessColumn : std::uint8_t
     Shared,
     CpuTime,
     State,
+    Status,
     Name,
     PPID,
     Nice,
@@ -32,20 +33,20 @@ enum class ProcessColumn : std::uint8_t
     Command,
     IoRead,
     IoWrite,
-    // Future columns (data not yet available):
-    Count // Must be last
+    Power,
+    NetSent,
+    NetReceived,
+    Count
 };
 
-[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, 19>
+[[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
-    // Keep in sync with ProcessColumn enum (excluding Count).
-    return {
-        ProcessColumn::PID,     ProcessColumn::User,     ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
-        ProcessColumn::Virtual, ProcessColumn::Resident, ProcessColumn::PeakResident, ProcessColumn::Shared,
-        ProcessColumn::CpuTime, ProcessColumn::State,    ProcessColumn::Name,         ProcessColumn::PPID,
-        ProcessColumn::Nice,    ProcessColumn::Threads,  ProcessColumn::PageFaults,   ProcessColumn::Affinity,
-        ProcessColumn::Command, ProcessColumn::IoRead,   ProcessColumn::IoWrite,
-    };
+    return {ProcessColumn::PID,      ProcessColumn::User,        ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
+            ProcessColumn::Virtual,  ProcessColumn::Resident,    ProcessColumn::PeakResident, ProcessColumn::Shared,
+            ProcessColumn::CpuTime,  ProcessColumn::State,       ProcessColumn::Status,       ProcessColumn::Name,
+            ProcessColumn::PPID,     ProcessColumn::Nice,        ProcessColumn::Threads,      ProcessColumn::PageFaults,
+            ProcessColumn::Affinity, ProcessColumn::Command,     ProcessColumn::IoRead,       ProcessColumn::IoWrite,
+            ProcessColumn::NetSent,  ProcessColumn::NetReceived, ProcessColumn::Power};
 }
 
 [[nodiscard]] constexpr auto processColumnCount() -> std::size_t
@@ -62,7 +63,8 @@ enum class ProcessColumn : std::uint8_t
 /// Column metadata for display and configuration
 struct ProcessColumnInfo
 {
-    std::string_view name;        // Display name in header
+    std::string_view name;        // Display name in header (can be short like "S")
+    std::string_view menuName;    // Display name in context menu (full name like "State")
     std::string_view configKey;   // Key used in config file
     float defaultWidth;           // Default column width
     bool defaultVisible;          // Visible by default
@@ -76,43 +78,51 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     // clang-format off
     constexpr std::array<ProcessColumnInfo, processColumnCount()> infos = {{
         // PID - always visible
-        {.name="PID", .configKey="pid", .defaultWidth=60.0F, .defaultVisible=true, .canHide=false, .description="Process ID"},
+        {.name="PID", .menuName="PID", .configKey="pid", .defaultWidth=60.0F, .defaultVisible=true, .canHide=false, .description="Process ID"},
         // User
-        {.name="User", .configKey="user", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Process owner"},
+        {.name="User", .menuName="User", .configKey="user", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Process owner"},
         // CPU%
-        {.name="CPU %", .configKey="cpu_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="CPU usage percentage"},
+        {.name="CPU %", .menuName="CPU %", .configKey="cpu_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="CPU usage percentage"},
         // MEM%
-        {.name="MEM %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
+        {.name="MEM %", .menuName="MEM %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
         // VIRT
-        {.name="VIRT", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
+        {.name="VIRT", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory size"},
         // RES
-        {.name="RES", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
+        {.name="RES", .menuName="Resident Memory", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Resident memory (physical RAM used)"},
         // PEAK RES
-        {.name="PEAK", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
+        {.name="PEAK", .menuName="Peak Resident", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
         // SHR
-        {.name="SHR", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
+        {.name="SHR", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // TIME+
-        {.name="TIME+", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS.cc)"},
+        {.name="TIME+", .menuName="CPU Time", .configKey="cpu_time", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Cumulative CPU time (H:MM:SS.cc)"},
         // State
-        {.name="S", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
+        {.name="S", .menuName="State", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
+        // Status
+        {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Name
-        {.name="Name", .configKey="name", .defaultWidth=120.0F, .defaultVisible=true, .canHide=false, .description="Process name"},
+        {.name="Name", .menuName="Name", .configKey="name", .defaultWidth=120.0F, .defaultVisible=true, .canHide=false, .description="Process name"},
         // PPID
-        {.name="PPID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
+        {.name="PPID", .menuName="Parent PID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Nice
-        {.name="NI", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
+        {.name="NI", .menuName="Nice", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
         // Threads
-        {.name="THR", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
+        {.name="THR", .menuName="Threads", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Page Faults
-        {.name="PF", .configKey="page_faults", .defaultWidth=75.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
+        {.name="PF", .menuName="Page Faults", .configKey="page_faults", .defaultWidth=75.0F, .defaultVisible=false, .canHide=true, .description="Total page faults (cumulative)"},
         // Affinity
-        {.name="Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
+        {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Command
-        {.name="Command", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
+        {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
         // I/O Read
-        {.name="I/O Read", .configKey="io_read", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk read rate (bytes/sec)"},
+        {.name="I/O Read", .menuName="I/O Read", .configKey="io_read", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk read rate (bytes/sec)"},
         // I/O Write
-        {.name="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
+        {.name="I/O Write", .menuName="I/O Write", .configKey="io_write", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Disk write rate (bytes/sec)"},
+        // Power
+        {.name="Power", .menuName="Power", .configKey="power", .defaultWidth=100.0F, .defaultVisible=true, .canHide=true, .description="Power consumption in watts (platform-dependent)"},
+        // Net Sent
+        {.name="Net Sent", .menuName="Net Sent", .configKey="net_sent", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network send rate (bytes/sec)"},
+        // Net Received
+        {.name="Net Recv", .menuName="Net Received", .configKey="net_recv", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network receive rate (bytes/sec)"},
     }};
     // clang-format on
 
@@ -127,7 +137,7 @@ struct ProcessColumnSettings
     ProcessColumnSettings()
     {
         // Initialize with defaults
-        for (ProcessColumn col : allProcessColumns())
+        for (const auto col : allProcessColumns())
         {
             visible[toIndex(col)] = getColumnInfo(col).defaultVisible;
         }

@@ -83,7 +83,7 @@ template<typename T, size_t Capacity> class History
 
         // Optimize: if data is not wrapped, use single memcpy-equivalent
         const size_t readStart = (m_WriteIndex + Capacity - m_Size) % Capacity;
-        
+
         if (readStart + count <= Capacity)
         {
             // Data is contiguous in the ring buffer
@@ -96,7 +96,7 @@ template<typename T, size_t Capacity> class History
             std::copy_n(m_Data.data() + readStart, firstChunk, buffer);
             std::copy_n(m_Data.data(), count - firstChunk, buffer + firstChunk);
         }
-        
+
         return count;
     }
 
