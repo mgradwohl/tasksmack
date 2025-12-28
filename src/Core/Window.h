@@ -29,7 +29,7 @@ class Window
 
     void swapBuffers() const;
 
-    [[nodiscard]] bool shouldClose() const;
+    [[nodiscard]] bool shouldClose() const noexcept;
 
     [[nodiscard]] int getWidth() const
     {
