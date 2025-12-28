@@ -160,49 +160,73 @@ const Platform::SystemCapabilities& SystemModel::capabilities() const
 std::vector<float> SystemModel::cpuHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_CpuHistory.begin(), m_CpuHistory.end());
+    std::vector<float> result;
+    result.reserve(m_CpuHistory.size());
+    result.assign(m_CpuHistory.begin(), m_CpuHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::cpuUserHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
+    std::vector<float> result;
+    result.reserve(m_CpuUserHistory.size());
+    result.assign(m_CpuUserHistory.begin(), m_CpuUserHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::cpuSystemHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
+    std::vector<float> result;
+    result.reserve(m_CpuSystemHistory.size());
+    result.assign(m_CpuSystemHistory.begin(), m_CpuSystemHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::cpuIowaitHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end());
+    std::vector<float> result;
+    result.reserve(m_CpuIowaitHistory.size());
+    result.assign(m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::cpuIdleHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_CpuIdleHistory.begin(), m_CpuIdleHistory.end());
+    std::vector<float> result;
+    result.reserve(m_CpuIdleHistory.size());
+    result.assign(m_CpuIdleHistory.begin(), m_CpuIdleHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::memoryHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_MemoryHistory.begin(), m_MemoryHistory.end());
+    std::vector<float> result;
+    result.reserve(m_MemoryHistory.size());
+    result.assign(m_MemoryHistory.begin(), m_MemoryHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end());
+    std::vector<float> result;
+    result.reserve(m_MemoryCachedHistory.size());
+    result.assign(m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end());
+    return result;
 }
 
 std::vector<float> SystemModel::swapHistory() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<float>(m_SwapHistory.begin(), m_SwapHistory.end());
+    std::vector<float> result;
+    result.reserve(m_SwapHistory.size());
+    result.assign(m_SwapHistory.begin(), m_SwapHistory.end());
+    return result;
 }
 
 std::vector<std::vector<float>> SystemModel::perCoreHistory() const
@@ -222,7 +246,10 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 std::vector<double> SystemModel::timestamps() const
 {
     std::shared_lock lock(m_Mutex);
-    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
+    std::vector<double> result;
+    result.reserve(m_Timestamps.size());
+    result.assign(m_Timestamps.begin(), m_Timestamps.end());
+    return result;
 }
 
 void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds)
