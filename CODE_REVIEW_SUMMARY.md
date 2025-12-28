@@ -37,7 +37,7 @@ The TaskSmack codebase demonstrates:
 - **NOLINT suppressions**: 13 total
   - 11 properly justified (OpenGL/Win32 API casts)
   - 2 needed documentation ← Fixed in this PR
-  
+
 - **TODOs**: 2 found
   - Both converted to issue references ← Fixed in this PR
 

@@ -340,7 +340,7 @@ Plus per-core history: 300 samples × 16 cores × 4 bytes = ~20KB
 std::vector<ProcessSnapshot> m_Snapshots;
 ```
 
-**Size estimate**: 
+**Size estimate**:
 - ProcessSnapshot ~200 bytes per process
 - 1000 processes = 200KB
 - Stored in ProcessModel + copied to UI
