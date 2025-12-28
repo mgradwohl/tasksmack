@@ -35,8 +35,7 @@ TaskSmack demonstrates **excellent architectural discipline** with clear layer s
 
 **Weaknesses:**
 - ⚠️ Zero test coverage for Core and App layers (HIGH RISK)
-- ⚠️ Critical error paths use assert() which disappears in release builds
-- ⚠️ Memory leak in ProcessModel (network baselines never pruned)
+- ⚠️ Critical error paths use assert() which disappears in release builds (FIXED)
 - ⚠️ Performance issue with large process counts (copies under lock)
 - ⚠️ Limited noexcept usage
 
@@ -110,18 +109,18 @@ TaskSmack demonstrates **excellent architectural discipline** with clear layer s
 
 ---
 
-### P1 Issues (Should Fix - 6 issues)
+### P1 Issues (Should Fix - 5 issues + 1 corrected analysis)
 
-#### 4. ProcessModel Network Baselines Never Pruned - Memory Leak
-**Severity:** P1  
+#### 4. ProcessModel Network Baselines - Analysis Correction
+**Severity:** ~~P1~~ **Not an Issue**  
 **Location:** `src/Domain/ProcessModel.cpp:99-100`  
-**Category:** Performance, Memory Leak
+**Category:** ~~Performance, Memory Leak~~ Analysis Correction
 
-**Why it matters:** Unbounded growth. 10K processes = 480KB leaked.
+**Original claim:** Network baselines grow without bound as processes are created and terminated.
 
-**Minimal fix:** Add pruning loop after snapshot computation (5 lines).
+**Correction:** After code analysis, this is **not a memory leak**. The `newNetworkBaselines` map is rebuilt fresh from current counters each iteration (line 99-100), only containing active processes, then replaces the old map (line 211). Terminated processes are automatically pruned.
 
-**Test impact:** Add test creating/terminating 1000 processes, verify map pruned.
+**Status:** No fix needed. This entry corrects an earlier inaccurate analysis.
 
 ---
 
@@ -502,8 +501,9 @@ cmake --build --preset release
 # Expected: throw instead of silent failure
 ```
 
-### For Memory Leak Fix (Issue #4)
+### For ProcessModel Analysis Verification
 ```bash
+# Verify network baselines don't leak (originally misreported as Issue #4)
 # Build with ASan
 cmake --preset asan-ubsan
 cmake --build --preset asan-ubsan
@@ -511,9 +511,9 @@ cmake --build --preset asan-ubsan
 # Create process churn
 for i in {1..10000}; do (sleep 0.1 &); done
 
-# Monitor memory
+# Monitor memory - should stay stable (baselines are already pruned correctly)
 watch -n 5 'ps -o rss= -p $(pidof TaskSmack)'
-# Expected: RSS stays stable
+# Expected: RSS stays stable (confirms no leak)
 ```
 
 ### For Performance Fix (Issue #5)
@@ -627,10 +627,9 @@ TaskSmack is a **well-architected, modern C++23 codebase** with excellent separa
 
 **Primary Recommendations:**
 1. **Add Core and App layer tests** (highest priority)
-2. **Replace assertions with exceptions** in critical paths
-3. **Fix memory leak** in ProcessModel network baselines
-4. **Optimize snapshots()** to reduce lock contention
-5. **Add UserConfig error recovery**
+2. **Replace assertions with exceptions** in critical paths (FIXED in this PR)
+3. **Optimize snapshots()** to reduce lock contention
+4. **Add UserConfig error recovery**
 
 **Overall Assessment:**
 
