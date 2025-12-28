@@ -116,24 +116,13 @@ std::unordered_map<std::uint64_t, NetworkBaseline> newNetworkBaselines;
 newNetworkBaselines.reserve(counters.size());
 ```
 
-**Issue:** `m_NetworkBaselines` grows with every unique process (uniqueKey = PID + startTime). When processes terminate, their baselines remain in the map forever. On systems with high process churn (build servers, containers), this causes unbounded memory growth.
+**Issue (corrected):** A previous review claimed that `m_NetworkBaselines` would grow without bound because baselines for terminated processes were never removed.
 
-**Impact:** 
-- 48 bytes per process baseline
-- 10,000 terminated processes = 480KB leaked
-- 1M processes over time = 48MB leaked
+**Clarification:** In the current implementation, `newNetworkBaselines` is rebuilt from the current `counters` on each iteration, and `m_NetworkBaselines` is replaced with this freshly built map. Only baselines for currently observed processes are inserted, so entries for terminated processes are dropped automatically when the replacement occurs.
 
-**Fix:** Add pruning after computing snapshots:
-```cpp
-// After line 220, add:
-// Prune stale network baselines
-for (auto it = m_NetworkBaselines.begin(); it != m_NetworkBaselines.end();) {
-    if (m_ActiveKeys.find(it->first) == m_ActiveKeys.end()) {
-        it = m_NetworkBaselines.erase(it);
-    } else {
-        ++it;
-    }
-}
+**Impact:** There is no memory leak arising from `m_NetworkBaselines`; network baselines for terminated processes are naturally pruned as part of the map replacement pattern.
+
+**Status:** No code change required. This comment exists solely to correct the earlier, inaccurate leak description.
 ```
 
 **Test:** 
