@@ -977,6 +977,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
     };
 
     std::vector<StackFrame> stack;
+    stack.reserve(32); // Reserve space for typical tree depth to avoid reallocations
     stack.push_back(StackFrame{.procIdx = procIdx, .depth = depth});
 
     while (!stack.empty())
@@ -1000,6 +1001,7 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
 
         if (childrenIt != tree.end())
         {
+            filteredChildren.reserve(childrenIt->second.size());
             // Only count children that are in the filtered set
             for (const std::size_t childIdx : childrenIt->second)
             {

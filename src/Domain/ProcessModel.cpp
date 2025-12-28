@@ -10,6 +10,7 @@
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
+#include <unordered_set>
 
 namespace Domain
 {
@@ -90,11 +91,9 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     std::vector<ProcessSnapshot> newSnapshots;
     newSnapshots.reserve(counters.size());
 
-    std::unordered_map<std::uint64_t, Platform::ProcessCounters> newPrevCounters;
-    newPrevCounters.reserve(counters.size());
-
-    std::unordered_map<std::uint64_t, std::uint64_t> newPeakRss;
-    newPeakRss.reserve(counters.size());
+    // Track active keys to prune stale entries (reuse existing set)
+    m_ActiveKeys.clear();
+    m_ActiveKeys.reserve(counters.size());
 
     // Carry forward network baselines for existing processes, add new ones
     std::unordered_map<std::uint64_t, NetworkBaseline> newNetworkBaselines;
@@ -109,6 +108,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
+        m_ActiveKeys.insert(key);
 
         const Platform::ProcessCounters* previous = nullptr;
         auto prevIt = m_PrevCounters.find(key);
@@ -152,7 +152,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
                 peakRss = std::max(peakIt->second, current.rssBytes);
             }
         }
-        newPeakRss[key] = peakRss;
+        m_PeakRss[key] = peakRss;
 
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
@@ -204,13 +204,16 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         aggThreads += static_cast<double>(snapRef.threadCount);
         aggPower += snapRef.powerWatts;
 
-        newPrevCounters[key] = current;
+        m_PrevCounters[key] = current;
     }
 
     m_Snapshots = std::move(newSnapshots);
-    m_PrevCounters = std::move(newPrevCounters);
-    m_PeakRss = std::move(newPeakRss);
     m_NetworkBaselines = std::move(newNetworkBaselines);
+
+    // Prune stale entries from tracking maps (dead processes) using modern C++23 idiom
+    std::erase_if(m_PrevCounters, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
+    std::erase_if(m_PeakRss, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
+
     m_PrevTotalCpuTime = totalCpuTime;
 
     if (m_HasPrevSampleTime && elapsedSeconds > 0.0)

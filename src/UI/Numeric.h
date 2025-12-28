@@ -20,7 +20,7 @@ namespace UI::Numeric
     return clampPercent(percent) / 100.0;
 }
 
-// Re-export Domain::Numeric::narrowOr for UI layer convenience
+// Re-export Domain::Numeric utilities for UI layer convenience
 using Domain::Numeric::narrowOr;
 using Domain::Numeric::toDouble;
 

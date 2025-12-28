@@ -353,6 +353,7 @@ struct AlignedNumericParts
     }
 
     std::string result;
+    result.reserve(64); // Reserve space for typical affinity string (avoid reallocations)
     int rangeStart = -1;
     int rangeEnd = -1;
     bool hasAny = false;
