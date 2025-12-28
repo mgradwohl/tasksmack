@@ -48,14 +48,17 @@ namespace
 
 /// Helper to extract double value from PDH counter union.
 /// @param counter PDH counter handle
-/// @return The double value on success, 0.0 on failure
-[[nodiscard]] double getPdhDoubleValue(PDH_HCOUNTER counter) noexcept
+/// @return The double value on success, 0.0 on failure (and logs on failure)
+[[nodiscard]] double getPdhDoubleValue(PDH_HCOUNTER counter)
 {
-    PDH_FMT_COUNTERVALUE value;
-    if (PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
+    PDH_FMT_COUNTERVALUE value{}; // Zero-initialize for safety
+    const PDH_STATUS status = PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value);
+    if (status == ERROR_SUCCESS)
     {
         return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
     }
+
+    spdlog::error("WindowsDiskProbe: PdhGetFormattedCounterValue failed with status {}", status);
     return 0.0;
 }
 
