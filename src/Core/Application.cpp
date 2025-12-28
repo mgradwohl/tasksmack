@@ -86,7 +86,8 @@ void Application::run()
         lastTime = currentTime;
 
         // Clamp delta time to avoid huge jumps
-        deltaTime = std::min(deltaTime, 0.1F);
+        constexpr float MAX_DELTA_TIME = 0.1F;
+        deltaTime = std::min(deltaTime, MAX_DELTA_TIME);
 
         // Update all layers
         for (const auto& layer : m_LayerStack)
