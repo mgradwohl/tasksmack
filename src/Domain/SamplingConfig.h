@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 
 namespace Domain::Sampling
 {
@@ -9,6 +10,9 @@ namespace Domain::Sampling
 inline constexpr int REFRESH_INTERVAL_DEFAULT_MS = 1000;
 inline constexpr int REFRESH_INTERVAL_MIN_MS = 100;
 inline constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
+
+// Common refresh rate presets (milliseconds) used for UI snapping and tick marks
+inline constexpr std::array<int, 4> COMMON_REFRESH_INTERVALS_MS = {100, 250, 500, 1000};
 
 // History window (seconds)
 inline constexpr int HISTORY_SECONDS_DEFAULT = 300; // 5 minutes

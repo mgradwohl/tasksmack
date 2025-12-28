@@ -33,10 +33,11 @@ namespace
 {
 [[nodiscard]] auto bindTexture(GLuint textureId) -> GLuint
 {
-    GLuint previous = 0U;
-    // glGetIntegerv expects GLint*, but texture IDs are GLuint. This cast is safe because
-    // OpenGL texture IDs are small positive integers that fit in both signed and unsigned 32-bit types.
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, reinterpret_cast<GLint*>(&previous)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    // glGetIntegerv expects GLint*, but texture IDs are GLuint.
+    // Use intermediate variable to avoid reinterpret_cast.
+    GLint temp = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &temp);
+    const GLuint previous = static_cast<GLuint>(temp);
     glBindTexture(GL_TEXTURE_2D, textureId);
     return previous;
 }
