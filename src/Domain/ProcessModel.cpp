@@ -127,28 +127,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     }
 
     // Prune stale entries from tracking maps (dead processes)
-    for (auto it = m_PrevCounters.begin(); it != m_PrevCounters.end();)
-    {
-        if (activeKeys.find(it->first) == activeKeys.end())
-        {
-            it = m_PrevCounters.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-    for (auto it = m_PeakRss.begin(); it != m_PeakRss.end();)
-    {
-        if (activeKeys.find(it->first) == activeKeys.end())
-        {
-            it = m_PeakRss.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
+    std::erase_if(m_PrevCounters, [&activeKeys](const auto& entry) { return !activeKeys.contains(entry.first); });
+    std::erase_if(m_PeakRss, [&activeKeys](const auto& entry) { return !activeKeys.contains(entry.first); });
 
     m_PrevTotalCpuTime = totalCpuTime;
 }
