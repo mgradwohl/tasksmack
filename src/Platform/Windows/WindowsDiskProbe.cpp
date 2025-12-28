@@ -46,6 +46,22 @@ struct WindowsDiskProbe::Impl
 namespace
 {
 
+/// Helper to extract double value from PDH counter union.
+/// @param counter PDH counter handle
+/// @return The double value on success, 0.0 on failure (and logs on failure)
+[[nodiscard]] double getPdhDoubleValue(PDH_HCOUNTER counter)
+{
+    PDH_FMT_COUNTERVALUE value{}; // Zero-initialize for safety
+    const PDH_STATUS status = PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value);
+    if (status == ERROR_SUCCESS)
+    {
+        return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
+    }
+
+    spdlog::error("WindowsDiskProbe: PdhGetFormattedCounterValue failed with status {}", status);
+    return 0.0;
+}
+
 } // namespace
 
 WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
@@ -198,40 +214,28 @@ SystemDiskCounters WindowsDiskProbe::read()
         disk.sectorSize = 512;
         disk.isPhysicalDevice = true;
 
-        PDH_FMT_COUNTERVALUE value;
-
         // Read bytes/sec
-        if (PdhGetFormattedCounterValue(counterSet.readBytesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
-        {
-            // Convert bytes/sec to cumulative sectors (approximate)
-            const double readBytesPerSec = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-            disk.readSectors = static_cast<uint64_t>(readBytesPerSec / static_cast<double>(disk.sectorSize));
-        }
+        const double readBytesPerSec = getPdhDoubleValue(counterSet.readBytesCounter);
+        disk.readSectors = static_cast<uint64_t>(readBytesPerSec / static_cast<double>(disk.sectorSize));
 
-        if (PdhGetFormattedCounterValue(counterSet.writeBytesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
-        {
-            const double writeBytesPerSec = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-            disk.writeSectors = static_cast<uint64_t>(writeBytesPerSec / static_cast<double>(disk.sectorSize));
-        }
+        // Write bytes/sec
+        const double writeBytesPerSec = getPdhDoubleValue(counterSet.writeBytesCounter);
+        disk.writeSectors = static_cast<uint64_t>(writeBytesPerSec / static_cast<double>(disk.sectorSize));
 
         // Read operations/sec
-        if (PdhGetFormattedCounterValue(counterSet.readsCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
-        {
-            const double readsPerSec = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-            disk.readsCompleted = static_cast<uint64_t>(readsPerSec);
-        }
+        const double readsPerSec = getPdhDoubleValue(counterSet.readsCounter);
+        disk.readsCompleted = static_cast<uint64_t>(readsPerSec);
 
-        if (PdhGetFormattedCounterValue(counterSet.writesCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
-        {
-            const double writesPerSec = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-            disk.writesCompleted = static_cast<uint64_t>(writesPerSec);
-        }
+        // Write operations/sec
+        const double writesPerSec = getPdhDoubleValue(counterSet.writesCounter);
+        disk.writesCompleted = static_cast<uint64_t>(writesPerSec);
 
         // Idle time (convert to busy time for ioTimeMs)
-        if (PdhGetFormattedCounterValue(counterSet.idleTimeCounter, PDH_FMT_DOUBLE, nullptr, &value) == ERROR_SUCCESS)
+        const double idlePercent = getPdhDoubleValue(counterSet.idleTimeCounter);
+        // Handle all valid idle percentages, including 0.0 (100% busy)
+        if (idlePercent >= 0.0)
         {
             // Idle time is a percentage; busy time = 100 - idle
-            const double idlePercent = value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
             const double busyPercent = std::clamp(100.0 - idlePercent, 0.0, 100.0);
             // Convert to milliseconds (approximate based on sample interval)
             disk.ioTimeMs = static_cast<uint64_t>(busyPercent * 10.0); // Rough approximation

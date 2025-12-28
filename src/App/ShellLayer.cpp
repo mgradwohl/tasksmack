@@ -40,16 +40,18 @@ namespace App
 namespace
 {
 
+// Common refresh rate presets (ms) used for snapping and UI tick marks
+constexpr std::array<int, 4> REFRESH_INTERVAL_STOPS = {100, 250, 500, 1000};
+
 [[nodiscard]] int snapRefreshIntervalMs(int value)
 {
     // Sticky stops for common refresh rates.
     // Snap only when close enough to a stop (threshold scales with stop size).
-    constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
 
     int best = value;
     int bestDist = std::numeric_limits<int>::max();
 
-    for (const int stop : stops)
+    for (const int stop : REFRESH_INTERVAL_STOPS)
     {
         const int dist = std::abs(value - stop);
         // Make it "at least twice as sticky":
@@ -73,7 +75,6 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
         return;
     }
 
-    constexpr std::array<int, 4> stops = {100, 250, 500, 1000};
     auto* drawList = ImGui::GetWindowDrawList();
 
     // Use a visible but subdued color; border can be too subtle on some themes.
@@ -83,7 +84,7 @@ void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int mi
     // Keep ticks inside the slider frame.
     ImGui::PushClipRect(frameMin, frameMax, true);
 
-    for (const int stop : stops)
+    for (const int stop : REFRESH_INTERVAL_STOPS)
     {
         if (stop < minValue || stop > maxValue)
         {
