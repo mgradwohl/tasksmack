@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <unordered_set>
 
 namespace Domain
 {
@@ -77,19 +78,18 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
     }
 
-    // Build new snapshots
-    std::vector<ProcessSnapshot> newSnapshots;
-    newSnapshots.reserve(counters.size());
+    // Build new snapshots (reuse allocated capacity)
+    m_Snapshots.clear();
+    m_Snapshots.reserve(counters.size());
 
-    std::unordered_map<std::uint64_t, Platform::ProcessCounters> newPrevCounters;
-    newPrevCounters.reserve(counters.size());
-
-    std::unordered_map<std::uint64_t, std::uint64_t> newPeakRss;
-    newPeakRss.reserve(counters.size());
+    // Track active keys to prune stale entries
+    std::unordered_set<std::uint64_t> activeKeys;
+    activeKeys.reserve(counters.size());
 
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
+        activeKeys.insert(key);
 
         // Find previous counters for this process (if exists and same instance)
         const Platform::ProcessCounters* previous = nullptr;
@@ -115,21 +115,41 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
                 peakRss = std::max(peakIt->second, current.rssBytes);
             }
         }
-        newPeakRss[key] = peakRss;
+        m_PeakRss[key] = peakRss;
 
         // Compute snapshot with deltas and rates, then set peak memory
         auto snapshot = computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds);
         snapshot.peakMemoryBytes = peakRss;
-        newSnapshots.push_back(std::move(snapshot));
+        m_Snapshots.push_back(std::move(snapshot));
 
         // Store for next iteration
-        newPrevCounters[key] = current;
+        m_PrevCounters[key] = current;
     }
 
-    // Swap in new data
-    m_Snapshots = std::move(newSnapshots);
-    m_PrevCounters = std::move(newPrevCounters);
-    m_PeakRss = std::move(newPeakRss);
+    // Prune stale entries from tracking maps (dead processes)
+    for (auto it = m_PrevCounters.begin(); it != m_PrevCounters.end();)
+    {
+        if (activeKeys.find(it->first) == activeKeys.end())
+        {
+            it = m_PrevCounters.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    for (auto it = m_PeakRss.begin(); it != m_PeakRss.end();)
+    {
+        if (activeKeys.find(it->first) == activeKeys.end())
+        {
+            it = m_PeakRss.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
     m_PrevTotalCpuTime = totalCpuTime;
 }
 

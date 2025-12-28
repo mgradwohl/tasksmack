@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 
@@ -74,11 +75,28 @@ template<typename T, size_t Capacity> class History
     /// Returns number of elements copied.
     size_t copyTo(T* buffer, size_t maxCount) const
     {
-        size_t count = (maxCount < m_Size) ? maxCount : m_Size;
-        for (size_t i = 0; i < count; ++i)
+        const size_t count = std::min(maxCount, m_Size);
+        if (count == 0)
         {
-            buffer[i] = (*this)[i];
+            return 0;
         }
+
+        // Optimize: if data is not wrapped, use single memcpy-equivalent
+        const size_t readStart = (m_WriteIndex + Capacity - m_Size) % Capacity;
+        
+        if (readStart + count <= Capacity)
+        {
+            // Data is contiguous in the ring buffer
+            std::copy_n(m_Data.data() + readStart, count, buffer);
+        }
+        else
+        {
+            // Data wraps around: copy in two chunks
+            const size_t firstChunk = Capacity - readStart;
+            std::copy_n(m_Data.data() + readStart, firstChunk, buffer);
+            std::copy_n(m_Data.data(), count - firstChunk, buffer + firstChunk);
+        }
+        
         return count;
     }
 

@@ -20,21 +20,14 @@ namespace UI::Numeric
     return clampPercent(percent) / 100.0;
 }
 
-// Re-export Domain::Numeric::narrowOr for UI layer convenience
+// Re-export Domain::Numeric utilities for UI layer convenience
 using Domain::Numeric::narrowOr;
+using Domain::Numeric::toDouble;
 
 // ImPlot series counts are int; keep conversion explicit + checked.
 [[nodiscard]] constexpr auto checkedCount(std::size_t value) noexcept -> int
 {
     return narrowOr<int>(value, std::numeric_limits<int>::max());
-}
-
-template<typename T>
-    requires(std::integral<T> || std::floating_point<T>)
-[[nodiscard]] constexpr auto toDouble(T value) noexcept -> double
-{
-    // Explicit conversion to satisfy strict warnings-as-errors (e.g. -Wimplicit-int-float-conversion, -Wdouble-promotion).
-    return static_cast<double>(value);
 }
 
 [[nodiscard]] constexpr auto toFloatNarrow(double value) noexcept -> float

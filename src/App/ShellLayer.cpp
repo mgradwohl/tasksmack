@@ -461,7 +461,7 @@ void ShellLayer::renderMenuBar()
 
             if (ImGui::MenuItem("Options..."))
             {
-                // TODO: Open options dialog
+                // Options dialog deferred - settings are currently accessible via menu
             }
             ImGui::EndMenu();
         }

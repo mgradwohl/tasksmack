@@ -187,6 +187,7 @@ struct ByteUnit
     // Build a compact representation of the affinity mask
     // Examples: "0-3" (cores 0,1,2,3), "0,2,4" (cores 0,2,4), "All" (all cores set)
     std::string result;
+    result.reserve(64); // Reserve space for typical affinity string (avoid reallocations)
     int rangeStart = -1;
     int rangeEnd = -1;
     bool hasAny = false;
