@@ -91,6 +91,11 @@ TEST(LinuxPathProviderTest, GetUserConfigDirEndsWithTasksmack)
 
 TEST(LinuxPathProviderTest, GetUserConfigDirRespectsXDG_CONFIG_HOME)
 {
+    // NOTE: This test modifies process-wide environment variables which could
+    // affect parallel test execution. The test restores original values but
+    // there's a brief window of modification. If this causes flakiness in CI,
+    // consider skipping this test or using a test fixture with proper isolation.
+    
     LinuxPathProvider provider;
 
     // Save original value
@@ -120,6 +125,11 @@ TEST(LinuxPathProviderTest, GetUserConfigDirRespectsXDG_CONFIG_HOME)
 
 TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToHome)
 {
+    // NOTE: This test modifies process-wide environment variables (XDG_CONFIG_HOME)
+    // which could affect parallel test execution. The test restores original values
+    // but there's a brief window of modification. If this causes flakiness in CI,
+    // consider skipping this test or using a test fixture with proper isolation.
+    
     LinuxPathProvider provider;
 
     // Save original values
@@ -154,6 +164,11 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToHome)
 
 TEST(LinuxPathProviderTest, GetUserConfigDirHandlesEmptyXDG)
 {
+    // NOTE: This test modifies process-wide environment variables (XDG_CONFIG_HOME)
+    // which could affect parallel test execution. The test restores original values
+    // but there's a brief window of modification. If this causes flakiness in CI,
+    // consider skipping this test or using a test fixture with proper isolation.
+    
     LinuxPathProvider provider;
 
     // Save original value
