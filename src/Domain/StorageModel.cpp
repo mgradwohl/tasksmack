@@ -177,7 +177,6 @@ std::vector<StorageSnapshot> StorageModel::history() const
 {
     std::shared_lock lock(m_Mutex);
     std::vector<StorageSnapshot> result;
-    result.reserve(m_History.size());
     result.assign(m_History.begin(), m_History.end());
     return result;
 }
