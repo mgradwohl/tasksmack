@@ -31,6 +31,10 @@
 #include <windows.h>
 #include <shellapi.h>
 // clang-format on
+#else
+#include <unistd.h> // fork, execlp, _exit
+#include <cerrno>   // errno
+#include <cstring>  // strerror
 #endif
 
 namespace App
@@ -124,17 +128,27 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     }
     spdlog::info("Opened config file: {}", filePath.string());
 #else
-    // Linux: Use xdg-open to open the file with the default editor
-    const std::string command = "xdg-open \"" + filePath.string() + "\" &";
-    const int result = std::system(command.c_str()); // NOLINT(concurrency-mt-unsafe)
-    if (result != 0)
+    // Linux: Use fork/exec to safely spawn xdg-open (avoids shell injection)
+    const pid_t pid = fork();
+    if (pid == -1)
     {
-        spdlog::error("Failed to open file with default editor: {}", filePath.string());
+        spdlog::error("Failed to fork process for xdg-open: {}", strerror(errno));
+        return;
     }
-    else
+
+    if (pid == 0)
     {
-        spdlog::info("Opened config file: {}", filePath.string());
+        // Child process: exec xdg-open
+        const std::string pathStr = filePath.string();
+        // Safe: no shell involved, arguments are separate
+        execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
+        // execlp only returns on error
+        spdlog::error("Failed to exec xdg-open: {}", strerror(errno));
+        _exit(EXIT_FAILURE); // Use _exit in child to avoid flushing parent's buffers
     }
+
+    // Parent process: don't wait (fire and forget)
+    spdlog::info("Opened config file with xdg-open (PID {}): {}", pid, filePath.string());
 #endif
 }
 

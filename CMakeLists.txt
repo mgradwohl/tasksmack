@@ -461,6 +461,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
+    src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -469,6 +470,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
+    src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )

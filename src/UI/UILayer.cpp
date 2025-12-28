@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "Platform/Factory.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -20,70 +21,20 @@
 #include <cstdlib>
 #include <filesystem>
 
-#ifdef __linux__
-// No additional includes needed - std::filesystem handles it
-#elif defined(_WIN32)
-#include <windows.h>
-#endif
-
 namespace
 {
-// Best-effort user config directory (mirrors UserConfig logic without adding an App dependency)
+// Get user config directory using platform abstraction
 std::filesystem::path getUserConfigDir()
 {
-#ifdef _WIN32
-    if (char* appData = nullptr; _dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
-    {
-        std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
-        if (appData[0] != '\0')
-        {
-            return std::filesystem::path(appData) / "TaskSmack";
-        }
-    }
-    return std::filesystem::current_path();
-#else
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
-    {
-        if (xdg[0] != '\0')
-        {
-            return std::filesystem::path(xdg) / "tasksmack";
-        }
-    }
-
-    if (const char* home = std::getenv("HOME"))
-    {
-        if (home[0] != '\0')
-        {
-            return std::filesystem::path(home) / ".config" / "tasksmack";
-        }
-    }
-
-    return std::filesystem::current_path();
-#endif
+    auto pathProvider = Platform::makePathProvider();
+    return pathProvider->getUserConfigDir();
 }
 
-// Get directory containing the executable
+// Get directory containing the executable using platform abstraction
 std::filesystem::path getExecutableDir()
 {
-#ifdef __linux__
-    // C++17: read_symlink handles /proc/self/exe directly
-    std::error_code errorCode;
-    auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
-    if (!errorCode)
-    {
-        return exePath.parent_path();
-    }
-#elif defined(_WIN32)
-    // Use wide string API and let filesystem handle conversion
-    std::wstring buffer(MAX_PATH, L'\0');
-    DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (len > 0 && len < buffer.size())
-    {
-        buffer.resize(len);
-        return std::filesystem::path(buffer).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
+    auto pathProvider = Platform::makePathProvider();
+    return pathProvider->getExecutableDir();
 }
 
 // Convert typographic points to pixels based on display DPI
