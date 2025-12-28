@@ -231,7 +231,8 @@ SystemDiskCounters WindowsDiskProbe::read()
 
         // Idle time (convert to busy time for ioTimeMs)
         const double idlePercent = getPdhDoubleValue(counterSet.idleTimeCounter);
-        if (idlePercent > 0.0)
+        // Handle all valid idle percentages, including 0.0 (100% busy)
+        if (idlePercent >= 0.0)
         {
             // Idle time is a percentage; busy time = 100 - idle
             const double busyPercent = std::clamp(100.0 - idlePercent, 0.0, 100.0);
