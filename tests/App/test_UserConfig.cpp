@@ -299,8 +299,15 @@ TEST(UserSettingsTest, MoveSemantics)
     // Move
     UserSettings moved = std::move(original);
 
+    // Verify moved object has expected values
     EXPECT_EQ(moved.themeId, "move-theme");
     EXPECT_FALSE(moved.imguiLayout.empty());
+
+    // Note: We don't verify the moved-from state of 'original' because the C++ standard
+    // only guarantees that moved-from objects are in a valid but unspecified state.
+    // For std::string (used in themeId and imguiLayout), the moved-from state is
+    // implementation-defined - it may be empty, but this is not guaranteed.
+    // What matters is that the move constructor compiles and the moved object is correct.
 }
 
 TEST(UserSettingsTest, SettingsModificationIsIndependent)
