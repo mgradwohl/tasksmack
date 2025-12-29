@@ -25,8 +25,8 @@ TEST(PriorityConfigTest, ClampNiceInRangeValues)
 TEST(PriorityConfigTest, ClampNiceBoundaryValues)
 {
     // Boundary values should remain unchanged
-    EXPECT_EQ(clampNice(MIN_NICE), MIN_NICE);     // -20
-    EXPECT_EQ(clampNice(MAX_NICE), MAX_NICE);     // 19
+    EXPECT_EQ(clampNice(MIN_NICE), MIN_NICE); // -20
+    EXPECT_EQ(clampNice(MAX_NICE), MAX_NICE); // 19
 }
 
 TEST(PriorityConfigTest, ClampNiceBelowMinimum)
@@ -122,19 +122,19 @@ TEST(PriorityConfigTest, GetPriorityLabelIdle)
 TEST(PriorityConfigTest, GetPriorityLabelBoundaryValues)
 {
     // Test exact threshold values to ensure correct classification
-    EXPECT_EQ(getPriorityLabel(HIGH_THRESHOLD), "Above Normal");     // -10
-    EXPECT_EQ(getPriorityLabel(ABOVE_NORMAL_THRESHOLD), "Normal");   // -5
+    EXPECT_EQ(getPriorityLabel(HIGH_THRESHOLD), "Above Normal");         // -10
+    EXPECT_EQ(getPriorityLabel(ABOVE_NORMAL_THRESHOLD), "Normal");       // -5
     EXPECT_EQ(getPriorityLabel(BELOW_NORMAL_THRESHOLD), "Below Normal"); // 5
-    EXPECT_EQ(getPriorityLabel(IDLE_THRESHOLD), "Idle");             // 15
+    EXPECT_EQ(getPriorityLabel(IDLE_THRESHOLD), "Idle");                 // 15
 }
 
 TEST(PriorityConfigTest, GetPriorityLabelBoundaryMinusOne)
 {
     // Test one less than each threshold
-    EXPECT_EQ(getPriorityLabel(HIGH_THRESHOLD - 1), "High");         // -11
+    EXPECT_EQ(getPriorityLabel(HIGH_THRESHOLD - 1), "High");                 // -11
     EXPECT_EQ(getPriorityLabel(ABOVE_NORMAL_THRESHOLD - 1), "Above Normal"); // -6
     EXPECT_EQ(getPriorityLabel(BELOW_NORMAL_THRESHOLD - 1), "Normal");       // 4
-    EXPECT_EQ(getPriorityLabel(IDLE_THRESHOLD - 1), "Below Normal"); // 14
+    EXPECT_EQ(getPriorityLabel(IDLE_THRESHOLD - 1), "Below Normal");         // 14
 }
 
 TEST(PriorityConfigTest, GetPriorityLabelExtremeValues)
@@ -149,9 +149,9 @@ TEST(PriorityConfigTest, GetPriorityLabelExtremeValues)
 TEST(PriorityConfigTest, ClampAndLabelConsistency)
 {
     // Verify that clamped values produce expected labels
-    EXPECT_EQ(getPriorityLabel(clampNice(-100)), "High");    // Clamped to -20
-    EXPECT_EQ(getPriorityLabel(clampNice(100)), "Idle");     // Clamped to 19
-    EXPECT_EQ(getPriorityLabel(clampNice(0)), "Normal");     // Unchanged at 0
+    EXPECT_EQ(getPriorityLabel(clampNice(-100)), "High"); // Clamped to -20
+    EXPECT_EQ(getPriorityLabel(clampNice(100)), "Idle");  // Clamped to 19
+    EXPECT_EQ(getPriorityLabel(clampNice(0)), "Normal");  // Unchanged at 0
 }
 
 TEST(PriorityConfigTest, ConstantsRelationship)
