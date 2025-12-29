@@ -7,6 +7,24 @@
 namespace Platform
 {
 
+namespace
+{
+
+/// Thread-safe environment variable lookup.
+/// secure_getenv is preferred as it's thread-safe and ignores env vars in setuid programs.
+/// Falls back to getenv with NOLINT if secure_getenv is unavailable.
+[[nodiscard]] const char* getEnvSafe(const char* name)
+{
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+    return secure_getenv(name);
+#else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - fallback when secure_getenv unavailable
+    return std::getenv(name);
+#endif
+}
+
+} // namespace
+
 std::filesystem::path LinuxPathProvider::getExecutableDir() const
 {
     // Read /proc/self/exe symlink to get executable path
@@ -24,7 +42,7 @@ std::filesystem::path LinuxPathProvider::getExecutableDir() const
 std::filesystem::path LinuxPathProvider::getUserConfigDir() const
 {
     // Try XDG_CONFIG_HOME first
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"))
+    if (const char* xdg = getEnvSafe("XDG_CONFIG_HOME"))
     {
         if (xdg[0] != '\0')
         {
@@ -33,7 +51,7 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
     }
 
     // Fall back to ~/.config/tasksmack
-    if (const char* home = std::getenv("HOME"))
+    if (const char* home = getEnvSafe("HOME"))
     {
         if (home[0] != '\0')
         {

@@ -25,6 +25,7 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult kill(int32_t pid) override;
     [[nodiscard]] ProcessActionResult stop(int32_t pid) override;
     [[nodiscard]] ProcessActionResult resume(int32_t pid) override;
+    [[nodiscard]] ProcessActionResult setPriority(int32_t pid, int32_t nice) override;
 
   private:
     [[nodiscard]] static ProcessActionResult sendSignal(int32_t pid, int signal, std::string_view signalName);

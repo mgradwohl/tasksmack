@@ -90,6 +90,10 @@ class ProcessDetailsPanel : public Panel
     std::string m_LastActionResult;
     float m_ActionResultTimer = 0.0F;
 
+    // Priority adjustment state
+    int32_t m_PriorityNiceValue = 0;
+    bool m_PriorityChanged = false;
+
     struct SmoothedUsage
     {
         double cpuPercent = 0.0;

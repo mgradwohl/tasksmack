@@ -53,6 +53,13 @@ TEST(ProcessActionsContractTest, NonExistentPidFailsGracefully)
         EXPECT_FALSE(result.success);
         EXPECT_GT(result.errorMessage.size(), 0ULL);
     }
+
+    if (caps.canSetPriority)
+    {
+        const auto result = actions->setPriority(nonExistentPid, 0);
+        EXPECT_FALSE(result.success);
+        EXPECT_GT(result.errorMessage.size(), 0ULL);
+    }
 }
 
 } // namespace Platform

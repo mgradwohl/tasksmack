@@ -20,10 +20,11 @@ namespace Platform
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true, // TerminateProcess
-        .canKill = true,      // TerminateProcess (same as terminate on Windows)
-        .canStop = false,     // Windows doesn't have SIGSTOP equivalent
-        .canContinue = false, // Windows doesn't have SIGCONT equivalent
+        .canTerminate = true,   // TerminateProcess
+        .canKill = true,        // TerminateProcess (same as terminate on Windows)
+        .canStop = false,       // Windows doesn't have SIGSTOP equivalent
+        .canContinue = false,   // Windows doesn't have SIGCONT equivalent
+        .canSetPriority = true, // SetPriorityClass
     };
 }
 
@@ -80,6 +81,82 @@ ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_
     }
 
     spdlog::info("Successfully terminated process {} with exit code {}", pid, exitCode);
+    return ProcessActionResult::ok();
+}
+
+uint32_t WindowsProcessActions::niceToPriorityClass(int32_t nice)
+{
+    // Map Unix nice values (-20 to 19) to Windows priority classes:
+    // nice < -15  -> REALTIME_PRIORITY_CLASS (use HIGH instead to avoid system instability)
+    // nice < -10  -> HIGH_PRIORITY_CLASS
+    // nice < -5   -> ABOVE_NORMAL_PRIORITY_CLASS
+    // nice < 5    -> NORMAL_PRIORITY_CLASS
+    // nice < 15   -> BELOW_NORMAL_PRIORITY_CLASS
+    // nice >= 15  -> IDLE_PRIORITY_CLASS
+    if (nice < -10)
+    {
+        return HIGH_PRIORITY_CLASS;
+    }
+    if (nice < -5)
+    {
+        return ABOVE_NORMAL_PRIORITY_CLASS;
+    }
+    if (nice < 5)
+    {
+        return NORMAL_PRIORITY_CLASS;
+    }
+    if (nice < 15)
+    {
+        return BELOW_NORMAL_PRIORITY_CLASS;
+    }
+    return IDLE_PRIORITY_CLASS;
+}
+
+ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice)
+{
+    if (pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+
+    const uint32_t priorityClass = niceToPriorityClass(nice);
+    spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, nice, pid);
+
+    // Note: Windows APIs require DWORD for PIDs; explicit cast from int32_t is safe.
+    HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(pid));
+
+    if (hProcess == nullptr)
+    {
+        DWORD error = GetLastError();
+        std::string msg;
+        switch (error)
+        {
+        case ERROR_ACCESS_DENIED:
+            msg = "Permission denied - cannot change priority of this process";
+            break;
+        case ERROR_INVALID_PARAMETER:
+            msg = "Process not found - may have already exited";
+            break;
+        default:
+            msg = std::format("Failed to open process {}: error {}", pid, error);
+            break;
+        }
+        spdlog::warn("{}", msg);
+        return ProcessActionResult::error(std::move(msg));
+    }
+
+    const BOOL result = SetPriorityClass(hProcess, priorityClass);
+    const DWORD error = GetLastError();
+    CloseHandle(hProcess);
+
+    if (result == 0)
+    {
+        std::string msg = std::format("Failed to set priority for process {}: error {}", pid, error);
+        spdlog::warn("{}", msg);
+        return ProcessActionResult::error(std::move(msg));
+    }
+
+    spdlog::info("Successfully set priority (nice={}) for PID {}", nice, pid);
     return ProcessActionResult::ok();
 }
 

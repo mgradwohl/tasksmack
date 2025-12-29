@@ -261,6 +261,8 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_LastActionResult.clear();
         m_SmoothedUsage = {};
         m_PeakMemoryPercent = 0.0;
+        m_PriorityChanged = false;
+        m_PriorityNiceValue = 0;
 
         if (pid != -1)
         {
@@ -1284,6 +1286,175 @@ void ProcessDetailsPanel::renderActions()
     }
 
     ImGui::EndGroup();
+
+    // Priority adjustment section
+    if (m_ActionCapabilities.canSetPriority)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Priority Adjustment (Nice Value)");
+        ImGui::Spacing();
+
+        // Initialize slider from current process nice value if not changed
+        if (!m_PriorityChanged && m_HasSnapshot)
+        {
+            m_PriorityNiceValue = m_CachedSnapshot.nice;
+        }
+
+        // Nice value slider: -20 (highest priority) to 19 (lowest priority)
+        constexpr int32_t MIN_NICE = -20;
+        constexpr int32_t MAX_NICE = 19;
+
+        ImGui::PushItemWidth(300);
+        if (ImGui::SliderInt("##nice", &m_PriorityNiceValue, MIN_NICE, MAX_NICE, "%d"))
+        {
+            m_PriorityChanged = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+
+        // Priority label - lambda returns string_view to avoid dead store warning
+        auto getPriorityLabel = [](int32_t nice) -> std::string_view
+        {
+            if (nice <= -15)
+            {
+                return "Real-time";
+            }
+            if (nice <= -10)
+            {
+                return "High";
+            }
+            if (nice <= -5)
+            {
+                return "Above Normal";
+            }
+            if (nice < 5)
+            {
+                return "Normal";
+            }
+            if (nice < 15)
+            {
+                return "Below Normal";
+            }
+            return "Idle";
+        };
+        const std::string_view priorityLabel = getPriorityLabel(m_PriorityNiceValue);
+        ImGui::Text("(%.*s)", static_cast<int>(priorityLabel.size()), priorityLabel.data());
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
+                              "Lower values mean higher priority\n"
+                              "Normal priority = 0\n"
+                              "Note: Lowering priority below 0 typically requires root/admin privileges");
+        }
+
+        // Apply, Set Normal, and Reset buttons
+        const bool canApply = m_PriorityChanged && m_PriorityNiceValue != m_CachedSnapshot.nice;
+
+        if (!canApply)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Apply", ImVec2(80, 0)))
+        {
+            auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
+            if (result.success)
+            {
+                m_LastActionResult =
+                    "Success: Priority set to " + std::to_string(m_PriorityNiceValue) + " for PID " + std::to_string(m_SelectedPid);
+                m_PriorityChanged = false;
+            }
+            else
+            {
+                m_LastActionResult = "Error: " + result.errorMessage;
+            }
+            m_ActionResultTimer = 5.0F;
+        }
+        if (!canApply)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Apply the selected priority to the process");
+        }
+
+        ImGui::SameLine();
+
+        // Set to Normal (nice=0) button
+        constexpr int32_t NORMAL_NICE = 0;
+        const bool isAlreadyNormal = (m_CachedSnapshot.nice == NORMAL_NICE) && !m_PriorityChanged;
+        const bool sliderAtNormal = (m_PriorityNiceValue == NORMAL_NICE);
+
+        if (isAlreadyNormal)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Set Normal (0)", ImVec2(110, 0)))
+        {
+            if (sliderAtNormal)
+            {
+                // Slider already at 0, just apply it
+                auto result = m_ProcessActions->setPriority(m_SelectedPid, NORMAL_NICE);
+                if (result.success)
+                {
+                    m_LastActionResult = "Success: Priority set to Normal (0) for PID " + std::to_string(m_SelectedPid);
+                    m_PriorityChanged = false;
+                    m_PriorityNiceValue = NORMAL_NICE;
+                }
+                else
+                {
+                    m_LastActionResult = "Error: " + result.errorMessage;
+                }
+                m_ActionResultTimer = 5.0F;
+            }
+            else
+            {
+                // Move slider to 0
+                m_PriorityNiceValue = NORMAL_NICE;
+                m_PriorityChanged = true;
+            }
+        }
+        if (isAlreadyNormal)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            if (isAlreadyNormal)
+            {
+                ImGui::SetTooltip("Process is already at normal priority");
+            }
+            else
+            {
+                ImGui::SetTooltip("Set priority to Normal (nice=0, default priority)");
+            }
+        }
+
+        ImGui::SameLine();
+
+        if (!m_PriorityChanged)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Undo", ImVec2(60, 0)))
+        {
+            m_PriorityNiceValue = m_CachedSnapshot.nice;
+            m_PriorityChanged = false;
+        }
+        if (!m_PriorityChanged)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Undo slider changes (revert to current process priority)");
+        }
+    }
 }
 
 } // namespace App
