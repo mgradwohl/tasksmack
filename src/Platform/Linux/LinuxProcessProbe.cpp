@@ -6,6 +6,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <array>
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
@@ -90,12 +91,14 @@ std::mutex& getUsernameCacheMutex()
         return it->second;
     }
 
-    // Look up username from passwd database
-    const struct passwd* pwd = getpwuid(uid);
+    // Look up username from passwd database (thread-safe version)
+    struct passwd pwBuf = {};
+    struct passwd* pwResult = nullptr;
+    std::array<char, 1024> buffer{};
     std::string username;
-    if (pwd != nullptr && pwd->pw_name != nullptr)
+    if (getpwuid_r(uid, &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr && pwResult->pw_name != nullptr)
     {
-        username = pwd->pw_name;
+        username = pwResult->pw_name;
     }
     else
     {

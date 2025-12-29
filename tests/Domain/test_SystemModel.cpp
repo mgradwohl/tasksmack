@@ -12,7 +12,6 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockProbes.h"
-#include "Platform/ISystemProbe.h"
 #include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
@@ -634,4 +633,260 @@ TEST(SystemModelTest, MaxHistorySecondsClamped)
     // Clamp above maximum (1800s)
     model.setMaxHistorySeconds(7200.0);
     EXPECT_DOUBLE_EQ(model.maxHistorySeconds(), Domain::Sampling::HISTORY_SECONDS_MAX);
+}
+
+// =============================================================================
+// Network Monitoring Tests
+// =============================================================================
+
+TEST(SystemModelTest, NetworkCapabilityExposed)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    Platform::SystemCapabilities caps;
+    caps.hasNetworkCounters = true;
+    probe->setCapabilities(caps);
+
+    Domain::SystemModel model(std::move(probe));
+
+    const auto& modelCaps = model.capabilities();
+    EXPECT_TRUE(modelCaps.hasNetworkCounters);
+}
+
+TEST(SystemModelTest, NetworkRatesZeroOnFirstSample)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Set up counters with network data
+    auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                       makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                       0,    // uptime
+                                       {},   // per-core
+                                       1000, // netRxBytes
+                                       2000  // netTxBytes
+    );
+    rawProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    auto snap = model.snapshot();
+    // First sample has no previous, so rates should be 0
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 0.0);
+}
+
+TEST(SystemModelTest, NetworkRatesComputedFromDeltas)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample: set initial network counters
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,    // uptime
+                                        {},   // per-core
+                                        1000, // netRxBytes
+                                        2000  // netTxBytes
+    );
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 0.0); // t=0
+
+    // Second sample: increased counters after 1 second
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        1,    // uptime
+                                        {},   // per-core
+                                        2000, // netRxBytes (+1000)
+                                        4000  // netTxBytes (+2000)
+    );
+    model.updateFromCounters(counters2, 1.0); // t=1
+
+    auto snap = model.snapshot();
+    // After 1 second: delta=1000 bytes / 1 second = 1000 bytes/sec
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 2000.0);
+}
+
+TEST(SystemModelTest, NetworkRatesHandleCounterRollback)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        5000, // netRxBytes (high)
+                                        8000  // netTxBytes (high)
+    );
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 0.0);
+
+    // Second sample: counters lower (system restart or counter overflow)
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        1,
+                                        {},
+                                        100, // netRxBytes (rolled back)
+                                        200  // netTxBytes (rolled back)
+    );
+    model.updateFromCounters(counters2, 1.0);
+
+    auto snap = model.snapshot();
+    // When counters roll back, rates should be 0 (not negative)
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 0.0);
+}
+
+TEST(SystemModelTest, NetworkHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        0, // netRxBytes
+                                        0  // netTxBytes
+    );
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 0.0);
+
+    // Add several samples
+    for (int i = 1; i <= 5; ++i)
+    {
+        auto counters = makeSystemCounters(
+            makeCpuCounters(100 * static_cast<uint64_t>(i + 1), 0, 50 * static_cast<uint64_t>(i + 1), 850 * static_cast<uint64_t>(i + 1)),
+            makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+            static_cast<uint64_t>(i),
+            {},
+            1000ULL * static_cast<uint64_t>(i), // Increasing RX
+            2000ULL * static_cast<uint64_t>(i)  // Increasing TX
+        );
+        model.updateFromCounters(counters, static_cast<double>(i));
+    }
+
+    auto rxHistory = model.netRxHistory();
+    auto txHistory = model.netTxHistory();
+
+    // 5 deltas recorded (from samples 1-5)
+    EXPECT_EQ(rxHistory.size(), 5);
+    EXPECT_EQ(txHistory.size(), 5);
+
+    // First entry: (1000-0) / 1 second = 1000 bytes/sec
+    EXPECT_FLOAT_EQ(rxHistory[0], 1000.0F);
+    EXPECT_FLOAT_EQ(txHistory[0], 2000.0F);
+
+    // All subsequent deltas: 1000 bytes per 1 second = 1000 bytes/sec
+    for (std::size_t j = 0; j < 5; ++j)
+    {
+        EXPECT_FLOAT_EQ(rxHistory[j], 1000.0F);
+        EXPECT_FLOAT_EQ(txHistory[j], 2000.0F);
+    }
+}
+
+TEST(SystemModelTest, NetworkRatesWithVariableTimeDelta)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto counters1 =
+        makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 0, 0);
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 0.0);
+
+    // 1000 bytes in 0.5 seconds = 2000 bytes/sec
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        1000, // +1000 RX
+                                        500   // +500 TX
+    );
+    model.updateFromCounters(counters2, 0.5);
+
+    auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 2000.0); // 1000 bytes / 0.5 sec
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 1000.0); // 500 bytes / 0.5 sec
+}
+
+TEST(SystemModelTest, NetworkRatesZeroWhenTimeDeltaIsZero)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto counters1 = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 2000);
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Same timestamp - time delta is 0
+    auto counters2 = makeSystemCounters(
+        makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 2000, 4000);
+    model.updateFromCounters(counters2, 1.0); // Same time
+
+    auto snap = model.snapshot();
+    // Division by zero protection: rates should be 0
+    EXPECT_DOUBLE_EQ(snap.netRxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netTxBytesPerSec, 0.0);
+}
+
+TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto counters =
+        makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 0, 0);
+    rawProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(probe));
+    model.setMaxHistorySeconds(10.0); // Short window for testing
+
+    // First sample at t=0
+    model.updateFromCounters(counters, 0.0);
+
+    // Add samples spanning 15 seconds
+    for (int i = 1; i <= 15; ++i)
+    {
+        auto c = makeSystemCounters(
+            makeCpuCounters(100 * static_cast<uint64_t>(i + 1), 0, 50 * static_cast<uint64_t>(i + 1), 850 * static_cast<uint64_t>(i + 1)),
+            makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+            static_cast<uint64_t>(i),
+            {},
+            1000ULL * static_cast<uint64_t>(i),
+            2000ULL * static_cast<uint64_t>(i));
+        model.updateFromCounters(c, static_cast<double>(i));
+    }
+
+    auto rxHistory = model.netRxHistory();
+    auto timestamps = model.timestamps();
+
+    // With 10-second window and samples at t=1..15, should keep ~10 samples
+    // (samples from t=6..15, which is within 10 seconds of t=15)
+    EXPECT_LE(rxHistory.size(), 11U); // At most 11 samples in 10-second window
+    EXPECT_GE(rxHistory.size(), 9U);  // At least 9 samples (timing may vary slightly)
+
+    // Timestamps should be within the window
+    if (!timestamps.empty())
+    {
+        const double latestTime = timestamps.back();
+        for (double ts : timestamps)
+        {
+            EXPECT_GE(ts, latestTime - 10.0);
+        }
+    }
 }

@@ -10,7 +10,6 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Numeric.h"
 #include "UI/Theme.h"
-#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -21,7 +20,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <format>
 #include <functional>
 #include <limits>
@@ -1069,13 +1067,13 @@ void SystemMetricsPanel::renderOverview()
         ImGui::Spacing();
     }
 
-    // System network history
-    if (m_ProcessModel != nullptr)
+    // System network history (from SystemModel - real system-wide network stats)
+    if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
     {
-        const auto netTimestamps = m_ProcessModel->historyTimestamps();
-        const auto netSentHist = m_ProcessModel->systemNetSentHistory();
-        const auto netRecvHist = m_ProcessModel->systemNetRecvHistory();
-        const size_t aligned = std::min({netTimestamps.size(), netSentHist.size(), netRecvHist.size()});
+        const auto netTimestamps = m_Model->timestamps();
+        const auto netTxHist = m_Model->netTxHistory();
+        const auto netRxHist = m_Model->netRxHistory();
+        const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
 
         // Always use default axis config even with no data
         const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
@@ -1089,8 +1087,8 @@ void SystemMetricsPanel::renderOverview()
         {
             // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
             netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
-            sentData.assign(netSentHist.end() - static_cast<std::ptrdiff_t>(aligned), netSentHist.end());
-            recvData.assign(netRecvHist.end() - static_cast<std::ptrdiff_t>(aligned), netRecvHist.end());
+            sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
+            recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
 
             // Smooth network rates for NowBars
             const double targetSent = sentData.empty() ? 0.0 : static_cast<double>(sentData.back());
@@ -1136,10 +1134,10 @@ void SystemMetricsPanel::renderOverview()
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
                             ImGui::TextColored(theme.scheme().chartCpu,
-                                               "Avg Sent: %s",
+                                               "Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.accentColor(2),
-                                               "Avg Recv: %s",
+                                               "Recv: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                             ImGui::EndTooltip();
                         }
@@ -1150,12 +1148,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_NETWORK_WIRED " Network - Avg Rate (%zu samples)", aligned);
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Average network bytes/sec since monitoring started.\n"
-                              "Sum of all process averages.");
-        }
+        ImGui::Text(ICON_FA_NETWORK_WIRED " Network (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();

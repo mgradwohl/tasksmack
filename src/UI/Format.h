@@ -1,7 +1,5 @@
 #pragma once
 
-#include "UI/Numeric.h"
-
 #include <algorithm>
 #include <cmath>
 #include <concepts>

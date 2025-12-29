@@ -83,6 +83,10 @@ struct SystemSnapshot
     // CPU frequency in MHz
     std::uint64_t cpuFreqMHz = 0;
 
+    // Network rates (bytes per second, computed from counter deltas)
+    double netRxBytesPerSec = 0.0;
+    double netTxBytesPerSec = 0.0;
+
     // Power/battery status
     PowerStatus power;
 };

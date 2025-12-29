@@ -1,6 +1,5 @@
 #pragma once
 
-#include "History.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "SamplingConfig.h"
@@ -62,6 +61,8 @@ class SystemModel
     [[nodiscard]] std::vector<float> memoryCachedHistory() const;
     [[nodiscard]] std::vector<float> powerHistory() const;
     [[nodiscard]] std::vector<float> batteryChargeHistory() const;
+    [[nodiscard]] std::vector<float> netRxHistory() const;
+    [[nodiscard]] std::vector<float> netTxHistory() const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
     [[nodiscard]] std::vector<double> timestamps() const;
 
@@ -73,6 +74,7 @@ class SystemModel
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;
+    double m_PrevTimestamp = 0.0;
     bool m_HasPrevious = false;
 
     // Latest computed snapshot
@@ -89,6 +91,8 @@ class SystemModel
     std::deque<float> m_SwapHistory;
     std::deque<float> m_PowerHistory;
     std::deque<float> m_BatteryChargeHistory;
+    std::deque<float> m_NetRxHistory;
+    std::deque<float> m_NetTxHistory;
     std::deque<double> m_Timestamps;
     std::vector<std::deque<float>> m_PerCoreHistory;
 

@@ -31,6 +31,7 @@ class LinuxSystemProbe : public ISystemProbe
     static void readUptime(SystemCounters& counters);
     static void readLoadAvg(SystemCounters& counters);
     static void readCpuFreq(SystemCounters& counters);
+    static void readNetworkCounters(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
 
     long m_TicksPerSecond;
