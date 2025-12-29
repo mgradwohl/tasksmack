@@ -4,7 +4,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <csignal> // POSIX signals
 #include <system_error>
@@ -57,11 +56,10 @@ ProcessActionResult LinuxProcessActions::setPriority(int32_t pid, int32_t nice)
 
     spdlog::debug("Setting priority (nice={}) for PID {}", clampedNice, pid);
 
-    // Clear errno before call since setpriority can legitimately return -1 on success
-    // when the current nice value is -1, so we must check errno to distinguish success from failure.
-    errno = 0;
+    // setpriority() returns 0 on success and -1 on error (per POSIX).
+    // Note: The errno-checking pattern applies to getpriority(), not setpriority().
     const int result = setpriority(PRIO_PROCESS, static_cast<id_t>(pid), clampedNice);
-    if (result == 0 || (result == -1 && errno == 0))
+    if (result == 0)
     {
         spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, pid);
         return ProcessActionResult::ok();

@@ -9,8 +9,6 @@
 
 #include <gtest/gtest.h>
 
-#include <iostream>
-
 #include <unistd.h>
 
 namespace Platform
@@ -144,7 +142,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     if (!resetResult.success)
     {
         // Log warning but don't fail - lowering nice requires privileges
-        std::cerr << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage << std::endl;
+        GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
     }
 
     // At minimum, the error message should be informative if it fails

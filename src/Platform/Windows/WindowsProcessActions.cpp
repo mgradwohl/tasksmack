@@ -14,7 +14,6 @@
 #include <windows.h>
 // clang-format on
 
-#include <algorithm>
 #include <format>
 
 namespace Platform
