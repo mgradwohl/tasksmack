@@ -1350,7 +1350,7 @@ void ProcessDetailsPanel::renderActions()
         }
 
         // Apply, Set Normal, and Reset buttons
-        const bool canApply = m_PriorityChanged && m_PriorityNiceValue != m_CachedSnapshot.nice;
+        const bool canApply = m_HasSnapshot && m_PriorityChanged && m_PriorityNiceValue != m_CachedSnapshot.nice;
 
         if (!canApply)
         {
@@ -1384,7 +1384,7 @@ void ProcessDetailsPanel::renderActions()
 
         // Set to Normal (nice=0) button
         constexpr int32_t NORMAL_NICE = 0;
-        const bool isAlreadyNormal = (m_CachedSnapshot.nice == NORMAL_NICE) && !m_PriorityChanged;
+        const bool isAlreadyNormal = m_HasSnapshot && (m_CachedSnapshot.nice == NORMAL_NICE) && !m_PriorityChanged;
         const bool sliderAtNormal = (m_PriorityNiceValue == NORMAL_NICE);
 
         if (isAlreadyNormal)
@@ -1393,28 +1393,9 @@ void ProcessDetailsPanel::renderActions()
         }
         if (ImGui::Button("Set Normal (0)", ImVec2(110, 0)))
         {
-            if (sliderAtNormal)
-            {
-                // Slider already at 0, just apply it
-                auto result = m_ProcessActions->setPriority(m_SelectedPid, NORMAL_NICE);
-                if (result.success)
-                {
-                    m_LastActionResult = "Success: Priority set to Normal (0) for PID " + std::to_string(m_SelectedPid);
-                    m_PriorityChanged = false;
-                    m_PriorityNiceValue = NORMAL_NICE;
-                }
-                else
-                {
-                    m_LastActionResult = "Error: " + result.errorMessage;
-                }
-                m_ActionResultTimer = 5.0F;
-            }
-            else
-            {
-                // Move slider to 0
-                m_PriorityNiceValue = NORMAL_NICE;
-                m_PriorityChanged = true;
-            }
+            // Move slider to 0 and mark as changed
+            m_PriorityNiceValue = NORMAL_NICE;
+            m_PriorityChanged = true;
         }
         if (isAlreadyNormal)
         {
@@ -1440,7 +1421,15 @@ void ProcessDetailsPanel::renderActions()
         }
         if (ImGui::Button("Undo", ImVec2(60, 0)))
         {
-            m_PriorityNiceValue = m_CachedSnapshot.nice;
+            if (m_HasSnapshot)
+            {
+                m_PriorityNiceValue = m_CachedSnapshot.nice;
+            }
+            else
+            {
+                // No snapshot yet; fall back to default normal priority
+                m_PriorityNiceValue = NORMAL_NICE;
+            }
             m_PriorityChanged = false;
         }
         if (!m_PriorityChanged)
