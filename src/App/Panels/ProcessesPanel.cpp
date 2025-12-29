@@ -291,11 +291,6 @@ void ProcessesPanel::render(bool* open)
         return 0;
     };
 
-    // Ensure buffer has null terminator space
-    m_SearchBuffer.resize(m_SearchBuffer.size() + 1);
-    m_SearchBuffer.back() = '\0';
-    m_SearchBuffer.resize(m_SearchBuffer.size() - 1);
-
     if (ImGui::InputTextWithHint("##search",
                                  "Filter by name...",
                                  m_SearchBuffer.data(),
