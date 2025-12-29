@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
@@ -1304,11 +1305,8 @@ void ProcessDetailsPanel::renderActions()
         }
 
         // Nice value slider: -20 (highest priority) to 19 (lowest priority)
-        constexpr int32_t MIN_NICE = -20;
-        constexpr int32_t MAX_NICE = 19;
-
         ImGui::PushItemWidth(300);
-        if (ImGui::SliderInt("##nice", &m_PriorityNiceValue, MIN_NICE, MAX_NICE, "%d"))
+        if (ImGui::SliderInt("##nice", &m_PriorityNiceValue, Domain::Priority::MIN_NICE, Domain::Priority::MAX_NICE, "%d"))
         {
             m_PriorityChanged = true;
         }
@@ -1316,29 +1314,8 @@ void ProcessDetailsPanel::renderActions()
 
         ImGui::SameLine();
 
-        // Priority label - aligned with Windows niceToPriorityClass() thresholds.
-        // We intentionally never use REALTIME_PRIORITY_CLASS to avoid system instability.
-        auto getPriorityLabel = [](int32_t nice) -> std::string_view
-        {
-            if (nice < -10)
-            {
-                return "High";
-            }
-            if (nice < -5)
-            {
-                return "Above Normal";
-            }
-            if (nice < 5)
-            {
-                return "Normal";
-            }
-            if (nice < 15)
-            {
-                return "Below Normal";
-            }
-            return "Idle";
-        };
-        const std::string_view priorityLabel = getPriorityLabel(m_PriorityNiceValue);
+        // Priority label - uses shared Domain::Priority::getPriorityLabel()
+        const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(m_PriorityNiceValue);
         ImGui::Text("(%.*s)", static_cast<int>(priorityLabel.size()), priorityLabel.data());
 
         if (ImGui::IsItemHovered())

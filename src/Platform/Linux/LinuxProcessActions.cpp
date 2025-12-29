@@ -1,5 +1,7 @@
 #include "LinuxProcessActions.h"
 
+#include "Domain/PriorityConfig.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -50,10 +52,8 @@ ProcessActionResult LinuxProcessActions::setPriority(int32_t pid, int32_t nice)
         return ProcessActionResult::error("Invalid PID");
     }
 
-    // Clamp nice value to valid range (-20 to 19)
-    constexpr int32_t MIN_NICE = -20;
-    constexpr int32_t MAX_NICE = 19;
-    const int32_t clampedNice = std::clamp(nice, MIN_NICE, MAX_NICE);
+    // Clamp nice value to valid range
+    const int32_t clampedNice = Domain::Priority::clampNice(nice);
 
     spdlog::debug("Setting priority (nice={}) for PID {}", clampedNice, pid);
 

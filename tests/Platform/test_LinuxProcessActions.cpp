@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include <iostream>
+
 #include <unistd.h>
 
 namespace Platform
@@ -137,8 +139,13 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     // If we're already at a high nice value, this should succeed
     // If we're at a lower nice value, we might need root to go back down
 
-    // Reset back to 0 (this may fail if we don't have privileges, ignore result)
-    [[maybe_unused]] auto resetResult = actions.setPriority(ownPid, 0);
+    // Reset back to 0 (this may fail if we don't have privileges)
+    auto resetResult = actions.setPriority(ownPid, 0);
+    if (!resetResult.success)
+    {
+        // Log warning but don't fail - lowering nice requires privileges
+        std::cerr << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage << std::endl;
+    }
 
     // At minimum, the error message should be informative if it fails
     if (!result.success)

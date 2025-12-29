@@ -1,5 +1,7 @@
 #include "WindowsProcessActions.h"
 
+#include "Domain/PriorityConfig.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off
@@ -87,26 +89,22 @@ ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_
 
 uint32_t WindowsProcessActions::niceToPriorityClass(int32_t nice)
 {
-    // Map Unix nice values (-20 to 19) to Windows priority classes.
+    // Map Unix nice values to Windows priority classes using shared thresholds.
     // We intentionally never use REALTIME_PRIORITY_CLASS to avoid system instability.
-    // nice < -10  -> HIGH_PRIORITY_CLASS
-    // nice < -5   -> ABOVE_NORMAL_PRIORITY_CLASS
-    // nice < 5    -> NORMAL_PRIORITY_CLASS
-    // nice < 15   -> BELOW_NORMAL_PRIORITY_CLASS
-    // nice >= 15  -> IDLE_PRIORITY_CLASS
-    if (nice < -10)
+    using namespace Domain::Priority;
+    if (nice < HIGH_THRESHOLD)
     {
         return HIGH_PRIORITY_CLASS;
     }
-    if (nice < -5)
+    if (nice < ABOVE_NORMAL_THRESHOLD)
     {
         return ABOVE_NORMAL_PRIORITY_CLASS;
     }
-    if (nice < 5)
+    if (nice < BELOW_NORMAL_THRESHOLD)
     {
         return NORMAL_PRIORITY_CLASS;
     }
-    if (nice < 15)
+    if (nice < IDLE_THRESHOLD)
     {
         return BELOW_NORMAL_PRIORITY_CLASS;
     }
@@ -120,10 +118,8 @@ ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice
         return ProcessActionResult::error("Invalid PID");
     }
 
-    // Clamp nice value to valid range (-20 to 19) for consistency with Linux
-    constexpr int32_t MIN_NICE = -20;
-    constexpr int32_t MAX_NICE = 19;
-    const int32_t clampedNice = std::clamp(nice, MIN_NICE, MAX_NICE);
+    // Clamp nice value to valid range for consistency with Linux
+    const int32_t clampedNice = Domain::Priority::clampNice(nice);
 
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, pid);
