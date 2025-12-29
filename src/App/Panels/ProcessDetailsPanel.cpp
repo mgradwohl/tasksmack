@@ -1316,18 +1316,15 @@ void ProcessDetailsPanel::renderActions()
 
         ImGui::SameLine();
 
-        // Priority label - lambda returns string_view to avoid dead store warning
+        // Priority label - aligned with Windows niceToPriorityClass() thresholds.
+        // We intentionally never use REALTIME_PRIORITY_CLASS to avoid system instability.
         auto getPriorityLabel = [](int32_t nice) -> std::string_view
         {
-            if (nice <= -15)
-            {
-                return "Real-time";
-            }
-            if (nice <= -10)
+            if (nice < -10)
             {
                 return "High";
             }
-            if (nice <= -5)
+            if (nice < -5)
             {
                 return "Above Normal";
             }

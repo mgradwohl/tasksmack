@@ -12,6 +12,7 @@
 #include <windows.h>
 // clang-format on
 
+#include <algorithm>
 #include <format>
 
 namespace Platform
@@ -86,8 +87,8 @@ ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_
 
 uint32_t WindowsProcessActions::niceToPriorityClass(int32_t nice)
 {
-    // Map Unix nice values (-20 to 19) to Windows priority classes:
-    // nice < -15  -> REALTIME_PRIORITY_CLASS (use HIGH instead to avoid system instability)
+    // Map Unix nice values (-20 to 19) to Windows priority classes.
+    // We intentionally never use REALTIME_PRIORITY_CLASS to avoid system instability.
     // nice < -10  -> HIGH_PRIORITY_CLASS
     // nice < -5   -> ABOVE_NORMAL_PRIORITY_CLASS
     // nice < 5    -> NORMAL_PRIORITY_CLASS
@@ -119,8 +120,13 @@ ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice
         return ProcessActionResult::error("Invalid PID");
     }
 
-    const uint32_t priorityClass = niceToPriorityClass(nice);
-    spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, nice, pid);
+    // Clamp nice value to valid range (-20 to 19) for consistency with Linux
+    constexpr int32_t MIN_NICE = -20;
+    constexpr int32_t MAX_NICE = 19;
+    const int32_t clampedNice = std::clamp(nice, MIN_NICE, MAX_NICE);
+
+    const uint32_t priorityClass = niceToPriorityClass(clampedNice);
+    spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, pid);
 
     // Note: Windows APIs require DWORD for PIDs; explicit cast from int32_t is safe.
     HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, static_cast<DWORD>(pid));
@@ -146,11 +152,11 @@ ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice
     }
 
     const BOOL result = SetPriorityClass(hProcess, priorityClass);
-    const DWORD error = GetLastError();
     CloseHandle(hProcess);
 
     if (result == 0)
     {
+        const DWORD error = GetLastError();
         std::string msg = std::format("Failed to set priority for process {}: error {}", pid, error);
         spdlog::warn("{}", msg);
         return ProcessActionResult::error(std::move(msg));

@@ -130,7 +130,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     LinuxProcessActions actions;
     int32_t ownPid = static_cast<int32_t>(getpid());
 
-    // Raising priority (higher nice value) should work without root
+    // Lowering priority (raising nice value) should work without root
     auto result = actions.setPriority(ownPid, 10);
 
     // This may succeed or fail depending on current priority

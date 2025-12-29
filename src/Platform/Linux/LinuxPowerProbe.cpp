@@ -76,6 +76,10 @@ void LinuxPowerProbe::discoverBatteries()
         return;
     }
 
+    // Collect all battery paths, then sort to prefer real batteries over peripherals
+    std::vector<std::string> primaryBatteries;    // BAT*, CMB*, etc.
+    std::vector<std::string> peripheralBatteries; // hidpp_battery_*, wacom_*, etc.
+
     for (const auto& entry : fs::directory_iterator(POWER_SUPPLY_PATH, ec))
     {
         if (!entry.is_directory(ec))
@@ -86,10 +90,24 @@ void LinuxPowerProbe::discoverBatteries()
         const auto devicePath = entry.path().string();
         if (isBatteryDevice(devicePath))
         {
-            m_BatteryPaths.push_back(devicePath);
-            spdlog::debug("LinuxPowerProbe: discovered battery at {}", devicePath);
+            const auto deviceName = entry.path().filename().string();
+            // Primary system batteries typically start with BAT, CMB (ThinkPad), or similar
+            if (deviceName.starts_with("BAT") || deviceName.starts_with("CMB") || deviceName.starts_with("ACAD"))
+            {
+                primaryBatteries.push_back(devicePath);
+                spdlog::debug("LinuxPowerProbe: discovered primary battery at {}", devicePath);
+            }
+            else
+            {
+                peripheralBatteries.push_back(devicePath);
+                spdlog::debug("LinuxPowerProbe: discovered peripheral battery at {}", devicePath);
+            }
         }
     }
+
+    // Prefer primary batteries, then peripherals
+    m_BatteryPaths = std::move(primaryBatteries);
+    m_BatteryPaths.insert(m_BatteryPaths.end(), peripheralBatteries.begin(), peripheralBatteries.end());
 
     if (ec)
     {
@@ -100,7 +118,7 @@ void LinuxPowerProbe::discoverBatteries()
     m_Capabilities.hasBattery = !m_BatteryPaths.empty();
     if (m_Capabilities.hasBattery)
     {
-        // Probe one battery to determine available fields
+        // Probe the first (primary) battery to determine available fields
         const auto& batteryPath = m_BatteryPaths[0];
         m_Capabilities.hasChargePercent = fs::exists(batteryPath + "/capacity", ec);
         m_Capabilities.hasChargeCapacity = fs::exists(batteryPath + "/energy_now", ec) || fs::exists(batteryPath + "/charge_now", ec);
