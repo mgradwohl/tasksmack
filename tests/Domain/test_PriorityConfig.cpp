@@ -105,7 +105,7 @@ TEST(PriorityConfigTest, GetPriorityLabelNormal)
 
 TEST(PriorityConfigTest, GetPriorityLabelBelowNormal)
 {
-    // Values from BELOW_NORMAL_THRESHOLD (5) to IDLE_THRESHOLD (15) should return "Below Normal"
+    // Values from BELOW_NORMAL_THRESHOLD (5) up to (but not including) IDLE_THRESHOLD (15) should return "Below Normal"
     EXPECT_EQ(getPriorityLabel(5), "Below Normal");
     EXPECT_EQ(getPriorityLabel(10), "Below Normal");
     EXPECT_EQ(getPriorityLabel(14), "Below Normal");
