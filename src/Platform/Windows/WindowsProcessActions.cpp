@@ -152,17 +152,17 @@ ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice
     }
 
     const BOOL result = SetPriorityClass(hProcess, priorityClass);
+    const DWORD error = result == 0 ? GetLastError() : 0; // Capture error before CloseHandle
     CloseHandle(hProcess);
 
     if (result == 0)
     {
-        const DWORD error = GetLastError();
         std::string msg = std::format("Failed to set priority for process {}: error {}", pid, error);
         spdlog::warn("{}", msg);
         return ProcessActionResult::error(std::move(msg));
     }
 
-    spdlog::info("Successfully set priority (nice={}) for PID {}", nice, pid);
+    spdlog::info("Successfully set priority (nice={}) for PID {}", clampedNice, pid);
     return ProcessActionResult::ok();
 }
 

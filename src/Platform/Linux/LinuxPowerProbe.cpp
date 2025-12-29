@@ -92,7 +92,7 @@ void LinuxPowerProbe::discoverBatteries()
         {
             const auto deviceName = entry.path().filename().string();
             // Primary system batteries typically start with BAT, CMB (ThinkPad), or similar
-            if (deviceName.starts_with("BAT") || deviceName.starts_with("CMB") || deviceName.starts_with("ACAD"))
+            if (deviceName.starts_with("BAT") || deviceName.starts_with("CMB"))
             {
                 primaryBatteries.push_back(devicePath);
                 spdlog::debug("LinuxPowerProbe: discovered primary battery at {}", devicePath);

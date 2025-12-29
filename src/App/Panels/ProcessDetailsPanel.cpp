@@ -1350,7 +1350,7 @@ void ProcessDetailsPanel::renderActions()
         }
 
         // Apply, Set Normal, and Reset buttons
-        const bool canApply = m_PriorityChanged && m_PriorityNiceValue != m_CachedSnapshot.nice;
+        const bool canApply = m_PriorityChanged && m_HasSnapshot && m_PriorityNiceValue != m_CachedSnapshot.nice;
 
         if (!canApply)
         {
@@ -1384,7 +1384,7 @@ void ProcessDetailsPanel::renderActions()
 
         // Set to Normal (nice=0) button
         constexpr int32_t NORMAL_NICE = 0;
-        const bool isAlreadyNormal = (m_CachedSnapshot.nice == NORMAL_NICE) && !m_PriorityChanged;
+        const bool isAlreadyNormal = m_HasSnapshot && (m_CachedSnapshot.nice == NORMAL_NICE) && !m_PriorityChanged;
         const bool sliderAtNormal = (m_PriorityNiceValue == NORMAL_NICE);
 
         if (isAlreadyNormal)
@@ -1440,7 +1440,10 @@ void ProcessDetailsPanel::renderActions()
         }
         if (ImGui::Button("Undo", ImVec2(60, 0)))
         {
-            m_PriorityNiceValue = m_CachedSnapshot.nice;
+            if (m_HasSnapshot)
+            {
+                m_PriorityNiceValue = m_CachedSnapshot.nice;
+            }
             m_PriorityChanged = false;
         }
         if (!m_PriorityChanged)

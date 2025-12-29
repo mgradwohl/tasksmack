@@ -10,8 +10,8 @@ namespace Platform
 namespace
 {
 
-/// Thread-safe environment variable lookup.
-/// secure_getenv is preferred as it's thread-safe and ignores env vars in setuid programs.
+/// Secure environment variable lookup for setuid/setgid programs.
+/// secure_getenv ignores environment variables in setuid programs for security.
 /// Falls back to getenv with NOLINT if secure_getenv is unavailable.
 [[nodiscard]] const char* getEnvSafe(const char* name)
 {
