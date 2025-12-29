@@ -5,11 +5,11 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -91,9 +91,8 @@ class ProcessesPanel : public Panel
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
 
-    // Search/filter state
-    // TODO: Replace fixed char buffer with std::string + ImGui resize callback
-    std::array<char, 256> m_SearchBuffer{};
+    // Search/filter state - using std::string for dynamic sizing
+    std::string m_SearchBuffer;
 
     // Tree view state
     bool m_TreeViewEnabled = false;

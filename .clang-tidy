@@ -1,6 +1,7 @@
 Checks: >
   bugprone-*,
   clang-analyzer-*,
+  concurrency-mt-unsafe,
   cppcoreguidelines-*,
   misc-*,
   modernize-*,
@@ -21,7 +22,6 @@ Checks: >
   -misc-include-cleaner,
   -misc-non-private-member-variables-in-classes,
   -modernize-avoid-c-arrays,
-  -modernize-deprecated-headers,
   -modernize-return-braced-init-list,
   -modernize-use-auto,
   -modernize-use-trailing-return-type,

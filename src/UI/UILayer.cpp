@@ -327,7 +327,7 @@ void UILayer::beginFrame()
 void UILayer::endFrame()
 {
     // Pop the font we pushed in beginFrame()
-    const ImFont* font = Theme::get().regularFont();
+    const ImFont* const font = Theme::get().regularFont();
     if (font != nullptr)
     {
         ImGui::PopFont();

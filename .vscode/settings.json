@@ -37,7 +37,9 @@
         "--enable-config",
         "--clang-tidy",
         "--completion-style=detailed",
-        "--header-insertion=iwyu"
+        "--header-insertion=iwyu",
+        "--pch-storage=memory",
+        "--query-driver=**/clang++,**/clang,**/g++,**/gcc,**/cl.exe"
     ],
     // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
     // Windows: "C:\\Program Files\\LLVM\\bin\\clangd.exe"

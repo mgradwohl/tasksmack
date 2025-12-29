@@ -43,8 +43,8 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     unsigned int b = 0;
     unsigned int a = 255; // Default to fully opaque
 
-    const std::string hexString(hex);
-    const char* hexData = hexString.data();
+    // Use string_view's data() directly - no need to create a string copy
+    const char* hexData = hex.data();
 
     // Parse RGB components
     auto [ptr1, ec1] = std::from_chars(hexData, hexData + 2, r, 16);

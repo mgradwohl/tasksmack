@@ -93,7 +93,7 @@ class ProcessModel
     // busy 5 minutes ago but idle now will still show some activity. For most
     // monitoring use cases, this is more useful than noisy instantaneous rates.
     //
-    // TODO: Investigate better approaches:
+    // Future improvement options (would require significant platform work):
     //   - ETW (Event Tracing for Windows) kernel providers for real-time network events
     //   - Track per-connection state to handle connection lifecycle properly
     //   - Use system-wide network interface counters instead (more reliable but less granular)

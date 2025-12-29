@@ -28,10 +28,10 @@ class WindowsSystemProbe : public ISystemProbe
   private:
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
-    void readMemoryCounters(SystemCounters& counters) const;
-    void readUptime(SystemCounters& counters) const;
+    static void readMemoryCounters(SystemCounters& counters);
+    static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
-    void readCpuFreq(SystemCounters& counters) const;
+    static void readCpuFreq(SystemCounters& counters);
 
     std::size_t m_NumCores{0};
 

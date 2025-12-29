@@ -104,7 +104,7 @@ WindowsSystemProbe::WindowsSystemProbe()
 
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
-    // TODO: Wrap WinAPI DWORD sizing in helper to return size_t while keeping API types
+    // Note: Windows APIs require DWORD for buffer sizes; explicit usage is intentional.
     DWORD bufferSize = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameW(hostBuffer.data(), &bufferSize) != 0)
     {
@@ -249,7 +249,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
-void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
+void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
 {
     MEMORYSTATUSEX memStatus{};
     memStatus.dwLength = sizeof(memStatus);
@@ -280,7 +280,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
     }
 }
 
-void WindowsSystemProbe::readUptime(SystemCounters& counters) const
+void WindowsSystemProbe::readUptime(SystemCounters& counters)
 {
     // GetTickCount64 returns milliseconds since system start
     const uint64_t uptimeMs = GetTickCount64();
@@ -300,7 +300,7 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.cpuCoreCount = m_NumCores;
 }
 
-void WindowsSystemProbe::readCpuFreq(SystemCounters& counters) const
+void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
 {
     // Read CPU frequency from registry (in MHz)
     // This is the base frequency; current frequency requires more complex APIs

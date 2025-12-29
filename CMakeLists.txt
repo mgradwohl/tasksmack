@@ -8,7 +8,7 @@ endif()
 # Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
 cmake_policy(SET CMP0169 OLD)
 
-project(TaskSmack VERSION 0.1.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

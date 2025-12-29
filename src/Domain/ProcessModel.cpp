@@ -171,8 +171,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         // division by tiny time values on first sample causing huge rate spikes.
         // We also apply a sanity check ceiling (100 Gbps) as a safety net.
         //
-        // TODO: If we find a more accurate approach (ETW, eBPF, etc.), replace this
-        // with instantaneous rate calculation similar to I/O rates below.
+        // Note: A more accurate approach (ETW, eBPF, etc.) could enable instantaneous
+        // rate calculation similar to I/O rates below. See ProcessModel.h for details.
         // =======================================================================
         constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
         constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec

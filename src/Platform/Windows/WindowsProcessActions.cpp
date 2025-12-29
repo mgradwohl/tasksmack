@@ -57,7 +57,7 @@ ProcessActionResult WindowsProcessActions::resume(int32_t pid)
 
 ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_t exitCode)
 {
-    // TODO: Wrap WinAPI pid casts (DWORD) behind a helper to avoid scattered legacy types
+    // Note: Windows APIs require DWORD for PIDs; explicit cast from int32_t is safe.
     HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
 
     if (hProcess == nullptr)
@@ -69,7 +69,7 @@ ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_
     }
 
     const BOOL result = TerminateProcess(hProcess, exitCode);
-    DWORD error = GetLastError();
+    const DWORD error = GetLastError();
     CloseHandle(hProcess);
 
     if (result == 0)

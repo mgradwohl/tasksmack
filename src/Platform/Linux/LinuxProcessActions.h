@@ -2,6 +2,8 @@
 
 #include "Platform/IProcessActions.h"
 
+#include <string_view>
+
 namespace Platform
 {
 
@@ -25,8 +27,7 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult resume(int32_t pid) override;
 
   private:
-    // TODO: Use std::string_view for signalName
-    [[nodiscard]] static ProcessActionResult sendSignal(int32_t pid, int signal, const char* signalName);
+    [[nodiscard]] static ProcessActionResult sendSignal(int32_t pid, int signal, std::string_view signalName);
 };
 
 } // namespace Platform

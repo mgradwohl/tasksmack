@@ -61,7 +61,7 @@ namespace
         return '?';
     }
 
-    // TODO: Centralize WinAPI DWORD usage behind thin wrappers where practical
+    // Note: Windows APIs require DWORD for exit codes; usage is localized here.
     DWORD exitCode = 0;
     if (GetExitCodeProcess(hProcess, &exitCode) != 0)
     {
@@ -360,7 +360,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     return results;
 }
 
-bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters) const
+bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters)
 {
     // Open process with limited access - some system processes won't allow full access
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
@@ -512,7 +512,7 @@ uint64_t WindowsProcessProbe::totalCpuTime() const
     return readTotalCpuTime();
 }
 
-uint64_t WindowsProcessProbe::readTotalCpuTime() const
+uint64_t WindowsProcessProbe::readTotalCpuTime()
 {
     FILETIME ftIdle{};
     FILETIME ftKernel{};

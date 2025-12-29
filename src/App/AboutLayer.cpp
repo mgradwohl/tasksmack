@@ -11,6 +11,7 @@
 #include <cassert>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #ifdef __linux__
@@ -40,7 +41,7 @@ namespace
     }
 #elif defined(_WIN32)
     std::wstring buffer(MAX_PATH, L'\0');
-    // TODO: Wrap GetModuleFileNameW to return size_t while keeping DWORD for WinAPI
+    // Note: GetModuleFileNameW returns DWORD; explicit cast is safe for path lengths.
     const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (len > 0 && len < buffer.size())
     {
@@ -234,12 +235,11 @@ void AboutLayer::loadIcon()
         cwd,                  // running from repo root
     };
 
-    // TODO: Use std::array<std::string_view, 2> for icon names
-    const std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
+    constexpr std::array<std::string_view, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
     for (const auto& base : baseDirs)
     {
-        for (const auto* file : sizes)
+        for (const auto file : sizes)
         {
             const auto iconPath = base / "assets" / "icons" / file;
 
