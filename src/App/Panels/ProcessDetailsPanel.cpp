@@ -1323,11 +1323,13 @@ void ProcessDetailsPanel::renderActions()
             ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
                               "Lower values mean higher priority\n"
                               "Normal priority = 0\n"
-                              "Note: Lowering priority below 0 typically requires root/admin privileges");
+                              "Note: Setting nice values below 0 (higher priority) typically requires root/admin privileges");
         }
 
         // Apply, Set Normal, and Reset buttons
-        const bool canApply = m_PriorityChanged && m_HasSnapshot && m_PriorityNiceValue != m_CachedSnapshot.nice;
+        // Note: canApply relies on m_PriorityChanged flag rather than comparing with cached snapshot,
+        // since the cached snapshot value may be stale if priority changed externally.
+        const bool canApply = m_PriorityChanged && m_HasSnapshot;
 
         if (!canApply)
         {
@@ -1360,6 +1362,9 @@ void ProcessDetailsPanel::renderActions()
         ImGui::SameLine();
 
         // Set to Normal (nice=0) button - uses shared constant from PriorityConfig.h
+        // Dual behavior by design: if slider is not at 0, clicking moves it to 0 (preview).
+        // If slider is already at 0, clicking applies normal priority immediately.
+        // This provides a one-click "reset to normal" shortcut. Tooltip explains this.
         const bool isAlreadyNormal = m_HasSnapshot && (m_CachedSnapshot.nice == Domain::Priority::NORMAL_NICE) && !m_PriorityChanged;
         const bool sliderAtNormal = (m_PriorityNiceValue == Domain::Priority::NORMAL_NICE);
 

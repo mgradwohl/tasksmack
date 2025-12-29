@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <concepts>
 #include <cstdint>
 #include <string_view>
 
@@ -25,7 +26,7 @@ inline constexpr int32_t BELOW_NORMAL_THRESHOLD = 5;
 inline constexpr int32_t IDLE_THRESHOLD = 15;
 
 /// Clamp nice value to valid range (-20 to 19)
-template<typename T> [[nodiscard]] constexpr T clampNice(T value)
+template<std::integral T> [[nodiscard]] constexpr T clampNice(T value)
 {
     return std::clamp(value, static_cast<T>(MIN_NICE), static_cast<T>(MAX_NICE));
 }

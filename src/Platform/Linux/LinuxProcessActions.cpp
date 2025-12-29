@@ -77,6 +77,8 @@ ProcessActionResult LinuxProcessActions::setPriority(int32_t pid, int32_t nice)
     case ESRCH:
         errorMsg = "Process not found - may have already exited";
         break;
+    // Note: EACCES is not in POSIX for setpriority(), but is documented by
+    // Linux setpriority(2) man page as a possible error code.
     case EACCES:
         errorMsg = "Permission denied - cannot change priority of this process";
         break;

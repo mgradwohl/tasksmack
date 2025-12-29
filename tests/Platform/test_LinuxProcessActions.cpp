@@ -125,6 +125,9 @@ TEST(LinuxProcessActionsTest, SetPriorityInvalidPid)
     EXPECT_GT(result2.errorMessage.size(), 0ULL);
 }
 
+// Note: This test may modify the test process's priority and cannot reliably
+// restore the original value without root privileges. This is acceptable since
+// test processes typically run at default nice=0 and are short-lived.
 TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
 {
     LinuxProcessActions actions;
@@ -137,7 +140,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     // If we're already at a high nice value, this should succeed
     // If we're at a lower nice value, we might need root to go back down
 
-    // Reset back to 0 (this may fail if we don't have privileges)
+    // Attempt to reset to 0 (may fail without privileges - see note above)
     auto resetResult = actions.setPriority(ownPid, 0);
     if (!resetResult.success)
     {
