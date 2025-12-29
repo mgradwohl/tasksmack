@@ -140,17 +140,20 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
     // If we're already at a high nice value, this should succeed
     // If we're at a lower nice value, we might need root to go back down
 
-    // Attempt to reset to 0 (may fail without privileges - see note above)
-    auto resetResult = actions.setPriority(ownPid, 0);
-    if (!resetResult.success)
+    // Only attempt cleanup if the initial operation succeeded
+    if (result.success)
     {
-        // Log warning but don't fail - lowering nice requires privileges
-        GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
+        // Attempt to reset to 0 (may fail without privileges - see note above)
+        auto resetResult = actions.setPriority(ownPid, 0);
+        if (!resetResult.success)
+        {
+            // Log warning but don't fail - lowering nice requires privileges
+            GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
+        }
     }
-
-    // At minimum, the error message should be informative if it fails
-    if (!result.success)
+    else
     {
+        // At minimum, the error message should be informative if it fails
         EXPECT_GT(result.errorMessage.size(), 0ULL);
     }
 }

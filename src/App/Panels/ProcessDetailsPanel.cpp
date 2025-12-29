@@ -1340,8 +1340,7 @@ void ProcessDetailsPanel::renderActions()
             auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
             if (result.success)
             {
-                m_LastActionResult =
-                    "Success: Priority set to " + std::to_string(m_PriorityNiceValue) + " for PID " + std::to_string(m_SelectedPid);
+                m_LastActionResult = std::format("Success: Priority set to {} for PID {}", m_PriorityNiceValue, m_SelectedPid);
                 m_PriorityChanged = false;
             }
             else
@@ -1380,7 +1379,7 @@ void ProcessDetailsPanel::renderActions()
                 auto result = m_ProcessActions->setPriority(m_SelectedPid, Domain::Priority::NORMAL_NICE);
                 if (result.success)
                 {
-                    m_LastActionResult = "Success: Priority set to Normal (0) for PID " + std::to_string(m_SelectedPid);
+                    m_LastActionResult = std::format("Success: Priority set to Normal (0) for PID {}", m_SelectedPid);
                     m_PriorityChanged = false;
                     m_PriorityNiceValue = Domain::Priority::NORMAL_NICE;
                 }
