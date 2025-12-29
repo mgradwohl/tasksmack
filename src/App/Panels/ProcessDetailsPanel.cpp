@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
@@ -261,6 +262,8 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_LastActionResult.clear();
         m_SmoothedUsage = {};
         m_PeakMemoryPercent = 0.0;
+        m_PriorityChanged = false;
+        m_PriorityNiceValue = 0;
 
         if (pid != -1)
         {
@@ -1284,6 +1287,154 @@ void ProcessDetailsPanel::renderActions()
     }
 
     ImGui::EndGroup();
+
+    // Priority adjustment section
+    if (m_ActionCapabilities.canSetPriority)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Priority Adjustment (Nice Value)");
+        ImGui::Spacing();
+
+        // Initialize slider from current process nice value if not changed
+        if (!m_PriorityChanged && m_HasSnapshot)
+        {
+            m_PriorityNiceValue = m_CachedSnapshot.nice;
+        }
+
+        // Nice value slider: -20 (highest priority) to 19 (lowest priority)
+        ImGui::PushItemWidth(300);
+        if (ImGui::SliderInt("##nice", &m_PriorityNiceValue, Domain::Priority::MIN_NICE, Domain::Priority::MAX_NICE, "%d"))
+        {
+            m_PriorityChanged = true;
+        }
+        ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+
+        // Priority label - uses shared Domain::Priority::getPriorityLabel()
+        const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(m_PriorityNiceValue);
+        ImGui::Text("(%.*s)", static_cast<int>(priorityLabel.size()), priorityLabel.data());
+
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
+                              "Lower values mean higher priority\n"
+                              "Normal priority = 0\n"
+                              "Note: Setting nice values below 0 (higher priority) typically requires root/admin privileges");
+        }
+
+        // Apply, Set Normal, and Reset buttons
+        // Note: canApply relies on m_PriorityChanged flag rather than comparing with cached snapshot,
+        // since the cached snapshot value may be stale if priority changed externally.
+        const bool canApply = m_PriorityChanged && m_HasSnapshot;
+
+        if (!canApply)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Apply", ImVec2(80, 0)))
+        {
+            auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
+            if (result.success)
+            {
+                m_LastActionResult = std::format("Success: Priority set to {} for PID {}", m_PriorityNiceValue, m_SelectedPid);
+                m_PriorityChanged = false;
+            }
+            else
+            {
+                m_LastActionResult = "Error: " + result.errorMessage;
+            }
+            m_ActionResultTimer = 5.0F;
+        }
+        if (!canApply)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Apply the selected priority to the process");
+        }
+
+        ImGui::SameLine();
+
+        // Set to Normal (nice=0) button - uses shared constant from PriorityConfig.h
+        // Dual behavior by design: if slider is not at 0, clicking moves it to 0 (preview).
+        // If slider is already at 0, clicking applies normal priority immediately.
+        // This provides a one-click "reset to normal" shortcut. Tooltip explains this.
+        const bool isAlreadyNormal = m_HasSnapshot && (m_CachedSnapshot.nice == Domain::Priority::NORMAL_NICE) && !m_PriorityChanged;
+        const bool sliderAtNormal = (m_PriorityNiceValue == Domain::Priority::NORMAL_NICE);
+
+        if (isAlreadyNormal)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Set Normal (0)", ImVec2(110, 0)))
+        {
+            if (sliderAtNormal)
+            {
+                // Slider already at 0, just apply it
+                auto result = m_ProcessActions->setPriority(m_SelectedPid, Domain::Priority::NORMAL_NICE);
+                if (result.success)
+                {
+                    m_LastActionResult = std::format("Success: Priority set to Normal (0) for PID {}", m_SelectedPid);
+                    m_PriorityChanged = false;
+                    m_PriorityNiceValue = Domain::Priority::NORMAL_NICE;
+                }
+                else
+                {
+                    m_LastActionResult = "Error: " + result.errorMessage;
+                }
+                m_ActionResultTimer = 5.0F;
+            }
+            else
+            {
+                // Move slider to 0
+                m_PriorityNiceValue = Domain::Priority::NORMAL_NICE;
+                m_PriorityChanged = true;
+            }
+        }
+        if (isAlreadyNormal)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            if (isAlreadyNormal)
+            {
+                ImGui::SetTooltip("Process is already at normal priority");
+            }
+            else
+            {
+                ImGui::SetTooltip("Set priority to Normal (nice=0, default priority)");
+            }
+        }
+
+        ImGui::SameLine();
+
+        if (!m_PriorityChanged)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Undo", ImVec2(60, 0)))
+        {
+            if (m_HasSnapshot)
+            {
+                m_PriorityNiceValue = m_CachedSnapshot.nice;
+            }
+            m_PriorityChanged = false;
+        }
+        if (!m_PriorityChanged)
+        {
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip("Undo slider changes (revert to current process priority)");
+        }
+    }
 }
 
 } // namespace App

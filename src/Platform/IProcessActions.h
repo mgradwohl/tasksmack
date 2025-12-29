@@ -26,10 +26,11 @@ struct ProcessActionResult
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
-    bool canTerminate = false; // SIGTERM
-    bool canKill = false;      // SIGKILL
-    bool canStop = false;      // SIGSTOP
-    bool canContinue = false;  // SIGCONT
+    bool canTerminate = false;   // SIGTERM
+    bool canKill = false;        // SIGKILL
+    bool canStop = false;        // SIGSTOP
+    bool canContinue = false;    // SIGCONT
+    bool canSetPriority = false; // setpriority/SetPriorityClass
 };
 
 /// Interface for platform-specific process actions.
@@ -58,6 +59,11 @@ class IProcessActions
 
     /// Send SIGCONT (resume paused process).
     [[nodiscard]] virtual ProcessActionResult resume(int32_t pid) = 0;
+
+    /// Set process priority (nice value on Unix, priority class on Windows).
+    /// @param pid Process ID
+    /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
+    [[nodiscard]] virtual ProcessActionResult setPriority(int32_t pid, int32_t nice) = 0;
 };
 
 } // namespace Platform
