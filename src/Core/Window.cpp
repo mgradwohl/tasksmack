@@ -80,17 +80,34 @@ void setWindowIconFromResource(GLFWwindow* window)
     // Get the module handle for this executable
     HINSTANCE hInstance = GetModuleHandle(nullptr);
 
+    // Get icon dimensions from system metrics (with validation)
+    const int smallIconWidth = GetSystemMetrics(SM_CXSMICON);
+    const int smallIconHeight = GetSystemMetrics(SM_CYSMICON);
+    const int largeIconWidth = GetSystemMetrics(SM_CXICON);
+    const int largeIconHeight = GetSystemMetrics(SM_CYICON);
+
+    // Validate dimensions (GetSystemMetrics can return 0 on failure)
+    if (smallIconWidth <= 0 || smallIconHeight <= 0 || largeIconWidth <= 0 || largeIconHeight <= 0)
+    {
+        spdlog::warn("Invalid icon dimensions from GetSystemMetrics (small={}x{}, large={}x{})",
+                     smallIconWidth,
+                     smallIconHeight,
+                     largeIconWidth,
+                     largeIconHeight);
+        return;
+    }
+
     // Load small icon (16x16) for title bar and Alt+Tab
     // MAKEINTRESOURCE(1) refers to IDI_ICON1 (resource ID 1) defined in the .rc file
-    HANDLE hIconSmall = loadIconFromResource(hInstance, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+    HANDLE hIconSmall = loadIconFromResource(hInstance, smallIconWidth, smallIconHeight);
 
     // Load large icon (32x32 or larger) for taskbar
-    HANDLE hIconBig = loadIconFromResource(hInstance, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    HANDLE hIconBig = loadIconFromResource(hInstance, largeIconWidth, largeIconHeight);
 
     if (hIconSmall != nullptr)
     {
         setWindowIcon(hwnd, ICON_SMALL, hIconSmall);
-        spdlog::debug("Set small window icon ({}x{})", GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+        spdlog::debug("Set small window icon ({}x{})", smallIconWidth, smallIconHeight);
     }
     else
     {
@@ -100,7 +117,7 @@ void setWindowIconFromResource(GLFWwindow* window)
     if (hIconBig != nullptr)
     {
         setWindowIcon(hwnd, ICON_BIG, hIconBig);
-        spdlog::debug("Set large window icon ({}x{})", GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+        spdlog::debug("Set large window icon ({}x{})", largeIconWidth, largeIconHeight);
     }
     else
     {

@@ -40,7 +40,7 @@ ProcessActionResult LinuxProcessActions::resume(int32_t pid)
     return sendSignal(pid, SIGCONT, "SIGCONT");
 }
 
-ProcessActionResult LinuxProcessActions::sendSignal(int32_t pid, int signal, const char* signalName)
+ProcessActionResult LinuxProcessActions::sendSignal(int32_t pid, int signal, std::string_view signalName)
 {
     if (pid <= 0)
     {

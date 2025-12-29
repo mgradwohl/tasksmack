@@ -393,7 +393,6 @@ inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mo
     return (distUpper < distLower) ? upperIdx : lowerIdx;
 }
 
-// TODO: Accept std::string_view for IDs/text to avoid raw const char*
 inline void setupLegendDefault()
 {
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoHighlightItem);

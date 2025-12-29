@@ -272,7 +272,37 @@ void ProcessesPanel::render(bool* open)
     const auto& theme = UI::Theme::get();
     ImGui::SetNextItemWidth(200.0F);
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
-    if (ImGui::InputTextWithHint("##search", "Filter by name...", m_SearchBuffer.data(), m_SearchBuffer.size()))
+
+    // Reserve initial capacity for search buffer if empty
+    if (m_SearchBuffer.capacity() == 0)
+    {
+        m_SearchBuffer.reserve(256);
+    }
+
+    // Resize callback for dynamic string growth
+    auto resizeCallback = [](ImGuiInputTextCallbackData* data) -> int
+    {
+        if (data->EventFlag == ImGuiInputTextFlags_CallbackResize)
+        {
+            auto* str = static_cast<std::string*>(data->UserData);
+            str->resize(static_cast<std::size_t>(data->BufTextLen));
+            data->Buf = str->data();
+        }
+        return 0;
+    };
+
+    // Ensure buffer has null terminator space
+    m_SearchBuffer.resize(m_SearchBuffer.size() + 1);
+    m_SearchBuffer.back() = '\0';
+    m_SearchBuffer.resize(m_SearchBuffer.size() - 1);
+
+    if (ImGui::InputTextWithHint("##search",
+                                 "Filter by name...",
+                                 m_SearchBuffer.data(),
+                                 m_SearchBuffer.capacity() + 1,
+                                 ImGuiInputTextFlags_CallbackResize,
+                                 resizeCallback,
+                                 &m_SearchBuffer))
     {
         // Input changed - filter will be applied below
     }
@@ -280,11 +310,11 @@ void ProcessesPanel::render(bool* open)
 
     // Clear button
     ImGui::SameLine();
-    if (m_SearchBuffer[0] != '\0')
+    if (!m_SearchBuffer.empty())
     {
         if (ImGui::SmallButton(ICON_FA_XMARK))
         {
-            m_SearchBuffer.fill('\0');
+            m_SearchBuffer.clear();
         }
         if (ImGui::IsItemHovered())
         {
@@ -293,7 +323,7 @@ void ProcessesPanel::render(bool* open)
     }
 
     // Filter snapshots based on search
-    const std::string_view searchTerm(m_SearchBuffer.data());
+    const std::string_view searchTerm(m_SearchBuffer);
     std::vector<size_t> filteredIndices;
     filteredIndices.reserve(currentSnapshots.size());
 

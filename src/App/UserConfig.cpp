@@ -59,7 +59,10 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 }
 
 #ifndef _WIN32
-// TODO: Replace const char* env handling with std::string_view/std::optional and avoid raw getenv
+/// Read an environment variable as a string.
+/// @param name The environment variable name (must be null-terminated for std::getenv)
+/// @return The value if set and non-empty, or std::nullopt otherwise
+/// Note: std::getenv requires const char*; using std::string_view would add no value.
 [[nodiscard]] auto readEnvVarString(const char* name) -> std::optional<std::string>
 {
     // NOLINT(concurrency-mt-unsafe): std::getenv is not thread-safe, but this function

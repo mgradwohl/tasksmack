@@ -62,13 +62,13 @@ class WindowsProcessProbe : public IProcessProbe
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
 
     /// Get detailed info for a single process
-    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters) const;
+    [[nodiscard]] static bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
 
     /// Read total system CPU time
-    [[nodiscard]] uint64_t readTotalCpuTime() const;
+    [[nodiscard]] static uint64_t readTotalCpuTime();
 
     /// Detect if power monitoring is available
-    [[nodiscard]] bool detectPowerMonitoring();
+    [[nodiscard]] static bool detectPowerMonitoring();
 
     /// Read system-wide energy (microjoules) if available
     [[nodiscard]] uint64_t readSystemEnergy() const;

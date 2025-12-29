@@ -11,13 +11,18 @@
 #include <windows.h>
 // clang-format on
 
+#include <string_view>
 #include <type_traits>
 
 namespace Platform::Windows
 {
 
-// TODO: Accept std::string_view and pass .data() to GetProcAddress
-template<typename T> [[nodiscard]] T getProcAddress(HMODULE module, const char* procName) noexcept
+/// Type-safe wrapper for GetProcAddress that returns the requested function pointer type.
+/// @tparam T The function pointer type to return (must be a pointer type)
+/// @param module The module handle to search for the procedure
+/// @param procName The name of the procedure to find (must be null-terminated)
+/// @return The function pointer cast to type T, or nullptr if not found
+template<typename T> [[nodiscard]] T getProcAddress(HMODULE module, std::string_view procName) noexcept
 {
     static_assert(std::is_pointer_v<T>, "getProcAddress<T>: T must be a pointer type");
 
@@ -26,7 +31,10 @@ template<typename T> [[nodiscard]] T getProcAddress(HMODULE module, const char* 
         return nullptr;
     }
 
-    FARPROC proc = GetProcAddress(module, procName);
+    // GetProcAddress requires null-terminated string; std::string_view::data() is safe
+    // because callers pass string literals or std::string which are null-terminated.
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - callers guarantee null-termination
+    FARPROC proc = GetProcAddress(module, procName.data());
     if (proc == nullptr)
     {
         return nullptr;

@@ -26,7 +26,7 @@ class WindowsProcessActions : public IProcessActions
 
   private:
     /// Helper to terminate a process with given exit code
-    [[nodiscard]] ProcessActionResult terminateProcess(int32_t pid, uint32_t exitCode);
+    [[nodiscard]] static ProcessActionResult terminateProcess(int32_t pid, uint32_t exitCode);
 };
 
 } // namespace Platform

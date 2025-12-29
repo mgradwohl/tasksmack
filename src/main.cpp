@@ -49,6 +49,7 @@ void initializeLocale()
     }
 
     // Ensure C locale uses UTF-8
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once at startup before any threads are created
     setlocale(LC_ALL, "");
 
 #ifdef _WIN32

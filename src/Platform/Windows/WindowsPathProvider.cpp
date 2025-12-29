@@ -10,6 +10,7 @@
 #include <windows.h>
 // clang-format on
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -52,11 +53,7 @@ std::filesystem::path WindowsPathProvider::getExecutableDir() const
             break;
         }
 
-        DWORD newSize = bufferSize * 2;
-        if (newSize > kMaxLongPath)
-        {
-            newSize = kMaxLongPath;
-        }
+        const DWORD newSize = std::min(bufferSize * 2, kMaxLongPath);
 
         buffer.assign(static_cast<std::size_t>(newSize), L'\0');
     }
@@ -71,7 +68,7 @@ std::filesystem::path WindowsPathProvider::getUserConfigDir() const
     char* appData = nullptr;
     if (_dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
     {
-        std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
+        const std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
         if (appData[0] != '\0')
         {
             return std::filesystem::path(appData) / "TaskSmack";

@@ -326,7 +326,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
-    // TODO: Use std::string_view for command/name and convert at ImGui boundary
+    // Note: ImGui requires null-terminated const char*; .c_str() is the correct approach here.
     const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
     ImGui::TextWrapped("Command Line: %s", titleCommand);
     ImGui::Spacing();
