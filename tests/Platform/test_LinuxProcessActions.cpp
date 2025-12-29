@@ -177,6 +177,17 @@ TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
     {
         EXPECT_GT(result2.errorMessage.size(), 0ULL);
     }
+
+    // Cleanup: attempt to reset priority to 0 to avoid affecting subsequent tests.
+    // Note: This may fail without root privileges (see SetPriorityOwnProcess note).
+    if (result2.success)
+    {
+        auto resetResult = actions.setPriority(ownPid, 0);
+        if (!resetResult.success)
+        {
+            GTEST_LOG_(WARNING) << "Test cleanup: Failed to reset priority for PID " << ownPid << ": " << resetResult.errorMessage;
+        }
+    }
 }
 
 } // namespace
