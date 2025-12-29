@@ -95,7 +95,7 @@ TEST(PriorityConfigTest, GetPriorityLabelAboveNormal)
 
 TEST(PriorityConfigTest, GetPriorityLabelNormal)
 {
-    // Values from ABOVE_NORMAL_THRESHOLD (-5) to BELOW_NORMAL_THRESHOLD (5) should return "Normal"
+    // Values from ABOVE_NORMAL_THRESHOLD (-5) up to (but not including) BELOW_NORMAL_THRESHOLD (5) should return "Normal"
     EXPECT_EQ(getPriorityLabel(-5), "Normal");
     EXPECT_EQ(getPriorityLabel(-1), "Normal");
     EXPECT_EQ(getPriorityLabel(0), "Normal");
