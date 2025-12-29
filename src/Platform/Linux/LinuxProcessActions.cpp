@@ -3,9 +3,8 @@
 #include <spdlog/spdlog.h>
 
 #include <cerrno>
+#include <csignal> // POSIX signals
 #include <cstring>
-
-#include <signal.h> // POSIX signals
 
 namespace Platform
 {
