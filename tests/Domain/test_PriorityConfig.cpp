@@ -87,7 +87,7 @@ TEST(PriorityConfigTest, GetPriorityLabelHigh)
 
 TEST(PriorityConfigTest, GetPriorityLabelAboveNormal)
 {
-    // Values from HIGH_THRESHOLD (-10) to ABOVE_NORMAL_THRESHOLD (-5) should return "Above Normal"
+    // Values from HIGH_THRESHOLD (-10) up to (but not including) ABOVE_NORMAL_THRESHOLD (-5) should return "Above Normal"
     EXPECT_EQ(getPriorityLabel(-10), "Above Normal");
     EXPECT_EQ(getPriorityLabel(-9), "Above Normal");
     EXPECT_EQ(getPriorityLabel(-6), "Above Normal");
