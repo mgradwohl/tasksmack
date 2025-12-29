@@ -6,7 +6,6 @@
 #include <cerrno>
 #include <csignal> // POSIX signals
 #include <system_error>
-
 #include <sys/resource.h>
 
 namespace Platform
