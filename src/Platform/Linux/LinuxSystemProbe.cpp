@@ -359,10 +359,13 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         std::string iface = line.substr(0, colonPos);
         // Trim leading/trailing whitespace
         auto start = iface.find_first_not_of(" \t");
-        if (start != std::string::npos)
+        if (start == std::string::npos)
         {
-            iface = iface.substr(start);
+            // Interface name is all whitespace; skip this line
+            continue;
         }
+        auto end = iface.find_last_not_of(" \t");
+        iface = iface.substr(start, (end - start) + 1);
 
         // Skip loopback interface - it's internal traffic
         if (iface == "lo")
