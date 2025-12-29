@@ -10,7 +10,6 @@
 
 #include "Domain/ProcessModel.h"
 #include "Mocks/MockProbes.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>

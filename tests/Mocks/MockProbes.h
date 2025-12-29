@@ -454,13 +454,17 @@ inline Platform::MemoryCounters makeMemoryAtUsage(double usagePercent, uint64_t 
 inline Platform::SystemCounters makeSystemCounters(Platform::CpuCounters cpu,
                                                    Platform::MemoryCounters memory,
                                                    uint64_t uptime = 0,
-                                                   std::vector<Platform::CpuCounters> perCore = {})
+                                                   std::vector<Platform::CpuCounters> perCore = {},
+                                                   uint64_t netRxBytes = 0,
+                                                   uint64_t netTxBytes = 0)
 {
     Platform::SystemCounters s;
     s.cpuTotal = cpu;
     s.memory = memory;
     s.uptimeSeconds = uptime;
     s.cpuPerCore = std::move(perCore);
+    s.netRxBytes = netRxBytes;
+    s.netTxBytes = netTxBytes;
     return s;
 }
 
@@ -493,6 +497,7 @@ inline Platform::SystemCapabilities makeFullSystemCapabilities()
     caps.hasPerCoreCpu = true;
     caps.hasSwap = true;
     caps.hasIoWait = true;
+    caps.hasNetworkCounters = true;
     return caps;
 }
 

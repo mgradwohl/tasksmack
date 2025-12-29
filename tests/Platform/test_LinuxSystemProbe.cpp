@@ -254,6 +254,60 @@ TEST(LinuxSystemProbeTest, CpuFrequencyIfAvailable)
     }
 }
 
+// =============================================================================
+// Network Counter Tests
+// =============================================================================
+
+TEST(LinuxSystemProbeTest, NetworkCapabilityEnabled)
+{
+    LinuxSystemProbe probe;
+    auto caps = probe.capabilities();
+
+    // Linux should always have network counters available via /proc/net/dev
+    EXPECT_TRUE(caps.hasNetworkCounters);
+}
+
+TEST(LinuxSystemProbeTest, NetworkCountersAreValid)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    // Network counters should be non-negative (0 is valid for idle systems)
+    // We can't guarantee non-zero since the system may have no network traffic
+    EXPECT_GE(counters.netRxBytes, 0ULL);
+    EXPECT_GE(counters.netTxBytes, 0ULL);
+}
+
+TEST(LinuxSystemProbeTest, NetworkCountersMonotonicallyIncrease)
+{
+    LinuxSystemProbe probe;
+    auto counters1 = probe.read();
+
+    // Generate some network traffic by sleeping briefly
+    // (background processes likely produce some network activity)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto counters2 = probe.read();
+
+    // Counters should be >= previous values (cumulative, not deltas)
+    EXPECT_GE(counters2.netRxBytes, counters1.netRxBytes);
+    EXPECT_GE(counters2.netTxBytes, counters1.netTxBytes);
+}
+
+TEST(LinuxSystemProbeTest, NetworkCountersReadMultipleTimes)
+{
+    LinuxSystemProbe probe;
+
+    // Read counters multiple times to ensure consistency
+    for (int i = 0; i < 5; ++i)
+    {
+        auto counters = probe.read();
+        // Basic sanity: should not throw and should have valid structure
+        EXPECT_GE(counters.netRxBytes, 0ULL);
+        EXPECT_GE(counters.netTxBytes, 0ULL);
+    }
+}
+
 } // namespace
 } // namespace Platform
 

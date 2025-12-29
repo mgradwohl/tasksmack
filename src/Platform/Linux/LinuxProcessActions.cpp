@@ -4,7 +4,7 @@
 
 #include <cerrno>
 #include <csignal> // POSIX signals
-#include <cstring>
+#include <system_error>
 
 namespace Platform
 {
@@ -70,7 +70,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(int32_t pid, int signal, std
         errorMsg = "Invalid signal";
         break;
     default:
-        errorMsg = std::strerror(err);
+        errorMsg = std::system_category().message(err);
         break;
     }
 

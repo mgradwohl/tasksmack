@@ -64,6 +64,8 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_SwapHistory);
     trimSamples(m_PowerHistory);
     trimSamples(m_BatteryChargeHistory);
+    trimSamples(m_NetRxHistory);
+    trimSamples(m_NetTxHistory);
 
     for (auto& coreHist : m_PerCoreHistory)
     {
@@ -91,6 +93,8 @@ void SystemModel::trimHistory(double nowSeconds)
     updateMin(m_SwapHistory.size());
     updateMin(m_PowerHistory.size());
     updateMin(m_BatteryChargeHistory.size());
+    updateMin(m_NetRxHistory.size());
+    updateMin(m_NetTxHistory.size());
     for (const auto& coreHist : m_PerCoreHistory)
     {
         updateMin(coreHist.size());
@@ -117,6 +121,8 @@ void SystemModel::trimHistory(double nowSeconds)
         trimToMin(m_SwapHistory);
         trimToMin(m_PowerHistory);
         trimToMin(m_BatteryChargeHistory);
+        trimToMin(m_NetRxHistory);
+        trimToMin(m_NetTxHistory);
         for (auto& coreHist : m_PerCoreHistory)
         {
             trimToMin(coreHist);
@@ -231,6 +237,18 @@ std::vector<float> SystemModel::batteryChargeHistory() const
     return std::vector<float>(m_BatteryChargeHistory.begin(), m_BatteryChargeHistory.end());
 }
 
+std::vector<float> SystemModel::netRxHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return std::vector<float>(m_NetRxHistory.begin(), m_NetRxHistory.end());
+}
+
+std::vector<float> SystemModel::netTxHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return std::vector<float>(m_NetTxHistory.begin(), m_NetTxHistory.end());
+}
+
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -339,6 +357,23 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             auto coreUsage = computeCpuUsage(counters.cpuPerCore[i], m_PrevCounters.cpuPerCore[i]);
             snap.cpuPerCore.push_back(coreUsage);
         }
+
+        // Network rates (bytes per second)
+        const double timeDelta = nowSeconds - m_PrevTimestamp;
+        if (timeDelta > 0.0)
+        {
+            // Only compute if counters increased (handle overflow/restart)
+            if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
+            {
+                const std::uint64_t rxDelta = counters.netRxBytes - m_PrevCounters.netRxBytes;
+                snap.netRxBytesPerSec = Numeric::toDouble(rxDelta) / timeDelta;
+            }
+            if (counters.netTxBytes >= m_PrevCounters.netTxBytes)
+            {
+                const std::uint64_t txDelta = counters.netTxBytes - m_PrevCounters.netTxBytes;
+                snap.netTxBytesPerSec = Numeric::toDouble(txDelta) / timeDelta;
+            }
+        }
     }
 
     // Store snapshot (preserve power status that was set separately in refresh())
@@ -361,6 +396,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Track battery charge % if available (0-100 range, use -1 as "no data")
         const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
         m_BatteryChargeHistory.push_back(chargeVal);
+        // Network history (bytes per second)
+        m_NetRxHistory.push_back(static_cast<float>(snap.netRxBytesPerSec));
+        m_NetTxHistory.push_back(static_cast<float>(snap.netTxBytesPerSec));
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
@@ -370,6 +408,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
         trimHistory(nowSeconds);
     }
+
+    // Update previous timestamp for next iteration
+    m_PrevTimestamp = nowSeconds;
 }
 
 CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous)

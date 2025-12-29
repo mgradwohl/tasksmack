@@ -67,6 +67,10 @@ struct SystemCounters
     // CPU frequency in MHz (current, may vary per-core)
     uint64_t cpuFreqMHz = 0;
 
+    // Network counters (cumulative bytes across all interfaces)
+    uint64_t netRxBytes = 0; // Total bytes received
+    uint64_t netTxBytes = 0; // Total bytes transmitted
+
     // Static system info (populated once)
     std::string hostname;
     std::string cpuModel;
@@ -84,6 +88,7 @@ struct SystemCapabilities
     bool hasSteal = false;
     bool hasLoadAvg = false;
     bool hasCpuFreq = false;
+    bool hasNetworkCounters = false; // System-wide network byte counters
 };
 
 } // namespace Platform

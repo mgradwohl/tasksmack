@@ -13,7 +13,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -34,7 +33,7 @@
 // clang-format on
 #else
 #include <cerrno>
-#include <cstring>
+#include <system_error>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -137,7 +136,7 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     const pid_t pid = fork();
     if (pid == -1)
     {
-        spdlog::error("Failed to fork process for xdg-open: {}", strerror(errno));
+        spdlog::error("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
         return;
     }
 
@@ -147,7 +146,7 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
         const pid_t grandchild = fork();
         if (grandchild == -1)
         {
-            spdlog::error("Failed to fork grandchild: {}", strerror(errno));
+            spdlog::error("Failed to fork grandchild: {}", std::system_category().message(errno));
             _exit(EXIT_FAILURE);
         }
 
@@ -158,7 +157,7 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
             // Safe: no shell involved, arguments are separate
             execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
             // execlp only returns on error
-            spdlog::error("Failed to exec xdg-open: {}", strerror(errno));
+            spdlog::error("Failed to exec xdg-open: {}", std::system_category().message(errno));
             _exit(EXIT_FAILURE);
         }
         // First child exits immediately (grandchild will be adopted by init)
@@ -170,7 +169,7 @@ void openFileWithDefaultEditor(const std::filesystem::path& filePath)
     const pid_t waited = waitpid(pid, &status, 0);
     if (waited == -1)
     {
-        spdlog::error("waitpid failed while waiting for xdg-open child process: {}", strerror(errno));
+        spdlog::error("waitpid failed while waiting for xdg-open child process: {}", std::system_category().message(errno));
     }
     else if (WIFEXITED(status))
     {

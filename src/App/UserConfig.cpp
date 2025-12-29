@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -116,10 +117,13 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
         return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
     }
 
-    // Last resort: use passwd entry
-    if (const auto* pw = getpwuid(getuid()))
+    // Last resort: use passwd entry (thread-safe version)
+    struct passwd pwBuf = {};
+    struct passwd* pwResult = nullptr;
+    std::array<char, 1024> buffer{};
+    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
     {
-        return std::filesystem::path(pw->pw_dir) / ".config" / "tasksmack";
+        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
     }
 
     return std::filesystem::current_path();

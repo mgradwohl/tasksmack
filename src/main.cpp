@@ -26,7 +26,6 @@
 #include <vector>
 #endif
 #include <clocale>
-#include <cstdio>
 #include <iostream>
 #include <print>
 

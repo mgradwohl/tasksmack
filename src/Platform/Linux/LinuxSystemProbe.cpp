@@ -102,6 +102,7 @@ SystemCounters LinuxSystemProbe::read()
     readUptime(counters);
     readLoadAvg(counters);
     readCpuFreq(counters);
+    readNetworkCounters(counters);
     readStaticInfo(counters);
     return counters;
 }
@@ -115,7 +116,8 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasIoWait = true,
                               .hasSteal = true,
                               .hasLoadAvg = true,
-                              .hasCpuFreq = true};
+                              .hasCpuFreq = true,
+                              .hasNetworkCounters = true};
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -319,6 +321,78 @@ void LinuxSystemProbe::readCpuFreq(SystemCounters& counters)
             counters.cpuFreqMHz = freqKHz / 1000;
         }
     }
+}
+
+void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
+{
+    // Format: /proc/net/dev
+    // Inter-|   Receive                                                |  Transmit
+    //  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    //     lo: 1234567   12345    0    0    0     0          0         0  1234567   12345    0    0    0     0       0          0
+    //   eth0: 9876543   98765    0    0    0     0          0         0  5432109   54321    0    0    0     0       0          0
+
+    std::ifstream netFile("/proc/net/dev");
+    if (!netFile.is_open())
+    {
+        spdlog::warn("Failed to open /proc/net/dev");
+        return;
+    }
+
+    uint64_t totalRxBytes = 0;
+    uint64_t totalTxBytes = 0;
+
+    std::string line;
+    // Skip first two header lines
+    std::getline(netFile, line);
+    std::getline(netFile, line);
+
+    while (std::getline(netFile, line))
+    {
+        // Find the colon separator between interface name and stats
+        auto colonPos = line.find(':');
+        if (colonPos == std::string::npos)
+        {
+            continue;
+        }
+
+        // Extract interface name (trimmed)
+        std::string iface = line.substr(0, colonPos);
+        // Trim leading/trailing whitespace
+        auto start = iface.find_first_not_of(" \t");
+        if (start != std::string::npos)
+        {
+            iface = iface.substr(start);
+        }
+
+        // Skip loopback interface - it's internal traffic
+        if (iface == "lo")
+        {
+            continue;
+        }
+
+        // Parse the stats after the colon
+        std::istringstream iss(line.substr(colonPos + 1));
+        uint64_t rxBytes = 0;
+        uint64_t rxPackets = 0;
+        uint64_t rxErrs = 0;
+        uint64_t rxDrop = 0;
+        uint64_t rxFifo = 0;
+        uint64_t rxFrame = 0;
+        uint64_t rxCompressed = 0;
+        uint64_t rxMulticast = 0;
+        uint64_t txBytes = 0;
+
+        iss >> rxBytes >> rxPackets >> rxErrs >> rxDrop >> rxFifo >> rxFrame >> rxCompressed >> rxMulticast >> txBytes;
+
+        if (!iss.fail())
+        {
+            totalRxBytes += rxBytes;
+            totalTxBytes += txBytes;
+        }
+    }
+
+    counters.netRxBytes = totalRxBytes;
+    counters.netTxBytes = totalTxBytes;
 }
 
 } // namespace Platform
