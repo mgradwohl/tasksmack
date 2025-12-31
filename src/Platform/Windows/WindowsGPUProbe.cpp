@@ -1,35 +1,50 @@
 #include "WindowsGPUProbe.h"
 
+#include "DXGIGPUProbe.h"
+
 #include <spdlog/spdlog.h>
 
 namespace Platform
 {
 
+WindowsGPUProbe::WindowsGPUProbe() : m_DXGIProbe(std::make_unique<DXGIGPUProbe>())
+{
+    spdlog::debug("WindowsGPUProbe: Initialized with DXGI probe");
+}
+
 std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
 {
-    // Stub implementation - returns no GPUs
-    // TODO: Implement DXGI, D3DKMT, and NVML GPU enumeration
-    spdlog::debug("WindowsGPUProbe: GPU enumeration not yet implemented");
+    if (m_DXGIProbe)
+    {
+        return m_DXGIProbe->enumerateGPUs();
+    }
     return {};
 }
 
 std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 {
-    // Stub implementation - returns empty
-    // TODO: Implement GPU metrics reading via DXGI and NVML
+    if (m_DXGIProbe)
+    {
+        return m_DXGIProbe->readGPUCounters();
+    }
     return {};
 }
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
 {
-    // Stub implementation - returns empty
-    // TODO: Implement per-process GPU metrics via D3DKMT
+    if (m_DXGIProbe)
+    {
+        return m_DXGIProbe->readProcessGPUCounters();
+    }
     return {};
 }
 
 GPUCapabilities WindowsGPUProbe::capabilities() const
 {
-    // Stub implementation - no capabilities yet
+    if (m_DXGIProbe)
+    {
+        return m_DXGIProbe->capabilities();
+    }
     return GPUCapabilities{};
 }
 
