@@ -12,10 +12,11 @@ namespace Platform
 
 class DXGIGPUProbe;
 class NVMLGPUProbe;
+class D3DKMTGPUProbe;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// Phase 2: Uses DXGI for basic enumeration + NVML for NVIDIA enhancements
-/// Future phases will add D3DKMT (per-process), etc.
+/// Phase 3: Uses D3DKMT for per-process GPU metrics (all vendors)
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -38,6 +39,7 @@ class WindowsGPUProbe : public IGPUProbe
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
+    std::unique_ptr<D3DKMTGPUProbe> m_D3DKMTProbe;
 
     // Map DXGI GPU index to NVML GPU index (for merging data)
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;

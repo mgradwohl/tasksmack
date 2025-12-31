@@ -1,5 +1,6 @@
 #include "WindowsGPUProbe.h"
 
+#include "D3DKMTGPUProbe.h"
 #include "DXGIGPUProbe.h"
 #include "NVMLGPUProbe.h"
 
@@ -11,9 +12,20 @@
 namespace Platform
 {
 
-WindowsGPUProbe::WindowsGPUProbe() : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()), m_NVMLProbe(std::make_unique<NVMLGPUProbe>())
+WindowsGPUProbe::WindowsGPUProbe()
+    : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()), m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
+      m_D3DKMTProbe(std::make_unique<D3DKMTGPUProbe>())
 {
-    spdlog::debug("WindowsGPUProbe: Initialized with DXGI{} probe", m_NVMLProbe->isAvailable() ? " + NVML" : "");
+    std::string probeSummary = "DXGI";
+    if (m_NVMLProbe->isAvailable())
+    {
+        probeSummary += " + NVML";
+    }
+    if (m_D3DKMTProbe->capabilities().hasPerProcessMetrics)
+    {
+        probeSummary += " + D3DKMT";
+    }
+    spdlog::debug("WindowsGPUProbe: Initialized with {} probe(s)", probeSummary);
 }
 
 std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
@@ -142,10 +154,10 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
 {
-    // Per-process GPU metrics will be implemented in Phase 3 via D3DKMT
-    if (m_DXGIProbe)
+    // Phase 3: Use D3DKMT for per-process GPU metrics (works for all vendors)
+    if (m_D3DKMTProbe)
     {
-        return m_DXGIProbe->readProcessGPUCounters();
+        return m_D3DKMTProbe->readProcessGPUCounters();
     }
     return {};
 }
@@ -175,6 +187,16 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || nvmlCaps.hasPerProcessMetrics;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || nvmlCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || nvmlCaps.supportsMultiGPU;
+    }
+
+    // Merge D3DKMT capabilities (per-process metrics for all vendors)
+    if (m_D3DKMTProbe)
+    {
+        auto d3dkmtCaps = m_D3DKMTProbe->capabilities();
+
+        caps.hasEngineUtilization = caps.hasEngineUtilization || d3dkmtCaps.hasEngineUtilization;
+        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || d3dkmtCaps.hasPerProcessMetrics;
+        caps.supportsMultiGPU = caps.supportsMultiGPU || d3dkmtCaps.supportsMultiGPU;
     }
 
     return caps;

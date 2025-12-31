@@ -489,6 +489,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WindowsGPUProbe.cpp
     src/Platform/Windows/DXGIGPUProbe.cpp
+    src/Platform/Windows/D3DKMTGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
@@ -542,6 +543,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WindowsGPUProbe.h
         src/Platform/Windows/DXGIGPUProbe.h
+        src/Platform/Windows/D3DKMTGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WinString.h
     )
@@ -700,7 +702,7 @@ target_link_libraries(TaskSmack PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32 dxgi)
+    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32 dxgi gdi32)
 endif()
 
 # Copy assets (fonts and themes) to build directory
