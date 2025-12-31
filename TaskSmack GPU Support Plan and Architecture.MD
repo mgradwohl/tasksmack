@@ -561,15 +561,21 @@ snapshot.perGpuUsage = {
    - Layout: Horizontal split (graph left, bars right) matching CPU/Memory sections
    - Uses `ImPlot` for graphs with theme colors
 
-2. **Multi-GPU Layout Options**:
-   - **Default Mode**: Show only GPU with highest utilization (auto-selected)
-   - **All GPUs Mode**: Stacked vertically, collapsible headers per GPU
-   - **Selection Dropdown**: Located in GPU section header
-     - "Auto (GPU with highest usage)"
-     - "GPU 0: NVIDIA RTX 4090 [Discrete]"
-     - "GPU 1: Intel UHD 770 [Integrated]"
-     - "Show All GPUs"
-   - Persist user selection to config file
+2. **Multi-GPU Layout** (Stacked):
+   - **Default Mode**: Stacked vertically with collapsible headers per GPU
+   - **Initial State**: GPU with highest utilization expanded, others collapsed
+   - **User Control**: Click header to expand/collapse individual GPUs; "Expand All" / "Collapse All" buttons
+   - **Layout**:
+     ```
+     ┌─────────────────────────────────────────────────┐
+     │ ▼ GPU 0: NVIDIA RTX 4090 [Discrete] (75%)      │ ← Expanded (highest util)
+     │   [Graph + Now Bars]                            │
+     ├─────────────────────────────────────────────────┤
+     │ ▶ GPU 1: Intel UHD 770 [Integrated] (12%)      │ ← Collapsed
+     └─────────────────────────────────────────────────┘
+     ```
+   - **Persistence**: Save expand/collapse state to config file
+   - **Rationale**: Maximizes visible data for primary GPU while allowing access to all GPUs
 
 3. **Missing SDK Guidance**:
    - When vendor SDK not installed, show info banner:
@@ -837,10 +843,10 @@ if(TASKSMACK_ENABLE_GPU_SUPPORT)
 endif()
 ```
 
-#### 3. Optional NVML Integration
+#### 3. NVML Integration (Static Linking Preferred)
 
 ```cmake
-# Optional: Attempt to find NVML (dynamically loaded at runtime)
+# NVML: Static link if possible, dynamic fallback
 if(WIN32)
     # Windows: Look for CUDA toolkit or standalone NVML
     find_path(NVML_INCLUDE_DIR nvml.h
@@ -848,25 +854,54 @@ if(WIN32)
             "$ENV{CUDA_PATH}/include"
             "$ENV{ProgramFiles}/NVIDIA GPU Computing Toolkit/CUDA/*/include"
     )
-    if(NVML_INCLUDE_DIR)
+    find_library(NVML_LIBRARY nvml
+        PATHS
+            "$ENV{CUDA_PATH}/lib/x64"
+            "$ENV{ProgramFiles}/NVIDIA GPU Computing Toolkit/CUDA/*/lib/x64"
+    )
+    if(NVML_INCLUDE_DIR AND NVML_LIBRARY)
+        target_include_directories(TaskSmack PRIVATE ${NVML_INCLUDE_DIR})
+        target_link_libraries(TaskSmack PRIVATE ${NVML_LIBRARY})
+        target_compile_definitions(TaskSmack PRIVATE TASKSMACK_HAVE_NVML=1 TASKSMACK_NVML_STATIC=1)
+        message(STATUS "NVML: Static linking enabled (${NVML_LIBRARY})")
+    elseif(NVML_INCLUDE_DIR)
+        # Headers found but not library: use dynamic loading fallback
         target_include_directories(TaskSmack PRIVATE ${NVML_INCLUDE_DIR})
         target_compile_definitions(TaskSmack PRIVATE TASKSMACK_HAVE_NVML=1)
+        message(STATUS "NVML: Dynamic loading fallback (headers only)")
+    else()
+        message(STATUS "NVML: Not found, NVIDIA GPU support will be limited")
     endif()
 else()
-    # Linux: Look for libnvidia-ml.so
-    find_library(NVML_LIBRARY nvidia-ml
-        PATHS /usr/lib/x86_64-linux-gnu /usr/lib64
+    # Linux: Prefer static linking, fallback to dynamic
+    find_path(NVML_INCLUDE_DIR nvml.h
+        PATHS /usr/include/nvidia/gdk /usr/local/cuda/include
     )
-    if(NVML_LIBRARY)
+    find_library(NVML_LIBRARY nvidia-ml
+        PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/local/cuda/lib64
+    )
+    if(NVML_INCLUDE_DIR AND NVML_LIBRARY)
+        target_include_directories(TaskSmack PRIVATE ${NVML_INCLUDE_DIR})
         target_link_libraries(TaskSmack PRIVATE ${NVML_LIBRARY})
+        target_compile_definitions(TaskSmack PRIVATE TASKSMACK_HAVE_NVML=1 TASKSMACK_NVML_STATIC=1)
+        message(STATUS "NVML: Static linking enabled (${NVML_LIBRARY})")
+    elseif(NVML_INCLUDE_DIR)
+        # Headers found but not library: use dynamic loading fallback
+        target_include_directories(TaskSmack PRIVATE ${NVML_INCLUDE_DIR})
         target_compile_definitions(TaskSmack PRIVATE TASKSMACK_HAVE_NVML=1)
+        message(STATUS "NVML: Dynamic loading fallback (headers only)")
+    else()
+        message(STATUS "NVML: Not found, NVIDIA GPU support will be limited")
     endif()
 endif()
+
+# Minimum NVML version check (API 11+, Driver 450+)
+# This is enforced at runtime in NVMLGPUProbe::initialize()
 ```
 
-**Note:** NVML should be loaded dynamically via `dlopen()` (Linux) or `LoadLibrary()` (Windows) to avoid hard dependency. If NVML is not available at runtime, the probe gracefully degrades.
+**Rationale:** Static linking preferred per maintainer. Dynamic loading is fallback when static library unavailable (e.g., user has drivers but not SDK).
 
-#### 4. Optional ROCm Integration
+#### 4. Optional ROCm Integration (Dynamic Loading)
 
 ```cmake
 if(UNIX AND NOT APPLE)
@@ -884,30 +919,60 @@ if(UNIX AND NOT APPLE)
 endif()
 ```
 
-### Dynamic Library Loading Strategy
+### Library Loading Strategy
 
-To avoid requiring NVML/ROCm at build time:
+**Static Linking (Preferred):**
+- NVML: Static link when SDK available
+- DXGI/D3DKMT: Static link (Windows system libraries)
+- libdrm: Static link (Linux system library)
+- ROCm: Dynamic loading only (optional, late priority)
 
-1. **Define function pointers** for all NVML/ROCm functions
+**Dynamic Loading (Fallback):**
+When static library unavailable but headers present:
+
+1. **Define function pointers** for all vendor API functions
 2. **At runtime**, attempt `dlopen("libnvidia-ml.so")` (Linux) or `LoadLibrary("nvml.dll")` (Windows)
 3. **Resolve symbols** using `dlsym()` or `GetProcAddress()`
-4. **If loading fails**, disable NVML features and log warning
+4. **If loading fails**, disable vendor features and log warning
 5. **Fallback** to DXGI (Windows) or DRM (Linux)
 
-**Example:**
+**Example (when TASKSMACK_NVML_STATIC not defined):**
 ```cpp
 // In NVMLGPUProbe.cpp
 bool NVMLGPUProbe::initialize() {
+#ifdef TASKSMACK_NVML_STATIC
+    // Use statically linked functions directly
+    nvmlReturn_t result = nvmlInit_v2();
+    if (result != NVML_SUCCESS) {
+        spdlog::warn("NVML initialization failed: {}", nvmlErrorString(result));
+        return false;
+    }
+#else
+    // Dynamic loading fallback
 #ifdef _WIN32
     m_NVMLHandle = LoadLibraryA("nvml.dll");
 #else
     m_NVMLHandle = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
 #endif
     if (!m_NVMLHandle) {
-        spdlog::warn("NVML not available, NVIDIA GPU support disabled");
+        spdlog::warn("NVML library not found, NVIDIA GPU support disabled");
         return false;
     }
     // Load function pointers...
+    auto nvmlInit = reinterpret_cast<nvmlReturn_t(*)()>(
+        dlsym(m_NVMLHandle, "nvmlInit_v2"));
+    if (!nvmlInit) {
+        spdlog::warn("NVML functions not found");
+        return false;
+    }
+#endif
+    
+    // Check driver version (require NVML 11+, Driver 450+)
+    nvmlReturn_t result = nvmlInit_v2();
+    if (result != NVML_SUCCESS) {
+        spdlog::warn("NVML init failed: Update NVIDIA drivers to 450+ for GPU monitoring");
+        return false;
+    }
     return true;
 }
 ```
@@ -915,8 +980,11 @@ bool NVMLGPUProbe::initialize() {
 ### Build Script Changes
 
 **Update `tools/` scripts:**
-- **`check-prereqs.sh` / `check-prereqs.ps1`**: Check for optional GPU libraries
-- Document in CONTRIBUTING.md that GPU support is optional
+- **`check-prereqs.sh` / `check-prereqs.ps1`**: Check for optional GPU libraries and SDK availability
+- Document in CONTRIBUTING.md that GPU support has tiered levels:
+  - **Tier 1 (Full):** NVML SDK installed (static linking)
+  - **Tier 2 (Runtime):** NVIDIA drivers only (dynamic loading)
+  - **Tier 3 (Basic):** No vendor SDKs (DXGI/DRM fallback)
 
 ### Theme Integration
 
@@ -1049,6 +1117,8 @@ const auto badgeColor = gpuInfo.isIntegrated
 
 ## Implementation Phases
 
+**Vendor Priority:** NVIDIA → Intel → AMD (per maintainer guidance)
+
 ### Phase 1: Foundation (Weeks 1-2)
 
 **Goals:**
@@ -1064,25 +1134,30 @@ const auto badgeColor = gpuInfo.isIntegrated
 - [ ] `tests/Mocks/MockGPUProbe.h`
 - [ ] Unit tests for `GPUModel` with mock probe
 - [ ] CMake integration (feature flag, conditional compilation)
+- [ ] Theme file updates with GPU colors
 
-### Phase 2: Windows System-Level Support (Weeks 3-4)
+### Phase 2: NVIDIA Support - Windows (Weeks 3-4)
 
 **Goals:**
-- DXGI probe for Windows (all vendors)
-- GPU enumeration and basic metrics
+- DXGI probe for basic Windows GPU enumeration (all vendors)
+- NVML probe for enhanced NVIDIA metrics
 - System Overview UI integration
+- **Priority:** NVIDIA first per maintainer request
 
 **Deliverables:**
-- [ ] `src/Platform/Windows/DXGIGPUProbe.cpp`
+- [ ] `src/Platform/Windows/DXGIGPUProbe.cpp` (basic enumeration)
+- [ ] `src/Platform/Windows/NVMLGPUProbe.cpp` (NVIDIA-specific)
 - [ ] `src/Platform/Windows/WindowsGPUProbe.cpp` (composite)
 - [ ] `src/App/Panels/SystemMetricsPanel.cpp` extended with GPU section
-- [ ] Integration tests on Windows with GPU
-- [ ] Documentation updates (README, CONTRIBUTING)
+- [ ] Static linking for NVML where possible, dynamic fallback
+- [ ] Integration tests on Windows with NVIDIA GPU
+- [ ] Driver version check (NVML 11+, Driver 450+)
 
-### Phase 3: Windows Per-Process Support (Weeks 5-6)
+### Phase 3: NVIDIA Support - Windows Per-Process (Weeks 5-6)
 
 **Goals:**
-- D3DKMT probe for per-process GPU usage
+- D3DKMT probe for per-process GPU usage (all vendors via Windows API)
+- NVML per-process enhancements for NVIDIA
 - Process table GPU columns
 - Process Details GPU tab
 
@@ -1092,55 +1167,74 @@ const auto badgeColor = gpuInfo.isIntegrated
 - [ ] `src/Domain/ProcessModel.cpp` integration with GPU probe
 - [ ] `src/App/Panels/ProcessPanel.cpp` GPU columns
 - [ ] `src/App/Panels/ProcessDetailsPanel.cpp` GPU tab
+- [ ] Multi-GPU aggregation logic in ProcessModel
 - [ ] Unit tests for process-GPU association
 
-### Phase 4: Linux NVML Support (Weeks 7-8)
+### Phase 4: NVIDIA Support - Linux (Weeks 7-8)
 
 **Goals:**
 - NVML probe for Linux (NVIDIA)
 - System and per-process metrics
+- Complete NVIDIA cross-platform support
 
 **Deliverables:**
-- [ ] `src/Platform/Linux/NVMLGPUProbe.cpp` (shared Windows/Linux code where possible)
-- [ ] Dynamic loading of NVML library
+- [ ] `src/Platform/Linux/NVMLGPUProbe.cpp` (shared code with Windows where possible)
+- [ ] Static linking for NVML, dynamic fallback
 - [ ] Integration tests on Linux with NVIDIA GPU
-- [ ] Documentation for Linux dependencies
+- [ ] Documentation for Linux NVIDIA driver requirements
+- [ ] User guidance banner when NVIDIA drivers not installed
 
-### Phase 5: Linux ROCm and DRM Support (Weeks 9-10)
+### Phase 5: Intel Support (Weeks 9-10)
 
 **Goals:**
-- ROCm probe (AMD on Linux)
-- DRM probe (Intel and fallback)
-- Composite Linux probe
+- Intel GPU support on both Windows and Linux
+- DRM probe (Linux) for Intel integrated GPUs
+- DXGI fallback (Windows) for Intel GPUs
+- **Priority:** Intel second per maintainer request
+
+**Deliverables:**
+- [ ] `src/Platform/Linux/DRMGPUProbe.cpp` (Intel-focused)
+- [ ] Intel GPU detection and integrated vs discrete labeling
+- [ ] Basic metrics via DRM/sysfs (Linux) and DXGI (Windows)
+- [ ] Integration tests on systems with Intel integrated GPUs
+- [ ] Temperature monitoring via hwmon (Linux)
+
+### Phase 6: AMD Support (Weeks 11-12)
+
+**Goals:**
+- AMD GPU support on both Windows and Linux
+- ROCm probe (Linux) for AMD discrete GPUs
+- DXGI fallback (Windows) for AMD GPUs
+- **Priority:** AMD last per maintainer request
 
 **Deliverables:**
 - [ ] `src/Platform/Linux/ROCmGPUProbe.cpp`
-- [ ] `src/Platform/Linux/DRMGPUProbe.cpp`
-- [ ] `src/Platform/Linux/LinuxGPUProbe.cpp` (composite)
-- [ ] Integration tests on Linux with AMD/Intel GPUs
-- [ ] Fallback behavior when vendor libraries unavailable
+- [ ] `src/Platform/Linux/LinuxGPUProbe.cpp` (composite: NVML → DRM → ROCm)
+- [ ] Dynamic loading for ROCm library (optional dependency)
+- [ ] Integration tests on Linux with AMD GPUs
+- [ ] ROCm 5.0+ requirement, user guidance for installation
+- [ ] Fallback behavior when ROCm unavailable
 
-### Phase 6: Windows NVML Enhancement (Week 11)
-
-**Goals:**
-- Enhanced NVIDIA metrics on Windows via NVML
-- Temperature, power, clock speeds
-
-**Deliverables:**
-- [ ] `src/Platform/Windows/NVMLGPUProbe.cpp`
-- [ ] Integration with `WindowsGPUProbe` composite
-- [ ] UI updates to show NVML-specific metrics
-
-### Phase 7: Polishing and Documentation (Week 12)
+### Phase 7: Polishing and Documentation (Week 13)
 
 **Goals:**
-- Multi-GPU UI refinements
+- Multi-GPU UI refinements (stacked layout)
 - Performance optimization
 - Comprehensive documentation
 - Close related issues
 
 **Deliverables:**
-- [ ] Multi-GPU tab/stacking UI in System Overview
+- [ ] Multi-GPU stacked UI in System Overview (collapsible headers)
+- [ ] Column visibility persistence for GPU columns
+- [ ] Performance profiling and optimization
+- [ ] Update `tasksmack.md` with GPU architecture
+- [ ] Update `completed-features.md`
+- [ ] Update all theme files with GPU color sections
+- [ ] Close issues #178, #189, #176
+- [ ] Create user guide for GPU monitoring features
+- [ ] Installation guidance documentation for NVML, ROCm, intel-gpu-tools
+
+---
 - [ ] Column visibility persistence for GPU columns
 - [ ] Performance profiling and optimization
 - [ ] Update `tasksmack.md` with GPU architecture
@@ -1310,13 +1404,11 @@ To ensure TaskSmack's GPU monitoring is intuitive and competitive, we compare ap
    - Use Metal Performance Shaders to query GPU metrics
    - Apple Silicon GPU monitoring
 
-2. **Virtualized GPU Monitoring**:
-   - vGPU metrics in VM environments (vSphere, Hyper-V)
-   - NVIDIA GRID vGPU monitoring
-
-3. **Container GPU Isolation**:
+2. **Container GPU Isolation**:
    - Track GPU usage per container (Docker, Kubernetes)
    - Requires integration with container runtimes
+
+**Note:** Virtualized GPU (vGPU) monitoring is explicitly out of scope per maintainer guidance. TaskSmack focuses on bare metal GPU monitoring only.
 
 ---
 
@@ -1416,16 +1508,38 @@ This design prioritizes:
 
 ### Questions for Maintainers
 
-Before implementation begins, clarify:
-1. **GPU vendor priority**: Should NVIDIA be prioritized, or equal effort for all vendors?
-2. **Multi-GPU UI**: Tabs vs. stacked sections in System Overview?
-3. **Dynamic linking**: Hard requirement or can we statically link some vendor libs?
-4. **Minimum driver versions**: Should we support older NVIDIA/AMD drivers?
-5. **Virtualized environments**: Should we handle vGPU scenarios?
+Answers provided by maintainer:
+
+1. **GPU vendor priority**: NVIDIA first, then Intel, then AMD
+   - **Implementation order**: Phase 1-3 focus on NVIDIA (Windows/Linux), Phase 4 adds Intel, Phase 5 adds AMD
+   - **Justification**: NVIDIA has best API support (NVML) and largest user base
+
+2. **Multi-GPU UI**: Stacked sections in System Overview
+   - **Layout**: Vertical stack with collapsible headers per GPU
+   - **Default**: Show GPU with highest utilization expanded, others collapsed
+   - **Rationale**: Maximizes screen space efficiency, consistent with CPU per-core view
+
+3. **Library linking**: Static linking is preferred where possible
+   - **NVML**: Static link if headers available, fallback to dynamic loading
+   - **ROCm/ADL**: Dynamic loading (optional dependency)
+   - **DXGI/D3DKMT**: Static link (system libraries on Windows)
+   - **libdrm**: Static link (system library on Linux)
+
+4. **Minimum driver versions**: Target recent drivers, no legacy support
+   - **NVIDIA**: NVML API version 11+ (Driver 450+, released 2020)
+   - **AMD**: ROCm 5.0+ (released 2022)
+   - **Intel**: Current generation drivers only
+   - **Rationale**: Users keep drivers up-to-date; supporting old drivers complicates code and loses features
+   - **UI Guidance**: If driver too old, show banner: "Update your GPU drivers to enable monitoring"
+
+5. **Virtualized environments**: Not in scope (bare metal only)
+   - **Focus**: Physical GPU monitoring on bare metal systems
+   - **vGPU/VM**: Not supported in initial implementation
+   - **Future**: May revisit if user demand exists
 
 ---
 
-**Document Version:** 1.0  
+**Document Version:** 2.0  
 **Last Updated:** 2025-12-31  
 **Author:** GitHub Copilot (Coding Agent)  
-**Status:** Awaiting Review and Approval
+**Status:** Reviewed with Maintainer Feedback Incorporated
