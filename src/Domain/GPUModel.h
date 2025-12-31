@@ -21,6 +21,12 @@ class GPUModel
 {
   public:
     explicit GPUModel(std::unique_ptr<Platform::IGPUProbe> probe);
+    ~GPUModel() = default;
+
+    GPUModel(const GPUModel&) = delete;
+    GPUModel& operator=(const GPUModel&) = delete;
+    GPUModel(GPUModel&&) = delete;
+    GPUModel& operator=(GPUModel&&) = delete;
 
     // Refresh metrics (called by sampler thread)
     void refresh();
@@ -28,8 +34,8 @@ class GPUModel
     // Get current snapshots (thread-safe)
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
-    // Get history for specific GPU
-    [[nodiscard]] const History<GPUSnapshot, GPU_HISTORY_CAPACITY>& history(const std::string& gpuId) const;
+    // Get history for specific GPU (returns copy for thread safety)
+    [[nodiscard]] std::vector<GPUSnapshot> history(const std::string& gpuId) const;
 
     // GPU info (static, rarely changes)
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;

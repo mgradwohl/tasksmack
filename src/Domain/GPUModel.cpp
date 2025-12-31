@@ -1,4 +1,4 @@
-#include "Domain/GPUModel.h"
+#include "GPUModel.h"
 
 #include <spdlog/spdlog.h>
 
@@ -67,19 +67,23 @@ void GPUModel::refresh()
             // Compute snapshot
             auto snapshot = computeSnapshot(current, previous, timeDeltaSeconds);
             newSnapshots[current.gpuId] = snapshot;
-
-            // Add to history
-            auto histIt = m_Histories.find(current.gpuId);
-            if (histIt != m_Histories.end())
-            {
-                histIt->second.push(snapshot);
-            }
         }
 
         // Update stored state under lock
         {
             std::unique_lock lock(m_Mutex);
             m_Snapshots = std::move(newSnapshots);
+
+            // Push to history under lock protection
+            for (const auto& [gpuId, snapshot] : m_Snapshots)
+            {
+                auto histIt = m_Histories.find(gpuId);
+                if (histIt != m_Histories.end())
+                {
+                    histIt->second.push(snapshot);
+                }
+            }
+
             m_PrevCounters.clear();
             for (const auto& counter : currentCounters)
             {
@@ -106,16 +110,23 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
     return result;
 }
 
-const History<GPUSnapshot, GPU_HISTORY_CAPACITY>& GPUModel::history(const std::string& gpuId) const
+std::vector<GPUSnapshot> GPUModel::history(const std::string& gpuId) const
 {
     std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
     {
-        static const History<GPUSnapshot, GPU_HISTORY_CAPACITY> empty;
-        return empty;
+        return {};
     }
-    return it->second;
+
+    // Copy history data to vector for thread-safe return
+    std::vector<GPUSnapshot> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(it->second[i]);
+    }
+    return result;
 }
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const

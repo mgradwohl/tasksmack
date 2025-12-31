@@ -273,15 +273,15 @@ TEST(GPUModelTest, HistoryMaintainedPerGPU)
     model.refresh();
 
     // Check history for each GPU
-    const auto& hist0 = model.history("GPU0");
-    const auto& hist1 = model.history("GPU1");
+    auto hist0 = model.history("GPU0");
+    auto hist1 = model.history("GPU1");
 
     EXPECT_EQ(hist0.size(), 2);
     EXPECT_EQ(hist1.size(), 2);
 
-    // Verify latest values using the latest() method
-    EXPECT_DOUBLE_EQ(hist0.latest().utilizationPercent, 60.0);
-    EXPECT_DOUBLE_EQ(hist1.latest().utilizationPercent, 80.0);
+    // Verify latest values (last element in vector)
+    EXPECT_DOUBLE_EQ(hist0.back().utilizationPercent, 60.0);
+    EXPECT_DOUBLE_EQ(hist1.back().utilizationPercent, 80.0);
 }
 
 // =============================================================================
@@ -371,7 +371,7 @@ TEST(GPUModelTest, HistoryForNonexistentGPUReturnsEmpty)
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
-    const auto& hist = model.history("NonexistentGPU");
+    auto hist = model.history("NonexistentGPU");
     EXPECT_EQ(hist.size(), 0);
 }
 
