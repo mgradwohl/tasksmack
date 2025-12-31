@@ -156,10 +156,11 @@ TEST(GPUModelTest, FirstRefreshShowsZeroPCIeRates)
 TEST(GPUModelTest, SubsequentRefreshComputesPCIeRates)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
     auto counters1 = makeGPUCounters("GPU0");
     counters1.pcieTxBytes = 1000;
     counters1.pcieRxBytes = 2000;
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
 
     Domain::GPUModel model(std::move(probe));
     model.refresh();
@@ -171,7 +172,7 @@ TEST(GPUModelTest, SubsequentRefreshComputesPCIeRates)
     auto counters2 = makeGPUCounters("GPU0");
     counters2.pcieTxBytes = 2000; // +1000 bytes
     counters2.pcieRxBytes = 4000; // +2000 bytes
-    probe->withGPUCounters("GPU0", counters2);
+    rawProbe->withGPUCounters("GPU0", counters2);
 
     model.refresh();
 
@@ -190,9 +191,10 @@ TEST(GPUModelTest, SubsequentRefreshComputesPCIeRates)
 TEST(GPUModelTest, PCIeCounterRollbackHandled)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
     auto counters1 = makeGPUCounters("GPU0");
     counters1.pcieTxBytes = 1000;
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
 
     Domain::GPUModel model(std::move(probe));
     model.refresh();
@@ -202,7 +204,7 @@ TEST(GPUModelTest, PCIeCounterRollbackHandled)
     // Counter went backward (e.g., GPU reset)
     auto counters2 = makeGPUCounters("GPU0");
     counters2.pcieTxBytes = 500;
-    probe->withGPUCounters("GPU0", counters2);
+    rawProbe->withGPUCounters("GPU0", counters2);
 
     model.refresh();
 
@@ -257,7 +259,8 @@ TEST(GPUModelTest, MultipleGPUsTrackedIndependently)
 TEST(GPUModelTest, HistoryMaintainedPerGPU)
 {
     auto probe = std::make_unique<MockGPUProbe>();
-    probe->withGPU("GPU0", "GPU Zero", "VendorA").withGPU("GPU1", "GPU One", "VendorB");
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA").withGPU("GPU1", "GPU One", "VendorB");
 
     Domain::GPUModel model(std::move(probe));
 
@@ -266,7 +269,7 @@ TEST(GPUModelTest, HistoryMaintainedPerGPU)
 
     // Second refresh with different values
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    probe->withUtilization("GPU0", 60.0).withUtilization("GPU1", 80.0);
+    rawProbe->withUtilization("GPU0", 60.0).withUtilization("GPU1", 80.0);
     model.refresh();
 
     // Check history for each GPU
@@ -276,15 +279,9 @@ TEST(GPUModelTest, HistoryMaintainedPerGPU)
     EXPECT_EQ(hist0.size(), 2);
     EXPECT_EQ(hist1.size(), 2);
 
-    // Verify latest values
-    auto gpu0Snapshots = hist0.getAll();
-    auto gpu1Snapshots = hist1.getAll();
-
-    ASSERT_EQ(gpu0Snapshots.size(), 2);
-    ASSERT_EQ(gpu1Snapshots.size(), 2);
-
-    EXPECT_DOUBLE_EQ(gpu0Snapshots.back().utilizationPercent, 60.0);
-    EXPECT_DOUBLE_EQ(gpu1Snapshots.back().utilizationPercent, 80.0);
+    // Verify latest values using the latest() method
+    EXPECT_DOUBLE_EQ(hist0.latest().utilizationPercent, 60.0);
+    EXPECT_DOUBLE_EQ(hist1.latest().utilizationPercent, 80.0);
 }
 
 // =============================================================================

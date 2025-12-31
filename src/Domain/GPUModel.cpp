@@ -26,7 +26,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         // Initialize history buffers for each GPU
         for (const auto& info : m_GPUInfo)
         {
-            m_Histories.emplace(info.id, History<GPUSnapshot>{});
+            m_Histories.emplace(info.id, History<GPUSnapshot, GPU_HISTORY_CAPACITY>{});
         }
     }
     catch (const std::exception& e)
@@ -50,7 +50,7 @@ void GPUModel::refresh()
 
         // Calculate time delta
         auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
-        double timeDeltaSeconds = timeDelta.count() / 1000.0;
+        double timeDeltaSeconds = static_cast<double>(timeDelta.count()) / 1000.0;
 
         // Compute snapshots
         std::unordered_map<std::string, GPUSnapshot> newSnapshots;
@@ -72,7 +72,7 @@ void GPUModel::refresh()
             auto histIt = m_Histories.find(current.gpuId);
             if (histIt != m_Histories.end())
             {
-                histIt->second.add(snapshot);
+                histIt->second.push(snapshot);
             }
         }
 
@@ -106,13 +106,13 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
     return result;
 }
 
-const History<GPUSnapshot>& GPUModel::history(const std::string& gpuId) const
+const History<GPUSnapshot, GPU_HISTORY_CAPACITY>& GPUModel::history(const std::string& gpuId) const
 {
     std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
     {
-        static const History<GPUSnapshot> empty;
+        static const History<GPUSnapshot, GPU_HISTORY_CAPACITY> empty;
         return empty;
     }
     return it->second;

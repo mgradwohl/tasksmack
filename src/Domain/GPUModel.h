@@ -14,6 +14,9 @@
 namespace Domain
 {
 
+// GPU history capacity: 5 minutes at 1 second intervals = 300 samples
+inline constexpr size_t GPU_HISTORY_CAPACITY = 300;
+
 class GPUModel
 {
   public:
@@ -26,7 +29,7 @@ class GPUModel
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
     // Get history for specific GPU
-    [[nodiscard]] const History<GPUSnapshot>& history(const std::string& gpuId) const;
+    [[nodiscard]] const History<GPUSnapshot, GPU_HISTORY_CAPACITY>& history(const std::string& gpuId) const;
 
     // GPU info (static, rarely changes)
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
@@ -42,7 +45,7 @@ class GPUModel
     std::unordered_map<std::string, GPUSnapshot> m_Snapshots;
 
     // History buffers per GPU
-    std::unordered_map<std::string, History<GPUSnapshot>> m_Histories;
+    std::unordered_map<std::string, History<GPUSnapshot, GPU_HISTORY_CAPACITY>> m_Histories;
 
     // Previous counters for rate calculation
     std::unordered_map<std::string, Platform::GPUCounters> m_PrevCounters;
