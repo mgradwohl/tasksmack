@@ -477,6 +477,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
+    src/Platform/Linux/NVMLGPUProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -533,6 +534,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
         src/Platform/Linux/LinuxGPUProbe.h
+        src/Platform/Linux/NVMLGPUProbe.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -703,6 +705,8 @@ target_link_libraries(TaskSmack PRIVATE
 
 if(WIN32)
     target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32 dxgi gdi32)
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(TaskSmack PRIVATE dl)
 endif()
 
 # Copy assets (fonts and themes) to build directory
