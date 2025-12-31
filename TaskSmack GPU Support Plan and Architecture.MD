@@ -13,10 +13,20 @@ This document outlines a comprehensive plan for adding GPU monitoring capabiliti
 1. **System-level GPU metrics** with history graphs in System Overview panel
 2. **Per-process GPU usage** in process table and Process Details panel
 3. **Multi-GPU support** for systems with multiple discrete or integrated GPUs
-4. **Vendor support**: NVIDIA (NVML), AMD (ROCm/ADL), Intel (Linux DRM, Windows perfmon)
+   - Automatic detection of integrated vs discrete GPUs
+   - Smart default display (GPU with highest utilization)
+   - User-selectable GPU for detailed metrics
+   - Aggregated GPU usage when processes span multiple GPUs
+4. **Comprehensive vendor support** with graceful degradation:
+   - **NVIDIA** (NVML): Full feature set on Windows and Linux
+   - **AMD** (ROCm/ADL): Full support on Linux, DXGI-based on Windows
+   - **Intel** (DRM/sysfs): Basic metrics on Linux, DXGI-based on Windows
+   - **Generic fallback**: DXGI (Windows), DRM (Linux) when vendor libraries unavailable
 5. **GPU engine tracking**: Which GPU engines are active (3D, Video Encode/Decode, Compute, Copy)
 6. **Temperature monitoring**: GPU die temperature and hotspot temperatures
 7. **Memory tracking**: VRAM usage (allocated, free, total) per GPU and per process
+8. **Theme-aware UI**: All GPU colors sourced from theme files; icons from Font Awesome
+9. **Guided installation**: UI prompts for installing vendor SDKs to unlock additional features
 
 ## Table of Contents
 
@@ -82,6 +92,11 @@ Following TaskSmack's established patterns:
 4. **Multi-GPU Native**: Architecture supports 0-N GPUs from the start
 5. **Optional Dependencies**: GPU libraries (NVML, ROCm) are optional; system works without them
 6. **Testability**: Domain logic is unit-testable with mock probes
+7. **All Vendors Supported**: NVIDIA, AMD, Intel all supported with vendor-specific limitations clearly documented
+8. **User Guidance**: UI provides actionable guidance for installing vendor SDKs to unlock features
+9. **Smart Multi-GPU**: Default to showing GPU with highest utilization; allow user to view all or select specific GPU
+10. **GPU Type Awareness**: UI differentiates integrated vs discrete GPUs with appropriate labeling and icons
+11. **Theme Integration**: All colors from theme files; GPU gets dedicated theme color section
 
 ---
 
@@ -127,6 +142,51 @@ Processes can use multiple engines simultaneously:
 - **Video Encode**: Hardware video encoding (NVENC, VCE, QuickSync)
 - **Video Decode**: Hardware video decoding (NVDEC, VCN, QuickSync)
 - **Copy/DMA**: Memory transfers, display output
+
+### Vendor Capability Matrix
+
+This matrix shows which features are available per vendor and OS. The UI uses this to:
+- Hide unavailable features automatically
+- Display vendor-specific tooltips
+- Provide installation guidance for missing SDKs
+
+| Feature | NVIDIA (NVML) | AMD (ROCm/ADL) | Intel | Generic (DXGI/DRM) |
+|---------|---------------|----------------|-------|-------------------|
+| **System GPU Utilization** | ✅ Win/Linux | ✅ Linux / ⚠️ Win (basic) | ✅ Linux / ⚠️ Win (basic) | ✅ Win/Linux (basic) |
+| **GPU Memory Used/Total** | ✅ Win/Linux | ✅ Linux / ✅ Win | ✅ Linux / ✅ Win | ✅ Win/Linux |
+| **Temperature** | ✅ Win/Linux | ✅ Linux / ⚠️ Win (limited) | ✅ Linux / ❌ Win | ⚠️ sysfs/hwmon only |
+| **Power Draw** | ✅ Win/Linux | ✅ Linux / ❌ Win | ⚠️ Linux (limited) / ❌ Win | ❌ |
+| **Clock Speeds** | ✅ Win/Linux | ✅ Linux / ⚠️ Win (limited) | ✅ Linux / ❌ Win | ⚠️ sysfs only |
+| **Fan Speed** | ✅ Win/Linux | ✅ Linux / ❌ Win | ❌ | ❌ |
+| **PCIe Bandwidth** | ✅ Win/Linux | ⚠️ Linux (limited) / ❌ Win | ⚠️ sysfs only / ❌ Win | ❌ |
+| **Per-Process GPU %** | ✅ Win/Linux | ❌ Linux / ✅ Win (D3DKMT) | ❌ Linux / ✅ Win (D3DKMT) | ⚠️ D3DKMT (Win) / ❌ Linux |
+| **Per-Process GPU Memory** | ✅ Win/Linux | ❌ Linux / ✅ Win (D3DKMT) | ❌ Linux / ✅ Win (D3DKMT) | ✅ Win (D3DKMT) / ❌ Linux |
+| **GPU Engine Attribution** | ⚠️ Via compute mode / ✅ Win (D3DKMT) | ❌ Linux / ✅ Win (D3DKMT) | ❌ Linux / ✅ Win (D3DKMT) | ✅ Win (D3DKMT) / ❌ Linux |
+| **Encoder/Decoder Util** | ✅ Win/Linux | ⚠️ Linux (limited) / ❌ Win | ❌ | ❌ |
+| **Multi-GPU Support** | ✅ Win/Linux | ✅ Win/Linux | ✅ Win/Linux | ✅ Win/Linux |
+
+**Legend:**
+- ✅ = Fully supported with accurate metrics
+- ⚠️ = Partial support or limited accuracy (details in notes)
+- ❌ = Not available on this platform/vendor combination
+
+**Important Limitations:**
+
+1. **AMD on Windows**: Basic metrics via DXGI only (no ROCm); per-process via D3DKMT; no power/temperature without vendor tools
+2. **AMD on Linux**: No per-process GPU utilization (ROCm limitation); use DXGI-equivalent fallback for basic system metrics
+3. **Intel on Windows**: Basic metrics via DXGI; per-process via D3DKMT; no temperature or power metrics
+4. **Intel on Linux**: Basic metrics via DRM/sysfs; no per-process metrics; limited temperature (hwmon)
+5. **Per-Process on Linux**: Only NVIDIA via NVML provides per-process GPU utilization; AMD/Intel show memory only
+6. **GPU Engine Attribution**: Most detailed on Windows via D3DKMT; NVIDIA NVML provides compute mode tracking
+
+**Recommended Installation Guidance (shown in UI when features unavailable):**
+
+| Vendor | Platform | Missing SDK | User Guidance |
+|--------|----------|-------------|---------------|
+| NVIDIA | Windows/Linux | NVIDIA Driver | "Install NVIDIA drivers from nvidia.com to enable GPU monitoring" |
+| AMD | Linux | ROCm | "Install ROCm from amd.com/rocm for enhanced AMD GPU metrics" |
+| Intel | Linux | intel-gpu-tools | "Install intel-gpu-tools package for enhanced Intel GPU metrics" |
+| Any | Linux | libdrm | "Install libdrm-dev package for basic GPU enumeration" |
 
 ---
 
@@ -424,22 +484,56 @@ Extend `Domain::ProcessSnapshot` with GPU fields:
 struct ProcessSnapshot {
     // ... existing fields ...
 
-    // GPU usage (per-process)
-    double gpuUtilPercent = 0.0;
-    uint64_t gpuMemoryBytes = 0;
-    std::vector<std::string> gpuEngines;  // e.g., ["3D", "Compute"]
-    double gpuEncoderUtil = 0.0;
-    double gpuDecoderUtil = 0.0;
-    std::string gpuDevice;  // Which GPU (for multi-GPU systems)
+    // GPU usage (per-process, aggregated across all GPUs)
+    double gpuUtilPercent = 0.0;        // Total GPU % across all GPUs process uses
+    uint64_t gpuMemoryBytes = 0;        // Total VRAM allocated across all GPUs
+    std::vector<std::string> gpuEngines;  // Union of active engines: ["3D", "Compute"]
+    double gpuEncoderUtil = 0.0;        // Aggregate encoder utilization
+    double gpuDecoderUtil = 0.0;        // Aggregate decoder utilization
+    std::string gpuDevices;             // Comma-separated GPU IDs: "0" or "0,1"
+    
+    // Per-GPU breakdown (for tooltip/details view)
+    struct PerGPUUsage {
+        std::string gpuId;              // GPU identifier
+        std::string gpuName;            // e.g., "NVIDIA RTX 4090"
+        bool isIntegrated;              // Integrated vs discrete
+        double utilPercent;             // GPU % on this specific GPU
+        uint64_t memoryBytes;           // VRAM allocated on this GPU
+        std::vector<std::string> engines; // Active engines on this GPU
+    };
+    std::vector<PerGPUUsage> perGpuUsage; // Breakdown for multi-GPU processes
 };
 ```
+
+**Multi-GPU Aggregation Logic:**
+
+When a process uses multiple GPUs, `ProcessModel` aggregates metrics as follows:
+
+```cpp
+// Example: Process uses GPU 0 (30% util, 2GB) and GPU 1 (45% util, 512MB)
+snapshot.gpuUtilPercent = 30.0 + 45.0;  // 75% total
+snapshot.gpuMemoryBytes = 2GB + 512MB;   // 2.5GB total
+snapshot.gpuEngines = {"3D", "Compute"}; // Union from both GPUs
+snapshot.gpuDevices = "0,1";             // Comma-separated list
+
+// Per-GPU breakdown for detailed view
+snapshot.perGpuUsage = {
+    {gpuId: "0", gpuName: "NVIDIA RTX 4090", isIntegrated: false, 
+     utilPercent: 30.0, memoryBytes: 2GB, engines: {"3D"}},
+    {gpuId: "1", gpuName: "Intel UHD 770", isIntegrated: true,
+     utilPercent: 45.0, memoryBytes: 512MB, engines: {"Compute"}}
+};
+```
+
+**Rationale:** Process table shows aggregated values for sorting/filtering; tooltips and Process Details panel show per-GPU breakdown for transparency.
 
 ### ProcessModel Integration
 
 `ProcessModel` will be extended to:
 1. Accept an optional `IGPUProbe` pointer in constructor
 2. During `refresh()`, read `readProcessGPUCounters()` and join with process data by PID
-3. Populate GPU fields in `ProcessSnapshot`
+3. Populate GPU fields in `ProcessSnapshot` with proper aggregation for multi-GPU processes
+4. Maintain per-GPU breakdown in `perGpuUsage` for detailed views
 
 ---
 
@@ -450,21 +544,39 @@ struct ProcessSnapshot {
 **Enhancements to `SystemMetricsPanel`:**
 
 1. **GPU Section** (new):
-   - One subsection per detected GPU
-   - Each GPU shows:
-     - **History graph**: Utilization % over time (similar to CPU graph)
-     - **"Now bars"** to the right:
-       - GPU Utilization %
-       - Memory Utilization %
-       - Temperature °C
-       - Power Draw W
-       - (Optional: Encoder/Decoder %)
-   - Layout: Horizontal split like CPU/Memory sections
-   - Uses `ImPlot` for graphs, consistent with existing system metrics
+   - **Smart default**: Show GPU with highest utilization by default
+   - **User selection**: Dropdown menu to select specific GPU or "All GPUs"
+   - Each GPU subsection shows:
+     - **Header**: GPU name with icon (ICON_FA_MICROCHIP) and type badge
+       - Integrated GPUs: Display `[Integrated]` badge with distinct color
+       - Discrete GPUs: Display `[Discrete]` badge
+       - Example: `🔲 NVIDIA GeForce RTX 4090 [Discrete]`
+     - **History graph**: Utilization % over time (consistent with CPU/Memory graphs)
+     - **"Now bars"** to the right (vertical layout):
+       - GPU Utilization % (with theme color `charts.gpu`)
+       - Memory Utilization % (with theme color `charts.gpu_memory`)
+       - Temperature °C (with theme color `charts.gpu_temperature`)
+       - Power Draw W (if available, with theme color `charts.gpu_power`)
+       - Encoder/Decoder % (if available, muted theme color)
+   - Layout: Horizontal split (graph left, bars right) matching CPU/Memory sections
+   - Uses `ImPlot` for graphs with theme colors
 
-2. **Multi-GPU Layout**:
-   - If multiple GPUs: stacked vertically or tabs
-   - Each GPU labeled with name and vendor
+2. **Multi-GPU Layout Options**:
+   - **Default Mode**: Show only GPU with highest utilization (auto-selected)
+   - **All GPUs Mode**: Stacked vertically, collapsible headers per GPU
+   - **Selection Dropdown**: Located in GPU section header
+     - "Auto (GPU with highest usage)"
+     - "GPU 0: NVIDIA RTX 4090 [Discrete]"
+     - "GPU 1: Intel UHD 770 [Integrated]"
+     - "Show All GPUs"
+   - Persist user selection to config file
+
+3. **Missing SDK Guidance**:
+   - When vendor SDK not installed, show info banner:
+     - Icon: ICON_FA_INFO_CIRCLE (theme color `semantic.text_info`)
+     - Message: "Install NVIDIA drivers for enhanced GPU metrics"
+     - Button: "Learn More" → opens URL to vendor download page
+   - Banner dismissible per session (don't nag)
 
 ### Process Table Columns
 
@@ -472,37 +584,67 @@ struct ProcessSnapshot {
 
 | Column | Description | Format | Notes |
 |--------|-------------|--------|-------|
-| **GPU %** | GPU utilization | `12.3%` | Per-process GPU usage |
-| **GPU Mem** | GPU memory allocated | `1.2 GB` | VRAM used by process |
-| **GPU Engine** | Active GPU engines | `3D, Compute` | Comma-separated list |
-| **GPU Device** | Which GPU (multi-GPU) | `GPU 0` | Only show if >1 GPU |
+| **GPU %** | GPU utilization | `12.3%` | Aggregate if multi-GPU (see below) |
+| **GPU Mem** | GPU memory allocated | `1.2 GB` | Sum across all GPUs |
+| **GPU Engine** | Active GPU engines | `3D, Compute` | Union of engines across GPUs |
+| **GPU Device** | Which GPU(s) used | `GPU 0` or `0,1` | Show if >1 GPU; aggregate format |
+
+**Multi-GPU Process Aggregation Logic:**
+- **GPU %**: If process uses multiple GPUs, show total utilization across all GPUs (e.g., 30% on GPU0 + 45% on GPU1 = 75% total)
+- **GPU Mem**: Sum of memory allocated on all GPUs
+- **GPU Engine**: Union set of active engines (e.g., "3D" on GPU0, "Compute" on GPU1 → show "3D, Compute")
+- **GPU Device**: Show comma-separated list if >1 GPU used (e.g., "0,1" means process uses GPU 0 and GPU 1)
+- **Tooltip**: On hover, show per-GPU breakdown:
+  ```
+  GPU 0 (NVIDIA RTX 4090): 30% util, 2.1 GB, 3D
+  GPU 1 (Intel UHD 770): 45% util, 512 MB, Compute
+  ```
 
 **Column visibility:** Controllable via right-click menu, persisted to config (existing pattern).
 
 **Capability-based hiding:** If `hasPerProcessMetrics == false`, hide GPU columns.
+
+**Icon usage:**
+- GPU column header icon: ICON_FA_MICROCHIP
+- Integrated GPU badge in tooltips: ICON_FA_MICROCHIP with muted color
+- Discrete GPU badge in tooltips: ICON_FA_MICROCHIP with accent color
 
 ### Process Details Panel
 
 **New "GPU" tab in `ProcessDetailsPanel`:**
 
 1. **Overview Section**:
-   - GPU Utilization % (text + small sparkline)
-   - GPU Memory (text + bar chart showing used/total)
-   - Active Engines (badges: 3D, Compute, Video Encode, etc.)
-   - GPU Device (if multi-GPU)
+   - GPU Utilization % (text + small sparkline, theme color `charts.gpu`)
+   - GPU Memory (text + bar chart showing used/total, theme color `charts.gpu_memory`)
+   - Active Engines (badges with theme `accents` colors):
+     - "3D" badge (blue accent)
+     - "Compute" badge (green accent)
+     - "Video Encode" badge (orange accent)
+     - "Video Decode" badge (purple accent)
+     - "Copy" badge (teal accent)
+   - GPU Device (if multi-GPU):
+     - Show per-GPU breakdown with collapsible sections
+     - Each GPU labeled with icon, name, and type badge
 
 2. **History Graphs** (similar to CPU/Memory tabs):
-   - GPU Utilization over time
-   - GPU Memory over time
-   - (Optional: Encoder/Decoder over time)
+   - GPU Utilization over time (theme color `charts.gpu`)
+   - GPU Memory over time (theme color `charts.gpu_memory`)
+   - Encoder/Decoder over time (if available, muted theme colors)
+   - If multi-GPU: Stacked line graph showing all GPUs with different accent colors
 
 3. **"Now Bars"** (right side):
-   - Current GPU %
-   - Current GPU Memory
-   - Current Encoder %
-   - Current Decoder %
+   - Current GPU % (theme color `charts.gpu`)
+   - Current GPU Memory (theme color `charts.gpu_memory`)
+   - Current Encoder % (if available, theme color `charts.gpu_encoder`)
+   - Current Decoder % (if available, theme color `charts.gpu_decoder`)
+   - Temperature °C (if available, theme color `charts.gpu_temperature`)
 
 **Layout:** Consistent with existing Process Details tabs (Overview, CPU, Memory, Disk).
+
+**Integrated vs Discrete Differentiation:**
+- Integrated GPUs show badge icon: ICON_FA_MICROCHIP with `[I]` suffix
+- Discrete GPUs show badge icon: ICON_FA_MICROCHIP with `[D]` suffix
+- Tooltips explain: "Integrated GPU (shares system memory)" vs "Discrete GPU (dedicated VRAM)"
 
 ---
 
@@ -776,6 +918,59 @@ bool NVMLGPUProbe::initialize() {
 - **`check-prereqs.sh` / `check-prereqs.ps1`**: Check for optional GPU libraries
 - Document in CONTRIBUTING.md that GPU support is optional
 
+### Theme Integration
+
+**New GPU-specific colors to add to theme files** (e.g., `assets/themes/windows-dark.toml`):
+
+```toml
+# =============================================================================
+# GPU METRICS COLORS
+# Colors for GPU monitoring graphs, bars, and badges
+# =============================================================================
+[charts.gpu]
+utilization = "#8E8CD8"           # Purple - GPU utilization line
+utilization_fill = "#8E8CD84D"    # Purple with 30% alpha - GPU fill
+memory = "#E74856"                # Red - GPU memory line
+memory_fill = "#E748564D"         # Red with 30% alpha - GPU memory fill
+temperature = "#FFB900"           # Gold - GPU temperature line
+temperature_fill = "#FFB9004D"    # Gold with 30% alpha - GPU temp fill
+power = "#10893E"                 # Green - GPU power draw line
+power_fill = "#10893E4D"          # Green with 30% alpha - GPU power fill
+encoder = "#00B7C3"               # Teal - GPU encoder utilization
+decoder = "#E3008C"               # Magenta - GPU decoder utilization
+
+# GPU type badges
+integrated_badge = "#8A8A8A"      # Muted gray - integrated GPU badge
+discrete_badge = "#0078D4"        # Windows Blue - discrete GPU badge
+
+# GPU engine badges (uses existing accent colors, documented here for clarity)
+# engine_3d = accents.colors[0]        # Blue - 3D engine
+# engine_compute = accents.colors[2]   # Green - Compute engine
+# engine_encode = accents.colors[4]    # Orange - Video encode
+# engine_decode = accents.colors[3]    # Purple - Video decode
+# engine_copy = accents.colors[5]      # Teal - Copy engine
+```
+
+**Icon Constants** (already available in `src/UI/IconsFontAwesome6.h`):
+- `ICON_FA_MICROCHIP`: Primary GPU icon for headers, columns, badges
+- `ICON_FA_INFO_CIRCLE`: For installation guidance banners
+- `ICON_FA_COMPUTER`: Alternative GPU/system icon
+
+**Theme Color Access Pattern** (consistent with existing code):
+```cpp
+// In SystemMetricsPanel.cpp
+const auto& theme = UI::Theme::getCurrent();
+const auto gpuColor = theme.charts.gpu.utilization;
+const auto gpuFillColor = theme.charts.gpu.utilization_fill;
+
+// For integrated vs discrete badges
+const auto badgeColor = gpuInfo.isIntegrated 
+    ? theme.charts.gpu.integrated_badge 
+    : theme.charts.gpu.discrete_badge;
+```
+
+**All existing themes must be updated** to include the new `[charts.gpu]` section. Themes without this section will use sensible defaults (fallback to existing accent colors).
+
 ---
 
 ## Testing Strategy
@@ -952,6 +1147,72 @@ bool NVMLGPUProbe::initialize() {
 - [ ] Update `completed-features.md`
 - [ ] Close issues #178, #189, #176
 - [ ] Create user guide for GPU monitoring features
+
+---
+
+## UI Design Comparisons with Other Applications
+
+To ensure TaskSmack's GPU monitoring is intuitive and competitive, we compare approaches with established applications:
+
+### Windows Task Manager (Reference)
+
+**System Overview:**
+- Shows all GPUs in Performance tab with individual graphs
+- Each GPU shows: Utilization, Dedicated Memory, Shared Memory, Clock Speed, Temperature
+- GPU selection via left sidebar (click GPU 0, GPU 1, etc.)
+- "Now bars" on right show current values
+
+**Process List:**
+- Columns: GPU, GPU Engine, Dedicated GPU Memory
+- GPU column shows which GPU is primary for that process
+- GPU Engine shows active engines (e.g., "Copy", "3D", "Compute")
+
+**TaskSmack Approach:**
+- ✅ Match: System overview graphs and "now bars" similar
+- ✅ Improve: Smart default (auto-select highest-usage GPU) vs manual selection
+- ✅ Match: Process list GPU columns similar
+- ✅ Improve: Multi-GPU aggregation (Task Manager only shows primary GPU)
+
+### htop / btop++ (Reference)
+
+**GPU Support in btop++:**
+- Shows all GPUs in system overview
+- Per-GPU graphs stacked vertically
+- GPU process list shows which processes use GPU
+- Limited to basic metrics (utilization, memory)
+
+**TaskSmack Approach:**
+- ✅ Match: Stacked GPU graphs similar to btop++
+- ✅ Improve: Per-process engine attribution (btop++ lacks this)
+- ✅ Improve: Detailed per-GPU breakdown in process details
+- ✅ Match: Support for AMD/Intel GPUs (btop++ limited to NVIDIA on Linux)
+
+### NVIDIA System Monitor / AMD Radeon Software (Vendor Tools)
+
+**NVIDIA-specific features:**
+- Per-process GPU usage (via nvidia-smi)
+- Engine-specific utilization (SM, Copy, Encoder, Decoder)
+- Temperature, power, clock speeds
+
+**TaskSmack Approach:**
+- ✅ Match: Same metrics via NVML
+- ✅ Improve: Unified UI for all vendors (not vendor-specific)
+- ✅ Match: Per-process attribution
+- ⚠️ Limitation: AMD lacks per-process on Linux (vendor limitation)
+
+### TaskSmack Design Philosophy
+
+**Key differentiators:**
+1. **Vendor-neutral**: Same UI for NVIDIA, AMD, Intel (unlike vendor tools)
+2. **Smart defaults**: Auto-show GPU with highest usage (unlike Task Manager)
+3. **Multi-GPU aggregation**: Process table shows total across all GPUs (Task Manager shows primary only)
+4. **Guided installation**: Prompts to install vendor SDKs (unique to TaskSmack)
+5. **Integrated vs Discrete awareness**: Clear labeling and badges (not common in other tools)
+
+**Alignment with established patterns:**
+- Graph layout: Similar to Task Manager and btop++
+- Column naming: Follows Task Manager conventions (GPU %, GPU Engine)
+- "Now bars": Consistent with TaskSmack's existing CPU/Memory panels
 
 ---
 
