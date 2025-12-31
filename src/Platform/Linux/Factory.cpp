@@ -1,6 +1,7 @@
 #include "Platform/Factory.h"
 
 #include "LinuxDiskProbe.h"
+#include "LinuxGPUProbe.h"
 #include "LinuxPathProvider.h"
 #include "LinuxPowerProbe.h"
 #include "LinuxProcessActions.h"
@@ -40,6 +41,11 @@ std::unique_ptr<IPathProvider> makePathProvider()
 std::unique_ptr<IPowerProbe> makePowerProbe()
 {
     return std::make_unique<LinuxPowerProbe>();
+}
+
+std::unique_ptr<IGPUProbe> makeGPUProbe()
+{
+    return std::make_unique<LinuxGPUProbe>();
 }
 
 } // namespace Platform

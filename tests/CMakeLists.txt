@@ -62,6 +62,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
@@ -90,6 +91,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -102,6 +104,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
@@ -114,6 +117,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
