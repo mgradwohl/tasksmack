@@ -4,16 +4,18 @@
 #include "Platform/IGPUProbe.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace Platform
 {
 
 class DXGIGPUProbe;
+class NVMLGPUProbe;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
-/// Phase 2: Uses DXGI for basic GPU enumeration (all vendors)
-/// Future phases will add NVML (NVIDIA), D3DKMT (per-process), etc.
+/// Phase 2: Uses DXGI for basic enumeration + NVML for NVIDIA enhancements
+/// Future phases will add D3DKMT (per-process), etc.
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -32,7 +34,13 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
 
   private:
+    void mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
+
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
+    std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
+
+    // Map DXGI GPU index to NVML GPU index (for merging data)
+    std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
 };
 
 } // namespace Platform

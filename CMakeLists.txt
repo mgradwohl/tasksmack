@@ -489,6 +489,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WindowsGPUProbe.cpp
     src/Platform/Windows/DXGIGPUProbe.cpp
+    src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -541,6 +542,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WindowsGPUProbe.h
         src/Platform/Windows/DXGIGPUProbe.h
+        src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WinString.h
     )
 endif()
