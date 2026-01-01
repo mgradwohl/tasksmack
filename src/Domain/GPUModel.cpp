@@ -103,7 +103,9 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
     std::shared_lock lock(m_Mutex);
     std::vector<GPUSnapshot> result;
     result.reserve(m_Snapshots.size());
-    for (const auto& [_, snapshot] : m_Snapshots)
+    for (const auto& [gpuId, snapshot] : m_Snapshots)
+    {
+        (void)gpuId; // Unused but kept for clarity
     {
         result.push_back(snapshot);
     }

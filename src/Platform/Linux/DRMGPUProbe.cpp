@@ -251,13 +251,13 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
 
     if (vramTotal > 0)
     {
-        info.totalMemoryBytes = vramTotal;
-        info.isIntegrated = false; // Has dedicated VRAM, likely discrete
+        // Has dedicated VRAM, likely discrete
+        info.isIntegrated = false;
     }
     else
     {
-        // Integrated GPU - no dedicated VRAM, uses system RAM
-        info.totalMemoryBytes = 0; // Unknown / shared
+        // Integrated GPU - no dedicated VRAM, uses system RAM (unknown/shared memory)
+        // info.isIntegrated remains true from earlier initialization
     }
 
     return info;
