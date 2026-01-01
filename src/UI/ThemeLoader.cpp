@@ -288,6 +288,16 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.cpuIdleFill = getColor(tbl, "cpu_breakdown.idle_fill", scheme.cpuIdle);
         scheme.cpuStealFill = getColor(tbl, "cpu_breakdown.steal_fill", scheme.cpuSteal);
 
+        // GPU chart colors
+        scheme.gpuUtilization = getColor(tbl, "charts.gpu.utilization");
+        scheme.gpuUtilizationFill = getColor(tbl, "charts.gpu.utilization_fill", scheme.gpuUtilization);
+        scheme.gpuMemory = getColor(tbl, "charts.gpu.memory");
+        scheme.gpuMemoryFill = getColor(tbl, "charts.gpu.memory_fill", scheme.gpuMemory);
+        scheme.gpuTemperature = getColor(tbl, "charts.gpu.temperature");
+        scheme.gpuPower = getColor(tbl, "charts.gpu.power");
+        scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
+        scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
+
         // Danger buttons
         scheme.dangerButton = getColor(tbl, "buttons.danger.normal");
         scheme.dangerButtonHovered = getColor(tbl, "buttons.danger.hovered");

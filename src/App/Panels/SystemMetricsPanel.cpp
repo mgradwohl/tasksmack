@@ -1487,7 +1487,7 @@ void SystemMetricsPanel::renderGpuSection()
             ImGui::TableNextColumn();
             ImGui::Text("GPU Utilization:");
             ImGui::TableNextColumn();
-            const ImVec4 gpuUtilColor = theme.charts().gpu.utilization;
+            const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
             ImGui::TextColored(gpuUtilColor, "%.1f%%", smoothed.utilizationPercent);
 
             // Memory
@@ -1495,7 +1495,7 @@ void SystemMetricsPanel::renderGpuSection()
             ImGui::TableNextColumn();
             ImGui::Text("GPU Memory:");
             ImGui::TableNextColumn();
-            const ImVec4 gpuMemColor = theme.charts().gpu.memory;
+            const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
             const std::string memStr = std::format("{} / {} ({:.1f}%%)",
                                                    UI::Format::bytes(snap.memoryUsedBytes),
                                                    UI::Format::bytes(snap.memoryTotalBytes),
@@ -1509,7 +1509,7 @@ void SystemMetricsPanel::renderGpuSection()
                 ImGui::TableNextColumn();
                 ImGui::Text("Temperature:");
                 ImGui::TableNextColumn();
-                const ImVec4 tempColor = theme.charts().gpu.temperature;
+                const ImVec4 tempColor = theme.scheme().gpuTemperature;
                 ImGui::TextColored(tempColor, "%d°C", static_cast<int>(smoothed.temperatureC));
 
                 if (caps.hasHotspotTemp && snap.hotspotTempC > 0)
@@ -1526,7 +1526,7 @@ void SystemMetricsPanel::renderGpuSection()
                 ImGui::TableNextColumn();
                 ImGui::Text("Power Draw:");
                 ImGui::TableNextColumn();
-                const ImVec4 powerColor = theme.charts().gpu.power;
+                const ImVec4 powerColor = theme.scheme().gpuPower;
                 if (snap.powerLimitWatts > 0.0)
                 {
                     ImGui::TextColored(powerColor,
@@ -1582,7 +1582,7 @@ void SystemMetricsPanel::renderGpuSection()
                     ImGui::TableNextColumn();
                     ImGui::Text("Video Encoder:");
                     ImGui::TableNextColumn();
-                    const ImVec4 encColor = theme.charts().gpu.encoder;
+                    const ImVec4 encColor = theme.scheme().gpuEncoder;
                     ImGui::TextColored(encColor, "%.1f%%", snap.encoderUtilPercent);
                 }
 
@@ -1592,7 +1592,7 @@ void SystemMetricsPanel::renderGpuSection()
                     ImGui::TableNextColumn();
                     ImGui::Text("Video Decoder:");
                     ImGui::TableNextColumn();
-                    const ImVec4 decColor = theme.charts().gpu.decoder;
+                    const ImVec4 decColor = theme.scheme().gpuDecoder;
                     ImGui::TextColored(decColor, "%.1f%%", snap.decoderUtilPercent);
                 }
             }
