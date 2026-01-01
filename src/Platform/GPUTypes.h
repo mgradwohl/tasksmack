@@ -18,16 +18,17 @@ struct GPUInfo
     std::uint32_t deviceIndex = 0; // Vendor-specific index
 };
 
-// Raw GPU counters (cumulative where applicable)
+// Raw GPU counters (Platform layer provides raw values only)
+// Derived metrics (rates, percentages) are computed by Domain layer
 struct GPUCounters
 {
     std::string gpuId; // Associates with GPUInfo
 
-    // Utilization (instantaneous snapshot, not cumulative)
-    double utilizationPercent = 0.0; // 0-100
-    double memoryUtilPercent = 0.0;  // 0-100
+    // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
+    double utilizationPercent = 0.0; // GPU usage reported by hardware
+    // Note: memoryUtilPercent computed by Domain layer from memoryUsedBytes/memoryTotalBytes
 
-    // Memory (bytes)
+    // Memory (bytes - raw counters)
     std::uint64_t memoryUsedBytes = 0;
     std::uint64_t memoryTotalBytes = 0;
 

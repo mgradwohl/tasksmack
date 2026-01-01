@@ -257,13 +257,6 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                     {
                         counter.memoryUsedBytes = memInfo.CurrentUsage;
                         counter.memoryTotalBytes = memInfo.Budget;
-
-                        // Calculate memory utilization percentage
-                        if (memInfo.Budget > 0)
-                        {
-                            counter.memoryUtilPercent =
-                                (static_cast<double>(memInfo.CurrentUsage) / static_cast<double>(memInfo.Budget)) * 100.0;
-                        }
                     }
 
                     adapter3->Release();
@@ -274,7 +267,7 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                     counter.memoryTotalBytes = desc.DedicatedVideoMemory;
                     // Cannot determine current usage without QueryVideoMemoryInfo
                     counter.memoryUsedBytes = 0;
-                    counter.memoryUtilPercent = 0.0;
+                }
                 }
 
                 counters.push_back(std::move(counter));

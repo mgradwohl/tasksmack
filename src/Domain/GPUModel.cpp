@@ -163,7 +163,6 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 
     // Copy instantaneous values
     snapshot.utilizationPercent = current.utilizationPercent;
-    snapshot.memoryUtilPercent = current.memoryUtilPercent;
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;
     snapshot.temperatureC = current.temperatureC;

@@ -329,17 +329,13 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.gpuId = std::format("NVML_GPU{}", index);
         }
 
-        // Memory info
+        // Memory info (raw counters only)
         nvmlMemory_t memInfo{};
         result = m_NVML.DeviceGetMemoryInfo(device, &memInfo);
         if (result == NVML_SUCCESS)
         {
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
-            if (memInfo.total > 0)
-            {
-                counter.memoryUtilPercent = (static_cast<double>(memInfo.used) / static_cast<double>(memInfo.total)) * 100.0;
-            }
         }
 
         // Temperature (GPU die)
@@ -347,27 +343,23 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         result = m_NVML.DeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temp);
         if (result == NVML_SUCCESS)
         {
-            counter.temperatureCelsius = static_cast<uint32_t>(temp);
+            counter.temperatureC = static_cast<int32_t>(temp);
         }
 
-        // Power usage (milliwatts)
+        // Power usage (milliwatts) - raw counter only
         unsigned int powerMilliwatts = 0;
         result = m_NVML.DeviceGetPowerUsage(device, &powerMilliwatts);
         if (result == NVML_SUCCESS)
         {
-            counter.powerUsageWatts = static_cast<double>(powerMilliwatts) / 1000.0;
+            counter.powerDrawWatts = static_cast<double>(powerMilliwatts) / 1000.0;
         }
 
-        // Power limit (milliwatts)
+        // Power limit (milliwatts) - raw counter only
         unsigned int powerLimitMilliwatts = 0;
         result = m_NVML.DeviceGetPowerManagementLimit(device, &powerLimitMilliwatts);
         if (result == NVML_SUCCESS)
         {
             counter.powerLimitWatts = static_cast<double>(powerLimitMilliwatts) / 1000.0;
-            if (powerLimitMilliwatts > 0 && powerMilliwatts > 0)
-            {
-                counter.powerUtilPercent = (static_cast<double>(powerMilliwatts) / static_cast<double>(powerLimitMilliwatts)) * 100.0;
-            }
         }
 
         // GPU clock (MHz)
@@ -391,31 +383,22 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         result = m_NVML.DeviceGetUtilizationRates(device, &util);
         if (result == NVML_SUCCESS)
         {
-            counter.gpuUtilPercent = static_cast<double>(util.gpu);
+            counter.utilizationPercent = static_cast<double>(util.gpu);
         }
 
-        // Fan speed (percentage)
+        // Fan speed (NVML returns percentage 0-100, stored in fanSpeedRPM field)
         unsigned int fanSpeed = 0;
         result = m_NVML.DeviceGetFanSpeed(device, &fanSpeed);
         if (result == NVML_SUCCESS)
         {
-            counter.fanSpeedPercent = fanSpeed;
+            counter.fanSpeedRPM = fanSpeed; // Semantic: NVML returns %, not RPM
         }
 
-        // PCIe throughput (KB/s)
-        unsigned int pcieTxBytes = 0;
-        result = m_NVML.DeviceGetPcieThroughput(device, NVML_PCIE_UTIL_TX_BYTES, &pcieTxBytes);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieTxBytesPerSec = static_cast<uint64_t>(pcieTxBytes) * 1024; // Convert KB to bytes
-        }
-
-        unsigned int pcieRxBytes = 0;
-        result = m_NVML.DeviceGetPcieThroughput(device, NVML_PCIE_UTIL_RX_BYTES, &pcieRxBytes);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieRxBytesPerSec = static_cast<uint64_t>(pcieRxBytes) * 1024; // Convert KB to bytes
-        }
+        // PCIe throughput: NVML returns rates (KB/s), not cumulative counters.
+        // GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes. 
+        // Since NVML doesn't provide cumulative counters, we leave these at 0.
+        // Future enhancement: Add rate fields or implement tracking.
+        // For now, Domain layer will compute rates as 0 from cumulative fields.
 
         counters.push_back(std::move(counter));
     }

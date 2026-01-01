@@ -126,20 +126,17 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         const auto& nvmlCounter = nvmlCounters[nvmlIdx];
 
         // Enhance with NVML data (NVML provides more accurate/detailed metrics)
-        dxgiCounter.temperatureCelsius = nvmlCounter.temperatureCelsius;
-        dxgiCounter.powerUsageWatts = nvmlCounter.powerUsageWatts;
+        dxgiCounter.temperatureC = nvmlCounter.temperatureC;
+        dxgiCounter.powerDrawWatts = nvmlCounter.powerDrawWatts;
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
-        dxgiCounter.powerUtilPercent = nvmlCounter.powerUtilPercent;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
-        dxgiCounter.fanSpeedPercent = nvmlCounter.fanSpeedPercent;
-        dxgiCounter.pcieTxBytesPerSec = nvmlCounter.pcieTxBytesPerSec;
-        dxgiCounter.pcieRxBytesPerSec = nvmlCounter.pcieRxBytesPerSec;
+        dxgiCounter.fanSpeedRPM = nvmlCounter.fanSpeedRPM;
 
         // Use NVML GPU utilization if available (may be more accurate)
-        if (nvmlCounter.gpuUtilPercent > 0.0)
+        if (nvmlCounter.utilizationPercent > 0.0)
         {
-            dxgiCounter.gpuUtilPercent = nvmlCounter.gpuUtilPercent;
+            dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
         }
 
         // Prefer NVML memory metrics (more accurate)

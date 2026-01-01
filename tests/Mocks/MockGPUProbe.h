@@ -32,14 +32,13 @@ makeGPUInfo(const std::string& id, const std::string& name, const std::string& v
 /// Create a GPUCounters struct with common test values.
 inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
                                              double utilization = 50.0,
-                                             double memoryUtil = 30.0,
                                              std::uint64_t memoryUsed = 1024 * 1024 * 1024,
                                              std::uint64_t memoryTotal = 4ULL * 1024 * 1024 * 1024)
 {
     Platform::GPUCounters c;
     c.gpuId = gpuId;
     c.utilizationPercent = utilization;
-    c.memoryUtilPercent = memoryUtil;
+    // memoryUtilPercent removed - computed by Domain layer
     c.memoryUsedBytes = memoryUsed;
     c.memoryTotalBytes = memoryTotal;
     c.temperatureC = 60;
