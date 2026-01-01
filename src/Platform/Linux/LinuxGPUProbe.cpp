@@ -2,13 +2,15 @@
 
 #include "DRMGPUProbe.h"
 #include "NVMLGPUProbe.h"
+#include "ROCmGPUProbe.h"
 
 #include <spdlog/spdlog.h>
 
 namespace Platform
 {
 
-LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), m_DRMProbe(std::make_unique<DRMGPUProbe>())
+LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), m_DRMProbe(std::make_unique<DRMGPUProbe>()),
+                                 m_ROCmProbe(std::make_unique<ROCmGPUProbe>())
 {
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())
@@ -18,6 +20,10 @@ LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), 
     if (m_DRMProbe->isAvailable())
     {
         probes.push_back("DRM");
+    }
+    if (m_ROCmProbe->isAvailable())
+    {
+        probes.push_back("ROCm");
     }
 
     std::string probeSummary = probes.empty() ? "None" : "";
@@ -53,7 +59,12 @@ std::vector<GPUInfo> LinuxGPUProbe::enumerateGPUs()
         gpus.insert(gpus.end(), drmGPUs.begin(), drmGPUs.end());
     }
 
-    // Future: Add ROCm (AMD)
+    // Phase 6: Try ROCm (AMD)
+    if (m_ROCmProbe && m_ROCmProbe->isAvailable())
+    {
+        auto rocmGPUs = m_ROCmProbe->enumerateGPUs();
+        gpus.insert(gpus.end(), rocmGPUs.begin(), rocmGPUs.end());
+    }
 
     if (gpus.empty())
     {
@@ -81,7 +92,12 @@ std::vector<GPUCounters> LinuxGPUProbe::readGPUCounters()
         counters.insert(counters.end(), drmCounters.begin(), drmCounters.end());
     }
 
-    // Future: Add ROCm
+    // Phase 6: ROCm metrics for AMD GPUs
+    if (m_ROCmProbe && m_ROCmProbe->isAvailable())
+    {
+        auto rocmCounters = m_ROCmProbe->readGPUCounters();
+        counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
+    }
 
     return counters;
 }
@@ -98,7 +114,12 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
     }
 
     // Phase 5: DRM per-process metrics (not available via sysfs)
-    // Future: Add vendor-specific per-process metrics
+    // Phase 6: ROCm per-process metrics (not available via ROCm SMI)
+    if (m_ROCmProbe && m_ROCmProbe->isAvailable())
+    {
+        auto rocmCounters = m_ROCmProbe->readProcessGPUCounters();
+        counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
+    }
 
     return counters;
 }
@@ -141,7 +162,22 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.supportsMultiGPU = caps.supportsMultiGPU || drmCaps.supportsMultiGPU;
     }
 
-    // Future: Merge capabilities from ROCm
+    // Phase 6: ROCm capabilities (AMD)
+    if (m_ROCmProbe && m_ROCmProbe->isAvailable())
+    {
+        auto rocmCaps = m_ROCmProbe->capabilities();
+
+        caps.hasTemperature = caps.hasTemperature || rocmCaps.hasTemperature;
+        caps.hasHotspotTemp = caps.hasHotspotTemp || rocmCaps.hasHotspotTemp;
+        caps.hasPowerMetrics = caps.hasPowerMetrics || rocmCaps.hasPowerMetrics;
+        caps.hasClockSpeeds = caps.hasClockSpeeds || rocmCaps.hasClockSpeeds;
+        caps.hasFanSpeed = caps.hasFanSpeed || rocmCaps.hasFanSpeed;
+        caps.hasPCIeMetrics = caps.hasPCIeMetrics || rocmCaps.hasPCIeMetrics;
+        caps.hasEngineUtilization = caps.hasEngineUtilization || rocmCaps.hasEngineUtilization;
+        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || rocmCaps.hasPerProcessMetrics;
+        caps.hasEncoderDecoder = caps.hasEncoderDecoder || rocmCaps.hasEncoderDecoder;
+        caps.supportsMultiGPU = caps.supportsMultiGPU || rocmCaps.supportsMultiGPU;
+    }
 
     return caps;
 }
