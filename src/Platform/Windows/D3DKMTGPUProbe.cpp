@@ -6,12 +6,20 @@
 #include <unordered_map>
 #include <utility>
 
+// clang-format off
 // Windows headers (windows.h must be included before d3dkmthk.h for NTSTATUS)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <d3dkmthk.h>
 #include <dxgi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
-#include <windows.h>
+// clang-format on
 
 namespace Platform
 {
