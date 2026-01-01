@@ -56,10 +56,10 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
     }
 
     // Helper to validate DRM card entry names
-    const auto isValidCardName = [](const std::string& name) -> bool {
+    const auto isValidCardName = [](const std::string& name) -> bool
+    {
         // Only process card* entries, skip cardX-* connectors and renderD* nodes
-        return name.starts_with("card") && name.find('-') == std::string::npos &&
-               !name.starts_with("renderD");
+        return name.starts_with("card") && name.find('-') == std::string::npos && !name.starts_with("renderD");
     };
 
     // Iterate over /sys/class/drm/card* entries
