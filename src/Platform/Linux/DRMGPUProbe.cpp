@@ -13,9 +13,8 @@ namespace Platform
 
 namespace fs = std::filesystem;
 
-DRMGPUProbe::DRMGPUProbe()
+DRMGPUProbe::DRMGPUProbe() : m_Available(initialize())
 {
-    m_Available = initialize();
     if (m_Available)
     {
         spdlog::debug("DRMGPUProbe: Initialized successfully, found {} DRM card(s)", m_Cards.size());
@@ -44,7 +43,7 @@ bool DRMGPUProbe::initialize()
     return !m_Cards.empty();
 }
 
-std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
+std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
 {
     std::vector<DRMCard> cards;
 
@@ -59,7 +58,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
     const auto isValidCardName = [](const std::string& name) -> bool
     {
         // Only process card* entries, skip cardX-* connectors and renderD* nodes
-        return name.starts_with("card") && name.find('-') == std::string::npos && !name.starts_with("renderD");
+        return name.starts_with("card") && !name.contains('-') && !name.starts_with("renderD");
     };
 
     // Iterate over /sys/class/drm/card* entries
@@ -123,13 +122,13 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
     return cards;
 }
 
-bool DRMGPUProbe::isIntelGPU(const DRMCard& card) const
+bool DRMGPUProbe::isIntelGPU(const DRMCard& card)
 {
     // Intel GPUs use i915 (legacy/current) or xe (future) drivers
     return card.driver == "i915" || card.driver == "xe";
 }
 
-std::string DRMGPUProbe::readSysfsString(const std::string& path) const
+std::string DRMGPUProbe::readSysfsString(const std::string& path)
 {
     std::ifstream file(path);
     if (!file.is_open())
@@ -152,7 +151,7 @@ std::string DRMGPUProbe::readSysfsString(const std::string& path) const
     return value.substr(start, end - start + 1);
 }
 
-uint64_t DRMGPUProbe::readSysfsUint64(const std::string& path) const
+uint64_t DRMGPUProbe::readSysfsUint64(const std::string& path)
 {
     const std::string valueStr = readSysfsString(path);
     if (valueStr.empty())
@@ -170,7 +169,7 @@ uint64_t DRMGPUProbe::readSysfsUint64(const std::string& path) const
     }
 }
 
-std::string DRMGPUProbe::findHwmonPath(const std::string& devicePath) const
+std::string DRMGPUProbe::findHwmonPath(const std::string& devicePath)
 {
     const std::string hwmonDir = devicePath + "/hwmon";
     if (!fs::exists(hwmonDir) || !fs::is_directory(hwmonDir))
@@ -191,7 +190,7 @@ std::string DRMGPUProbe::findHwmonPath(const std::string& devicePath) const
     return "";
 }
 
-std::string DRMGPUProbe::getVendorName(const std::string& vendorId) const
+std::string DRMGPUProbe::getVendorName(const std::string& vendorId)
 {
     // Intel PCI vendor ID is 0x8086
     if (vendorId.contains("8086"))
@@ -267,6 +266,7 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
 std::vector<GPUInfo> DRMGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;
+    gpus.reserve(m_Cards.size());
 
     for (const auto& card : m_Cards)
     {

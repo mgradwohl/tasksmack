@@ -47,12 +47,12 @@ class DRMGPUProbe : public IGPUProbe
     };
 
     bool initialize();
-    [[nodiscard]] std::vector<DRMCard> discoverDRMCards() const;
-    [[nodiscard]] bool isIntelGPU(const DRMCard& card) const;
-    [[nodiscard]] std::string readSysfsString(const std::string& path) const;
-    [[nodiscard]] uint64_t readSysfsUint64(const std::string& path) const;
-    [[nodiscard]] std::string findHwmonPath(const std::string& devicePath) const;
-    [[nodiscard]] std::string getVendorName(const std::string& vendorId) const;
+    [[nodiscard]] static std::vector<DRMCard> discoverDRMCards();
+    [[nodiscard]] static bool isIntelGPU(const DRMCard& card);
+    [[nodiscard]] static std::string readSysfsString(const std::string& path);
+    [[nodiscard]] static uint64_t readSysfsUint64(const std::string& path);
+    [[nodiscard]] static std::string findHwmonPath(const std::string& devicePath);
+    [[nodiscard]] static std::string getVendorName(const std::string& vendorId);
     [[nodiscard]] GPUInfo cardToGPUInfo(const DRMCard& card) const;
 
     bool m_Available{false};

@@ -15,11 +15,11 @@ LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), 
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())
     {
-        probes.push_back("NVML");
+        probes.emplace_back("NVML");
     }
     if (m_DRMProbe->isAvailable())
     {
-        probes.push_back("DRM");
+        probes.emplace_back("DRM");
     }
     if (m_ROCmProbe->isAvailable())
     {
