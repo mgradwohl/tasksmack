@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <dlfcn.h>
@@ -16,7 +17,10 @@ namespace
 
 using nvmlDevice_t = void*;
 
-enum nvmlReturn_t
+// These enums must match NVML's ABI exactly (C-style enums, unsigned int).
+// Using enum class would break dynamic loading compatibility.
+// NOLINTBEGIN(performance-enum-size,cppcoreguidelines-use-enum-class)
+enum nvmlReturn_t : unsigned int
 {
     NVML_SUCCESS = 0,
     NVML_ERROR_UNINITIALIZED = 1,
@@ -45,12 +49,12 @@ enum nvmlReturn_t
     NVML_ERROR_UNKNOWN = 999
 };
 
-enum nvmlTemperatureSensors_t
+enum nvmlTemperatureSensors_t : unsigned int
 {
     NVML_TEMPERATURE_GPU = 0
 };
 
-enum nvmlClockType_t
+enum nvmlClockType_t : unsigned int
 {
     NVML_CLOCK_GRAPHICS = 0,
     NVML_CLOCK_SM = 1,
@@ -58,12 +62,13 @@ enum nvmlClockType_t
     NVML_CLOCK_VIDEO = 3
 };
 
-enum nvmlPcieUtilCounter_t
+enum nvmlPcieUtilCounter_t : unsigned int
 {
     NVML_PCIE_UTIL_TX_BYTES = 0,
     NVML_PCIE_UTIL_RX_BYTES = 1,
-    NVML_PCIE_UTIL_COUNT
+    NVML_PCIE_UTIL_COUNT = 2
 };
+// NOLINTEND(performance-enum-size,cppcoreguidelines-use-enum-class)
 
 // NVML buffer size constants
 constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
@@ -140,12 +145,14 @@ bool NVMLGPUProbe::Impl::loadNVML()
         nvmlHandle = dlopen("libnvidia-ml.so", RTLD_NOW);
         if (nvmlHandle == nullptr)
         {
+            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() is called during single-threaded initialization
             spdlog::debug("NVMLGPUProbe: Failed to load libnvidia-ml.so - {}", dlerror());
             return false;
         }
     }
 
 // Load function pointers
+// NOLINTBEGIN(bugprone-macro-parentheses) - 'name' is used as identifier and stringified, cannot be parenthesized
 #define LOAD_NVML_FUNC(name)                                                                                                               \
     name = reinterpret_cast<decltype(name)>(dlsym(nvmlHandle, #name));                                                                     \
     if (name == nullptr)                                                                                                                   \
@@ -154,6 +161,7 @@ bool NVMLGPUProbe::Impl::loadNVML()
         unloadNVML();                                                                                                                      \
         return false;                                                                                                                      \
     }
+    // NOLINTEND(bugprone-macro-parentheses)
 
     LOAD_NVML_FUNC(nvmlInit_v2);
     LOAD_NVML_FUNC(nvmlShutdown);
@@ -460,7 +468,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     counter.pid = static_cast<std::int32_t>(proc.pid);
                     counter.gpuId = gpuId;
                     counter.gpuMemoryBytes = proc.usedGpuMemory;
-                    counter.activeEngines.push_back("Compute");
+                    counter.activeEngines.emplace_back("Compute");
                     allCounters.push_back(std::move(counter));
                 }
             }
@@ -480,12 +488,12 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     // Check if we already have this process from compute list
                     auto it = std::ranges::find_if(allCounters,
                                                    [&proc, &gpuId](const ProcessGPUCounters& c)
-                                                   { return c.pid == static_cast<std::int32_t>(proc.pid) && c.gpuId == gpuId; });
+                                                   { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });
 
                     if (it != allCounters.end())
                     {
                         // Merge: add graphics engine
-                        it->activeEngines.push_back("3D");
+                        it->activeEngines.emplace_back("3D");
                         it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, static_cast<std::uint64_t>(proc.usedGpuMemory));
                     }
                     else
@@ -494,7 +502,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                         counter.pid = static_cast<std::int32_t>(proc.pid);
                         counter.gpuId = gpuId;
                         counter.gpuMemoryBytes = proc.usedGpuMemory;
-                        counter.activeEngines.push_back("3D");
+                        counter.activeEngines.emplace_back("3D");
                         allCounters.push_back(std::move(counter));
                     }
                 }

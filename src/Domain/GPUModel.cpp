@@ -50,7 +50,7 @@ void GPUModel::refresh()
 
         // Calculate time delta
         auto timeDelta = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - m_PrevSampleTime);
-        double timeDeltaSeconds = static_cast<double>(timeDelta.count()) / 1000.0;
+        const double timeDeltaSeconds = static_cast<double>(timeDelta.count()) / 1000.0;
 
         // Compute snapshots
         std::unordered_map<std::string, GPUSnapshot> newSnapshots;
@@ -71,7 +71,7 @@ void GPUModel::refresh()
 
         // Update stored state under lock
         {
-            std::unique_lock lock(m_Mutex);
+            const std::unique_lock lock(m_Mutex);
             m_Snapshots = std::move(newSnapshots);
 
             // Push to history under lock protection
@@ -100,7 +100,7 @@ void GPUModel::refresh()
 
 std::vector<GPUSnapshot> GPUModel::snapshots() const
 {
-    std::shared_lock lock(m_Mutex);
+    const std::shared_lock lock(m_Mutex);
     std::vector<GPUSnapshot> result;
     result.reserve(m_Snapshots.size());
     for (const auto& [_, snapshot] : m_Snapshots)
@@ -112,7 +112,7 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
 
 std::vector<GPUSnapshot> GPUModel::history(const std::string& gpuId) const
 {
-    std::shared_lock lock(m_Mutex);
+    const std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
     {
@@ -131,7 +131,7 @@ std::vector<GPUSnapshot> GPUModel::history(const std::string& gpuId) const
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
 {
-    std::shared_lock lock(m_Mutex);
+    const std::shared_lock lock(m_Mutex);
     return m_GPUInfo;
 }
 

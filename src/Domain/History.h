@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <utility>
 
 namespace Domain
 {
@@ -15,7 +16,7 @@ template<typename T, size_t Capacity> class History
     /// Add a new value, overwriting oldest if full.
     void push(T value)
     {
-        m_Data[m_WriteIndex] = value;
+        m_Data[m_WriteIndex] = std::move(value);
         m_WriteIndex = (m_WriteIndex + 1) % Capacity;
         if (m_Size < Capacity)
         {
@@ -57,7 +58,7 @@ template<typename T, size_t Capacity> class History
     /// Access element by logical index (0 = oldest, size()-1 = newest).
     [[nodiscard]] T operator[](size_t index) const
     {
-        size_t readIndex = (m_WriteIndex + Capacity - m_Size + index) % Capacity;
+        const size_t readIndex = (m_WriteIndex + Capacity - m_Size + index) % Capacity;
         return m_Data[readIndex];
     }
 
