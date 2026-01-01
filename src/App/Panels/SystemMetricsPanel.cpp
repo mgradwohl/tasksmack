@@ -1497,8 +1497,8 @@ void SystemMetricsPanel::renderGpuSection()
             ImGui::TableNextColumn();
             const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
             const std::string memStr = std::format("{} / {} ({:.1f}%%)",
-                                                   UI::Format::bytes(snap.memoryUsedBytes),
-                                                   UI::Format::bytes(snap.memoryTotalBytes),
+                                                   UI::Format::formatBytes(snap.memoryUsedBytes),
+                                                   UI::Format::formatBytes(snap.memoryTotalBytes),
                                                    smoothed.memoryPercent);
             ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
@@ -1610,7 +1610,7 @@ void SystemMetricsPanel::renderGpuSection()
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textInfo, "%s Per-process GPU metrics not available on this platform", ICON_FA_INFO_CIRCLE);
+        ImGui::TextColored(theme.scheme().textInfo, "%s Per-process GPU metrics not available on this platform", ICON_FA_CIRCLE_INFO);
         ImGui::TextWrapped("Per-process GPU usage requires vendor-specific support (NVIDIA NVML on Linux/Windows, D3DKMT on Windows).");
     }
 }

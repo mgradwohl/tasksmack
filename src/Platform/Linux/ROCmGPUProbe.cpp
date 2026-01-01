@@ -360,12 +360,8 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.memoryTotalBytes = memTotal;
         }
 
-        // Calculate memory utilization percentage
-        if (counter.memoryTotalBytes > 0)
-        {
-            counter.memoryUtilPercent =
-                (static_cast<double>(counter.memoryUsedBytes) / static_cast<double>(counter.memoryTotalBytes)) * 100.0;
-        }
+        // Memory utilization percentage is computed by Domain layer from memoryUsedBytes/memoryTotalBytes
+        // Platform layer provides raw counters only
 
         // Temperature (edge/die temperature)
         std::int64_t tempMilliC = 0;
@@ -424,7 +420,7 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         result = m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &fanSpeed);
         if (result == RSMI_STATUS_SUCCESS)
         {
-            counter.fanSpeedRPM = static_cast<std::uint32_t>(fanSpeed);
+            counter.fanSpeedRPMPercent = static_cast<std::uint32_t>(fanSpeed);
         }
 
         // PCIe throughput: Not directly available via ROCm SMI
