@@ -62,6 +62,10 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/D3DKMTGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
@@ -90,6 +94,9 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -102,6 +109,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
@@ -114,6 +122,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
@@ -138,7 +147,7 @@ target_link_libraries(TaskSmackTests PRIVATE
 if(UNIX AND NOT APPLE)
     # Linux needs X11 for platform tests
     find_package(X11 REQUIRED)
-    target_link_libraries(TaskSmackTests PRIVATE X11::X11)
+    target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS})
 endif()
 
 if(WIN32)
@@ -149,6 +158,8 @@ if(WIN32)
         iphlpapi
         ws2_32
         userenv
+        dxgi
+        gdi32
     )
 endif()
 

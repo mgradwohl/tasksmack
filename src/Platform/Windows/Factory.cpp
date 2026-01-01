@@ -1,6 +1,7 @@
 #include "Platform/Factory.h"
 
 #include "WindowsDiskProbe.h"
+#include "WindowsGPUProbe.h"
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
@@ -40,6 +41,11 @@ std::unique_ptr<IPathProvider> makePathProvider()
 std::unique_ptr<IPowerProbe> makePowerProbe()
 {
     return std::make_unique<WindowsPowerProbe>();
+}
+
+std::unique_ptr<IGPUProbe> makeGPUProbe()
+{
+    return std::make_unique<WindowsGPUProbe>();
 }
 
 } // namespace Platform

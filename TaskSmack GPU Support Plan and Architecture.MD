@@ -450,7 +450,7 @@ public:
 private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     std::vector<Platform::GPUInfo> m_GPUInfo;
-    
+
     // Current snapshots per GPU
     std::unordered_map<std::string, GPUSnapshot> m_Snapshots;
 
@@ -491,7 +491,7 @@ struct ProcessSnapshot {
     double gpuEncoderUtil = 0.0;        // Aggregate encoder utilization
     double gpuDecoderUtil = 0.0;        // Aggregate decoder utilization
     std::string gpuDevices;             // Comma-separated GPU IDs: "0" or "0,1"
-    
+
     // Per-GPU breakdown (for tooltip/details view)
     struct PerGPUUsage {
         std::string gpuId;              // GPU identifier
@@ -518,7 +518,7 @@ snapshot.gpuDevices = "0,1";             // Comma-separated list
 
 // Per-GPU breakdown for detailed view
 snapshot.perGpuUsage = {
-    {gpuId: "0", gpuName: "NVIDIA RTX 4090", isIntegrated: false, 
+    {gpuId: "0", gpuName: "NVIDIA RTX 4090", isIntegrated: false,
      utilPercent: 30.0, memoryBytes: 2GB, engines: {"3D"}},
     {gpuId: "1", gpuName: "Intel UHD 770", isIntegrated: true,
      utilPercent: 45.0, memoryBytes: 512MB, engines: {"Compute"}}
@@ -966,7 +966,7 @@ bool NVMLGPUProbe::initialize() {
         return false;
     }
 #endif
-    
+
     // Check driver version (require NVML 11+, Driver 450+)
     nvmlReturn_t result = nvmlInit_v2();
     if (result != NVML_SUCCESS) {
@@ -1032,8 +1032,8 @@ const auto gpuColor = theme.charts.gpu.utilization;
 const auto gpuFillColor = theme.charts.gpu.utilization_fill;
 
 // For integrated vs discrete badges
-const auto badgeColor = gpuInfo.isIntegrated 
-    ? theme.charts.gpu.integrated_badge 
+const auto badgeColor = gpuInfo.isIntegrated
+    ? theme.charts.gpu.integrated_badge
     : theme.charts.gpu.discrete_badge;
 ```
 

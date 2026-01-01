@@ -465,6 +465,7 @@ set(TASKSMACK_SOURCES
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
+    src/Domain/GPUModel.cpp
 )
 
 # Platform-specific sources
@@ -475,6 +476,9 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
+    src/Platform/Linux/LinuxGPUProbe.cpp
+    src/Platform/Linux/NVMLGPUProbe.cpp
+    src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -485,6 +489,10 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
+    src/Platform/Windows/WindowsGPUProbe.cpp
+    src/Platform/Windows/DXGIGPUProbe.cpp
+    src/Platform/Windows/D3DKMTGPUProbe.cpp
+    src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -506,14 +514,18 @@ set(TASKSMACK_HEADERS
     src/App/Panels/ProcessesPanel.h
     src/Platform/Factory.h
     src/Platform/IDiskProbe.h
+    src/Platform/IGPUProbe.h
     src/Platform/IPowerProbe.h
     src/Platform/IProcessProbe.h
     src/Platform/IProcessActions.h
     src/Platform/ISystemProbe.h
+    src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
+    src/Domain/GPUSnapshot.h
+    src/Domain/GPUModel.h
 )
 
 # Platform-specific headers
@@ -522,6 +534,9 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessProbe.h
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
+        src/Platform/Linux/LinuxGPUProbe.h
+        src/Platform/Linux/NVMLGPUProbe.h
+        src/Platform/Linux/DRMGPUProbe.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -530,6 +545,10 @@ elseif(WIN32)
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/WindowsDiskProbe.h
         src/Platform/Windows/WindowsPowerProbe.h
+        src/Platform/Windows/WindowsGPUProbe.h
+        src/Platform/Windows/DXGIGPUProbe.h
+        src/Platform/Windows/D3DKMTGPUProbe.h
+        src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WinString.h
     )
 endif()
@@ -687,7 +706,9 @@ target_link_libraries(TaskSmack PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32)
+    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32 dxgi gdi32)
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(TaskSmack PRIVATE dl)
 endif()
 
 # Copy assets (fonts and themes) to build directory
