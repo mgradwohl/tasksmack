@@ -58,6 +58,16 @@ struct D3DKMT_QUERYSTATISTICS_MEMORY
     UINT64 BytesResidentInSharedMemory;
 };
 
+struct D3DKMT_QUERYSTATISTICS_QUERY_PROCESS
+{
+    ULONG ProcessId;
+};
+
+struct D3DKMT_QUERYSTATISTICS_PROCESS_RESULT
+{
+    D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
+};
+
 struct D3DKMT_QUERYSTATISTICS
 {
     D3DKMT_QUERYSTATISTICS_TYPE Type;
@@ -65,17 +75,11 @@ struct D3DKMT_QUERYSTATISTICS
     HANDLE hProcess;
     union
     {
-        struct
-        {
-            ULONG ProcessId;
-        } QueryProcessStatistics;
+        D3DKMT_QUERYSTATISTICS_QUERY_PROCESS QueryProcessStatistics;
     };
     union
     {
-        struct
-        {
-            D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
-        } ProcessStatistics;
+        D3DKMT_QUERYSTATISTICS_PROCESS_RESULT ProcessStatistics;
     } QueryResult;
 };
 
@@ -117,7 +121,11 @@ bool D3DKMTGPUProbe::Impl::initialize()
 
     // Use DXGI to enumerate adapters and get LUID
     IDXGIFactory1* factory = nullptr;
+    // __uuidof is a Microsoft extension, suppress warning
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+#pragma clang diagnostic pop
     if (FAILED(hr) || factory == nullptr)
     {
         return false;

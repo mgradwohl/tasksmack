@@ -61,7 +61,11 @@ DXGIGPUProbe::~DXGIGPUProbe()
 bool DXGIGPUProbe::initialize()
 {
     // Create DXGI factory for GPU enumeration
+    // __uuidof is a Microsoft extension, suppress warning
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&m_Factory));
+#pragma clang diagnostic pop
     if (FAILED(hr) || m_Factory == nullptr)
     {
         spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
@@ -244,7 +248,11 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
                 // Try to get IDXGIAdapter3 for QueryVideoMemoryInfo (Windows 10+)
                 IDXGIAdapter3* adapter3 = nullptr;
+                // __uuidof is a Microsoft extension, suppress warning
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
                 hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
+#pragma clang diagnostic pop
 
                 if (SUCCEEDED(hr) && adapter3 != nullptr)
                 {
