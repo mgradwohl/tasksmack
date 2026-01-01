@@ -69,7 +69,7 @@ ctest --preset win-debug
 Example (Ubuntu/Debian):
 
 ```bash
-sudo apt install clang-21 clang-tidy-21 clang-format-21 lld-21 llvm-21 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
+sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
 
 # Optional: For GPU monitoring
 sudo apt install libdrm-dev          # Intel GPU enumeration

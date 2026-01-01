@@ -154,6 +154,8 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     }
 
 // Load function pointers
+// Note: dlsym returns void* by POSIX definition; reinterpret_cast to the function pointer type is required
+// and safe here because we only use it for known ROCm SMI symbols with matching signatures.
 #define LOAD_ROCM_FUNC(name)                                                                                                               \
     name = reinterpret_cast<decltype(name)>(dlsym(rocmHandle, #name));                                                                     \
     if (name == nullptr)                                                                                                                   \

@@ -25,7 +25,7 @@ LinuxGPUProbe::LinuxGPUProbe()
     }
     if (m_ROCmProbe->isAvailable())
     {
-        probes.push_back("ROCm");
+        probes.emplace_back("ROCm");
     }
 
     std::string probeSummary = probes.empty() ? "None" : "";

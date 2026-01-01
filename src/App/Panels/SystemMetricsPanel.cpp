@@ -1464,7 +1464,7 @@ void SystemMetricsPanel::renderGpuSection()
         // GPU header with collapsible section
         const std::string headerLabel = std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuName, isIntegrated ? "Integrated" : "Discrete");
 
-        ImGui::PushID(gpuIdx);
+        ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopID();
 
