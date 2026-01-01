@@ -1497,8 +1497,8 @@ void SystemMetricsPanel::renderGpuSection()
             ImGui::TableNextColumn();
             const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
             const std::string memStr = std::format("{} / {} ({:.1f}%%)",
-                                                   UI::Format::formatBytes(snap.memoryUsedBytes),
-                                                   UI::Format::formatBytes(snap.memoryTotalBytes),
+                                                   UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
+                                                   UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
                                                    smoothed.memoryPercent);
             ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 

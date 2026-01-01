@@ -1099,7 +1099,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         ImGui::Text("GPU Memory:");
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-        const std::string memStr = UI::Format::formatBytes(static_cast<std::uint64_t>(m_SmoothedUsage.gpuMemoryBytes));
+        const std::string memStr = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
         // GPU Device(s)
@@ -1190,7 +1190,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                     ImGui::TableNextColumn();
                     ImGui::Text("Memory:");
                     ImGui::TableNextColumn();
-                    const std::string memoryStr = UI::Format::formatBytes(gpuUsage.memoryBytes);
+                    const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
                     ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
 
                     if (!gpuUsage.engines.empty())
@@ -1253,7 +1253,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(timeData, alignedCount);
+                        const auto idxVal = hoveredIndexFromPlotX(gpuUtilData, ImPlot::GetPlotMousePos().x);
                         if (idxVal.has_value())
                         {
                             ImGui::BeginTooltip();
@@ -1293,13 +1293,13 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(timeData, alignedCount);
+                        const auto idxVal = hoveredIndexFromPlotX(gpuMemData, ImPlot::GetPlotMousePos().x);
                         if (idxVal.has_value())
                         {
                             ImGui::BeginTooltip();
                             const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                             ImGui::TextUnformatted(ageText.c_str());
-                            const std::string memStr = UI::Format::formatBytes(static_cast<std::uint64_t>(gpuMemData[*idxVal]));
+                            const std::string memStr = UI::Format::formatBytes(static_cast<double>(gpuMemData[*idxVal]));
                             ImGui::TextColored(theme.scheme().textInfo, "GPU Memory: %s", memStr.c_str());
                             ImGui::EndTooltip();
                         }

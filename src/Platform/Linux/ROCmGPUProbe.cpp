@@ -18,21 +18,21 @@ using rsmi_status_t = std::uint32_t;
 
 // ROCm SMI return codes
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
-constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
-constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
-constexpr rsmi_status_t RSMI_STATUS_FILE_ERROR = 3;
-constexpr rsmi_status_t RSMI_STATUS_PERMISSION = 4;
-constexpr rsmi_status_t RSMI_STATUS_OUT_OF_RESOURCES = 5;
-constexpr rsmi_status_t RSMI_STATUS_INTERNAL_EXCEPTION = 6;
-constexpr rsmi_status_t RSMI_STATUS_INPUT_OUT_OF_BOUNDS = 7;
-constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
-constexpr rsmi_status_t RSMI_STATUS_NOT_YET_IMPLEMENTED = 9;
-constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
-constexpr rsmi_status_t RSMI_STATUS_INSUFFICIENT_SIZE = 11;
-constexpr rsmi_status_t RSMI_STATUS_INTERRUPT = 12;
-constexpr rsmi_status_t RSMI_STATUS_UNEXPECTED_SIZE = 13;
-constexpr rsmi_status_t RSMI_STATUS_NO_DATA = 14;
-constexpr rsmi_status_t RSMI_STATUS_UNKNOWN_ERROR = 0xFFFFFFFF;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_SUPPORTED = 2;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_FILE_ERROR = 3;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_PERMISSION = 4;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_OUT_OF_RESOURCES = 5;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INTERNAL_EXCEPTION = 6;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INPUT_OUT_OF_BOUNDS = 7;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INIT_ERROR = 8;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_YET_IMPLEMENTED = 9;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INSUFFICIENT_SIZE = 11;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_INTERRUPT = 12;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_UNEXPECTED_SIZE = 13;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_NO_DATA = 14;
+[[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_UNKNOWN_ERROR = 0xFFFFFFFF;
 
 // ROCm SMI temperature types
 enum rsmi_temperature_type_t : std::uint32_t
