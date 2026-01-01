@@ -87,6 +87,24 @@ memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
 io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O fill
 
 # =============================================================================
+# GPU METRICS COLORS
+# Colors for GPU monitoring graphs, bars, and badges
+# =============================================================================
+[charts.gpu]
+utilization = "#7B1FA2"           # Purple - GPU utilization line
+utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
+memory = "#D32F2F"                # Red - GPU memory line
+memory_fill = "#D32F2F4D"         # Red with 30% alpha - GPU memory fill
+temperature = "#F57C00"           # Gold - GPU temperature line
+temperature_fill = "#F57C004D"    # Gold with 30% alpha - GPU temp fill
+power = "#388E3C"                 # Green - GPU power draw line
+power_fill = "#388E3C4D"          # Green with 30% alpha - GPU power fill
+encoder = "#0097A7"               # Teal - GPU encoder utilization
+decoder = "#C2185B"               # Magenta - GPU decoder utilization
+integrated_badge = "#757575"      # Muted gray - integrated GPU badge
+discrete_badge = "#1976D2"        # Windows Blue - discrete GPU badge
+
+# =============================================================================
 # CPU BREAKDOWN COLORS
 # Colors for the stacked CPU usage bar
 # =============================================================================
