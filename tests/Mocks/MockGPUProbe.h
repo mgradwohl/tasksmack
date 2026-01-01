@@ -47,7 +47,7 @@ inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
     c.powerLimitWatts = 250.0;
     c.gpuClockMHz = 1500;
     c.memoryClockMHz = 7000;
-    c.fanSpeedRPM = 1200;
+    c.fanSpeedRPMPercent = 1200;
     c.pcieTxBytes = 0;
     c.pcieRxBytes = 0;
     c.computeUtilPercent = 0.0;
