@@ -27,6 +27,7 @@ This file lists features that are already implemented in TaskSmack.
 | **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; infrastructure ready for probe implementation |
 | **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
 | **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
+| **GPU Monitoring (Phase 1-6)** | Task Manager, btop++ | GPU infrastructure ready; Platform layer with NVIDIA (NVML), Intel (DRM), AMD (ROCm) probes on Linux; Domain GPUModel with history; Per-process GPU fields in ProcessSnapshot; UI integration pending Phase 7 |
 
 ## Developer Tooling / Infrastructure
 
