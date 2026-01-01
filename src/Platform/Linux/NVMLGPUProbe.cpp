@@ -65,6 +65,10 @@ enum nvmlPcieUtilCounter_t
     NVML_PCIE_UTIL_COUNT
 };
 
+// NVML buffer size constants
+constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
+constexpr unsigned int NVML_DEVICE_UUID_BUFFER_SIZE = 80;
+
 struct nvmlMemory_t
 {
     unsigned long long total;
@@ -482,7 +486,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     {
                         // Merge: add graphics engine
                         it->activeEngines.push_back("3D");
-                        it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, proc.usedGpuMemory);
+                        it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, static_cast<std::uint64_t>(proc.usedGpuMemory));
                     }
                     else
                     {

@@ -29,6 +29,8 @@ WindowsGPUProbe::WindowsGPUProbe()
     spdlog::debug("WindowsGPUProbe: Initialized with {} probe(s)", probeSummary);
 }
 
+WindowsGPUProbe::~WindowsGPUProbe() = default;
+
 std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
 {
     // Use DXGI as primary enumeration source (works for all vendors)

@@ -21,7 +21,7 @@ class WindowsGPUProbe : public IGPUProbe
 {
   public:
     WindowsGPUProbe();
-    ~WindowsGPUProbe() override = default;
+    ~WindowsGPUProbe() override;
 
     // Rule of 5
     WindowsGPUProbe(const WindowsGPUProbe&) = delete;

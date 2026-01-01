@@ -15,13 +15,24 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+
+// Suppress __uuidof extension warning for DXGI
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi.h>
+#pragma clang diagnostic pop
+
 #include <psapi.h>
 #include <tlhelp32.h>
 // clang-format on
 
 // D3DKMT types and functions (declared locally to avoid WDK dependency)
 // These are standard Windows kernel-mode graphics types available via gdi32.dll
+
+// NTSTATUS type (from ntdef.h)
+typedef LONG NTSTATUS;
+#define STATUS_SUCCESS ((NTSTATUS) 0x00000000L)
+
 typedef UINT D3DKMT_HANDLE;
 
 struct D3DKMT_OPENADAPTERFROMLUID
@@ -34,7 +45,8 @@ enum D3DKMT_QUERYSTATISTICS_TYPE
 {
     D3DKMT_QUERYSTATISTICS_ADAPTER = 0,
     D3DKMT_QUERYSTATISTICS_PROCESS = 1,
-    D3DKMT_QUERYSTATISTICS_PROCESS_ADAPTER = 2
+    D3DKMT_QUERYSTATISTICS_PROCESS_ADAPTER = 2,
+    D3DKMT_QUERYSTATISTICS_SEGMENT = 3
 };
 
 struct D3DKMT_QUERYSTATISTICS_MEMORY
@@ -54,13 +66,24 @@ struct D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION
     UINT64 Reserved[7];
 };
 
+struct D3DKMT_QUERYSTATISTICS_RESULT
+{
+    D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION ProcessInformation;
+};
+
 struct D3DKMT_QUERYSTATISTICS
 {
     D3DKMT_QUERYSTATISTICS_TYPE Type;
     LUID AdapterLuid;
     HANDLE hProcess;
-    D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION QueryProcessInformation;
-    D3DKMT_HANDLE hAdapter;
+    D3DKMT_QUERYSTATISTICS_RESULT QueryResult;
+    union
+    {
+        struct
+        {
+            ULONG ProcessId;
+        } QueryProcessStatistics;
+    };
 };
 
 // Function prototypes (exported from gdi32.dll)
@@ -163,7 +186,8 @@ bool D3DKMTGPUProbe::Impl::initialize()
 std::string D3DKMTGPUProbe::Impl::luidToString(const LUID& luid) const
 {
     char buffer[32]{};
-    std::snprintf(buffer, sizeof(buffer), "%08X%08X", luid.HighPart, luid.LowPart);
+    std::snprintf(
+        buffer, sizeof(buffer), "%08lX%08lX", static_cast<unsigned long>(luid.HighPart), static_cast<unsigned long>(luid.LowPart));
     return {buffer};
 }
 
@@ -269,7 +293,7 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
             }
 
             // Check if process has any GPU activity
-            auto& processStats = queryStats.QueryResult.ProcessStatistics;
+            auto& processStats = queryStats.QueryResult.ProcessInformation;
             std::uint64_t totalMemory = processStats.SystemMemory.BytesAllocated + processStats.SystemMemory.BytesReserved;
 
             if (totalMemory == 0)

@@ -292,7 +292,7 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
             const uint64_t tempMilliC = readSysfsUint64(tempPath);
             if (tempMilliC > 0)
             {
-                counter.temperatureC = static_cast<uint32_t>(tempMilliC / 1000);
+                counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);
             }
         }
 

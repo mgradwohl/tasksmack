@@ -20,7 +20,7 @@ class LinuxGPUProbe : public IGPUProbe
 {
   public:
     LinuxGPUProbe();
-    ~LinuxGPUProbe() override = default;
+    ~LinuxGPUProbe() override;
 
     // Rule of 5
     LinuxGPUProbe(const LinuxGPUProbe&) = delete;

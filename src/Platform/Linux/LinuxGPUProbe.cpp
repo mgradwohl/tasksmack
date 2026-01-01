@@ -33,6 +33,8 @@ LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), 
     spdlog::debug("LinuxGPUProbe: Initialized with {} probe(s)", probeSummary);
 }
 
+LinuxGPUProbe::~LinuxGPUProbe() = default;
+
 std::vector<GPUInfo> LinuxGPUProbe::enumerateGPUs()
 {
     std::vector<GPUInfo> gpus;

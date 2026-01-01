@@ -10,7 +10,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+
+// Suppress __uuidof extension warning for DXGI
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi1_4.h>
+#pragma clang diagnostic pop
 // clang-format on
 
 #include <array>
@@ -56,15 +61,7 @@ DXGIGPUProbe::~DXGIGPUProbe()
 bool DXGIGPUProbe::initialize()
 {
     // Create DXGI factory for GPU enumeration
-#ifdef _MSC_VER
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&m_Factory));
-#else
-// Clang with MS compatibility
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&m_Factory));
-#pragma clang diagnostic pop
-#endif
     if (FAILED(hr) || m_Factory == nullptr)
     {
         spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
@@ -247,15 +244,7 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
                 // Try to get IDXGIAdapter3 for QueryVideoMemoryInfo (Windows 10+)
                 IDXGIAdapter3* adapter3 = nullptr;
-#ifdef _MSC_VER
                 hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
-#else
-// Clang with MS compatibility
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-                hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
-#pragma clang diagnostic pop
-#endif
 
                 if (SUCCEEDED(hr) && adapter3 != nullptr)
                 {
