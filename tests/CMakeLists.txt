@@ -63,6 +63,9 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/D3DKMTGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
     set(INTEGRATION_TEST_SOURCES
@@ -153,6 +156,8 @@ if(WIN32)
         iphlpapi
         ws2_32
         userenv
+        dxgi
+        gdi32
     )
 endif()
 
