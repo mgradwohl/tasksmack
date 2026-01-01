@@ -13,6 +13,12 @@ class IGPUProbe
   public:
     virtual ~IGPUProbe() = default;
 
+    IGPUProbe() = default;
+    IGPUProbe(const IGPUProbe&) = default;
+    IGPUProbe& operator=(const IGPUProbe&) = default;
+    IGPUProbe(IGPUProbe&&) = default;
+    IGPUProbe& operator=(IGPUProbe&&) = default;
+
     // Enumerate available GPUs (called once at startup or on refresh)
     [[nodiscard]] virtual std::vector<GPUInfo> enumerateGPUs() = 0;
 
