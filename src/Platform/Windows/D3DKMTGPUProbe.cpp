@@ -7,7 +7,7 @@
 #include <utility>
 
 // clang-format off
-// Windows headers (windows.h must be included before d3dkmthk.h for NTSTATUS)
+// Windows headers
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -15,11 +15,60 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <d3dkmthk.h>
 #include <dxgi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 // clang-format on
+
+// D3DKMT types and functions (declared locally to avoid WDK dependency)
+// These are standard Windows kernel-mode graphics types available via gdi32.dll
+typedef UINT D3DKMT_HANDLE;
+
+struct D3DKMT_OPENADAPTERFROMLUID
+{
+    LUID AdapterLuid;
+    D3DKMT_HANDLE hAdapter;
+};
+
+enum D3DKMT_QUERYSTATISTICS_TYPE
+{
+    D3DKMT_QUERYSTATISTICS_ADAPTER = 0,
+    D3DKMT_QUERYSTATISTICS_PROCESS = 1,
+    D3DKMT_QUERYSTATISTICS_PROCESS_ADAPTER = 2
+};
+
+struct D3DKMT_QUERYSTATISTICS_MEMORY
+{
+    UINT64 BytesAllocated;
+    UINT64 BytesReserved;
+    UINT64 CommitLimit;
+    UINT64 BytesResident;
+    UINT64 BytesResidentInSharedMemory;
+};
+
+struct D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION
+{
+    ULONG NodeCount;
+    ULONG VidPnSourceCount;
+    D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
+    UINT64 Reserved[7];
+};
+
+struct D3DKMT_QUERYSTATISTICS
+{
+    D3DKMT_QUERYSTATISTICS_TYPE Type;
+    LUID AdapterLuid;
+    HANDLE hProcess;
+    D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION QueryProcessInformation;
+    D3DKMT_HANDLE hAdapter;
+};
+
+// Function prototypes (exported from gdi32.dll)
+extern "C"
+{
+    NTSTATUS WINAPI D3DKMTOpenAdapterFromLuid(D3DKMT_OPENADAPTERFROMLUID* pAdapter);
+    NTSTATUS WINAPI D3DKMTQueryStatistics(D3DKMT_QUERYSTATISTICS* pQueryStats);
+}
 
 namespace Platform
 {
