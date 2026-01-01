@@ -145,7 +145,6 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
-            dxgiCounter.memoryUtilPercent = nvmlCounter.memoryUtilPercent;
         }
     }
 }

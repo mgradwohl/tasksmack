@@ -17,7 +17,7 @@ class D3DKMTGPUProbe final : public IGPUProbe
 {
   public:
     D3DKMTGPUProbe();
-    ~D3DKMTGPUProbe() override = default;
+    ~D3DKMTGPUProbe() override;
 
     // Rule of 5: Delete copy/move operations
     D3DKMTGPUProbe(const D3DKMTGPUProbe&) = delete;

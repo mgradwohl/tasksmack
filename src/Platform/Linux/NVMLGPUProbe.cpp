@@ -9,8 +9,84 @@
 
 #include <dlfcn.h>
 
-// NVML headers (dynamically loaded)
-#include <nvml.h>
+// NVML types and constants (for dynamic loading without requiring nvml.h)
+// These definitions match the NVML API but don't require the CUDA toolkit
+namespace
+{
+
+using nvmlDevice_t = void*;
+
+enum nvmlReturn_t
+{
+    NVML_SUCCESS = 0,
+    NVML_ERROR_UNINITIALIZED = 1,
+    NVML_ERROR_INVALID_ARGUMENT = 2,
+    NVML_ERROR_NOT_SUPPORTED = 3,
+    NVML_ERROR_NO_PERMISSION = 4,
+    NVML_ERROR_ALREADY_INITIALIZED = 5,
+    NVML_ERROR_NOT_FOUND = 6,
+    NVML_ERROR_INSUFFICIENT_SIZE = 7,
+    NVML_ERROR_INSUFFICIENT_POWER = 8,
+    NVML_ERROR_DRIVER_NOT_LOADED = 9,
+    NVML_ERROR_TIMEOUT = 10,
+    NVML_ERROR_IRQ_ISSUE = 11,
+    NVML_ERROR_LIBRARY_NOT_FOUND = 12,
+    NVML_ERROR_FUNCTION_NOT_FOUND = 13,
+    NVML_ERROR_CORRUPTED_INFOROM = 14,
+    NVML_ERROR_GPU_IS_LOST = 15,
+    NVML_ERROR_RESET_REQUIRED = 16,
+    NVML_ERROR_OPERATING_SYSTEM = 17,
+    NVML_ERROR_LIB_RM_VERSION_MISMATCH = 18,
+    NVML_ERROR_IN_USE = 19,
+    NVML_ERROR_MEMORY = 20,
+    NVML_ERROR_NO_DATA = 21,
+    NVML_ERROR_VGPU_ECC_NOT_SUPPORTED = 22,
+    NVML_ERROR_INSUFFICIENT_RESOURCES = 23,
+    NVML_ERROR_UNKNOWN = 999
+};
+
+enum nvmlTemperatureSensors_t
+{
+    NVML_TEMPERATURE_GPU = 0
+};
+
+enum nvmlClockType_t
+{
+    NVML_CLOCK_GRAPHICS = 0,
+    NVML_CLOCK_SM = 1,
+    NVML_CLOCK_MEM = 2,
+    NVML_CLOCK_VIDEO = 3
+};
+
+enum nvmlPcieUtilCounter_t
+{
+    NVML_PCIE_UTIL_TX_BYTES = 0,
+    NVML_PCIE_UTIL_RX_BYTES = 1,
+    NVML_PCIE_UTIL_COUNT
+};
+
+struct nvmlMemory_t
+{
+    unsigned long long total;
+    unsigned long long free;
+    unsigned long long used;
+};
+
+struct nvmlUtilization_t
+{
+    unsigned int gpu;
+    unsigned int memory;
+};
+
+struct nvmlProcessInfo_t
+{
+    unsigned int pid;
+    unsigned long long usedGpuMemory;
+    unsigned int gpuInstanceId;
+    unsigned int computeInstanceId;
+};
+
+} // anonymous namespace
 
 namespace Platform
 {

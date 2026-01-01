@@ -56,7 +56,15 @@ DXGIGPUProbe::~DXGIGPUProbe()
 bool DXGIGPUProbe::initialize()
 {
     // Create DXGI factory for GPU enumeration
+#ifdef _MSC_VER
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&m_Factory));
+#else
+// Clang with MS compatibility
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&m_Factory));
+#pragma clang diagnostic pop
+#endif
     if (FAILED(hr) || m_Factory == nullptr)
     {
         spdlog::warn("DXGIGPUProbe: Failed to create DXGI factory (HRESULT: 0x{:08X})", static_cast<uint32_t>(hr));
@@ -177,15 +185,8 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Determine vendor
                 info.vendor = vendorIdToName(desc.VendorId);
 
-                // Driver version (encoded in DriverVersion LARGE_INTEGER)
-                // Windows encodes driver version as: Product.Version.SubVersion.Build
-                LARGE_INTEGER driverVer = desc.DriverVersion;
-                uint64_t ver = static_cast<uint64_t>(driverVer.QuadPart);
-                uint32_t product = static_cast<uint32_t>((ver >> 48) & 0xFFFF);
-                uint32_t version = static_cast<uint32_t>((ver >> 32) & 0xFFFF);
-                uint32_t subVersion = static_cast<uint32_t>((ver >> 16) & 0xFFFF);
-                uint32_t build = static_cast<uint32_t>(ver & 0xFFFF);
-                info.driverVersion = std::format("{}.{}.{}.{}", product, version, subVersion, build);
+                // Driver version not available in DXGI_ADAPTER_DESC1
+                info.driverVersion = "Unknown";
 
                 // Determine if integrated
                 info.isIntegrated = isIntegratedGPU(adapter);
@@ -246,7 +247,15 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 
                 // Try to get IDXGIAdapter3 for QueryVideoMemoryInfo (Windows 10+)
                 IDXGIAdapter3* adapter3 = nullptr;
+#ifdef _MSC_VER
                 hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
+#else
+// Clang with MS compatibility
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+                hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
+#pragma clang diagnostic pop
+#endif
 
                 if (SUCCEEDED(hr) && adapter3 != nullptr)
                 {
@@ -268,17 +277,16 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                     // Cannot determine current usage without QueryVideoMemoryInfo
                     counter.memoryUsedBytes = 0;
                 }
-            }
 
-            counters.push_back(std::move(counter));
+                counters.push_back(std::move(counter));
+            }
         }
+
+        adapter->Release();
+        ++adapterIndex;
     }
 
-    adapter->Release();
-    ++adapterIndex;
-}
-
-return counters;
+    return counters;
 }
 
 std::vector<ProcessGPUCounters> DXGIGPUProbe::readProcessGPUCounters()

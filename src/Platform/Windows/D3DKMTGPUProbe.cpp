@@ -6,9 +6,7 @@
 #include <unordered_map>
 #include <utility>
 
-// Windows headers
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+// Windows headers (windows.h must be included before d3dkmthk.h for NTSTATUS)
 #include <d3dkmthk.h>
 #include <dxgi.h>
 #include <psapi.h>
@@ -141,8 +139,9 @@ std::vector<std::uint32_t> D3DKMTGPUProbe::Impl::enumerateProcessIds() const
 // Constructor
 D3DKMTGPUProbe::D3DKMTGPUProbe() : m_Impl(std::make_unique<Impl>())
 {
-    m_Impl->initialize();
 }
+
+D3DKMTGPUProbe::~D3DKMTGPUProbe() = default;
 
 std::vector<GPUInfo> D3DKMTGPUProbe::enumerateGPUs()
 {

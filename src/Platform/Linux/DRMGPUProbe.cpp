@@ -204,7 +204,7 @@ std::string DRMGPUProbe::getVendorName(const std::string& vendorId) const
 GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
 {
     GPUInfo info{};
-    info.gpuId = card.gpuId;
+    info.id = card.gpuId;
 
     // Read vendor ID from sysfs
     const std::string vendorPath = card.devicePath + "/vendor";

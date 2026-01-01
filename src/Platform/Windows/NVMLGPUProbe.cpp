@@ -45,12 +45,12 @@ constexpr int NVML_TEMPERATURE_GPU = 0;
 
 // NVML clock types
 constexpr int NVML_CLOCK_GRAPHICS = 0;
-constexpr int NVML_CLOCK_SM = 1;
+[[maybe_unused]] constexpr int NVML_CLOCK_SM = 1;
 constexpr int NVML_CLOCK_MEM = 2;
 
 // NVML PCIe counter types
-constexpr int NVML_PCIE_UTIL_TX_BYTES = 0;
-constexpr int NVML_PCIE_UTIL_RX_BYTES = 1;
+[[maybe_unused]] constexpr int NVML_PCIE_UTIL_TX_BYTES = 0;
+[[maybe_unused]] constexpr int NVML_PCIE_UTIL_RX_BYTES = 1;
 
 // NVML constants
 constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
