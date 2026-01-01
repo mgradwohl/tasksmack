@@ -95,6 +95,8 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
@@ -145,7 +147,7 @@ target_link_libraries(TaskSmackTests PRIVATE
 if(UNIX AND NOT APPLE)
     # Linux needs X11 for platform tests
     find_package(X11 REQUIRED)
-    target_link_libraries(TaskSmackTests PRIVATE X11::X11)
+    target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS})
 endif()
 
 if(WIN32)
