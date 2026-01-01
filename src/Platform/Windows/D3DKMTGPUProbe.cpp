@@ -58,25 +58,11 @@ struct D3DKMT_QUERYSTATISTICS_MEMORY
     UINT64 BytesResidentInSharedMemory;
 };
 
-struct D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION
-{
-    ULONG NodeCount;
-    ULONG VidPnSourceCount;
-    D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
-    UINT64 Reserved[7];
-};
-
-struct D3DKMT_QUERYSTATISTICS_RESULT
-{
-    D3DKMT_QUERYSTATISTICS_PROCESS_INFORMATION ProcessInformation;
-};
-
 struct D3DKMT_QUERYSTATISTICS
 {
     D3DKMT_QUERYSTATISTICS_TYPE Type;
     LUID AdapterLuid;
     HANDLE hProcess;
-    D3DKMT_QUERYSTATISTICS_RESULT QueryResult;
     union
     {
         struct
@@ -84,6 +70,13 @@ struct D3DKMT_QUERYSTATISTICS
             ULONG ProcessId;
         } QueryProcessStatistics;
     };
+    union
+    {
+        struct
+        {
+            D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
+        } ProcessStatistics;
+    } QueryResult;
 };
 
 // Function prototypes (exported from gdi32.dll)
@@ -293,8 +286,8 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
             }
 
             // Check if process has any GPU activity
-            auto& processStats = queryStats.QueryResult.ProcessInformation;
-            std::uint64_t totalMemory = processStats.SystemMemory.BytesAllocated + processStats.SystemMemory.BytesReserved;
+            auto& processStats = queryStats.QueryResult.ProcessStatistics.SystemMemory;
+            std::uint64_t totalMemory = processStats.BytesAllocated + processStats.BytesReserved;
 
             if (totalMemory == 0)
             {
