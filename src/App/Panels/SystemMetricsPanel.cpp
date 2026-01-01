@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/GPUModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
@@ -26,6 +27,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -152,9 +154,15 @@ void SystemMetricsPanel::onAttach()
     m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
+    m_GPUModel = std::make_unique<Domain::GPUModel>(Platform::makeGPUProbe());
+
     // Initial refresh to seed histories
     m_Model->refresh();
     m_StorageModel->sample();
+    if (m_GPUModel)
+    {
+        m_GPUModel->refresh();
+    }
 
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
@@ -173,6 +181,7 @@ void SystemMetricsPanel::onAttach()
 
 void SystemMetricsPanel::onDetach()
 {
+    m_GPUModel.reset();
     m_StorageModel.reset();
     m_Model.reset();
 }
@@ -212,6 +221,11 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         {
             m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             m_StorageModel->sample();
+        }
+
+        if (m_GPUModel)
+        {
+            m_GPUModel->refresh();
         }
 
         m_TimestampsCache = m_Model->timestamps();
@@ -297,6 +311,20 @@ void SystemMetricsPanel::render(bool* open)
             {
                 renderPerCoreSection();
                 ImGui::EndTabItem();
+            }
+        }
+
+        // GPU tab - show if GPUs are available
+        if (m_GPUModel)
+        {
+            const auto gpuInfos = m_GPUModel->gpuInfo();
+            if (!gpuInfos.empty())
+            {
+                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " GPU"))
+                {
+                    renderGpuSection();
+                    ImGui::EndTabItem();
+                }
             }
         }
 
@@ -1386,6 +1414,206 @@ void SystemMetricsPanel::renderPerCoreSection()
     }
 }
 
+void SystemMetricsPanel::renderGpuSection()
+{
+    if (!m_GPUModel)
+    {
+        ImGui::Text("GPU monitoring not available");
+        return;
+    }
+
+    const auto gpuSnapshots = m_GPUModel->snapshots();
+    const auto gpuInfos = m_GPUModel->gpuInfo();
+    const auto caps = m_GPUModel->capabilities();
+    auto& theme = UI::Theme::get();
+
+    if (gpuSnapshots.empty())
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "No GPU data available");
+        return;
+    }
+
+    ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
+    ImGui::Spacing();
+
+    // Update smoothed values for all GPUs
+    for (const auto& snap : gpuSnapshots)
+    {
+        updateSmoothedGPU(snap.gpuId, snap, m_LastDeltaSeconds);
+    }
+
+    // Render each GPU
+    for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
+    {
+        const auto& snap = gpuSnapshots[gpuIdx];
+        const auto& smoothed = m_SmoothedGPUs[snap.gpuId];
+
+        // Find GPU info for this GPU
+        std::string gpuName = snap.name;
+        bool isIntegrated = snap.isIntegrated;
+        for (const auto& info : gpuInfos)
+        {
+            if (info.id == snap.gpuId)
+            {
+                gpuName = info.name;
+                isIntegrated = info.isIntegrated;
+                break;
+            }
+        }
+
+        // GPU header with collapsible section
+        const std::string headerLabel = std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuName, 
+                                                     isIntegrated ? "Integrated" : "Discrete");
+        
+        ImGui::PushID(gpuIdx);
+        const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::PopID();
+
+        if (!expanded)
+        {
+            continue;
+        }
+
+        // GPU metrics display
+        ImGui::Indent();
+
+        // Create a table for metrics
+        if (ImGui::BeginTable("GPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0F);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+            // GPU Utilization
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("GPU Utilization:");
+            ImGui::TableNextColumn();
+            const ImVec4 gpuUtilColor = theme.charts().gpu.utilization;
+            ImGui::TextColored(gpuUtilColor, "%.1f%%", smoothed.utilizationPercent);
+
+            // Memory
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("GPU Memory:");
+            ImGui::TableNextColumn();
+            const ImVec4 gpuMemColor = theme.charts().gpu.memory;
+            const std::string memStr = std::format("{} / {} ({:.1f}%%)",
+                                                    UI::Format::bytes(snap.memoryUsedBytes),
+                                                    UI::Format::bytes(snap.memoryTotalBytes),
+                                                    smoothed.memoryPercent);
+            ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
+
+            // Temperature (if available)
+            if (caps.hasTemperature && snap.temperatureC > 0)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("Temperature:");
+                ImGui::TableNextColumn();
+                const ImVec4 tempColor = theme.charts().gpu.temperature;
+                ImGui::TextColored(tempColor, "%d°C", static_cast<int>(smoothed.temperatureC));
+
+                if (caps.hasHotspotTemp && snap.hotspotTempC > 0)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(theme.scheme().textMuted, " (Hotspot: %d°C)", snap.hotspotTempC);
+                }
+            }
+
+            // Power (if available)
+            if (caps.hasPowerMetrics && snap.powerDrawWatts > 0.0)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("Power Draw:");
+                ImGui::TableNextColumn();
+                const ImVec4 powerColor = theme.charts().gpu.power;
+                if (snap.powerLimitWatts > 0.0)
+                {
+                    ImGui::TextColored(powerColor, "%.1f W / %.1f W (%.1f%%)",
+                                      smoothed.powerWatts, snap.powerLimitWatts,
+                                      (smoothed.powerWatts / snap.powerLimitWatts) * 100.0);
+                }
+                else
+                {
+                    ImGui::TextColored(powerColor, "%.1f W", smoothed.powerWatts);
+                }
+            }
+
+            // Clock speeds (if available)
+            if (caps.hasClockSpeeds)
+            {
+                if (snap.gpuClockMHz > 0)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("GPU Clock:");
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%u MHz", snap.gpuClockMHz);
+                }
+
+                if (snap.memoryClockMHz > 0)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Memory Clock:");
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%u MHz", snap.memoryClockMHz);
+                }
+            }
+
+            // Fan speed (if available)
+            if (caps.hasFanSpeed && snap.fanSpeedRPMPercent > 0)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("Fan Speed:");
+                ImGui::TableNextColumn();
+                ImGui::Text("%u RPM", snap.fanSpeedRPMPercent);
+            }
+
+            // Encoder/Decoder utilization (if available)
+            if (caps.hasEncoderDecoder)
+            {
+                if (snap.encoderUtilPercent > 0.0)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Video Encoder:");
+                    ImGui::TableNextColumn();
+                    const ImVec4 encColor = theme.charts().gpu.encoder;
+                    ImGui::TextColored(encColor, "%.1f%%", snap.encoderUtilPercent);
+                }
+
+                if (snap.decoderUtilPercent > 0.0)
+                {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Video Decoder:");
+                    ImGui::TableNextColumn();
+                    const ImVec4 decColor = theme.charts().gpu.decoder;
+                    ImGui::TextColored(decColor, "%.1f%%", snap.decoderUtilPercent);
+                }
+            }
+
+            ImGui::EndTable();
+        }
+
+        ImGui::Unindent();
+        ImGui::Spacing();
+    }
+
+    // Show capability information at the bottom
+    if (!caps.hasPerProcessMetrics)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(theme.scheme().textInfo, "%s Per-process GPU metrics not available on this platform", ICON_FA_INFO_CIRCLE);
+        ImGui::TextWrapped("Per-process GPU usage requires vendor-specific support (NVIDIA NVML on Linux/Windows, D3DKMT on Windows).");
+    }
+}
+
 void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
     auto clampPercent = [](double value)
@@ -1600,6 +1828,27 @@ void SystemMetricsPanel::updateSmoothedNetwork(double targetSent, double targetR
 
     m_SmoothedNetwork.sentBytesPerSec = smoothTowards(m_SmoothedNetwork.sentBytesPerSec, targetSent, alpha);
     m_SmoothedNetwork.recvBytesPerSec = smoothTowards(m_SmoothedNetwork.recvBytesPerSec, targetRecv, alpha);
+}
+
+void SystemMetricsPanel::updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, float deltaTimeSeconds)
+{
+    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
+
+    auto& smoothed = m_SmoothedGPUs[gpuId];
+    if (!smoothed.initialized)
+    {
+        smoothed.utilizationPercent = snap.utilizationPercent;
+        smoothed.memoryPercent = snap.memoryUsedPercent;
+        smoothed.temperatureC = static_cast<double>(snap.temperatureC);
+        smoothed.powerWatts = snap.powerDrawWatts;
+        smoothed.initialized = true;
+        return;
+    }
+
+    smoothed.utilizationPercent = smoothTowards(smoothed.utilizationPercent, snap.utilizationPercent, alpha);
+    smoothed.memoryPercent = smoothTowards(smoothed.memoryPercent, snap.memoryUsedPercent, alpha);
+    smoothed.temperatureC = smoothTowards(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha);
+    smoothed.powerWatts = smoothTowards(smoothed.powerWatts, snap.powerDrawWatts, alpha);
 }
 
 } // namespace App
