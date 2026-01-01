@@ -1462,9 +1462,8 @@ void SystemMetricsPanel::renderGpuSection()
         }
 
         // GPU header with collapsible section
-        const std::string headerLabel = std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuName, 
-                                                     isIntegrated ? "Integrated" : "Discrete");
-        
+        const std::string headerLabel = std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuName, isIntegrated ? "Integrated" : "Discrete");
+
         ImGui::PushID(gpuIdx);
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopID();
@@ -1498,9 +1497,9 @@ void SystemMetricsPanel::renderGpuSection()
             ImGui::TableNextColumn();
             const ImVec4 gpuMemColor = theme.charts().gpu.memory;
             const std::string memStr = std::format("{} / {} ({:.1f}%%)",
-                                                    UI::Format::bytes(snap.memoryUsedBytes),
-                                                    UI::Format::bytes(snap.memoryTotalBytes),
-                                                    smoothed.memoryPercent);
+                                                   UI::Format::bytes(snap.memoryUsedBytes),
+                                                   UI::Format::bytes(snap.memoryTotalBytes),
+                                                   smoothed.memoryPercent);
             ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
             // Temperature (if available)
@@ -1530,9 +1529,11 @@ void SystemMetricsPanel::renderGpuSection()
                 const ImVec4 powerColor = theme.charts().gpu.power;
                 if (snap.powerLimitWatts > 0.0)
                 {
-                    ImGui::TextColored(powerColor, "%.1f W / %.1f W (%.1f%%)",
-                                      smoothed.powerWatts, snap.powerLimitWatts,
-                                      (smoothed.powerWatts / snap.powerLimitWatts) * 100.0);
+                    ImGui::TextColored(powerColor,
+                                       "%.1f W / %.1f W (%.1f%%)",
+                                       smoothed.powerWatts,
+                                       snap.powerLimitWatts,
+                                       (smoothed.powerWatts / snap.powerLimitWatts) * 100.0);
                 }
                 else
                 {

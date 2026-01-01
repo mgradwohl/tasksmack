@@ -122,8 +122,7 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_gpu_busy_percent_get)(std::uint32_t, std::uint32_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_memory_usage_get)(std::uint32_t, rsmi_memory_type_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_memory_total_get)(std::uint32_t, rsmi_memory_type_t, std::uint64_t*) = nullptr;
-    rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t,
-                                               std::int64_t*) = nullptr;
+    rsmi_status_t (*rsmi_dev_temp_metric_get)(std::uint32_t, rsmi_temperature_type_t, rsmi_temperature_metric_t, std::int64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_ave_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
@@ -159,7 +158,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     name = reinterpret_cast<decltype(name)>(dlsym(rocmHandle, #name));                                                                     \
     if (name == nullptr)                                                                                                                   \
     {                                                                                                                                      \
-        spdlog::warn("ROCmGPUProbe: Failed to load function {} - {}", #name, dlerror());                                                  \
+        spdlog::warn("ROCmGPUProbe: Failed to load function {} - {}", #name, dlerror());                                                   \
         unloadROCmSMI();                                                                                                                   \
         return false;                                                                                                                      \
     }
@@ -363,7 +362,8 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         // Calculate memory utilization percentage
         if (counter.memoryTotalBytes > 0)
         {
-            counter.memoryUtilPercent = (static_cast<double>(counter.memoryUsedBytes) / static_cast<double>(counter.memoryTotalBytes)) * 100.0;
+            counter.memoryUtilPercent =
+                (static_cast<double>(counter.memoryUsedBytes) / static_cast<double>(counter.memoryTotalBytes)) * 100.0;
         }
 
         // Temperature (edge/die temperature)
@@ -463,11 +463,11 @@ GPUCapabilities ROCmGPUProbe::capabilities() const
 
     // ROCm SMI provides system-level metrics
     caps.hasTemperature = true;
-    caps.hasHotspotTemp = true;      // Junction temperature available
+    caps.hasHotspotTemp = true; // Junction temperature available
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
     caps.hasFanSpeed = true;
-    caps.hasPCIeMetrics = false;     // Not directly available via ROCm SMI
+    caps.hasPCIeMetrics = false;       // Not directly available via ROCm SMI
     caps.hasEngineUtilization = false; // Not available
     caps.hasPerProcessMetrics = false; // Major limitation: no per-process data
     caps.hasEncoderDecoder = false;    // Not available via ROCm SMI

@@ -1122,7 +1122,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             std::string enginesStr;
             for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
             {
-                if (i > 0) enginesStr += ", ";
+                if (i > 0)
+                    enginesStr += ", ";
                 enginesStr += proc.gpuEngines[i];
             }
             ImGui::TextUnformatted(enginesStr.c_str());
@@ -1164,11 +1165,9 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
         for (const auto& gpuUsage : proc.perGpuUsage)
         {
-            const std::string gpuLabel = std::format("{} {} [{}]", 
-                                                     ICON_FA_MICROCHIP,
-                                                     gpuUsage.gpuName,
-                                                     gpuUsage.isIntegrated ? "Integrated" : "Discrete");
-            
+            const std::string gpuLabel =
+                std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Integrated" : "Discrete");
+
             if (ImGui::CollapsingHeader(gpuLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
             {
                 ImGui::Indent();
@@ -1200,7 +1199,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                         std::string engStr;
                         for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
                         {
-                            if (i > 0) engStr += ", ";
+                            if (i > 0)
+                                engStr += ", ";
                             engStr += gpuUsage.engines[i];
                         }
                         ImGui::TextUnformatted(engStr.c_str());
@@ -1237,7 +1237,11 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
                 if (alignedCount > 0)
                 {
-                    plotLineWithFill("GPU %", timeData, gpuUtilData, static_cast<int>(alignedCount), theme.charts().gpu.utilization,
+                    plotLineWithFill("GPU %",
+                                     timeData,
+                                     gpuUtilData,
+                                     static_cast<int>(alignedCount),
+                                     theme.charts().gpu.utilization,
                                      theme.charts().gpu.utilizationFill);
 
                     // Tooltip
@@ -1273,7 +1277,11 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
                 if (alignedCount > 0)
                 {
-                    plotLineWithFill("GPU Memory", timeData, gpuMemData, static_cast<int>(alignedCount), theme.charts().gpu.memory,
+                    plotLineWithFill("GPU Memory",
+                                     timeData,
+                                     gpuMemData,
+                                     static_cast<int>(alignedCount),
+                                     theme.charts().gpu.memory,
                                      theme.charts().gpu.memoryFill);
 
                     // Tooltip
@@ -1319,12 +1327,13 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         };
 
         ImGui::Text(ICON_FA_CHART_LINE " GPU Utilization History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false,
-                                 PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars(
+            "ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
 
         ImGui::Text(ICON_FA_CHART_LINE " GPU Memory History (%zu samples)", alignedCount);
-        renderHistoryWithNowBars("ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars(
+            "ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
     else

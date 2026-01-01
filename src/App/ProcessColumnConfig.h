@@ -45,13 +45,13 @@ enum class ProcessColumn : std::uint8_t
 
 [[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
-    return {ProcessColumn::PID,      ProcessColumn::User,        ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
-            ProcessColumn::Virtual,  ProcessColumn::Resident,    ProcessColumn::PeakResident, ProcessColumn::Shared,
-            ProcessColumn::CpuTime,  ProcessColumn::State,       ProcessColumn::Status,       ProcessColumn::Name,
-            ProcessColumn::PPID,     ProcessColumn::Nice,        ProcessColumn::Threads,      ProcessColumn::PageFaults,
-            ProcessColumn::Affinity, ProcessColumn::Command,     ProcessColumn::IoRead,       ProcessColumn::IoWrite,
-            ProcessColumn::NetSent,  ProcessColumn::NetReceived, ProcessColumn::Power,
-            ProcessColumn::GpuPercent, ProcessColumn::GpuMemory, ProcessColumn::GpuEngine,  ProcessColumn::GpuDevice};
+    return {ProcessColumn::PID,       ProcessColumn::User,        ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
+            ProcessColumn::Virtual,   ProcessColumn::Resident,    ProcessColumn::PeakResident, ProcessColumn::Shared,
+            ProcessColumn::CpuTime,   ProcessColumn::State,       ProcessColumn::Status,       ProcessColumn::Name,
+            ProcessColumn::PPID,      ProcessColumn::Nice,        ProcessColumn::Threads,      ProcessColumn::PageFaults,
+            ProcessColumn::Affinity,  ProcessColumn::Command,     ProcessColumn::IoRead,       ProcessColumn::IoWrite,
+            ProcessColumn::NetSent,   ProcessColumn::NetReceived, ProcessColumn::Power,        ProcessColumn::GpuPercent,
+            ProcessColumn::GpuMemory, ProcessColumn::GpuEngine,   ProcessColumn::GpuDevice};
 }
 
 [[nodiscard]] constexpr auto processColumnCount() -> std::size_t
