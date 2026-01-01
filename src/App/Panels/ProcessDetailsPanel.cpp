@@ -1090,7 +1090,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::Text("GPU Utilization:");
         ImGui::TableNextColumn();
-        const ImVec4 gpuUtilColor = theme.charts().gpu.utilization;
+        const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
         ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
 
         // GPU Memory
@@ -1098,7 +1098,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         ImGui::TableNextColumn();
         ImGui::Text("GPU Memory:");
         ImGui::TableNextColumn();
-        const ImVec4 gpuMemColor = theme.charts().gpu.memory;
+        const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
         const std::string memStr = UI::Format::bytes(static_cast<std::uint64_t>(m_SmoothedUsage.gpuMemoryBytes));
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
@@ -1136,7 +1136,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             ImGui::TableNextColumn();
             ImGui::Text("Video Encoder:");
             ImGui::TableNextColumn();
-            const ImVec4 encColor = theme.charts().gpu.encoder;
+            const ImVec4 encColor = theme.scheme().gpuEncoder;
             ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
         }
 
@@ -1146,7 +1146,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             ImGui::TableNextColumn();
             ImGui::Text("Video Decoder:");
             ImGui::TableNextColumn();
-            const ImVec4 decColor = theme.charts().gpu.decoder;
+            const ImVec4 decColor = theme.scheme().gpuDecoder;
             ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
         }
 
@@ -1241,8 +1241,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                                      timeData,
                                      gpuUtilData,
                                      static_cast<int>(alignedCount),
-                                     theme.charts().gpu.utilization,
-                                     theme.charts().gpu.utilizationFill);
+                                     theme.scheme().gpuUtilization,
+                                     theme.scheme().gpuUtilizationFill);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
@@ -1281,8 +1281,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                                      timeData,
                                      gpuMemData,
                                      static_cast<int>(alignedCount),
-                                     theme.charts().gpu.memory,
-                                     theme.charts().gpu.memoryFill);
+                                     theme.scheme().gpuMemory,
+                                     theme.scheme().gpuMemoryFill);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
@@ -1313,7 +1313,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             .label = "GPU %",
             .value = m_SmoothedUsage.gpuUtilPercent,
             .maxValue = 100.0,
-            .color = theme.charts().gpu.utilization,
+            .color = theme.scheme().gpuUtilization,
             .suffix = "%",
         };
 
@@ -1321,7 +1321,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             .label = "GPU Mem",
             .value = m_SmoothedUsage.gpuMemoryBytes,
             .maxValue = 0.0, // Auto-scale
-            .color = theme.charts().gpu.memory,
+            .color = theme.scheme().gpuMemory,
             .suffix = " (bytes)",
             .formatAsBytes = true,
         };
