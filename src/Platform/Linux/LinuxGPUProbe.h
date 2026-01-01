@@ -10,10 +10,12 @@ namespace Platform
 {
 
 class NVMLGPUProbe;
+class DRMGPUProbe;
 
 /// Composite Linux GPU probe that delegates to vendor-specific probes.
 /// Phase 4: Uses NVML for NVIDIA GPUs
-/// Future phases will add ROCm (AMD), DRM (Intel/generic)
+/// Phase 5: Uses DRM for Intel GPUs
+/// Future phases will add ROCm (AMD)
 class LinuxGPUProbe : public IGPUProbe
 {
   public:
@@ -33,6 +35,7 @@ class LinuxGPUProbe : public IGPUProbe
 
   private:
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
+    std::unique_ptr<DRMGPUProbe> m_DRMProbe;
 };
 
 } // namespace Platform

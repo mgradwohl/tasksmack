@@ -478,6 +478,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
     src/Platform/Linux/NVMLGPUProbe.cpp
+    src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 
@@ -535,6 +536,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxPowerProbe.h
         src/Platform/Linux/LinuxGPUProbe.h
         src/Platform/Linux/NVMLGPUProbe.h
+        src/Platform/Linux/DRMGPUProbe.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
