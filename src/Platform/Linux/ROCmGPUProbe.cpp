@@ -2,9 +2,8 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
-#include <cstring>
-#include <unordered_map>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 #include <dlfcn.h>
