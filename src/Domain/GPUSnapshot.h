@@ -39,7 +39,7 @@ struct GPUSnapshot
     std::uint32_t memoryClockMHz = 0;
 
     // Fan
-    std::uint32_t fanSpeedRPM = 0;
+    std::uint32_t fanSpeedRPMPercent = 0;
 
     // PCIe bandwidth (rates computed from deltas)
     double pcieTxBytesPerSec = 0.0;

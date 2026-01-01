@@ -171,7 +171,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.powerLimitWatts = current.powerLimitWatts;
     snapshot.gpuClockMHz = current.gpuClockMHz;
     snapshot.memoryClockMHz = current.memoryClockMHz;
-    snapshot.fanSpeedRPM = current.fanSpeedRPM;
+    snapshot.fanSpeedRPMPercent = current.fanSpeedRPMPercent;
     snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;

@@ -386,12 +386,12 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.utilizationPercent = static_cast<double>(util.gpu);
         }
 
-        // Fan speed (NVML returns percentage 0-100, stored in fanSpeedRPM field)
+        // Fan speed (NVML returns percentage 0-100)
         unsigned int fanSpeed = 0;
         result = m_NVML.DeviceGetFanSpeed(device, &fanSpeed);
         if (result == NVML_SUCCESS)
         {
-            counter.fanSpeedRPM = fanSpeed; // Semantic: NVML returns %, not RPM
+            counter.fanSpeedRPMPercent = fanSpeed;
         }
 
         // PCIe throughput: NVML returns rates (KB/s), not cumulative counters.

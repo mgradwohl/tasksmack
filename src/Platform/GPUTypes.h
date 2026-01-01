@@ -44,8 +44,9 @@ struct GPUCounters
     std::uint32_t gpuClockMHz = 0;
     std::uint32_t memoryClockMHz = 0;
 
-    // Fan speed (RPM, 0 if not available)
-    std::uint32_t fanSpeedRPM = 0;
+    // Fan speed (RPM or percentage depending on probe, 0 if not available)
+    // NVML probes return percentage (0-100), other probes may return RPM
+    std::uint32_t fanSpeedRPMPercent = 0;
 
     // PCIe throughput (cumulative bytes)
     std::uint64_t pcieTxBytes = 0;

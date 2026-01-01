@@ -134,7 +134,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
-        dxgiCounter.fanSpeedRPM = nvmlCounter.fanSpeedRPM;
+        dxgiCounter.fanSpeedRPMPercent = nvmlCounter.fanSpeedRPMPercent;
 
         // Use NVML GPU utilization if available (may be more accurate)
         if (nvmlCounter.utilizationPercent > 0.0)
