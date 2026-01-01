@@ -105,8 +105,7 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
     result.reserve(m_Snapshots.size());
     for (const auto& [gpuId, snapshot] : m_Snapshots)
     {
-        (void)gpuId; // Unused but kept for clarity
-    {
+        (void) gpuId; // Unused but kept for clarity
         result.push_back(snapshot);
     }
     return result;

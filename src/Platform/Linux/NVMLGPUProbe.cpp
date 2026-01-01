@@ -4,9 +4,10 @@
 
 #include <algorithm>
 #include <cstring>
-#include <dlfcn.h>
 #include <unordered_map>
 #include <vector>
+
+#include <dlfcn.h>
 
 // NVML headers (dynamically loaded)
 #include <nvml.h>
@@ -64,14 +65,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
         }
     }
 
-    // Load function pointers
-    #define LOAD_NVML_FUNC(name) \
-        name = reinterpret_cast<decltype(name)>(dlsym(nvmlHandle, #name)); \
-        if (name == nullptr) { \
-            spdlog::error("NVMLGPUProbe: Failed to load symbol " #name); \
-            unloadNVML(); \
-            return false; \
-        }
+// Load function pointers
+#define LOAD_NVML_FUNC(name)                                                                                                               \
+    name = reinterpret_cast<decltype(name)>(dlsym(nvmlHandle, #name));                                                                     \
+    if (name == nullptr)                                                                                                                   \
+    {                                                                                                                                      \
+        spdlog::error("NVMLGPUProbe: Failed to load symbol " #name);                                                                       \
+        unloadNVML();                                                                                                                      \
+        return false;                                                                                                                      \
+    }
 
     LOAD_NVML_FUNC(nvmlInit_v2);
     LOAD_NVML_FUNC(nvmlShutdown);
@@ -91,7 +93,7 @@ bool NVMLGPUProbe::Impl::loadNVML()
     LOAD_NVML_FUNC(nvmlDeviceGetGraphicsRunningProcesses);
     LOAD_NVML_FUNC(nvmlErrorString);
 
-    #undef LOAD_NVML_FUNC
+#undef LOAD_NVML_FUNC
 
     // Initialize NVML
     auto result = nvmlInit_v2();
@@ -259,10 +261,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         {
             counter.memoryUsedBytes = memInfo.used;
             counter.memoryTotalBytes = memInfo.total;
-            if (memInfo.total > 0)
-            {
-                counter.memoryUtilPercent = (static_cast<double>(memInfo.used) / static_cast<double>(memInfo.total)) * 100.0;
-            }
+            // Note: memoryUtilPercent is computed in Domain layer from raw bytes
         }
 
         // Utilization
@@ -399,9 +398,9 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                 for (const auto& proc : graphicsProcesses)
                 {
                     // Check if we already have this process from compute list
-                    auto it = std::ranges::find_if(allCounters, [&proc, &gpuId](const ProcessGPUCounters& c) {
-                        return c.pid == static_cast<std::int32_t>(proc.pid) && c.gpuId == gpuId;
-                    });
+                    auto it = std::ranges::find_if(allCounters,
+                                                   [&proc, &gpuId](const ProcessGPUCounters& c)
+                                                   { return c.pid == static_cast<std::int32_t>(proc.pid) && c.gpuId == gpuId; });
 
                     if (it != allCounters.end())
                     {

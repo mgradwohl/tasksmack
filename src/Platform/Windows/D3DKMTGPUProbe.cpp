@@ -9,12 +9,11 @@
 // Windows headers
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
-
 #include <d3dkmthk.h>
 #include <dxgi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <windows.h>
 
 namespace Platform
 {

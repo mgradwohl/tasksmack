@@ -395,7 +395,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         }
 
         // PCIe throughput: NVML returns rates (KB/s), not cumulative counters.
-        // GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes. 
+        // GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes.
         // Since NVML doesn't provide cumulative counters, we leave these at 0.
         // Future enhancement: Add rate fields or implement tracking.
         // For now, Domain layer will compute rates as 0 from cumulative fields.

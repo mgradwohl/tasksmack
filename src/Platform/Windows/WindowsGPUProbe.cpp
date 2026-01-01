@@ -13,7 +13,8 @@ namespace Platform
 {
 
 WindowsGPUProbe::WindowsGPUProbe()
-    : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()), m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
+    : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
+      m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
       m_D3DKMTProbe(std::make_unique<D3DKMTGPUProbe>())
 {
     std::string probeSummary = "DXGI";

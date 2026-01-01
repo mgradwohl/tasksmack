@@ -8,8 +8,7 @@
 namespace Platform
 {
 
-LinuxGPUProbe::LinuxGPUProbe()
-    : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), m_DRMProbe(std::make_unique<DRMGPUProbe>())
+LinuxGPUProbe::LinuxGPUProbe() : m_NVMLProbe(std::make_unique<NVMLGPUProbe>()), m_DRMProbe(std::make_unique<DRMGPUProbe>())
 {
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())

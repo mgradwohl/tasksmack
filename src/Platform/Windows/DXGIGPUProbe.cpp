@@ -268,17 +268,17 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                     // Cannot determine current usage without QueryVideoMemoryInfo
                     counter.memoryUsedBytes = 0;
                 }
-                }
-
-                counters.push_back(std::move(counter));
             }
-        }
 
-        adapter->Release();
-        ++adapterIndex;
+            counters.push_back(std::move(counter));
+        }
     }
 
-    return counters;
+    adapter->Release();
+    ++adapterIndex;
+}
+
+return counters;
 }
 
 std::vector<ProcessGPUCounters> DXGIGPUProbe::readProcessGPUCounters()

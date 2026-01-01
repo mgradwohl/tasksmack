@@ -29,18 +29,21 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
 
-    [[nodiscard]] bool isAvailable() const { return m_Available; }
+    [[nodiscard]] bool isAvailable() const
+    {
+        return m_Available;
+    }
 
   private:
     struct DRMCard
     {
-        std::string cardPath;        // e.g., /sys/class/drm/card0
-        std::string devicePath;      // e.g., /sys/class/drm/card0/device
-        std::string hwmonPath;       // e.g., /sys/class/drm/card0/device/hwmon/hwmon0
-        uint32_t cardIndex{0};       // card0 -> 0, card1 -> 1
-        bool isRenderOnly{false};    // renderD* nodes are compute-only
-        std::string driver;          // i915, xe, amdgpu, nouveau, etc.
-        std::string gpuId;           // Unique ID for tracking
+        std::string cardPath;     // e.g., /sys/class/drm/card0
+        std::string devicePath;   // e.g., /sys/class/drm/card0/device
+        std::string hwmonPath;    // e.g., /sys/class/drm/card0/device/hwmon/hwmon0
+        uint32_t cardIndex{0};    // card0 -> 0, card1 -> 1
+        bool isRenderOnly{false}; // renderD* nodes are compute-only
+        std::string driver;       // i915, xe, amdgpu, nouveau, etc.
+        std::string gpuId;        // Unique ID for tracking
     };
 
     bool initialize();
