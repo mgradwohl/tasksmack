@@ -16,6 +16,10 @@
 #include <utility>
 
 #ifdef __linux__
+#include <cerrno>
+#include <system_error>
+
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -130,20 +134,62 @@ void openPath(const std::filesystem::path& path)
     const std::string pathStr = path.string();
 
 #ifdef _WIN32
-    const std::wstring widePath(pathStr.begin(), pathStr.end());
-    ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // Properly convert UTF-8 to UTF-16 using MultiByteToWideChar
+    const int wideSize = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pathStr.c_str(), -1, nullptr, 0);
+    if (wideSize == 0)
+    {
+        spdlog::warn("Failed to convert UTF-8 path to UTF-16: {}", pathStr);
+        return;
+    }
+
+    // wideSize includes the null terminator; std::wstring length excludes it.
+    std::wstring widePath(static_cast<size_t>(wideSize - 1), L'\0');
+    const int result = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pathStr.c_str(), -1, widePath.data(), wideSize);
+    if (result == 0)
+    {
+        spdlog::warn("Failed to convert UTF-8 path to UTF-16 on second pass: {}", pathStr);
+        return;
+    }
+
+    // ShellExecuteW returns > 32 on success
+    const auto shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
+    const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
+    if (shellCode <= 32)
+    {
+        spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, pathStr);
+    }
 #else
+    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
     const pid_t pid = ::fork();
+    if (pid == -1)
+    {
+        spdlog::warn("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
+        return;
+    }
+
     if (pid == 0)
     {
-        // Child: exec xdg-open; if it fails, exit quietly.
-        ::execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
-        _exit(127);
+        // First child: fork again to create grandchild
+        const pid_t grandchild = ::fork();
+        if (grandchild == -1)
+        {
+            _exit(EXIT_FAILURE);
+        }
+
+        if (grandchild == 0)
+        {
+            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
+            ::execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
+            _exit(127); // execlp only returns on error
+        }
+        // First child exits immediately (grandchild will be adopted by init)
+        _exit(0);
     }
-    else if (pid < 0)
-    {
-        spdlog::warn("Failed to launch xdg-open for path: {}", pathStr);
-    }
+
+    // Parent: wait for first child to prevent zombie
+    int status = 0;
+    ::waitpid(pid, &status, 0);
 #endif
 }
 
@@ -322,6 +368,8 @@ void SettingsLayer::renderSettingsDialog()
             {
                 for (size_t i = 0; i < m_ThemeNames.size(); ++i)
                 {
+                    // NOTE: std::cmp_equal is used intentionally for safe signed/unsigned comparison.
+                    // The m_Selected*Index members are int (for ImGui compatibility) while loop indices are size_t.
                     const bool isSelected = std::cmp_equal(m_SelectedThemeIndex, i);
                     if (ImGui::Selectable(m_ThemeNames[i].c_str(), isSelected))
                     {

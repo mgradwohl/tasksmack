@@ -176,6 +176,8 @@ void SystemMetricsPanel::onAttach()
     m_ForceRefresh = false;
 
     const auto initialSnap = m_Model->snapshot();
+    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
+    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
     m_Hostname = initialSnap.hostname.empty() ? "System" : initialSnap.hostname;
 }
 

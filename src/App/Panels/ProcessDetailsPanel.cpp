@@ -1665,7 +1665,11 @@ void ProcessDetailsPanel::renderActions()
         constexpr float NICE_RANGE = static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
         const float normalizedPos = static_cast<float>(m_PriorityNiceValue - Domain::Priority::MIN_NICE) / NICE_RANGE;
 
-        // Get color for current nice value (red at -20, green at 0, blue at 19)
+        // Get color for current nice value using a red-green-blue gradient:
+        //   - Red (high priority, nice=-20): R=1.0, G=0.3, B=0.2
+        //   - Green (normal, nice=0): R=0.5, G=0.8, B=0.2
+        //   - Blue (low priority, nice=19): R=0.4, G=0.4, B=0.8
+        // The gradient interpolates smoothly between these anchor colors.
         auto getNiceColor = [](int nice) -> ImVec4
         {
             // Normalize to 0-1 range
@@ -1736,6 +1740,7 @@ void ProcessDetailsPanel::renderActions()
 
         // Draw gradient background (red -> green -> blue)
         constexpr int GRADIENT_SEGMENTS = 40;
+        constexpr float SEGMENT_WIDTH = SLIDER_WIDTH / static_cast<float>(GRADIENT_SEGMENTS);
         for (int i = 0; i < GRADIENT_SEGMENTS; ++i)
         {
             const float t1 = static_cast<float>(i) / static_cast<float>(GRADIENT_SEGMENTS);
@@ -1745,8 +1750,8 @@ void ProcessDetailsPanel::renderActions()
             const ImU32 col1 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice1));
             const ImU32 col2 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice2));
 
-            const ImVec2 segMin(sliderMin.x + (t1 * SLIDER_WIDTH), sliderMin.y);
-            const ImVec2 segMax(sliderMin.x + (t2 * SLIDER_WIDTH), sliderMax.y);
+            const ImVec2 segMin(sliderMin.x + (static_cast<float>(i) * SEGMENT_WIDTH), sliderMin.y);
+            const ImVec2 segMax(sliderMin.x + (static_cast<float>(i + 1) * SEGMENT_WIDTH), sliderMax.y);
 
             drawList->AddRectFilledMultiColor(segMin, segMax, col1, col2, col2, col1);
         }
@@ -1791,6 +1796,8 @@ void ProcessDetailsPanel::renderActions()
             ImGui::PopStyleColor();
 
             // Scale tick labels (muted color)
+            // NOTE: The spacing in this string is approximate and may not perfectly align
+            // with all font sizes. Consider dynamically positioning labels if precision is needed.
             ImGui::SameLine();
             ImGui::SetCursorPosX(contentStartX + 35.0F);
             ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
