@@ -1499,39 +1499,15 @@ void SystemMetricsPanel::renderGpuSection()
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
 
-        // Crop histories to aligned size
-        if (utilHist.size() > alignedCount)
-        {
-            utilHist.erase(utilHist.begin(), utilHist.begin() + static_cast<std::ptrdiff_t>(utilHist.size() - alignedCount));
-        }
-        if (memHist.size() > alignedCount)
-        {
-            memHist.erase(memHist.begin(), memHist.begin() + static_cast<std::ptrdiff_t>(memHist.size() - alignedCount));
-        }
-        if (encoderHist.size() > alignedCount)
-        {
-            encoderHist.erase(encoderHist.begin(), encoderHist.begin() + static_cast<std::ptrdiff_t>(encoderHist.size() - alignedCount));
-        }
-        if (decoderHist.size() > alignedCount)
-        {
-            decoderHist.erase(decoderHist.begin(), decoderHist.begin() + static_cast<std::ptrdiff_t>(decoderHist.size() - alignedCount));
-        }
-        if (clockHist.size() > alignedCount)
-        {
-            clockHist.erase(clockHist.begin(), clockHist.begin() + static_cast<std::ptrdiff_t>(clockHist.size() - alignedCount));
-        }
-        if (tempHist.size() > alignedCount)
-        {
-            tempHist.erase(tempHist.begin(), tempHist.begin() + static_cast<std::ptrdiff_t>(tempHist.size() - alignedCount));
-        }
-        if (powerHist.size() > alignedCount)
-        {
-            powerHist.erase(powerHist.begin(), powerHist.begin() + static_cast<std::ptrdiff_t>(powerHist.size() - alignedCount));
-        }
-        if (fanHist.size() > alignedCount)
-        {
-            fanHist.erase(fanHist.begin(), fanHist.begin() + static_cast<std::ptrdiff_t>(fanHist.size() - alignedCount));
-        }
+        // Crop histories to aligned size using existing helper
+        cropFrontToSize(utilHist, alignedCount);
+        cropFrontToSize(memHist, alignedCount);
+        cropFrontToSize(encoderHist, alignedCount);
+        cropFrontToSize(decoderHist, alignedCount);
+        cropFrontToSize(clockHist, alignedCount);
+        cropFrontToSize(tempHist, alignedCount);
+        cropFrontToSize(powerHist, alignedCount);
+        cropFrontToSize(fanHist, alignedCount);
 
         std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
 
@@ -1730,7 +1706,7 @@ void SystemMetricsPanel::renderGpuSection()
                 {
                     if (i > 0)
                     {
-                        noteText += (unavailableCoreNotes.size() == 2) ? " or " : ", ";
+                        noteText += (i == unavailableCoreNotes.size() - 1) ? " or " : ", ";
                     }
                     noteText += unavailableCoreNotes[i];
                 }

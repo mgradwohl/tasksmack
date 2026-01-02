@@ -17,7 +17,7 @@ DRMGPUProbe::DRMGPUProbe()
     // Must call initialize() in the body, not the initializer list,
     // because initialize() uses m_Cards which must be constructed first
     // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
-    m_Available = initialize(); // NOLINT(cppcoreguidelines-prefer-member-initializer)
+    m_Available = initialize();
 
     if (m_Available)
     {

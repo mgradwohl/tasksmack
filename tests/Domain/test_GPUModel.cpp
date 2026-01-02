@@ -375,4 +375,419 @@ TEST(GPUModelTest, HistoryForNonexistentGPUReturnsEmpty)
     EXPECT_EQ(hist.size(), 0);
 }
 
+// =============================================================================
+// History Accessor Tests (For Chart Plotting)
+// =============================================================================
+
+TEST(GPUModelTest, UtilizationHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update utilization and refresh again
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    rawProbe->withUtilization("GPU0", 75.0);
+    model.refresh();
+
+    auto hist = model.utilizationHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 50.0F);
+    EXPECT_FLOAT_EQ(hist[1], 75.0F);
+}
+
+TEST(GPUModelTest, UtilizationHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.utilizationHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, MemoryPercentHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    // 2GB used / 8GB total = 25%
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withMemory("GPU0", 2ULL * 1024 * 1024 * 1024, 8ULL * 1024 * 1024 * 1024);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update memory and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // 4GB used / 8GB total = 50%
+    rawProbe->withMemory("GPU0", 4ULL * 1024 * 1024 * 1024, 8ULL * 1024 * 1024 * 1024);
+    model.refresh();
+
+    auto hist = model.memoryPercentHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 25.0F);
+    EXPECT_FLOAT_EQ(hist[1], 50.0F);
+}
+
+TEST(GPUModelTest, MemoryPercentHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.memoryPercentHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, GpuClockHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.gpuClockMHz = 1200;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update clock and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.gpuClockMHz = 1800;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.gpuClockHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 1200.0F);
+    EXPECT_FLOAT_EQ(hist[1], 1800.0F);
+}
+
+TEST(GPUModelTest, GpuClockHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.gpuClockHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, EncoderHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.encoderUtilPercent = 30.0;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update encoder and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.encoderUtilPercent = 85.0;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.encoderHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 30.0F);
+    EXPECT_FLOAT_EQ(hist[1], 85.0F);
+}
+
+TEST(GPUModelTest, EncoderHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.encoderHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, DecoderHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.decoderUtilPercent = 15.0;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update decoder and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.decoderUtilPercent = 60.0;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.decoderHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 15.0F);
+    EXPECT_FLOAT_EQ(hist[1], 60.0F);
+}
+
+TEST(GPUModelTest, DecoderHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.decoderHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, TemperatureHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.temperatureC = 45;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update temperature and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.temperatureC = 72;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.temperatureHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 45.0F);
+    EXPECT_FLOAT_EQ(hist[1], 72.0F);
+}
+
+TEST(GPUModelTest, TemperatureHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.temperatureHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, PowerHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.powerDrawWatts = 120.5;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update power and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.powerDrawWatts = 250.0;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.powerHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 120.5F);
+    EXPECT_FLOAT_EQ(hist[1], 250.0F);
+}
+
+TEST(GPUModelTest, PowerHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.powerHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+TEST(GPUModelTest, FanSpeedHistoryReturnsCorrectValues)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    auto counters = makeGPUCounters("GPU0");
+    counters.fanSpeedRPMPercent = 40;
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Update fan speed and refresh
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    counters.fanSpeedRPMPercent = 95;
+    rawProbe->withGPUCounters("GPU0", counters);
+    model.refresh();
+
+    auto hist = model.fanSpeedHistory("GPU0");
+    ASSERT_EQ(hist.size(), 2);
+    EXPECT_FLOAT_EQ(hist[0], 40.0F);
+    EXPECT_FLOAT_EQ(hist[1], 95.0F);
+}
+
+TEST(GPUModelTest, FanSpeedHistoryReturnsEmptyForNonexistentGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist = model.fanSpeedHistory("NonexistentGPU");
+    EXPECT_TRUE(hist.empty());
+}
+
+// =============================================================================
+// History Timestamps Tests
+// =============================================================================
+
+TEST(GPUModelTest, HistoryTimestampsAlignWithHistoryData)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    // Refresh a few more times
+    for (int i = 0; i < 3; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        rawProbe->withUtilization("GPU0", 50.0 + static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    auto timestamps = model.historyTimestamps();
+    auto utilHist = model.utilizationHistory("GPU0");
+
+    // Timestamps should match history length
+    EXPECT_EQ(timestamps.size(), utilHist.size());
+    EXPECT_EQ(timestamps.size(), 4); // Initial + 3 updates
+
+    // Timestamps should be monotonically increasing
+    for (size_t i = 1; i < timestamps.size(); ++i)
+    {
+        EXPECT_GT(timestamps[i], timestamps[i - 1]);
+    }
+}
+
+TEST(GPUModelTest, HistoryTimestampsEmptyWhenNoRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    // No refresh called
+
+    auto timestamps = model.historyTimestamps();
+    EXPECT_TRUE(timestamps.empty());
+}
+
+// =============================================================================
+// Multi-GPU History Tests
+// =============================================================================
+
+TEST(GPUModelTest, HistoryAccessorsWorkWithMultipleGPUs)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA")
+        .withUtilization("GPU0", 25.0)
+        .withGPU("GPU1", "GPU One", "VendorB")
+        .withUtilization("GPU1", 75.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto hist0 = model.utilizationHistory("GPU0");
+    auto hist1 = model.utilizationHistory("GPU1");
+
+    ASSERT_EQ(hist0.size(), 1);
+    ASSERT_EQ(hist1.size(), 1);
+    EXPECT_FLOAT_EQ(hist0[0], 25.0F);
+    EXPECT_FLOAT_EQ(hist1[0], 75.0F);
+}
+
+// =============================================================================
+// Thread Safety Tests for History Accessors
+// =============================================================================
+
+TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    std::atomic<bool> stop{false};
+    std::atomic<std::size_t> readCount{0};
+    std::atomic<bool> hadError{false};
+
+    // Reader thread that calls all history accessors
+    // Note: Each accessor call is independent, so we cannot guarantee they see
+    // the same snapshot. We verify they don't crash and return valid data.
+    auto reader = std::jthread(
+        [&](std::stop_token st)
+        {
+            while (!stop.load() && !st.stop_requested())
+            {
+                // Each call should return valid data without crashing
+                auto utilHist = model.utilizationHistory("GPU0");
+                auto memHist = model.memoryPercentHistory("GPU0");
+                auto clockHist = model.gpuClockHistory("GPU0");
+                auto encHist = model.encoderHistory("GPU0");
+                auto decHist = model.decoderHistory("GPU0");
+                auto tempHist = model.temperatureHistory("GPU0");
+                auto powerHist = model.powerHistory("GPU0");
+                auto fanHist = model.fanSpeedHistory("GPU0");
+                auto timestamps = model.historyTimestamps();
+
+                // Verify we got non-empty results (at least one refresh happened)
+                if (utilHist.empty() || timestamps.empty())
+                {
+                    hadError.store(true);
+                }
+
+                ++readCount;
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        });
+
+    // Perform several refreshes
+    for (int i = 0; i < 10; ++i)
+    {
+        rawProbe->withUtilization("GPU0", 50.0 + static_cast<double>(i));
+        model.refresh();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    stop.store(true);
+    reader.join();
+
+    // Verify readers executed without errors
+    EXPECT_GT(readCount.load(), 0);
+    EXPECT_FALSE(hadError.load());
+}
+
 } // namespace

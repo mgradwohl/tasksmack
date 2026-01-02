@@ -79,6 +79,10 @@ class GPUModel
     // Helper: compute snapshot from current/previous counters
     [[nodiscard]] GPUSnapshot
     computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
+
+    // Helper template: extract a field from GPU history and return as float vector
+    template<typename T, typename FieldPtr>
+    [[nodiscard]] std::vector<float> getHistoryField(const std::string& gpuId, FieldPtr field) const;
 };
 
 } // namespace Domain
