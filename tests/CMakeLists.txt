@@ -119,6 +119,8 @@ add_executable(TaskSmackTests
     UI/test_HistoryWidgets.cpp
     UI/test_Format.cpp
     App/test_ProcessColumnConfig.cpp
+    App/test_UserConfig.cpp
+    App/test_ActiveTab.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)

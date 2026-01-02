@@ -20,12 +20,6 @@ struct UserSettings
     // Font size
     UI::FontSize fontSize = UI::FontSize::Medium;
 
-    // Panel visibility
-    bool showProcesses = true;
-    bool showMetrics = true;
-    bool showDetails = true;
-    bool showStorage = true;
-
     // Process table column visibility
     ProcessColumnSettings processColumns;
 
@@ -37,16 +31,12 @@ struct UserSettings
     // Controls how much timeline data is retained and shown in plots.
     int maxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
 
-    // Window state (optional, for future use)
+    // Window state
     int windowWidth = 1280;
     int windowHeight = 720;
     std::optional<int> windowPosX;
     std::optional<int> windowPosY;
     bool windowMaximized = false;
-
-    // ImGui layout state (window positions, docking layout, etc.)
-    // Stored as INI-format string from ImGui::SaveIniSettingsToMemory()
-    std::string imguiLayout;
 };
 
 /**
@@ -91,12 +81,6 @@ class UserConfig
 
     /// Capture current application state into settings
     void captureFromApplication();
-
-    /// Apply ImGui layout state from settings
-    void applyImGuiLayout() const;
-
-    /// Capture current ImGui layout state into settings
-    void captureImGuiLayout();
 
     /// Get the config file path
     [[nodiscard]] auto configPath() const -> const std::filesystem::path&

@@ -176,7 +176,7 @@ void SystemMetricsPanel::onAttach()
     m_ForceRefresh = false;
 
     const auto initialSnap = m_Model->snapshot();
-    m_Hostname = std::string(ICON_FA_COMPUTER) + " " + (initialSnap.hostname.empty() ? "System" : initialSnap.hostname);
+    m_Hostname = initialSnap.hostname.empty() ? "System" : initialSnap.hostname;
 }
 
 void SystemMetricsPanel::onDetach()
@@ -243,7 +243,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         const auto snap = m_Model->snapshot();
         if (!snap.hostname.empty())
         {
-            m_Hostname = std::string(ICON_FA_COMPUTER) + " " + snap.hostname;
+            m_Hostname = snap.hostname;
         }
 
         if (intervalSec > 0.0F)
@@ -268,11 +268,17 @@ void SystemMetricsPanel::render(bool* open)
         return;
     }
 
+    renderContent();
+
+    ImGui::End();
+}
+
+void SystemMetricsPanel::renderContent()
+{
     if (!m_Model)
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textError, "System model not initialized");
-        ImGui::End();
         return;
     }
 
@@ -297,9 +303,12 @@ void SystemMetricsPanel::render(bool* open)
         m_LayoutDirty = false;
     }
 
+    // Add padding inside tabs for better spacing
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+
     if (ImGui::BeginTabBar("SystemTabs"))
     {
-        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH " Overview"))
+        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
         {
             renderOverview();
             ImGui::EndTabItem();
@@ -307,7 +316,7 @@ void SystemMetricsPanel::render(bool* open)
 
         if (snap.coreCount > 1)
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " CPU Cores"))
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
                 renderPerCoreSection();
                 ImGui::EndTabItem();
@@ -320,7 +329,7 @@ void SystemMetricsPanel::render(bool* open)
             const auto gpuInfos = m_GPUModel->gpuInfo();
             if (!gpuInfos.empty())
             {
-                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " GPU"))
+                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
                 {
                     renderGpuSection();
                     ImGui::EndTabItem();
@@ -331,7 +340,7 @@ void SystemMetricsPanel::render(bool* open)
         ImGui::EndTabBar();
     }
 
-    ImGui::End();
+    ImGui::PopStyleVar(); // FramePadding
 }
 
 void SystemMetricsPanel::renderOverview()
@@ -413,7 +422,7 @@ void SystemMetricsPanel::renderOverview()
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     // CPU history with vertical now bars (total + breakdown)
-    ImGui::Text(ICON_FA_MICROCHIP " CPU Usage (last %zu samples)", cpuCount);
+    ImGui::Text(ICON_FA_MICROCHIP " CPU Usage (%zu samples)", cpuCount);
 
     cropFrontToSize(cpuHist, cpuCount);
     std::vector<float> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
@@ -537,7 +546,7 @@ void SystemMetricsPanel::renderOverview()
         auto swapHist = m_Model->swapHistory();
         double peakMemPercent = 0.0;
 
-        ImGui::Text(ICON_FA_MEMORY " Memory & Swap (last %zu samples)", std::min(memHist.size(), timestamps.size()));
+        ImGui::Text(ICON_FA_MEMORY " Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
         ImGui::Spacing();
 
         const size_t memCount = std::min(memHist.size(), timestamps.size());
@@ -1202,7 +1211,7 @@ void SystemMetricsPanel::renderCpuSection()
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
-    ImGui::Text(ICON_FA_CHART_LINE " CPU History (last %zu samples)", cpuHist.size());
+    ImGui::Text(ICON_FA_CHART_LINE " CPU History (%zu samples)", cpuHist.size());
     ImGui::Spacing();
 
     const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
@@ -1851,16 +1860,6 @@ void SystemMetricsPanel::renderGpuSection()
 
         ImGui::Unindent();
         ImGui::Spacing();
-    }
-
-    // Show capability information at the bottom
-    if (!caps.hasPerProcessMetrics)
-    {
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textInfo, "%s Per-process GPU metrics not available on this platform", ICON_FA_CIRCLE_INFO);
-        ImGui::TextWrapped("Per-process GPU usage requires vendor-specific support (NVIDIA NVML on Linux/Windows, D3DKMT on Windows).");
     }
 }
 

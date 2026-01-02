@@ -27,15 +27,6 @@ TEST(UserSettingsTest, DefaultFontSize)
     EXPECT_EQ(settings.fontSize, UI::FontSize::Medium);
 }
 
-TEST(UserSettingsTest, DefaultPanelVisibility)
-{
-    const UserSettings settings;
-    EXPECT_TRUE(settings.showProcesses);
-    EXPECT_TRUE(settings.showMetrics);
-    EXPECT_TRUE(settings.showDetails);
-    EXPECT_TRUE(settings.showStorage);
-}
-
 TEST(UserSettingsTest, DefaultRefreshInterval)
 {
     const UserSettings settings;
@@ -66,12 +57,6 @@ TEST(UserSettingsTest, DefaultProcessColumnsAreVisible)
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::CpuPercent));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::MemPercent));
-}
-
-TEST(UserSettingsTest, DefaultImguiLayoutIsEmpty)
-{
-    const UserSettings settings;
-    EXPECT_TRUE(settings.imguiLayout.empty());
 }
 
 // ========== Boundary Conditions ==========
@@ -184,27 +169,6 @@ TEST(UserSettingsTest, WindowPositionHandlesNegativeValues)
     EXPECT_EQ(*settings.windowPosY, -300);
 }
 
-// ========== ImGui Layout String ==========
-
-TEST(UserSettingsTest, ImguiLayoutCanStoreData)
-{
-    UserSettings settings;
-
-    const std::string testLayout = "[Window][Debug]\nPos=100,200\nSize=300,400\n";
-    settings.imguiLayout = testLayout;
-
-    EXPECT_EQ(settings.imguiLayout, testLayout);
-}
-
-TEST(UserSettingsTest, ImguiLayoutCanBeCleared)
-{
-    UserSettings settings;
-    settings.imguiLayout = "some layout data";
-    settings.imguiLayout.clear();
-
-    EXPECT_TRUE(settings.imguiLayout.empty());
-}
-
 // ========== Process Column Settings Integration ==========
 
 TEST(UserSettingsTest, ProcessColumnsCanBeModified)
@@ -231,49 +195,11 @@ TEST(UserSettingsTest, ProcessColumnsToggleWorks)
 
 // ========== Multiple Settings Interactions ==========
 
-TEST(UserSettingsTest, AllPanelsCanBeHidden)
-{
-    UserSettings settings;
-
-    settings.showProcesses = false;
-    settings.showMetrics = false;
-    settings.showDetails = false;
-    settings.showStorage = false;
-
-    EXPECT_FALSE(settings.showProcesses);
-    EXPECT_FALSE(settings.showMetrics);
-    EXPECT_FALSE(settings.showDetails);
-    EXPECT_FALSE(settings.showStorage);
-}
-
-TEST(UserSettingsTest, AllPanelsCanBeShown)
-{
-    UserSettings settings;
-
-    // Start with all hidden
-    settings.showProcesses = false;
-    settings.showMetrics = false;
-    settings.showDetails = false;
-    settings.showStorage = false;
-
-    // Show all
-    settings.showProcesses = true;
-    settings.showMetrics = true;
-    settings.showDetails = true;
-    settings.showStorage = true;
-
-    EXPECT_TRUE(settings.showProcesses);
-    EXPECT_TRUE(settings.showMetrics);
-    EXPECT_TRUE(settings.showDetails);
-    EXPECT_TRUE(settings.showStorage);
-}
-
 TEST(UserSettingsTest, CopySemantics)
 {
     UserSettings original;
     original.themeId = "custom-theme";
     original.refreshIntervalMs = 2000;
-    original.showProcesses = false;
     original.windowPosX = 500;
 
     // Copy
@@ -281,7 +207,6 @@ TEST(UserSettingsTest, CopySemantics)
 
     EXPECT_EQ(copy.themeId, "custom-theme");
     EXPECT_EQ(copy.refreshIntervalMs, 2000);
-    EXPECT_FALSE(copy.showProcesses);
     EXPECT_TRUE(copy.windowPosX.has_value());
     EXPECT_EQ(*copy.windowPosX, 500);
 
@@ -294,20 +219,18 @@ TEST(UserSettingsTest, MoveSemantics)
 {
     UserSettings original;
     original.themeId = "move-theme";
-    original.imguiLayout = "some large layout data that would benefit from move";
+    original.windowPosX = 123;
 
     // Move
     UserSettings moved = std::move(original);
 
     // Verify moved object has expected values
     EXPECT_EQ(moved.themeId, "move-theme");
-    EXPECT_FALSE(moved.imguiLayout.empty());
+    EXPECT_TRUE(moved.windowPosX.has_value());
+    EXPECT_EQ(*moved.windowPosX, 123);
 
     // Note: We don't verify the moved-from state of 'original' because the C++ standard
     // only guarantees that moved-from objects are in a valid but unspecified state.
-    // For std::string (used in themeId and imguiLayout), the moved-from state is
-    // implementation-defined - it may be empty, but this is not guaranteed.
-    // What matters is that the move constructor compiles and the moved object is correct.
 }
 
 TEST(UserSettingsTest, SettingsModificationIsIndependent)

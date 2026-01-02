@@ -192,11 +192,26 @@ void ProcessDetailsPanel::render(bool* open)
         return;
     }
 
+    renderContent();
+
+    ImGui::End();
+}
+
+std::string ProcessDetailsPanel::tabLabel() const
+{
+    if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
+    {
+        return m_CachedSnapshot.name;
+    }
+    return "Select a process";
+}
+
+void ProcessDetailsPanel::renderContent()
+{
     if (m_SelectedPid == -1)
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textMuted, "Select a process from the Processes panel to view details");
-        ImGui::End();
         return;
     }
 
@@ -204,14 +219,16 @@ void ProcessDetailsPanel::render(bool* open)
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textWarning, "Process %d not found (may have exited)", m_SelectedPid);
-        ImGui::End();
         return;
     }
 
     // Tabs for different info sections
+    // Add padding inside tabs for better spacing
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
-        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO " Overview"))
+        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
         {
             renderBasicInfo(m_CachedSnapshot);
             ImGui::Separator();
@@ -227,7 +244,7 @@ void ProcessDetailsPanel::render(bool* open)
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(ICON_FA_GEARS " Actions"))
+        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
         {
             renderActions();
             ImGui::EndTabItem();
@@ -236,7 +253,7 @@ void ProcessDetailsPanel::render(bool* open)
         // GPU tab - show if process has GPU usage
         if (m_CachedSnapshot.gpuUtilPercent > 0.0 || m_CachedSnapshot.gpuMemoryBytes > 0 || !m_CachedSnapshot.gpuDevices.empty())
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " GPU"))
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
             {
                 renderGpuUsage(m_CachedSnapshot);
                 ImGui::EndTabItem();
@@ -246,7 +263,7 @@ void ProcessDetailsPanel::render(bool* open)
         ImGui::EndTabBar();
     }
 
-    ImGui::End();
+    ImGui::PopStyleVar(); // FramePadding
 }
 
 void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
@@ -1456,13 +1473,11 @@ void ProcessDetailsPanel::renderActions()
 {
     const auto& theme = UI::Theme::get();
 
-    ImGui::TextColored(theme.scheme().textMuted, "Target: %s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
-    ImGui::Spacing();
-    ImGui::Separator();
+    ImGui::Text("%s (PID %d)", m_CachedSnapshot.name.c_str(), m_SelectedPid);
     ImGui::Spacing();
 
-    // Warning text
-    ImGui::TextColored(theme.scheme().textWarning, "Warning: These actions affect the running process!");
+    // Section: Process Control
+    ImGui::Text(ICON_FA_GEARS "  Process Control");
     ImGui::Spacing();
 
     // Action result feedback
@@ -1548,66 +1563,66 @@ void ProcessDetailsPanel::renderActions()
         // Row 1: Terminate and Kill
         ImGui::TableNextRow();
 
-        // Terminate (SIGTERM) - graceful
+        // Terminate - graceful shutdown
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canTerminate)
         {
-            if (ImGui::Button(ICON_FA_XMARK " Terminate (SIGTERM)", buttonSize))
+            if (ImGui::Button(ICON_FA_XMARK " Terminate", buttonSize))
             {
                 m_ConfirmAction = "terminate";
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Send SIGTERM - request graceful shutdown");
+                ImGui::SetTooltip("Request graceful shutdown");
             }
         }
 
-        // Kill (SIGKILL) - forceful
+        // Kill - force terminate
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canKill)
         {
-            if (ImGui::Button(ICON_FA_SKULL " Kill (SIGKILL)", buttonSize))
+            if (ImGui::Button(ICON_FA_SKULL " Kill", buttonSize))
             {
                 m_ConfirmAction = "kill";
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Send SIGKILL - force kill (cannot be caught)");
+                ImGui::SetTooltip("Force terminate (cannot be caught or ignored)");
             }
         }
 
         // Row 2: Stop and Resume
         ImGui::TableNextRow();
 
-        // Stop (SIGSTOP) - pause
+        // Pause - suspend the process
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canStop)
         {
-            if (ImGui::Button(ICON_FA_PAUSE " Stop (SIGSTOP)", buttonSize))
+            if (ImGui::Button(ICON_FA_PAUSE " Pause", buttonSize))
             {
                 m_ConfirmAction = "stop";
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Send SIGSTOP - pause the process");
+                ImGui::SetTooltip("Pause the process");
             }
         }
 
-        // Continue (SIGCONT) - resume
+        // Resume - continue a paused process
         ImGui::TableNextColumn();
         if (m_ActionCapabilities.canContinue)
         {
-            if (ImGui::Button(ICON_FA_PLAY " Resume (SIGCONT)", buttonSize))
+            if (ImGui::Button(ICON_FA_PLAY " Resume", buttonSize))
             {
                 m_ConfirmAction = "resume";
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Send SIGCONT - resume a stopped process");
+                ImGui::SetTooltip("Resume a paused process");
             }
         }
 
@@ -1618,10 +1633,14 @@ void ProcessDetailsPanel::renderActions()
     if (m_ActionCapabilities.canSetPriority)
     {
         ImGui::Spacing();
+        ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
+        ImGui::Spacing();
 
-        ImGui::Text("Priority Adjustment (Nice Value)");
+        // Show current nice value in the header
+        const int currentNice = m_HasSnapshot ? m_CachedSnapshot.nice : 0;
+        ImGui::Text(ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
         ImGui::Spacing();
 
         // Initialize slider from current process nice value if not changed
@@ -1630,84 +1649,208 @@ void ProcessDetailsPanel::renderActions()
             m_PriorityNiceValue = m_CachedSnapshot.nice;
         }
 
-        // Nice value slider: -20 (highest priority) to 19 (lowest priority)
-        ImGui::PushItemWidth(300);
-        if (ImGui::SliderInt("##nice", &m_PriorityNiceValue, Domain::Priority::MIN_NICE, Domain::Priority::MAX_NICE, "%d"))
+        // theme already declared at start of function
+        auto* drawList = ImGui::GetWindowDrawList();
+        const ImGuiStyle& style = ImGui::GetStyle();
+
+        // ========================================
+        // Custom gradient priority slider
+        // ========================================
+        constexpr float SLIDER_WIDTH = 400.0F;
+        constexpr float SLIDER_HEIGHT = 12.0F;
+        constexpr float BADGE_HEIGHT = 24.0F;
+        constexpr float BADGE_ARROW_SIZE = 6.0F;
+
+        // Calculate normalized position (0.0 = -20, 1.0 = 19)
+        constexpr float NICE_RANGE = static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
+        const float normalizedPos = static_cast<float>(m_PriorityNiceValue - Domain::Priority::MIN_NICE) / NICE_RANGE;
+
+        // Get color for current nice value (red at -20, green at 0, blue at 19)
+        auto getNiceColor = [](int nice) -> ImVec4
         {
-            m_PriorityChanged = true;
+            // Normalize to 0-1 range
+            const float t = static_cast<float>(nice - Domain::Priority::MIN_NICE) /
+                            static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
+
+            if (t < 0.5F)
+            {
+                // Red to Green (high priority to normal)
+                const float localT = t * 2.0F;        // 0-1 within red-green range
+                return ImVec4(1.0F - (localT * 0.5F), // R: 1.0 -> 0.5
+                              0.3F + (localT * 0.5F), // G: 0.3 -> 0.8
+                              0.2F,                   // B: constant low
+                              1.0F);
+            }
+            // Green to Blue (normal to low priority)
+            const float localT = (t - 0.5F) * 2.0F; // 0-1 within green-blue range
+            return ImVec4(0.2F + (localT * 0.2F),   // R: 0.2 -> 0.4
+                          0.8F - (localT * 0.4F),   // G: 0.8 -> 0.4
+                          0.3F + (localT * 0.5F),   // B: 0.3 -> 0.8
+                          1.0F);
+        };
+
+        // Reserve space for badge above slider
+        const ImVec2 cursorStart = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(SLIDER_WIDTH, BADGE_HEIGHT + BADGE_ARROW_SIZE));
+
+        // Draw the value badge/callout above the slider position
+        {
+            const float badgeX = cursorStart.x + (normalizedPos * SLIDER_WIDTH);
+            const float badgeY = cursorStart.y;
+
+            // Badge text
+            const std::string valueText = std::to_string(m_PriorityNiceValue);
+            const ImVec2 textSize = ImGui::CalcTextSize(valueText.c_str());
+            const float badgeWidth = textSize.x + (style.FramePadding.x * 2.0F);
+            const float badgeHalfWidth = badgeWidth * 0.5F;
+
+            // Clamp badge position to stay within slider bounds
+            const float clampedBadgeX = std::clamp(badgeX, cursorStart.x + badgeHalfWidth, cursorStart.x + SLIDER_WIDTH - badgeHalfWidth);
+
+            // Badge rectangle
+            const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
+            const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + BADGE_HEIGHT);
+
+            // Badge color based on nice value
+            const ImVec4 badgeColor = getNiceColor(m_PriorityNiceValue);
+            const ImU32 badgeColorU32 = ImGui::ColorConvertFloat4ToU32(badgeColor);
+
+            // Draw badge rectangle with rounded corners
+            drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, 4.0F);
+
+            // Draw arrow pointing down from badge
+            const ImVec2 arrowTip(badgeX, badgeMax.y + BADGE_ARROW_SIZE);
+            const ImVec2 arrowLeft(badgeX - BADGE_ARROW_SIZE, badgeMax.y);
+            const ImVec2 arrowRight(badgeX + BADGE_ARROW_SIZE, badgeMax.y);
+            drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
+
+            // Draw badge text (white for contrast)
+            const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((BADGE_HEIGHT - textSize.y) * 0.5F));
+            drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), valueText.c_str());
         }
-        ImGui::PopItemWidth();
 
-        ImGui::SameLine();
+        // Draw the gradient slider bar
+        const ImVec2 sliderStart = ImGui::GetCursorScreenPos();
+        const ImVec2 sliderMin = sliderStart;
+        const ImVec2 sliderMax(sliderStart.x + SLIDER_WIDTH, sliderStart.y + SLIDER_HEIGHT);
 
-        // Priority label - uses shared Domain::Priority::getPriorityLabel()
-        const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(m_PriorityNiceValue);
-        ImGui::Text("(%.*s)", static_cast<int>(priorityLabel.size()), priorityLabel.data());
+        // Draw gradient background (red -> green -> blue)
+        constexpr int GRADIENT_SEGMENTS = 40;
+        for (int i = 0; i < GRADIENT_SEGMENTS; ++i)
+        {
+            const float t1 = static_cast<float>(i) / static_cast<float>(GRADIENT_SEGMENTS);
+            const float t2 = static_cast<float>(i + 1) / static_cast<float>(GRADIENT_SEGMENTS);
+            const int nice1 = Domain::Priority::MIN_NICE + static_cast<int>(t1 * NICE_RANGE);
+            const int nice2 = Domain::Priority::MIN_NICE + static_cast<int>(t2 * NICE_RANGE);
+            const ImU32 col1 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice1));
+            const ImU32 col2 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice2));
 
+            const ImVec2 segMin(sliderMin.x + (t1 * SLIDER_WIDTH), sliderMin.y);
+            const ImVec2 segMax(sliderMin.x + (t2 * SLIDER_WIDTH), sliderMax.y);
+
+            drawList->AddRectFilledMultiColor(segMin, segMax, col1, col2, col2, col1);
+        }
+
+        // Draw slider border
+        drawList->AddRect(sliderMin, sliderMax, ImGui::GetColorU32(ImGuiCol_Border), 2.0F);
+
+        // Draw slider thumb/handle
+        {
+            const float thumbX = sliderMin.x + (normalizedPos * SLIDER_WIDTH);
+            const float thumbRadius = SLIDER_HEIGHT * 0.6F;
+            const ImVec2 thumbCenter(thumbX, sliderMin.y + (SLIDER_HEIGHT * 0.5F));
+
+            // Thumb outline
+            drawList->AddCircleFilled(thumbCenter, thumbRadius + 2.0F, ImGui::GetColorU32(ImGuiCol_Border));
+            // Thumb fill (white)
+            drawList->AddCircleFilled(thumbCenter, thumbRadius, IM_COL32(255, 255, 255, 255));
+        }
+
+        // Make the slider interactive with an invisible button
+        ImGui::InvisibleButton("##priority_slider", ImVec2(SLIDER_WIDTH, SLIDER_HEIGHT));
+        if (ImGui::IsItemActive())
+        {
+            const float mouseX = ImGui::GetIO().MousePos.x;
+            const float relX = std::clamp((mouseX - sliderMin.x) / SLIDER_WIDTH, 0.0F, 1.0F);
+            const int newNice = Domain::Priority::MIN_NICE + static_cast<int>(relX * NICE_RANGE);
+            if (newNice != m_PriorityNiceValue)
+            {
+                m_PriorityNiceValue = newNice;
+                m_PriorityChanged = true;
+            }
+        }
+
+        // Draw scale labels below the slider
+        ImGui::Spacing();
+        {
+            const float contentStartX = ImGui::GetCursorPosX();
+
+            // "High" label (left, colored red)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9F, 0.3F, 0.2F, 1.0F));
+            ImGui::TextUnformatted("High");
+            ImGui::PopStyleColor();
+
+            // Scale tick labels (muted color)
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(contentStartX + 35.0F);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+            ImGui::TextUnformatted("-20   -15   -10   -5    0    5    10    15    19");
+            ImGui::PopStyleColor();
+
+            // "Low" label (right, colored blue)
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3F, 0.5F, 0.8F, 1.0F));
+            ImGui::TextUnformatted("Low");
+            ImGui::PopStyleColor();
+
+            // "Default" label centered below the 0 position
+            // 0 is at normalized position 0.5128 (20 out of 39 range)
+            constexpr float ZERO_NORMALIZED = 20.0F / 39.0F;
+            const float defaultX = contentStartX + (ZERO_NORMALIZED * SLIDER_WIDTH);
+            const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
+            ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+            ImGui::TextUnformatted("Default");
+            ImGui::PopStyleColor();
+        }
+
+        // Tooltip on hover
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
-                              "Lower values mean higher priority\n"
-                              "Normal priority = 0\n"
-                              "Note: Setting nice values below 0 (higher priority) typically requires root/admin privileges");
+                              "Lower values = higher priority (more CPU time)\n"
+                              "Normal priority = 0\n\n"
+                              "Note: Setting values below 0 typically requires root/admin privileges");
         }
 
-        // Apply, Set Normal, and Reset buttons
-        // Note: canApply relies on m_PriorityChanged flag rather than comparing with cached snapshot,
-        // since the cached snapshot value may be stale if priority changed externally.
+        ImGui::Spacing();
+
+        // ========================================
+        // Action button (right-aligned)
+        // ========================================
         const bool canApply = m_PriorityChanged && m_HasSnapshot;
 
-        if (!canApply)
+        // Right-align the Apply button
+        constexpr float APPLY_BUTTON_WIDTH = 120.0F;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
+
+        // Apply button with success (green) styling
         {
-            ImGui::BeginDisabled();
-        }
-        if (ImGui::Button("Apply", ImVec2(80, 0)))
-        {
-            auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
-            if (result.success)
+            ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
+
+            if (!canApply)
             {
-                m_LastActionResult = std::format("Success: Priority set to {} for PID {}", m_PriorityNiceValue, m_SelectedPid);
-                m_PriorityChanged = false;
+                ImGui::BeginDisabled();
             }
-            else
+            if (ImGui::Button("Apply", ImVec2(APPLY_BUTTON_WIDTH, 0)))
             {
-                m_LastActionResult = "Error: " + result.errorMessage;
-            }
-            m_ActionResultTimer = 5.0F;
-        }
-        if (!canApply)
-        {
-            ImGui::EndDisabled();
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        {
-            ImGui::SetTooltip("Apply the selected priority to the process");
-        }
-
-        ImGui::SameLine();
-
-        // Set to Normal (nice=0) button - uses shared constant from PriorityConfig.h
-        // Dual behavior by design: if slider is not at 0, clicking moves it to 0 (preview).
-        // If slider is already at 0, clicking applies normal priority immediately.
-        // This provides a one-click "reset to normal" shortcut. Tooltip explains this.
-        const bool isAlreadyNormal = m_HasSnapshot && (m_CachedSnapshot.nice == Domain::Priority::NORMAL_NICE) && !m_PriorityChanged;
-        const bool sliderAtNormal = (m_PriorityNiceValue == Domain::Priority::NORMAL_NICE);
-
-        if (isAlreadyNormal)
-        {
-            ImGui::BeginDisabled();
-        }
-        if (ImGui::Button("Set Normal (0)", ImVec2(110, 0)))
-        {
-            if (sliderAtNormal)
-            {
-                // Slider already at 0, just apply it
-                auto result = m_ProcessActions->setPriority(m_SelectedPid, Domain::Priority::NORMAL_NICE);
+                auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
                 if (result.success)
                 {
-                    m_LastActionResult = std::format("Success: Priority set to Normal (0) for PID {}", m_SelectedPid);
+                    m_LastActionResult = std::format("Success: Priority set to {} for PID {}", m_PriorityNiceValue, m_SelectedPid);
                     m_PriorityChanged = false;
-                    m_PriorityNiceValue = Domain::Priority::NORMAL_NICE;
                 }
                 else
                 {
@@ -1715,50 +1858,16 @@ void ProcessDetailsPanel::renderActions()
                 }
                 m_ActionResultTimer = 5.0F;
             }
-            else
+            if (!canApply)
             {
-                // Move slider to 0
-                m_PriorityNiceValue = Domain::Priority::NORMAL_NICE;
-                m_PriorityChanged = true;
+                ImGui::EndDisabled();
             }
-        }
-        if (isAlreadyNormal)
-        {
-            ImGui::EndDisabled();
+
+            ImGui::PopStyleColor(3);
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         {
-            if (isAlreadyNormal)
-            {
-                ImGui::SetTooltip("Process is already at normal priority");
-            }
-            else
-            {
-                ImGui::SetTooltip("Set priority to Normal (nice=0, default priority)");
-            }
-        }
-
-        ImGui::SameLine();
-
-        if (!m_PriorityChanged)
-        {
-            ImGui::BeginDisabled();
-        }
-        if (ImGui::Button("Undo", ImVec2(60, 0)))
-        {
-            if (m_HasSnapshot)
-            {
-                m_PriorityNiceValue = m_CachedSnapshot.nice;
-            }
-            m_PriorityChanged = false;
-        }
-        if (!m_PriorityChanged)
-        {
-            ImGui::EndDisabled();
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        {
-            ImGui::SetTooltip("Undo slider changes (revert to current process priority)");
+            ImGui::SetTooltip("Apply the selected priority to the process");
         }
     }
 }

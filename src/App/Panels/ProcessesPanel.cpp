@@ -257,11 +257,17 @@ void ProcessesPanel::render(bool* open)
         return;
     }
 
+    renderContent();
+
+    ImGui::End();
+}
+
+void ProcessesPanel::renderContent()
+{
     if (!m_ProcessModel)
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textError, "Process model not initialized");
-        ImGui::End();
         return;
     }
 
@@ -517,7 +523,6 @@ void ProcessesPanel::render(bool* open)
                     {
                         sortSpecs->SpecsDirty = true;
                         ImGui::EndTable();
-                        ImGui::End();
                         return;
                     }
 
@@ -646,8 +651,6 @@ void ProcessesPanel::render(bool* open)
 
         ImGui::EndTable();
     }
-
-    ImGui::End();
 }
 
 size_t ProcessesPanel::processCount() const

@@ -1,10 +1,10 @@
 #include "ShellLayer.h"
 
 #include "App/AboutLayer.h"
+#include "App/SettingsLayer.h"
 #include "Core/Application.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Domain/SamplingConfig.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
@@ -12,189 +12,11 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
-#include <chrono>
 #include <cstdint>
-#include <cstdlib>
-#include <filesystem>
-#include <limits>
 #include <string>
-
-#ifdef _WIN32
-// clang-format off
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <shellapi.h>
-// clang-format on
-#else
-#include <cerrno>
-#include <system_error>
-
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 namespace App
 {
-
-namespace
-{
-
-// Import common refresh intervals from Domain config
-using Domain::Sampling::COMMON_REFRESH_INTERVALS_MS;
-
-[[nodiscard]] int snapRefreshIntervalMs(int value)
-{
-    // Sticky stops for common refresh rates.
-    // Snap only when close enough to a stop (threshold scales with stop size).
-
-    int best = value;
-    int bestDist = std::numeric_limits<int>::max();
-
-    for (const int stop : COMMON_REFRESH_INTERVALS_MS)
-    {
-        const int dist = std::abs(value - stop);
-        // Make it "at least twice as sticky":
-        // Previous: min(50, stop/5). Now: 2x that, capped at 100ms.
-        const int baseThreshold = std::min(50, stop / 5);
-        const int threshold = std::min(100, baseThreshold * 2);
-        if (dist <= threshold && dist < bestDist)
-        {
-            best = stop;
-            bestDist = dist;
-        }
-    }
-
-    return best;
-}
-
-void drawRefreshPresetTicks(const ImVec2 frameMin, const ImVec2 frameMax, int minValue, int maxValue)
-{
-    if (maxValue <= minValue)
-    {
-        return;
-    }
-
-    auto* drawList = ImGui::GetWindowDrawList();
-
-    // Use a visible but subdued color; border can be too subtle on some themes.
-    const ImU32 tickColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const float w = frameMax.x - frameMin.x;
-
-    // Keep ticks inside the slider frame.
-    ImGui::PushClipRect(frameMin, frameMax, true);
-
-    for (const int stop : COMMON_REFRESH_INTERVALS_MS)
-    {
-        if (stop < minValue || stop > maxValue)
-        {
-            continue;
-        }
-        const float t = static_cast<float>(stop - minValue) / static_cast<float>(maxValue - minValue);
-        const float x = frameMin.x + (t * w);
-
-        // Slight inset looks nicer than touching the border.
-        drawList->AddLine(ImVec2(x, frameMin.y + 2.0F), ImVec2(x, frameMax.y - 2.0F), tickColor, 1.0F);
-    }
-
-    ImGui::PopClipRect();
-}
-
-/// Open a file with the platform's default application
-void openFileWithDefaultEditor(const std::filesystem::path& filePath)
-{
-    if (!std::filesystem::exists(filePath))
-    {
-        spdlog::error("Cannot open file: {} does not exist", filePath.string());
-        return;
-    }
-
-#ifdef _WIN32
-    // Windows: Prefer Notepad to avoid unexpected handlers (e.g., Node.js associations)
-    const std::wstring wpath = filePath.wstring();
-    auto* const result = ShellExecuteW(nullptr, L"open", L"notepad.exe", wpath.c_str(), nullptr, SW_SHOWNORMAL);
-    // ShellExecuteW returns a value > 32 on success
-    if (reinterpret_cast<intptr_t>(result) <= 32)
-    {
-        // Fallback to shell default association if Notepad failed to launch
-        auto* const fallback = ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        if (reinterpret_cast<intptr_t>(fallback) <= 32)
-        {
-            spdlog::error("Failed to open file with Notepad or default handler: {}", filePath.string());
-            return;
-        }
-    }
-    spdlog::info("Opened config file: {}", filePath.string());
-#else
-    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
-    // First fork creates a child that will be reaped
-    const pid_t pid = fork();
-    if (pid == -1)
-    {
-        spdlog::error("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
-        return;
-    }
-
-    if (pid == 0)
-    {
-        // First child: fork again to create grandchild
-        const pid_t grandchild = fork();
-        if (grandchild == -1)
-        {
-            spdlog::error("Failed to fork grandchild: {}", std::system_category().message(errno));
-            _exit(EXIT_FAILURE);
-        }
-
-        if (grandchild == 0)
-        {
-            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
-            const std::string pathStr = filePath.string();
-            // Safe: no shell involved, arguments are separate
-            execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
-            // execlp only returns on error
-            spdlog::error("Failed to exec xdg-open: {}", std::system_category().message(errno));
-            _exit(EXIT_FAILURE);
-        }
-        // First child exits immediately (grandchild will be adopted by init)
-        _exit(0);
-    }
-
-    // Parent: wait for first child to prevent zombie
-    int status = 0;
-    const pid_t waited = waitpid(pid, &status, 0);
-    if (waited == -1)
-    {
-        spdlog::error("waitpid failed while waiting for xdg-open child process: {}", std::system_category().message(errno));
-    }
-    else if (WIFEXITED(status))
-    {
-        const int exitCode = WEXITSTATUS(status);
-        if (exitCode != 0)
-        {
-            spdlog::error("xdg-open launcher child exited with code {}", exitCode);
-        }
-        else
-        {
-            spdlog::info("Opened config file with xdg-open: {}", filePath.string());
-        }
-    }
-    else if (WIFSIGNALED(status))
-    {
-        spdlog::error("xdg-open launcher child killed by signal {}", WTERMSIG(status));
-    }
-    else
-    {
-        spdlog::warn("xdg-open launcher child in unexpected state after waitpid (status={})", status);
-    }
-#endif
-}
-
-} // namespace
 
 ShellLayer::ShellLayer() : Layer("ShellLayer")
 {
@@ -210,19 +32,6 @@ void ShellLayer::onAttach()
 
     // Apply config to theme (must be after UILayer loads themes)
     config.applyToApplication();
-
-    // Restore ImGui layout state (window positions, docking layout, etc.)
-    config.applyImGuiLayout();
-
-    // Restore panel visibility from config
-    const auto& settings = config.settings();
-    m_ShowProcesses = settings.showProcesses;
-    m_ShowMetrics = settings.showMetrics;
-    m_ShowDetails = settings.showDetails;
-
-    // Configure ImGui for docking
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // Initialize panels
     m_ProcessesPanel.onAttach();
@@ -243,18 +52,10 @@ void ShellLayer::onDetach()
     auto& config = UserConfig::get();
     config.captureFromApplication();
 
-    // Capture ImGui layout state (window positions, docking layout, etc.)
-    config.captureImGuiLayout();
-
-    // Save panel visibility
-    auto& settings = config.settings();
-    settings.showProcesses = m_ShowProcesses;
-    settings.showMetrics = m_ShowMetrics;
-    settings.showDetails = m_ShowDetails;
-
     // Capture current window geometry/state.
     auto& window = Core::Application::get().getWindow();
     const auto [width, height] = window.getSize();
+    auto& settings = config.settings();
     settings.windowWidth = width;
     settings.windowHeight = height;
 
@@ -329,209 +130,143 @@ void ShellLayer::onUpdate(float deltaTime)
 
 void ShellLayer::onRender()
 {
-    renderMenuBar();
-    setupDockspace();
-
-    // Render panels
-    if (m_ShowProcesses)
-    {
-        m_ProcessesPanel.render(&m_ShowProcesses);
-    }
-    if (m_ShowMetrics)
-    {
-        m_SystemMetricsPanel.render(&m_ShowMetrics);
-    }
-    if (m_ShowDetails)
-    {
-        m_ProcessDetailsPanel.render(&m_ShowDetails);
-    }
-    renderStatusBar();
-}
-
-void ShellLayer::setupDockspace()
-{
-    // Create a fullscreen dockspace
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Account for status bar at bottom. The main menu bar already adjusts the viewport work area.
-    // Calculate height dynamically based on font size for proper scaling
+    // Calculate status bar height
     const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
+    // Create fullscreen window that covers the viewport minus status bar
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                         ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+                                         ImGuiWindowFlags_NoSavedSettings;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
 
-    ImGui::Begin("DockSpaceWindow", nullptr, windowFlags);
-    ImGui::PopStyleVar(3);
+    if (ImGui::Begin("##MainWindow", nullptr, windowFlags))
+    {
+        ImGui::PopStyleVar(3);
 
-    // Create the dockspace
-    const ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
-    ImGui::DockSpace(dockspaceId, ImVec2(0.0F, 0.0F), ImGuiDockNodeFlags_PassthruCentralNode);
+        renderTabBar();
 
+        // Render content area with padding
+        constexpr float CONTENT_PADDING_H = 12.0F;
+        constexpr float CONTENT_PADDING_V = 8.0F;
+
+        // Add padding by using a child window with border that provides internal padding
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
+        const ImVec2 contentSize(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+
+        if (ImGui::BeginChild("##ContentArea", contentSize, ImGuiChildFlags_AlwaysUseWindowPadding))
+        {
+            switch (m_ActiveTab)
+            {
+            case ActiveTab::SystemOverview:
+                m_SystemMetricsPanel.renderContent();
+                break;
+            case ActiveTab::Processes:
+                m_ProcessesPanel.renderContent();
+                break;
+            case ActiveTab::ProcessDetails:
+                m_ProcessDetailsPanel.renderContent();
+                break;
+            }
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+    }
+    else
+    {
+        ImGui::PopStyleVar(3);
+    }
     ImGui::End();
+
+    renderStatusBar();
 }
 
-void ShellLayer::renderMenuBar()
+void ShellLayer::renderTabBar()
 {
-    // Increase vertical padding for menu items to center text better
-    const float menuBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.y * 2.0F);
-    const float verticalPadding = (menuBarHeight - ImGui::GetFontSize()) * 0.5F;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, verticalPadding));
+    const ImGuiStyle& style = ImGui::GetStyle();
 
-    if (ImGui::BeginMainMenuBar())
+    // Tab bar with icons on the right
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+
+    // Calculate icon button sizes (include 8px right edge padding)
+    constexpr float RIGHT_EDGE_PADDING = 8.0F;
+    const float iconButtonWidth = ImGui::GetFrameHeight();
+    const float iconButtonSpacing = style.ItemSpacing.x;
+    const float rightIconsWidth = (iconButtonWidth * 2.0F) + iconButtonSpacing + style.ItemSpacing.x + RIGHT_EDGE_PADDING;
+
+    // Tab bar takes remaining width
+    // Add horizontal padding inside tabs and vertical padding for taller tabs
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 10.0F));
+
+    if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
     {
-        if (ImGui::BeginMenu(ICON_FA_FILE " File"))
+        // Tab 1: System Overview (hostname)
+        const std::string& hostname = m_SystemMetricsPanel.hostname();
+        const std::string systemLabel = std::string(ICON_FA_COMPUTER) + "  " + hostname;
+        if (ImGui::BeginTabItem(systemLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
         {
-            if (ImGui::MenuItem(ICON_FA_DOOR_OPEN " Exit", "Alt+F4"))
-            {
-                Core::Application::get().stop();
-            }
-            ImGui::EndMenu();
+            m_ActiveTab = ActiveTab::SystemOverview;
+            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginMenu(ICON_FA_EYE " View"))
+        // Tab 2: Processes
+        if (ImGui::BeginTabItem(ICON_FA_LIST "  Processes", nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
         {
-            ImGui::MenuItem(ICON_FA_LIST " Processes", nullptr, &m_ShowProcesses);
-            ImGui::MenuItem(ICON_FA_COMPUTER " System Metrics", nullptr, &m_ShowMetrics);
-            ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details", nullptr, &m_ShowDetails);
-            ImGui::Separator();
-
-            // Sampling / refresh interval (shared)
-            {
-                auto& settings = UserConfig::get().settings();
-                const int beforeMs = settings.refreshIntervalMs;
-                int refreshIntervalMs = beforeMs;
-
-                ImGui::SetNextItemWidth(220.0F);
-                const bool sliderChanged = ImGui::SliderInt("Refresh (ms)",
-                                                            &refreshIntervalMs,
-                                                            Domain::Sampling::REFRESH_INTERVAL_MIN_MS,
-                                                            Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
-
-                // Draw tick marks for preset values (100/250/500/1000ms) on the actual slider frame.
-                drawRefreshPresetTicks(ImGui::GetItemRectMin(),
-                                       ImGui::GetItemRectMax(),
-                                       Domain::Sampling::REFRESH_INTERVAL_MIN_MS,
-                                       Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
-
-                // Snap when the user finishes editing (mouse release / enter).
-                const bool releasedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
-                if (releasedAfterEdit)
-                {
-                    refreshIntervalMs = snapRefreshIntervalMs(refreshIntervalMs);
-                }
-
-                const bool snappedChanged = (refreshIntervalMs != beforeMs);
-                if (sliderChanged || snappedChanged)
-                {
-                    settings.refreshIntervalMs = refreshIntervalMs;
-
-                    const auto interval = std::chrono::milliseconds(settings.refreshIntervalMs);
-                    m_ProcessesPanel.setSamplingInterval(interval);
-                    m_SystemMetricsPanel.setSamplingInterval(interval);
-
-                    // Ensure the change takes effect without waiting a full interval.
-                    m_ProcessesPanel.requestRefresh();
-                    m_SystemMetricsPanel.requestRefresh();
-                }
-            }
-
-            ImGui::Separator();
-
-            // Theme submenu (dynamically loaded from TOML files)
-            if (ImGui::BeginMenu(ICON_FA_PALETTE " Theme"))
-            {
-                auto& theme = UI::Theme::get();
-                const auto& themes = theme.discoveredThemes();
-                auto currentIndex = theme.currentThemeIndex();
-
-                for (std::size_t i = 0; i < themes.size(); ++i)
-                {
-                    const bool selected = (currentIndex == i);
-                    if (ImGui::MenuItem(themes[i].name.c_str(), nullptr, selected))
-                    {
-                        theme.setTheme(i);
-                    }
-                }
-                ImGui::EndMenu();
-            }
-
-            // Font size submenu
-            if (ImGui::BeginMenu(ICON_FA_FONT " Font Size"))
-            {
-                auto& theme = UI::Theme::get();
-                auto currentSize = theme.currentFontSize();
-
-                for (const auto fontSize : UI::ALL_FONT_SIZES)
-                {
-                    const auto& cfg = theme.fontConfig(fontSize);
-                    const bool selected = (currentSize == fontSize);
-                    const std::string label(cfg.name);
-                    if (ImGui::MenuItem(label.c_str(), nullptr, selected))
-                    {
-                        theme.setFontSize(fontSize);
-                    }
-                }
-
-                ImGui::Separator();
-
-                // Quick adjust shortcuts
-                if (ImGui::MenuItem(ICON_FA_PLUS " Increase", "Ctrl++"))
-                {
-                    theme.increaseFontSize();
-                }
-                if (ImGui::MenuItem(ICON_FA_MINUS " Decrease", "Ctrl+-"))
-                {
-                    theme.decreaseFontSize();
-                }
-
-                ImGui::EndMenu();
-            }
-
-            ImGui::EndMenu();
+            m_ActiveTab = ActiveTab::Processes;
+            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginMenu(ICON_FA_WRENCH " Tools"))
+        // Tab 3: Process Details (shows process name or "Select a process")
+        const std::string detailsLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
+        if (ImGui::BeginTabItem(detailsLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
         {
-            if (ImGui::MenuItem(ICON_FA_FILE_PEN " Open Config File..."))
-            {
-                const auto& configPath = UserConfig::get().configPath();
-                openFileWithDefaultEditor(configPath);
-            }
-
-            ImGui::Separator();
-
-            if (ImGui::MenuItem(ICON_FA_GEARS " Options..."))
-            {
-                // Options dialog: See GitHub issue for planned implementation
-                // Feature: Global settings dialog for themes, refresh rates, column presets
-            }
-            ImGui::EndMenu();
+            m_ActiveTab = ActiveTab::ProcessDetails;
+            ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginMenu(ICON_FA_CIRCLE_QUESTION " Help"))
-        {
-            if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " About TaskSmack"))
-            {
-                if (auto* about = AboutLayer::instance(); about != nullptr)
-                {
-                    about->requestOpen();
-                }
-            }
-            ImGui::EndMenu();
-        }
-
-        ImGui::EndMainMenuBar();
+        ImGui::EndTabBar();
     }
+
     ImGui::PopStyleVar();
+
+    // Right-aligned icon buttons on the same row as tabs
+    ImGui::SameLine(availWidth - rightIconsWidth + style.ItemSpacing.x);
+
+    // Help button (?)
+    if (ImGui::Button(ICON_FA_CIRCLE_QUESTION))
+    {
+        if (auto* about = AboutLayer::instance(); about != nullptr)
+        {
+            about->requestOpen();
+        }
+    }
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("About TaskSmack");
+    }
+
+    ImGui::SameLine();
+
+    // Settings button (gear)
+    if (ImGui::Button(ICON_FA_GEAR))
+    {
+        if (auto* settings = SettingsLayer::instance(); settings != nullptr)
+        {
+            settings->requestOpen();
+        }
+    }
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Settings");
+    }
 }
 
 void ShellLayer::renderStatusBar() const
@@ -545,8 +280,7 @@ void ShellLayer::renderStatusBar() const
     ImGui::SetNextWindowViewport(viewport->ID);
 
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
-                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
+                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav;
 
     // Use theme colors for status bar
     const auto& theme = UI::Theme::get();
