@@ -152,6 +152,8 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_NetSentHistory.push_back(snapshot->netSentBytesPerSec);
             m_NetRecvHistory.push_back(snapshot->netReceivedBytesPerSec);
             m_PowerHistory.push_back(snapshot->powerWatts);
+            m_GpuUtilHistory.push_back(snapshot->gpuUtilPercent);
+            m_GpuMemHistory.push_back(UI::Numeric::toDouble(snapshot->gpuMemoryBytes));
             m_Timestamps.push_back(nowSeconds);
 
             // Update peak memory percent (from snapshot's peak value)
@@ -231,6 +233,16 @@ void ProcessDetailsPanel::render(bool* open)
             ImGui::EndTabItem();
         }
 
+        // GPU tab - show if process has GPU usage
+        if (m_CachedSnapshot.gpuUtilPercent > 0.0 || m_CachedSnapshot.gpuMemoryBytes > 0 || !m_CachedSnapshot.gpuDevices.empty())
+        {
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " GPU"))
+            {
+                renderGpuUsage(m_CachedSnapshot);
+                ImGui::EndTabItem();
+            }
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -255,6 +267,8 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_NetSentHistory.clear();
         m_NetRecvHistory.clear();
         m_PowerHistory.clear();
+        m_GpuUtilHistory.clear();
+        m_GpuMemHistory.clear();
         m_Timestamps.clear();
         m_HistoryTimer = 0.0F;
         m_HasSnapshot = false;
@@ -289,6 +303,8 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetNetSent = std::max(0.0, snapshot.netSentBytesPerSec);
     const double targetNetRecv = std::max(0.0, snapshot.netReceivedBytesPerSec);
     const double targetPower = std::max(0.0, snapshot.powerWatts);
+    const double targetGpuUtil = UI::Numeric::clampPercent(snapshot.gpuUtilPercent);
+    const double targetGpuMem = UI::Numeric::toDouble(snapshot.gpuMemoryBytes);
 
     if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
     {
@@ -304,6 +320,8 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
         m_SmoothedUsage.netSentBytesPerSec = targetNetSent;
         m_SmoothedUsage.netRecvBytesPerSec = targetNetRecv;
         m_SmoothedUsage.powerWatts = targetPower;
+        m_SmoothedUsage.gpuUtilPercent = targetGpuUtil;
+        m_SmoothedUsage.gpuMemoryBytes = targetGpuMem;
         m_SmoothedUsage.initialized = true;
         return;
     }
@@ -321,6 +339,8 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.netSentBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netSentBytesPerSec, targetNetSent, alpha));
     m_SmoothedUsage.netRecvBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netRecvBytesPerSec, targetNetRecv, alpha));
     m_SmoothedUsage.powerWatts = std::max(0.0, smoothTowards(m_SmoothedUsage.powerWatts, targetPower, alpha));
+    m_SmoothedUsage.gpuUtilPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha));
+    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha));
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
@@ -1051,6 +1071,278 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     ImGui::Spacing();
 }
 
+void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
+{
+    auto& theme = UI::Theme::get();
+
+    // Show GPU info
+    ImGui::Text(ICON_FA_MICROCHIP " GPU Usage");
+    ImGui::Spacing();
+
+    // Current GPU metrics
+    if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0F);
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+        // GPU Utilization
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("GPU Utilization:");
+        ImGui::TableNextColumn();
+        const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
+        ImGui::TextColored(gpuUtilColor, "%.1f%%", m_SmoothedUsage.gpuUtilPercent);
+
+        // GPU Memory
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("GPU Memory:");
+        ImGui::TableNextColumn();
+        const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
+        const std::string memStr = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
+        ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
+
+        // GPU Device(s)
+        if (!proc.gpuDevices.empty())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("GPU Device(s):");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(proc.gpuDevices.c_str());
+        }
+
+        // GPU Engines
+        if (!proc.gpuEngines.empty())
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("Active Engines:");
+            ImGui::TableNextColumn();
+            std::string enginesStr;
+            for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
+            {
+                if (i > 0)
+                    enginesStr += ", ";
+                enginesStr += proc.gpuEngines[i];
+            }
+            ImGui::TextUnformatted(enginesStr.c_str());
+        }
+
+        // Encoder/Decoder utilization
+        if (proc.gpuEncoderUtil > 0.0)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("Video Encoder:");
+            ImGui::TableNextColumn();
+            const ImVec4 encColor = theme.scheme().gpuEncoder;
+            ImGui::TextColored(encColor, "%.1f%%", proc.gpuEncoderUtil);
+        }
+
+        if (proc.gpuDecoderUtil > 0.0)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("Video Decoder:");
+            ImGui::TableNextColumn();
+            const ImVec4 decColor = theme.scheme().gpuDecoder;
+            ImGui::TextColored(decColor, "%.1f%%", proc.gpuDecoderUtil);
+        }
+
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // Per-GPU breakdown if available
+    if (!proc.perGpuUsage.empty())
+    {
+        ImGui::Text("Per-GPU Breakdown:");
+        ImGui::Spacing();
+
+        const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
+        const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
+
+        for (const auto& gpuUsage : proc.perGpuUsage)
+        {
+            const std::string gpuLabel =
+                std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Integrated" : "Discrete");
+
+            if (ImGui::CollapsingHeader(gpuLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Indent();
+
+                if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+                {
+                    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 120.0F);
+                    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Utilization:");
+                    ImGui::TableNextColumn();
+                    ImGui::TextColored(gpuUtilColor, "%.1f%%", gpuUsage.utilPercent);
+
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Memory:");
+                    ImGui::TableNextColumn();
+                    const std::string memoryStr = UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes));
+                    ImGui::TextColored(gpuMemColor, "%s", memoryStr.c_str());
+
+                    if (!gpuUsage.engines.empty())
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Engines:");
+                        ImGui::TableNextColumn();
+                        std::string engStr;
+                        for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
+                        {
+                            if (i > 0)
+                                engStr += ", ";
+                            engStr += gpuUsage.engines[i];
+                        }
+                        ImGui::TextUnformatted(engStr.c_str());
+                    }
+
+                    ImGui::EndTable();
+                }
+
+                ImGui::Unindent();
+                ImGui::Spacing();
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // GPU history graphs (if we have history)
+    if (!m_GpuUtilHistory.empty() && !m_Timestamps.empty())
+    {
+        const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
+        std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
+        std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
+        std::vector<double> timeVec = tailVector(m_Timestamps, alignedCount);
+        const auto* gpuUtilData = gpuUtilVec.data();
+        const auto* gpuMemData = gpuMemVec.data();
+        const auto* timeData = timeVec.data();
+
+        // GPU Utilization graph
+        auto plotGpuUtil = [&]()
+        {
+            if (ImPlot::BeginPlot("##GPUUtilPlot", ImVec2(-1, -1), UI::Widgets::PLOT_FLAGS_DEFAULT))
+            {
+                ImPlot::SetupAxes("Time", "GPU %", UI::Widgets::X_AXIS_FLAGS_DEFAULT, UI::Widgets::Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 100.0, ImPlotCond_Always);
+
+                if (alignedCount > 0)
+                {
+                    plotLineWithFill("GPU %",
+                                     timeData,
+                                     gpuUtilData,
+                                     static_cast<int>(alignedCount),
+                                     theme.scheme().gpuUtilization,
+                                     theme.scheme().gpuUtilizationFill);
+
+                    // Tooltip
+                    if (ImPlot::IsPlotHovered())
+                    {
+                        const auto idxVal = hoveredIndexFromPlotX(gpuUtilVec, ImPlot::GetPlotMousePos().x);
+                        if (idxVal.has_value())
+                        {
+                            ImGui::BeginTooltip();
+                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                            ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::TextColored(theme.scheme().textInfo, "GPU: %.1f%%", gpuUtilData[*idxVal]);
+                            ImGui::EndTooltip();
+                        }
+                    }
+                }
+                else
+                {
+                    ImPlot::PlotDummy("GPU %");
+                }
+
+                ImPlot::EndPlot();
+            }
+        };
+
+        // GPU Memory graph
+        auto plotGpuMem = [&]()
+        {
+            if (ImPlot::BeginPlot("##GPUMemPlot", ImVec2(-1, -1), UI::Widgets::PLOT_FLAGS_DEFAULT))
+            {
+                ImPlot::SetupAxes("Time", "GPU Memory", UI::Widgets::X_AXIS_FLAGS_DEFAULT, UI::Widgets::Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
+
+                if (alignedCount > 0)
+                {
+                    plotLineWithFill("GPU Memory",
+                                     timeData,
+                                     gpuMemData,
+                                     static_cast<int>(alignedCount),
+                                     theme.scheme().gpuMemory,
+                                     theme.scheme().gpuMemoryFill);
+
+                    // Tooltip
+                    if (ImPlot::IsPlotHovered())
+                    {
+                        const auto idxVal = hoveredIndexFromPlotX(gpuMemVec, ImPlot::GetPlotMousePos().x);
+                        if (idxVal.has_value())
+                        {
+                            ImGui::BeginTooltip();
+                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                            ImGui::TextUnformatted(ageText.c_str());
+                            const std::string memStr = UI::Format::formatBytes(static_cast<double>(gpuMemData[*idxVal]));
+                            ImGui::TextColored(theme.scheme().textInfo, "GPU Memory: %s", memStr.c_str());
+                            ImGui::EndTooltip();
+                        }
+                    }
+                }
+                else
+                {
+                    ImPlot::PlotDummy("GPU Memory");
+                }
+
+                ImPlot::EndPlot();
+            }
+        };
+
+        // Now bars for current values
+        const NowBar gpuUtilBar{
+            .valueText = std::format("{:.1f}%", m_SmoothedUsage.gpuUtilPercent),
+            .value01 = m_SmoothedUsage.gpuUtilPercent / 100.0,
+            .color = theme.scheme().gpuUtilization,
+        };
+
+        const NowBar gpuMemBar{
+            .valueText = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes)),
+            .value01 = 0.0, // Auto-scale by setting to 0
+            .color = theme.scheme().gpuMemory,
+        };
+
+        ImGui::Text(ICON_FA_CHART_LINE " GPU Utilization History (%zu samples)", alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        ImGui::Spacing();
+
+        ImGui::Text(ICON_FA_CHART_LINE " GPU Memory History (%zu samples)", alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        ImGui::Spacing();
+    }
+    else
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "Collecting GPU history data...");
+    }
+}
+
 void ProcessDetailsPanel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
@@ -1082,6 +1374,8 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     trimDeque(m_NetSentHistory);
     trimDeque(m_NetRecvHistory);
     trimDeque(m_PowerHistory);
+    trimDeque(m_GpuUtilHistory);
+    trimDeque(m_GpuMemHistory);
 
     // Keep all history buffers aligned to the smallest non-empty length.
     size_t minSize = std::numeric_limits<size_t>::max();
@@ -1107,6 +1401,8 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     updateMin(m_NetSentHistory.size());
     updateMin(m_NetRecvHistory.size());
     updateMin(m_PowerHistory.size());
+    updateMin(m_GpuUtilHistory.size());
+    updateMin(m_GpuMemHistory.size());
 
     if (minSize != std::numeric_limits<size_t>::max())
     {
@@ -1132,6 +1428,8 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
         trimToMin(m_NetSentHistory);
         trimToMin(m_NetRecvHistory);
         trimToMin(m_PowerHistory);
+        trimToMin(m_GpuUtilHistory);
+        trimToMin(m_GpuMemHistory);
     }
 }
 

@@ -479,6 +479,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxGPUProbe.cpp
     src/Platform/Linux/NVMLGPUProbe.cpp
     src/Platform/Linux/DRMGPUProbe.cpp
+    src/Platform/Linux/ROCmGPUProbe.cpp
     src/Platform/Linux/Factory.cpp
 )
 

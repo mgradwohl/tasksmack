@@ -36,17 +36,22 @@ enum class ProcessColumn : std::uint8_t
     Power,
     NetSent,
     NetReceived,
+    GpuPercent,
+    GpuMemory,
+    GpuEngine,
+    GpuDevice,
     Count
 };
 
 [[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
-    return {ProcessColumn::PID,      ProcessColumn::User,        ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
-            ProcessColumn::Virtual,  ProcessColumn::Resident,    ProcessColumn::PeakResident, ProcessColumn::Shared,
-            ProcessColumn::CpuTime,  ProcessColumn::State,       ProcessColumn::Status,       ProcessColumn::Name,
-            ProcessColumn::PPID,     ProcessColumn::Nice,        ProcessColumn::Threads,      ProcessColumn::PageFaults,
-            ProcessColumn::Affinity, ProcessColumn::Command,     ProcessColumn::IoRead,       ProcessColumn::IoWrite,
-            ProcessColumn::NetSent,  ProcessColumn::NetReceived, ProcessColumn::Power};
+    return {ProcessColumn::PID,       ProcessColumn::User,        ProcessColumn::CpuPercent,   ProcessColumn::MemPercent,
+            ProcessColumn::Virtual,   ProcessColumn::Resident,    ProcessColumn::PeakResident, ProcessColumn::Shared,
+            ProcessColumn::CpuTime,   ProcessColumn::State,       ProcessColumn::Status,       ProcessColumn::Name,
+            ProcessColumn::PPID,      ProcessColumn::Nice,        ProcessColumn::Threads,      ProcessColumn::PageFaults,
+            ProcessColumn::Affinity,  ProcessColumn::Command,     ProcessColumn::IoRead,       ProcessColumn::IoWrite,
+            ProcessColumn::NetSent,   ProcessColumn::NetReceived, ProcessColumn::Power,        ProcessColumn::GpuPercent,
+            ProcessColumn::GpuMemory, ProcessColumn::GpuEngine,   ProcessColumn::GpuDevice};
 }
 
 [[nodiscard]] constexpr auto processColumnCount() -> std::size_t
@@ -123,6 +128,14 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Net Sent", .menuName="Net Sent", .configKey="net_sent", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network send rate (bytes/sec)"},
         // Net Received
         {.name="Net Recv", .menuName="Net Received", .configKey="net_recv", .defaultWidth=90.0F, .defaultVisible=true, .canHide=true, .description="Network receive rate (bytes/sec)"},
+        // GPU Percent
+        {.name="GPU %", .menuName="GPU %", .configKey="gpu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="GPU utilization percentage (aggregated across all GPUs)"},
+        // GPU Memory
+        {.name="GPU Mem", .menuName="GPU Memory", .configKey="gpu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="GPU memory allocated (VRAM)"},
+        // GPU Engine
+        {.name="GPU Engine", .menuName="GPU Engine", .configKey="gpu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active GPU engines (3D, Compute, Video, etc.)"},
+        // GPU Device
+        {.name="GPU Dev", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
     }};
     // clang-format on
 

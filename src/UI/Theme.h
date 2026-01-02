@@ -94,6 +94,16 @@ struct ColorScheme
     ImVec4 cpuIdleFill{};   // Idle time fill
     ImVec4 cpuStealFill{};  // VM steal time fill
 
+    // GPU chart colors
+    ImVec4 gpuUtilization{};     // GPU utilization line
+    ImVec4 gpuUtilizationFill{}; // GPU utilization fill
+    ImVec4 gpuMemory{};          // GPU memory line
+    ImVec4 gpuMemoryFill{};      // GPU memory fill
+    ImVec4 gpuTemperature{};     // GPU temperature line
+    ImVec4 gpuPower{};           // GPU power line
+    ImVec4 gpuEncoder{};         // GPU encoder utilization
+    ImVec4 gpuDecoder{};         // GPU decoder utilization
+
     // Danger button colors
     ImVec4 dangerButton{};
     ImVec4 dangerButtonHovered{};

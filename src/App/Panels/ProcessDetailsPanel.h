@@ -49,6 +49,7 @@ class ProcessDetailsPanel : public Panel
     void renderIoStats(const Domain::ProcessSnapshot& proc);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc);
+    void renderGpuUsage(const Domain::ProcessSnapshot& proc);
     void renderActions();
     void trimHistory(double nowSeconds);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
@@ -72,6 +73,8 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_NetSentHistory;   // Network send rate (bytes/sec)
     std::deque<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
     std::deque<double> m_PowerHistory;     // Power usage history (watts)
+    std::deque<double> m_GpuUtilHistory;   // GPU utilization % history
+    std::deque<double> m_GpuMemHistory;    // GPU memory bytes history
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
@@ -108,6 +111,8 @@ class ProcessDetailsPanel : public Panel
         double netSentBytesPerSec = 0.0;
         double netRecvBytesPerSec = 0.0;
         double powerWatts = 0.0;
+        double gpuUtilPercent = 0.0;
+        double gpuMemoryBytes = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
 };

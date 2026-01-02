@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
@@ -10,12 +11,13 @@
 
 #include <chrono>
 #include <memory>
+#include <unordered_map>
 
 namespace App
 {
 
 /// Panel displaying system-wide metrics with ImPlot graphs.
-/// Shows CPU, memory, swap, and disk I/O usage over time.
+/// Shows CPU, memory, swap, disk I/O, and GPU usage over time.
 class SystemMetricsPanel : public Panel
 {
   public:
@@ -59,9 +61,11 @@ class SystemMetricsPanel : public Panel
     void renderOverview();
     void renderCpuSection();
     void renderPerCoreSection();
+    void renderGpuSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
+    std::unique_ptr<Domain::GPUModel> m_GPUModel;
     Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
 
     double m_MaxHistorySeconds = 300.0;
@@ -128,6 +132,16 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedNetwork;
 
+    struct SmoothedGPU
+    {
+        double utilizationPercent = 0.0;
+        double memoryPercent = 0.0;
+        double temperatureC = 0.0;
+        double powerWatts = 0.0;
+        bool initialized = false;
+    };
+    std::unordered_map<std::string, SmoothedGPU> m_SmoothedGPUs;
+
     std::vector<double> m_SmoothedPerCore;
 
     // Cached layout values (recalculated one frame after font changes)
@@ -149,6 +163,7 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
     void updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds);
     void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds);
+    void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, float deltaTimeSeconds);
 };
 
 } // namespace App

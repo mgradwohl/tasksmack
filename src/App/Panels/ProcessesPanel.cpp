@@ -582,6 +582,25 @@ void ProcessesPanel::render(bool* open)
                                               return compare(procA.netReceivedBytesPerSec, procB.netReceivedBytesPerSec);
                                           case ProcessColumn::Power:
                                               return compare(procA.powerWatts, procB.powerWatts);
+                                          case ProcessColumn::GpuPercent:
+                                              return compare(procA.gpuUtilPercent, procB.gpuUtilPercent);
+                                          case ProcessColumn::GpuMemory:
+                                              return compare(procA.gpuMemoryBytes, procB.gpuMemoryBytes);
+                                          case ProcessColumn::GpuEngine:
+                                          {
+                                              // Sort by number of engines, then by first engine name
+                                              if (procA.gpuEngines.size() != procB.gpuEngines.size())
+                                              {
+                                                  return compare(procA.gpuEngines.size(), procB.gpuEngines.size());
+                                              }
+                                              if (!procA.gpuEngines.empty() && !procB.gpuEngines.empty())
+                                              {
+                                                  return compare(procA.gpuEngines[0], procB.gpuEngines[0]);
+                                              }
+                                              return false;
+                                          }
+                                          case ProcessColumn::GpuDevice:
+                                              return compare(procA.gpuDevices, procB.gpuDevices);
                                           default:
                                               return false;
                                           }
@@ -982,6 +1001,69 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderDecimalAligned(parts, UNIT_POWER, true);
             break;
         }
+
+        case ProcessColumn::GpuPercent:
+        {
+            if (proc.gpuUtilPercent > 0.0)
+            {
+                const auto parts = UI::Format::splitPercentForAlignment(proc.gpuUtilPercent);
+                renderDecimalAligned(parts, UNIT_PERCENT, true);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::GpuMemory:
+        {
+            if (proc.gpuMemoryBytes > 0)
+            {
+                const auto unit = UI::Format::unitForTotalBytes(proc.gpuMemoryBytes);
+                const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.gpuMemoryBytes), unit);
+                renderDecimalAligned(parts, UNIT_BYTES, true);
+            }
+            else
+            {
+                renderRightAlignedText("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::GpuEngine:
+        {
+            if (!proc.gpuEngines.empty())
+            {
+                std::string enginesStr;
+                for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
+                {
+                    if (i > 0)
+                        enginesStr += ", ";
+                    enginesStr += proc.gpuEngines[i];
+                }
+                ImGui::TextUnformatted(enginesStr.c_str());
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::GpuDevice:
+        {
+            if (!proc.gpuDevices.empty())
+            {
+                ImGui::TextUnformatted(proc.gpuDevices.c_str());
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
         default:
             break;
         }

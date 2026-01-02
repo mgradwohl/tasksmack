@@ -13,8 +13,12 @@ namespace Platform
 
 namespace fs = std::filesystem;
 
-DRMGPUProbe::DRMGPUProbe() : m_Available(initialize())
+DRMGPUProbe::DRMGPUProbe()
 {
+    // Must call initialize() in the body, not the initializer list,
+    // because initialize() uses m_Cards which must be constructed first
+    m_Available = initialize();
+
     if (m_Available)
     {
         spdlog::debug("DRMGPUProbe: Initialized successfully, found {} DRM card(s)", m_Cards.size());
