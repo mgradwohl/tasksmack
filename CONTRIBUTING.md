@@ -256,6 +256,15 @@ Build tasks are preconfigured:
 
 ## Code Quality Tools
 
+### Static Analysis (run first)
+
+```bash
+./tools/clang-tidy.sh debug        # Linux
+pwsh tools/clang-tidy.ps1 debug    # Windows
+```
+
+Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
+
 ### Formatting (required before PRs)
 
 ```bash
@@ -269,15 +278,6 @@ Check formatting (no changes):
 ./tools/check-format.sh        # Linux
 pwsh tools/check-format.ps1    # Windows
 ```
-
-### Static Analysis
-
-```bash
-./tools/clang-tidy.sh debug        # Linux
-pwsh tools/clang-tidy.ps1 debug    # Windows
-```
-
-Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
 ## Coverage
 
@@ -446,13 +446,13 @@ gh run download <run-id> -n coverage-html-report
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run pre-commit checks: `pre-commit run --all-files` (if installed)
+4. Run clang-tidy: `./tools/clang-tidy.sh debug` (Linux) or `pwsh tools/clang-tidy.ps1 debug` (Windows)
 5. Run formatting: `./tools/clang-format.sh` (Linux) or `pwsh tools/clang-format.ps1` (Windows)
-6. Run clang-tidy (recommended)
+6. Run pre-commit checks: `pre-commit run --all-files` (if installed)
 7. Run tests
 8. Open a PR and follow the checklist in the PR template: [.github/pull_request_template.md](.github/pull_request_template.md)
 
-**Note:** If you installed pre-commit hooks (recommended), steps 4-5 run automatically on commit.
+**Note:** If you installed pre-commit hooks (recommended), format checks run automatically on commit.
 
 ## Reporting Issues
 
