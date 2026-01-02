@@ -1433,6 +1433,11 @@ void SystemMetricsPanel::renderGpuSection()
         return;
     }
 
+    // Get timestamps for history charts
+    const auto gpuTimestamps = m_GPUModel->historyTimestamps();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto axisConfig = makeTimeAxisConfig(gpuTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
     ImGui::Spacing();
 
@@ -1441,6 +1446,8 @@ void SystemMetricsPanel::renderGpuSection()
     {
         updateSmoothedGPU(snap.gpuId, snap, m_LastDeltaSeconds);
     }
+
+    constexpr size_t GPU_NOW_BAR_COLUMNS = 3; // Utilization, Memory, Clock
 
     // Render each GPU
     for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
@@ -1473,131 +1480,207 @@ void SystemMetricsPanel::renderGpuSection()
             continue;
         }
 
-        // GPU metrics display
         ImGui::Indent();
 
-        // Create a table for metrics
-        if (ImGui::BeginTable("GPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+        // Get history data for this GPU
+        auto utilHist = m_GPUModel->utilizationHistory(snap.gpuId);
+        auto memHist = m_GPUModel->memoryPercentHistory(snap.gpuId);
+        auto clockHist = m_GPUModel->gpuClockHistory(snap.gpuId);
+
+        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
+
+        // Crop histories to aligned size
+        if (utilHist.size() > alignedCount)
         {
-            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, 150.0F);
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+            utilHist.erase(utilHist.begin(), utilHist.begin() + static_cast<std::ptrdiff_t>(utilHist.size() - alignedCount));
+        }
+        if (memHist.size() > alignedCount)
+        {
+            memHist.erase(memHist.begin(), memHist.begin() + static_cast<std::ptrdiff_t>(memHist.size() - alignedCount));
+        }
 
-            // GPU Utilization
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("GPU Utilization:");
-            ImGui::TableNextColumn();
-            const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-            ImGui::TextColored(gpuUtilColor, "%.1f%%", smoothed.utilizationPercent);
+        std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
 
-            // Memory
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("GPU Memory:");
-            ImGui::TableNextColumn();
-            const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-            const std::string memStr = std::format("{} / {} ({:.1f}%%)",
-                                                   UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
-                                                   UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
-                                                   smoothed.memoryPercent);
-            ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
+        // Get max clock for normalization
+        const float maxClockMHz =
+            caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
 
-            // Temperature (if available)
-            if (caps.hasTemperature && snap.temperatureC > 0)
+        // History chart with utilization, memory%, and clock
+        ImGui::Text("GPU History (%zu samples)", alignedCount);
+
+        auto gpuPlot = [&]()
+        {
+            const UI::Widgets::PlotFontGuard fontGuard;
+            if (ImPlot::BeginPlot("##GPUHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
             {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("Temperature:");
-                ImGui::TableNextColumn();
-                const ImVec4 tempColor = theme.scheme().gpuTemperature;
-                ImGui::TextColored(tempColor, "%d°C", static_cast<int>(smoothed.temperatureC));
+                UI::Widgets::setupLegendDefault();
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-                if (caps.hasHotspotTemp && snap.hotspotTempC > 0)
+                if (!utilHist.empty())
                 {
-                    ImGui::SameLine();
-                    ImGui::TextColored(theme.scheme().textMuted, " (Hotspot: %d°C)", snap.hotspotTempC);
+                    plotLineWithFill("Utilization",
+                                     timeData.data(),
+                                     utilHist.data(),
+                                     UI::Numeric::checkedCount(utilHist.size()),
+                                     theme.scheme().gpuUtilization);
                 }
-            }
 
-            // Power (if available)
-            if (caps.hasPowerMetrics && snap.powerDrawWatts > 0.0)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("Power Draw:");
-                ImGui::TableNextColumn();
-                const ImVec4 powerColor = theme.scheme().gpuPower;
-                if (snap.powerLimitWatts > 0.0)
+                if (!memHist.empty())
                 {
-                    ImGui::TextColored(powerColor,
-                                       "%.1f W / %.1f W (%.1f%%)",
-                                       smoothed.powerWatts,
-                                       snap.powerLimitWatts,
-                                       (smoothed.powerWatts / snap.powerLimitWatts) * 100.0);
+                    plotLineWithFill(
+                        "Memory", timeData.data(), memHist.data(), UI::Numeric::checkedCount(memHist.size()), theme.scheme().gpuMemory);
+                }
+
+                // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
+                if (caps.hasClockSpeeds && !clockHist.empty())
+                {
+                    std::vector<float> clockPercent(clockHist.size());
+                    for (size_t i = 0; i < clockHist.size(); ++i)
+                    {
+                        clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
+                    }
+                    // Use a distinct color for clock - reuse chartIo or similar
+                    ImVec4 clockColor = theme.scheme().chartIo;
+                    clockColor.w = 0.8F; // Slightly transparent
+                    plotLineWithFill(
+                        "Clock", timeData.data(), clockPercent.data(), UI::Numeric::checkedCount(clockPercent.size()), clockColor);
+                }
+
+                // Tooltip on hover
+                if (ImPlot::IsPlotHovered() && !timeData.empty())
+                {
+                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                    {
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
+                        if (*idxVal < utilHist.size())
+                        {
+                            ImGui::TextColored(
+                                theme.scheme().gpuUtilization, "Utilization: %s", UI::Format::percentCompact(utilHist[*idxVal]).c_str());
+                        }
+                        if (*idxVal < memHist.size())
+                        {
+                            ImGui::TextColored(
+                                theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
+                        }
+                        if (caps.hasClockSpeeds && *idxVal < clockHist.size())
+                        {
+                            ImGui::TextColored(theme.scheme().chartIo, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
+                        }
+                        ImGui::EndTooltip();
+                    }
+                }
+
+                ImPlot::EndPlot();
+            }
+        };
+
+        // Build now bars for utilization, memory, clock
+        std::vector<NowBar> gpuBars;
+        gpuBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
+                           .value01 = UI::Numeric::percent01(smoothed.utilizationPercent),
+                           .color = theme.scheme().gpuUtilization});
+        gpuBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                           .value01 = UI::Numeric::percent01(smoothed.memoryPercent),
+                           .color = theme.scheme().gpuMemory});
+        if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
+        {
+            const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
+            gpuBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
+                               .value01 = UI::Numeric::percent01(clockPercent),
+                               .color = theme.scheme().chartIo});
+        }
+
+        const std::string layoutId = std::format("GPUHistoryLayout{}", gpuIdx);
+        renderHistoryWithNowBars(layoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuPlot, gpuBars, false, GPU_NOW_BAR_COLUMNS);
+
+        // Additional metrics below the chart
+        ImGui::Spacing();
+
+        // Create a compact table for secondary metrics (temp, power, fan, etc.)
+        if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed || caps.hasEncoderDecoder)
+        {
+            if (ImGui::BeginTable("GPUSecondaryMetrics", 4, ImGuiTableFlags_SizingStretchSame))
+            {
+                // Temperature
+                if (caps.hasTemperature && snap.temperatureC > 0)
+                {
+                    ImGui::TableNextColumn();
+                    ImGui::TextColored(
+                        theme.scheme().gpuTemperature, "%s Temp: %d°C", ICON_FA_TEMPERATURE_HALF, static_cast<int>(smoothed.temperatureC));
+                    if (caps.hasHotspotTemp && snap.hotspotTempC > 0)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextColored(theme.scheme().textMuted, "(Hot: %d°C)", snap.hotspotTempC);
+                    }
                 }
                 else
                 {
-                    ImGui::TextColored(powerColor, "%.1f W", smoothed.powerWatts);
+                    ImGui::TableNextColumn();
                 }
-            }
 
-            // Clock speeds (if available)
-            if (caps.hasClockSpeeds)
-            {
-                if (snap.gpuClockMHz > 0)
+                // Power
+                if (caps.hasPowerMetrics && snap.powerDrawWatts > 0.0)
                 {
-                    ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("GPU Clock:");
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%u MHz", snap.gpuClockMHz);
+                    if (snap.powerLimitWatts > 0.0)
+                    {
+                        ImGui::TextColored(
+                            theme.scheme().gpuPower, "%s Power: %.1fW / %.1fW", ICON_FA_BOLT, smoothed.powerWatts, snap.powerLimitWatts);
+                    }
+                    else
+                    {
+                        ImGui::TextColored(theme.scheme().gpuPower, "%s Power: %.1fW", ICON_FA_BOLT, smoothed.powerWatts);
+                    }
                 }
-
-                if (snap.memoryClockMHz > 0)
+                else
                 {
-                    ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Memory Clock:");
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%u MHz", snap.memoryClockMHz);
                 }
-            }
 
-            // Fan speed (if available)
-            if (caps.hasFanSpeed && snap.fanSpeedRPMPercent > 0)
-            {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("Fan Speed:");
-                ImGui::TableNextColumn();
-                ImGui::Text("%u RPM", snap.fanSpeedRPMPercent);
-            }
-
-            // Encoder/Decoder utilization (if available)
-            if (caps.hasEncoderDecoder)
-            {
-                if (snap.encoderUtilPercent > 0.0)
+                // Fan
+                if (caps.hasFanSpeed && snap.fanSpeedRPMPercent > 0)
                 {
-                    ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Video Encoder:");
-                    ImGui::TableNextColumn();
-                    const ImVec4 encColor = theme.scheme().gpuEncoder;
-                    ImGui::TextColored(encColor, "%.1f%%", snap.encoderUtilPercent);
+                    ImGui::Text("%s Fan: %u%%", ICON_FA_FAN, snap.fanSpeedRPMPercent);
                 }
-
-                if (snap.decoderUtilPercent > 0.0)
+                else
                 {
-                    ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::Text("Video Decoder:");
-                    ImGui::TableNextColumn();
-                    const ImVec4 decColor = theme.scheme().gpuDecoder;
-                    ImGui::TextColored(decColor, "%.1f%%", snap.decoderUtilPercent);
                 }
-            }
 
-            ImGui::EndTable();
+                // Encoder/Decoder
+                if (caps.hasEncoderDecoder && (snap.encoderUtilPercent > 0.0 || snap.decoderUtilPercent > 0.0))
+                {
+                    ImGui::TableNextColumn();
+                    std::string encDecStr;
+                    if (snap.encoderUtilPercent > 0.0)
+                    {
+                        encDecStr += std::format("Enc: {:.1f}%", snap.encoderUtilPercent);
+                    }
+                    if (snap.decoderUtilPercent > 0.0)
+                    {
+                        if (!encDecStr.empty())
+                        {
+                            encDecStr += " ";
+                        }
+                        encDecStr += std::format("Dec: {:.1f}%", snap.decoderUtilPercent);
+                    }
+                    ImGui::TextColored(theme.scheme().gpuEncoder, "%s %s", ICON_FA_VIDEO, encDecStr.c_str());
+                }
+                else
+                {
+                    ImGui::TableNextColumn();
+                }
+
+                ImGui::EndTable();
+            }
         }
 
         ImGui::Unindent();

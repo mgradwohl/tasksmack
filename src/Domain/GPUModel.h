@@ -37,6 +37,14 @@ class GPUModel
     // Get history for specific GPU (returns copy for thread safety)
     [[nodiscard]] std::vector<GPUSnapshot> history(const std::string& gpuId) const;
 
+    // Get flattened history arrays for specific GPU (for chart plotting)
+    [[nodiscard]] std::vector<float> utilizationHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> memoryPercentHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> gpuClockHistory(const std::string& gpuId) const;
+
+    // Get timestamps for GPU history
+    [[nodiscard]] std::vector<double> historyTimestamps() const;
+
     // GPU info (static, rarely changes)
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
 
@@ -52,6 +60,9 @@ class GPUModel
 
     // History buffers per GPU
     std::unordered_map<std::string, History<GPUSnapshot, GPU_HISTORY_CAPACITY>> m_Histories;
+
+    // Timestamps for history data
+    std::vector<double> m_HistoryTimestamps;
 
     // Previous counters for rate calculation
     std::unordered_map<std::string, Platform::GPUCounters> m_PrevCounters;

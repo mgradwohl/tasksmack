@@ -126,4 +126,6 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_COMPUTER "\xef\x84\x88" // U+f108 - Desktop computer
 #define ICON_FA_DESKTOP "\xef\x84\x88"  // U+f108 - Desktop (alias)
 #define ICON_FA_ID_CARD "\xef\x8b\x82"  // U+f2c2 - ID card
+#define ICON_FA_FAN "\xef\xa1\xa3"      // U+f863 - Fan
+#define ICON_FA_VIDEO "\xef\x80\xbd"    // U+f03d - Video camera
 // NOLINTEND(cppcoreguidelines-macro-usage)
