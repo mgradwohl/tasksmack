@@ -1253,7 +1253,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(gpuUtilData, ImPlot::GetPlotMousePos().x);
+                        const auto idxVal = hoveredIndexFromPlotX(gpuUtilVec, ImPlot::GetPlotMousePos().x);
                         if (idxVal.has_value())
                         {
                             ImGui::BeginTooltip();
@@ -1293,7 +1293,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(gpuMemData, ImPlot::GetPlotMousePos().x);
+                        const auto idxVal = hoveredIndexFromPlotX(gpuMemVec, ImPlot::GetPlotMousePos().x);
                         if (idxVal.has_value())
                         {
                             ImGui::BeginTooltip();
@@ -1322,7 +1322,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         };
 
         const NowBar gpuMemBar{
-            .valueText = UI::Format::formatBytes(static_cast<std::uint64_t>(m_SmoothedUsage.gpuMemoryBytes)),
+            .valueText = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes)),
             .value01 = 0.0, // Auto-scale by setting to 0
             .color = theme.scheme().gpuMemory,
         };
