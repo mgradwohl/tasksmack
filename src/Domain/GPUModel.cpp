@@ -74,6 +74,18 @@ void GPUModel::refresh()
             const std::unique_lock lock(m_Mutex);
             m_Snapshots = std::move(newSnapshots);
 
+            // Record timestamp for this sample
+            const double nowSec = std::chrono::duration<double>(currentTime.time_since_epoch()).count();
+            m_HistoryTimestamps.push_back(nowSec);
+
+            // Trim timestamps to match history capacity
+            if (m_HistoryTimestamps.size() > GPU_HISTORY_CAPACITY)
+            {
+                m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(),
+                                          m_HistoryTimestamps.begin() +
+                                              static_cast<std::ptrdiff_t>(m_HistoryTimestamps.size() - GPU_HISTORY_CAPACITY));
+            }
+
             // Push to history under lock protection
             for (const auto& [gpuId, snapshot] : m_Snapshots)
             {
@@ -205,6 +217,71 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     }
 
     return snapshot;
+}
+
+// Template helper for extracting history fields - reduces code duplication
+template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(const std::string& gpuId, FieldPtr field) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].*field));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::utilizationHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::utilizationPercent);
+}
+
+std::vector<float> GPUModel::memoryPercentHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::memoryUsedPercent);
+}
+
+std::vector<float> GPUModel::gpuClockHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::gpuClockMHz);
+}
+
+std::vector<float> GPUModel::encoderHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::encoderUtilPercent);
+}
+
+std::vector<float> GPUModel::decoderHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::decoderUtilPercent);
+}
+
+std::vector<float> GPUModel::temperatureHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::temperatureC);
+}
+
+std::vector<float> GPUModel::powerHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::powerDrawWatts);
+}
+
+std::vector<float> GPUModel::fanSpeedHistory(const std::string& gpuId) const
+{
+    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedRPMPercent);
+}
+
+std::vector<double> GPUModel::historyTimestamps() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_HistoryTimestamps;
 }
 
 } // namespace Domain

@@ -2,7 +2,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +16,7 @@ DRMGPUProbe::DRMGPUProbe()
 {
     // Must call initialize() in the body, not the initializer list,
     // because initialize() uses m_Cards which must be constructed first
+    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
     m_Available = initialize();
 
     if (m_Available)
@@ -205,6 +205,7 @@ std::string DRMGPUProbe::getVendorName(const std::string& vendorId)
     return "Unknown";
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
 {
     GPUInfo info{};

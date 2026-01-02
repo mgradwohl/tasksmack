@@ -35,13 +35,13 @@ If you need to add new documentation, keep it narrowly scoped and update the rel
 
 **Essential commands:**
 ```bash
+# Lint first (catches issues early)
+./tools/clang-tidy.sh debug    # Linux
+pwsh tools/clang-tidy.ps1 debug # Windows
+
 # Format before commit (REQUIRED)
 ./tools/clang-format.sh        # Linux
 pwsh tools/clang-format.ps1    # Windows
-
-# Lint regularly
-./tools/clang-tidy.sh debug    # Linux
-pwsh tools/clang-tidy.ps1 debug # Windows
 
 # Test after changes
 ctest --preset debug            # Linux

@@ -106,7 +106,7 @@ Users need to see how much memory is shared between processes.
 - [ ] Add "SHR" column to process table in UI
 - [ ] Format shared memory in human-readable units (KB/MB/GB)
 - [ ] Update tests for ProcessModel
-- [ ] Run clang-format and clang-tidy
+- [ ] Run clang-tidy and clang-format
 
 ## Context
 - Files: `src/Platform/ProcessTypes.h`, `src/Platform/Linux/LinuxProcessProbe.cpp`,

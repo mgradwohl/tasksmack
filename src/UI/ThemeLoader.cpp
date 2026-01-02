@@ -297,11 +297,18 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.gpuPower = getColor(tbl, "charts.gpu.power");
         scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
         scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
+        scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
+        scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
 
         // Danger buttons
         scheme.dangerButton = getColor(tbl, "buttons.danger.normal");
         scheme.dangerButtonHovered = getColor(tbl, "buttons.danger.hovered");
         scheme.dangerButtonActive = getColor(tbl, "buttons.danger.active");
+
+        // Success buttons (e.g., Resume)
+        scheme.successButton = getColor(tbl, "buttons.success.normal");
+        scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
+        scheme.successButtonActive = getColor(tbl, "buttons.success.active");
 
         // Window colors
         scheme.windowBg = getColor(tbl, "ui.window.background");

@@ -103,11 +103,18 @@ struct ColorScheme
     ImVec4 gpuPower{};           // GPU power line
     ImVec4 gpuEncoder{};         // GPU encoder utilization
     ImVec4 gpuDecoder{};         // GPU decoder utilization
+    ImVec4 gpuClock{};           // GPU clock speed line
+    ImVec4 gpuFan{};             // GPU fan speed line
 
     // Danger button colors
     ImVec4 dangerButton{};
     ImVec4 dangerButtonHovered{};
     ImVec4 dangerButtonActive{};
+
+    // Success button colors (e.g., Resume)
+    ImVec4 successButton{};
+    ImVec4 successButtonHovered{};
+    ImVec4 successButtonActive{};
 
     // ImGui style colors (base colors for UI chrome)
     ImVec4 windowBg{};

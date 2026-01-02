@@ -1039,7 +1039,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
                 {
                     if (i > 0)
+                    {
                         enginesStr += ", ";
+                    }
                     enginesStr += proc.gpuEngines[i];
                 }
                 ImGui::TextUnformatted(enginesStr.c_str());

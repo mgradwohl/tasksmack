@@ -103,6 +103,8 @@ power = "#2E7D32"                 # Green - GPU power draw line
 power_fill = "#2E7D324D"          # Green with 30% alpha - GPU power fill
 encoder = "#66BB6A"               # Teal - GPU encoder utilization
 decoder = "#388E3C"               # Magenta - GPU decoder utilization
+clock = "#64B5F6"             # Light Blue - GPU clock speed line
+fan = "#78909C"                # Blue Gray - GPU fan speed line
 integrated_badge = "#757575"      # Muted gray - integrated GPU badge
 discrete_badge = "#4CAF50"        # Windows Blue - discrete GPU badge
 
@@ -131,6 +133,11 @@ steal_fill = "#1B5E2059"     # Darkest with 35% alpha - steal fill
 normal = "#2E7D32"     # Dark green
 hovered = "#1B5E20"    # Darkest green
 active = "#43A047"     # Medium-dark green
+
+[buttons.success]
+normal = "#43A047"     # Medium green
+hovered = "#66BB6A"    # Light green
+active = "#388E3C"     # Dark green
 
 # =============================================================================
 # WINDOW COLORS
