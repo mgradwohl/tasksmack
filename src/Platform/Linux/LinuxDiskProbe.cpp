@@ -123,7 +123,6 @@ SystemDiskCounters LinuxDiskProbe::read()
         result.disks.push_back(disk);
     }
 
-    spdlog::debug("LinuxDiskProbe: read {} devices", result.disks.size());
     return result;
 }
 

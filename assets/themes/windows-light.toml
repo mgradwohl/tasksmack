@@ -100,6 +100,8 @@ temperature = "#F7630C"           # Gold - GPU temperature line
 power = "#107C10"                 # Green - GPU power draw line
 encoder = "#038387"               # Teal - GPU encoder utilization
 decoder = "#BF0077"               # Magenta - GPU decoder utilization
+clock = "#64B5F6"             # Light Blue - GPU clock speed line
+fan = "#78909C"                # Blue Gray - GPU fan speed line
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -125,6 +127,11 @@ steal_fill = "#C50F1F59"     # Dark red with 35% alpha - steal fill
 normal = "#C50F1F"     # Dark red
 hovered = "#E74856"    # Red
 active = "#A40912"     # Darker red
+
+[buttons.success]
+normal = "#16825D"     # Windows green
+hovered = "#20A271"    # Bright green
+active = "#106B4E"     # Dark green
 
 # =============================================================================
 # WINDOW COLORS

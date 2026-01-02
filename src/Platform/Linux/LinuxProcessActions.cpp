@@ -72,7 +72,8 @@ ProcessActionResult LinuxProcessActions::setPriority(int32_t pid, int32_t nice)
     switch (err)
     {
     case EPERM:
-        errorMsg = "Permission denied - cannot lower priority without root privileges";
+        errorMsg = "Permission denied. To lower priority (increase niceness), run TaskSmack as root or use: sudo renice -n " +
+                   std::to_string(clampedNice) + " -p " + std::to_string(pid);
         break;
     case ESRCH:
         errorMsg = "Process not found - may have already exited";
@@ -80,7 +81,7 @@ ProcessActionResult LinuxProcessActions::setPriority(int32_t pid, int32_t nice)
     // Note: EACCES is not in POSIX for setpriority(), but is documented by
     // Linux setpriority(2) man page as a possible error code.
     case EACCES:
-        errorMsg = "Permission denied - cannot change priority of this process";
+        errorMsg = "Permission denied. Try running TaskSmack with elevated privileges (sudo).";
         break;
     default:
         errorMsg = std::system_category().message(err);

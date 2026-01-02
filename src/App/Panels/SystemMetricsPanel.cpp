@@ -443,14 +443,12 @@ void SystemMetricsPanel::renderOverview()
                 std::vector<float> yUserTop(breakdownCount);
                 std::vector<float> ySystemTop(breakdownCount);
                 std::vector<float> yIowaitTop(breakdownCount);
-                std::vector<float> yTotalTop(breakdownCount);
 
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
                     yUserTop[i] = cpuUserHist[i];
                     ySystemTop[i] = cpuUserHist[i] + cpuSystemHist[i];
                     yIowaitTop[i] = ySystemTop[i] + cpuIowaitHist[i];
-                    yTotalTop[i] = yIowaitTop[i] + cpuIdleHist[i];
                 }
 
                 ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
@@ -463,10 +461,6 @@ void SystemMetricsPanel::renderOverview()
                 ImPlot::SetNextFillStyle(theme.scheme().cpuIowaitFill);
                 ImPlot::PlotShaded(
                     "I/O Wait", breakdownTimeData.data(), ySystemTop.data(), yIowaitTop.data(), UI::Numeric::checkedCount(breakdownCount));
-
-                ImPlot::SetNextFillStyle(theme.scheme().cpuIdleFill);
-                ImPlot::PlotShaded(
-                    "Idle", breakdownTimeData.data(), yIowaitTop.data(), yTotalTop.data(), UI::Numeric::checkedCount(breakdownCount));
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -515,22 +509,23 @@ void SystemMetricsPanel::renderOverview()
 
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
+                       .label = "CPU Total",
                        .value01 = UI::Numeric::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
+                       .label = "User",
                        .value01 = UI::Numeric::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
+                       .label = "System",
                        .value01 = UI::Numeric::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
+                       .label = "I/O Wait",
                        .value01 = UI::Numeric::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
-    cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.idle),
-                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.idle),
-                       .color = theme.scheme().cpuIdle});
 
-    constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 5; // Keep CPU and Memory charts aligned
+    constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
     renderHistoryWithNowBars("OverviewCPUHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, cpuPlot, cpuBars, false, OVERVIEW_NOW_BAR_COLUMNS);
 
     ImGui::Spacing();
@@ -642,11 +637,13 @@ void SystemMetricsPanel::renderOverview()
         {
             const double usedPercentClamped = std::clamp(m_SmoothedMemory.usedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
+                                  .label = "Memory Used",
                                   .value01 = UI::Numeric::percent01(usedPercentClamped),
                                   .color = theme.scheme().chartMemory});
 
             const double cachedPercentClamped = std::clamp(m_SmoothedMemory.cachedPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercentClamped),
+                                  .label = "Memory Cached",
                                   .value01 = UI::Numeric::percent01(cachedPercentClamped),
                                   .color = theme.scheme().chartCpu});
         }
@@ -655,6 +652,7 @@ void SystemMetricsPanel::renderOverview()
         {
             const double swapPercentClamped = std::clamp(m_SmoothedMemory.swapPercent, 0.0, 100.0);
             memoryBars.push_back({.valueText = UI::Format::percentCompact(swapPercentClamped),
+                                  .label = "Swap Used",
                                   .value01 = UI::Numeric::percent01(swapPercentClamped),
                                   .color = theme.scheme().chartIo});
         }
@@ -740,12 +738,14 @@ void SystemMetricsPanel::renderOverview()
             // Build NowBars
             std::vector<NowBar> bars;
             bars.push_back({.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
+                            .label = "Power Draw",
                             .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
                             .color = theme.scheme().chartCpu});
 
             if (snap.power.hasBattery)
             {
                 bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
+                                .label = "Battery Charge",
                                 .value01 = UI::Numeric::percent01(m_SmoothedPower.batteryChargePercent),
                                 .color = theme.scheme().chartMemory});
             }
@@ -957,9 +957,11 @@ void SystemMetricsPanel::renderOverview()
                                   : std::max(m_SmoothedThreadsFaults.pageFaults, static_cast<double>(*std::ranges::max_element(faultData)));
 
         const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedThreadsFaults.threads), "threads"),
+                                .label = "Threads",
                                 .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.threads / threadMax, 0.0, 1.0) : 0.0,
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedThreadsFaults.pageFaults),
+                               .label = "Page Faults",
                                .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.pageFaults / faultMax, 0.0, 1.0) : 0.0,
                                .color = theme.accentColor(3)};
 
@@ -1043,9 +1045,11 @@ void SystemMetricsPanel::renderOverview()
                                        m_SmoothedSystemIO.writeBytesPerSec,
                                        1.0});
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
+                             .label = "Disk Read",
                              .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
                              .color = theme.scheme().chartCpu};
         const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
+                              .label = "Disk Write",
                               .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
                               .color = theme.scheme().chartIo};
 
@@ -1130,9 +1134,11 @@ void SystemMetricsPanel::renderOverview()
                                         m_SmoothedNetwork.recvBytesPerSec,
                                         1.0});
         const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
+                             .label = "Network Sent",
                              .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
                              .color = theme.scheme().chartCpu};
         const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
+                             .label = "Network Received",
                              .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
                              .color = theme.accentColor(2)};
 
@@ -1397,6 +1403,7 @@ void SystemMetricsPanel::renderPerCoreSection()
                         const double smoothed =
                             (coreIdx < m_SmoothedPerCore.size()) ? m_SmoothedPerCore[coreIdx] : snap.cpuPerCore[coreIdx].totalPercent;
                         const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
+                                         .label = std::format("Core {}", coreIdx),
                                          .value01 = UI::Numeric::percent01(smoothed),
                                          .color = theme.progressColor(smoothed)};
 
@@ -1447,8 +1454,6 @@ void SystemMetricsPanel::renderGpuSection()
         updateSmoothedGPU(snap.gpuId, snap, m_LastDeltaSeconds);
     }
 
-    constexpr size_t GPU_NOW_BAR_COLUMNS = 3; // Utilization, Memory, Clock
-
     // Render each GPU
     for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
     {
@@ -1486,6 +1491,11 @@ void SystemMetricsPanel::renderGpuSection()
         auto utilHist = m_GPUModel->utilizationHistory(snap.gpuId);
         auto memHist = m_GPUModel->memoryPercentHistory(snap.gpuId);
         auto clockHist = m_GPUModel->gpuClockHistory(snap.gpuId);
+        auto encoderHist = m_GPUModel->encoderHistory(snap.gpuId);
+        auto decoderHist = m_GPUModel->decoderHistory(snap.gpuId);
+        auto tempHist = m_GPUModel->temperatureHistory(snap.gpuId);
+        auto powerHist = m_GPUModel->powerHistory(snap.gpuId);
+        auto fanHist = m_GPUModel->fanSpeedHistory(snap.gpuId);
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
 
@@ -1498,6 +1508,30 @@ void SystemMetricsPanel::renderGpuSection()
         {
             memHist.erase(memHist.begin(), memHist.begin() + static_cast<std::ptrdiff_t>(memHist.size() - alignedCount));
         }
+        if (encoderHist.size() > alignedCount)
+        {
+            encoderHist.erase(encoderHist.begin(), encoderHist.begin() + static_cast<std::ptrdiff_t>(encoderHist.size() - alignedCount));
+        }
+        if (decoderHist.size() > alignedCount)
+        {
+            decoderHist.erase(decoderHist.begin(), decoderHist.begin() + static_cast<std::ptrdiff_t>(decoderHist.size() - alignedCount));
+        }
+        if (clockHist.size() > alignedCount)
+        {
+            clockHist.erase(clockHist.begin(), clockHist.begin() + static_cast<std::ptrdiff_t>(clockHist.size() - alignedCount));
+        }
+        if (tempHist.size() > alignedCount)
+        {
+            tempHist.erase(tempHist.begin(), tempHist.begin() + static_cast<std::ptrdiff_t>(tempHist.size() - alignedCount));
+        }
+        if (powerHist.size() > alignedCount)
+        {
+            powerHist.erase(powerHist.begin(), powerHist.begin() + static_cast<std::ptrdiff_t>(powerHist.size() - alignedCount));
+        }
+        if (fanHist.size() > alignedCount)
+        {
+            fanHist.erase(fanHist.begin(), fanHist.begin() + static_cast<std::ptrdiff_t>(fanHist.size() - alignedCount));
+        }
 
         std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
 
@@ -1505,13 +1539,16 @@ void SystemMetricsPanel::renderGpuSection()
         const float maxClockMHz =
             caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
 
-        // History chart with utilization, memory%, and clock
-        ImGui::Text("GPU History (%zu samples)", alignedCount);
+        // ========================================
+        // Chart 1: Core + Video (all percentages)
+        // Utilization, Memory, Clock, Encoder, Decoder
+        // ========================================
+        ImGui::Text("GPU Core & Video (%zu samples)", alignedCount);
 
-        auto gpuPlot = [&]()
+        auto gpuCorePlot = [&]()
         {
             const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##GPUHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+            if (ImPlot::BeginPlot("##GPUCoreHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
             {
                 UI::Widgets::setupLegendDefault();
                 ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
@@ -1542,11 +1579,30 @@ void SystemMetricsPanel::renderGpuSection()
                     {
                         clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
                     }
-                    // Use a distinct color for clock - reuse chartIo or similar
                     ImVec4 clockColor = theme.scheme().chartIo;
-                    clockColor.w = 0.8F; // Slightly transparent
+                    clockColor.w = 0.8F;
                     plotLineWithFill(
                         "Clock", timeData.data(), clockPercent.data(), UI::Numeric::checkedCount(clockPercent.size()), clockColor);
+                }
+
+                // Encoder utilization
+                if (caps.hasEncoderDecoder && !encoderHist.empty())
+                {
+                    plotLineWithFill("Encoder",
+                                     timeData.data(),
+                                     encoderHist.data(),
+                                     UI::Numeric::checkedCount(encoderHist.size()),
+                                     theme.scheme().gpuEncoder);
+                }
+
+                // Decoder utilization
+                if (caps.hasEncoderDecoder && !decoderHist.empty())
+                {
+                    plotLineWithFill("Decoder",
+                                     timeData.data(),
+                                     decoderHist.data(),
+                                     UI::Numeric::checkedCount(decoderHist.size()),
+                                     theme.scheme().gpuDecoder);
                 }
 
                 // Tooltip on hover
@@ -1573,6 +1629,16 @@ void SystemMetricsPanel::renderGpuSection()
                         {
                             ImGui::TextColored(theme.scheme().chartIo, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
                         }
+                        if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
+                        {
+                            ImGui::TextColored(
+                                theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[*idxVal]).c_str());
+                        }
+                        if (caps.hasEncoderDecoder && *idxVal < decoderHist.size())
+                        {
+                            ImGui::TextColored(
+                                theme.scheme().gpuDecoder, "Decoder: %s", UI::Format::percentCompact(decoderHist[*idxVal]).c_str());
+                        }
                         ImGui::EndTooltip();
                     }
                 }
@@ -1581,105 +1647,229 @@ void SystemMetricsPanel::renderGpuSection()
             }
         };
 
-        // Build now bars for utilization, memory, clock
-        std::vector<NowBar> gpuBars;
-        gpuBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
-                           .value01 = UI::Numeric::percent01(smoothed.utilizationPercent),
-                           .color = theme.scheme().gpuUtilization});
-        gpuBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                           .value01 = UI::Numeric::percent01(smoothed.memoryPercent),
-                           .color = theme.scheme().gpuMemory});
+        // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
+        std::vector<NowBar> gpuCoreBars;
+        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
+                               .label = "GPU Utilization",
+                               .value01 = UI::Numeric::percent01(smoothed.utilizationPercent),
+                               .color = theme.scheme().gpuUtilization});
+        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                               .label = "GPU Memory",
+                               .value01 = UI::Numeric::percent01(smoothed.memoryPercent),
+                               .color = theme.scheme().gpuMemory});
         if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
         {
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
-                               .value01 = UI::Numeric::percent01(clockPercent),
-                               .color = theme.scheme().chartIo});
+            gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
+                                   .label = "GPU Clock",
+                                   .value01 = UI::Numeric::percent01(clockPercent),
+                                   .color = theme.scheme().chartIo});
+        }
+        if (caps.hasEncoderDecoder)
+        {
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.encoderUtilPercent),
+                                   .label = "Encoder",
+                                   .value01 = UI::Numeric::percent01(snap.encoderUtilPercent),
+                                   .color = theme.scheme().gpuEncoder});
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.decoderUtilPercent),
+                                   .label = "Decoder",
+                                   .value01 = UI::Numeric::percent01(snap.decoderUtilPercent),
+                                   .color = theme.scheme().gpuDecoder});
         }
 
-        const std::string layoutId = std::format("GPUHistoryLayout{}", gpuIdx);
-        renderHistoryWithNowBars(layoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuPlot, gpuBars, false, GPU_NOW_BAR_COLUMNS);
+        // Build thermal bars early so we can calculate max column count for alignment
+        std::vector<NowBar> gpuThermalBars;
+        constexpr float maxTempC = 100.0F;
+        const float maxPowerW = snap.powerLimitWatts > 0.0 ? static_cast<float>(snap.powerLimitWatts) : 300.0F;
+        if (caps.hasTemperature)
+        {
+            const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
+            gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
+                                      .label = "GPU Temperature",
+                                      .value01 = UI::Numeric::percent01(tempPercent),
+                                      .color = theme.scheme().gpuTemperature});
+        }
+        if (caps.hasPowerMetrics)
+        {
+            const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
+            gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
+                                      .label = "GPU Power",
+                                      .value01 = UI::Numeric::percent01(powerPercent),
+                                      .color = theme.scheme().gpuPower});
+        }
+        if (caps.hasFanSpeed)
+        {
+            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedRPMPercent),
+                                      .label = "GPU Fan Speed",
+                                      .value01 = UI::Numeric::percent01(static_cast<double>(snap.fanSpeedRPMPercent)),
+                                      .color = theme.scheme().gpuFan});
+        }
 
-        // Additional metrics below the chart
+        // Use max bar count across both charts for x-axis alignment
+        const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
+
+        const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
+        renderHistoryWithNowBars(coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+
+        // Show notes for unavailable core metrics
+        {
+            std::vector<std::string> unavailableCoreNotes;
+            if (!caps.hasClockSpeeds)
+            {
+                unavailableCoreNotes.emplace_back("clock speed");
+            }
+            if (!caps.hasEncoderDecoder)
+            {
+                unavailableCoreNotes.emplace_back("encoder/decoder utilization");
+            }
+
+            if (!unavailableCoreNotes.empty())
+            {
+                std::string noteText = "Note: This system does not report GPU ";
+                for (size_t i = 0; i < unavailableCoreNotes.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        noteText += (unavailableCoreNotes.size() == 2) ? " or " : ", ";
+                    }
+                    noteText += unavailableCoreNotes[i];
+                }
+                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
+            }
+        }
+
         ImGui::Spacing();
 
-        // Create a compact table for secondary metrics (temp, power, fan, etc.)
-        if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed || caps.hasEncoderDecoder)
+        // ========================================
+        // Chart 2: Thermal/Power (temp, power, fan)
+        // These have different units, normalize to percentage for display
+        // ========================================
+        if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            if (ImGui::BeginTable("GPUSecondaryMetrics", 4, ImGuiTableFlags_SizingStretchSame))
+            ImGui::Text("Thermal & Power");
+
+            // Note: maxTempC and maxPowerW are defined above with the thermal bars
+            // Note: Fan speed is already a percentage (0-100%), no max needed
+
+            auto gpuThermalPlot = [&]()
             {
-                // Temperature
-                if (caps.hasTemperature && snap.temperatureC > 0)
+                const UI::Widgets::PlotFontGuard fontGuard;
+                if (ImPlot::BeginPlot("##GPUThermalHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
                 {
-                    ImGui::TableNextColumn();
-                    ImGui::TextColored(
-                        theme.scheme().gpuTemperature, "%s Temp: %d°C", ICON_FA_TEMPERATURE_HALF, static_cast<int>(smoothed.temperatureC));
-                    if (caps.hasHotspotTemp && snap.hotspotTempC > 0)
-                    {
-                        ImGui::SameLine();
-                        ImGui::TextColored(theme.scheme().textMuted, "(Hot: %d°C)", snap.hotspotTempC);
-                    }
-                }
-                else
-                {
-                    ImGui::TableNextColumn();
-                }
+                    UI::Widgets::setupLegendDefault();
+                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
+                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
+                    ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-                // Power
-                if (caps.hasPowerMetrics && snap.powerDrawWatts > 0.0)
-                {
-                    ImGui::TableNextColumn();
-                    if (snap.powerLimitWatts > 0.0)
+                    // Temperature (normalized to 0-100%)
+                    if (caps.hasTemperature && !tempHist.empty())
                     {
-                        ImGui::TextColored(
-                            theme.scheme().gpuPower, "%s Power: %.1fW / %.1fW", ICON_FA_BOLT, smoothed.powerWatts, snap.powerLimitWatts);
-                    }
-                    else
-                    {
-                        ImGui::TextColored(theme.scheme().gpuPower, "%s Power: %.1fW", ICON_FA_BOLT, smoothed.powerWatts);
-                    }
-                }
-                else
-                {
-                    ImGui::TableNextColumn();
-                }
-
-                // Fan
-                if (caps.hasFanSpeed && snap.fanSpeedRPMPercent > 0)
-                {
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s Fan: %u%%", ICON_FA_FAN, snap.fanSpeedRPMPercent);
-                }
-                else
-                {
-                    ImGui::TableNextColumn();
-                }
-
-                // Encoder/Decoder
-                if (caps.hasEncoderDecoder && (snap.encoderUtilPercent > 0.0 || snap.decoderUtilPercent > 0.0))
-                {
-                    ImGui::TableNextColumn();
-                    std::string encDecStr;
-                    if (snap.encoderUtilPercent > 0.0)
-                    {
-                        encDecStr += std::format("Enc: {:.1f}%", snap.encoderUtilPercent);
-                    }
-                    if (snap.decoderUtilPercent > 0.0)
-                    {
-                        if (!encDecStr.empty())
+                        std::vector<float> tempPercent(tempHist.size());
+                        for (size_t i = 0; i < tempHist.size(); ++i)
                         {
-                            encDecStr += " ";
+                            tempPercent[i] = (tempHist[i] / maxTempC) * 100.0F;
                         }
-                        encDecStr += std::format("Dec: {:.1f}%", snap.decoderUtilPercent);
+                        plotLineWithFill("Temp",
+                                         timeData.data(),
+                                         tempPercent.data(),
+                                         UI::Numeric::checkedCount(tempPercent.size()),
+                                         theme.scheme().gpuTemperature);
                     }
-                    ImGui::TextColored(theme.scheme().gpuEncoder, "%s %s", ICON_FA_VIDEO, encDecStr.c_str());
-                }
-                else
-                {
-                    ImGui::TableNextColumn();
-                }
 
-                ImGui::EndTable();
+                    // Power (normalized to power limit percentage)
+                    if (caps.hasPowerMetrics && !powerHist.empty())
+                    {
+                        std::vector<float> powerPercent(powerHist.size());
+                        for (size_t i = 0; i < powerHist.size(); ++i)
+                        {
+                            powerPercent[i] = (powerHist[i] / maxPowerW) * 100.0F;
+                        }
+                        plotLineWithFill("Power",
+                                         timeData.data(),
+                                         powerPercent.data(),
+                                         UI::Numeric::checkedCount(powerPercent.size()),
+                                         theme.scheme().gpuPower);
+                    }
+
+                    // Fan speed (already a percentage)
+                    if (caps.hasFanSpeed && !fanHist.empty())
+                    {
+                        plotLineWithFill(
+                            "Fan", timeData.data(), fanHist.data(), UI::Numeric::checkedCount(fanHist.size()), theme.scheme().gpuFan);
+                    }
+
+                    // Tooltip on hover
+                    if (ImPlot::IsPlotHovered() && !timeData.empty())
+                    {
+                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                        {
+                            ImGui::BeginTooltip();
+                            const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
+                            ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::Separator();
+                            if (caps.hasTemperature && *idxVal < tempHist.size())
+                            {
+                                ImGui::TextColored(theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[*idxVal]));
+                            }
+                            if (caps.hasPowerMetrics && *idxVal < powerHist.size())
+                            {
+                                ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[*idxVal]));
+                            }
+                            if (caps.hasFanSpeed && *idxVal < fanHist.size())
+                            {
+                                ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[*idxVal]));
+                            }
+                            ImGui::EndTooltip();
+                        }
+                    }
+
+                    ImPlot::EndPlot();
+                }
+            };
+
+            // Thermal bars were already built above for alignment calculation
+            // Render thermal chart with the same column count as core chart for x-axis alignment
+            if (!gpuThermalBars.empty())
+            {
+                const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
+                renderHistoryWithNowBars(
+                    thermalLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
+            }
+            else
+            {
+                // No current data, just render the plot without now bars
+                gpuThermalPlot();
+            }
+
+            // Show notes for unavailable metrics
+            std::vector<std::string> unavailableNotes;
+            if (!caps.hasTemperature)
+            {
+                unavailableNotes.emplace_back("temperature");
+            }
+            if (!caps.hasPowerMetrics)
+            {
+                unavailableNotes.emplace_back("power draw");
+            }
+            if (!caps.hasFanSpeed)
+            {
+                unavailableNotes.emplace_back("fan speed");
+            }
+
+            if (!unavailableNotes.empty())
+            {
+                std::string noteText = "Note: This system does not report GPU ";
+                for (size_t i = 0; i < unavailableNotes.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        noteText += (i == unavailableNotes.size() - 1) ? " or " : ", ";
+                    }
+                    noteText += unavailableNotes[i];
+                }
+                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
             }
         }
 

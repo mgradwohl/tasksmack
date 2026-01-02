@@ -258,6 +258,7 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
 struct NowBar
 {
     std::string valueText;
+    std::string label; // Tooltip label (e.g., "CPU Total", "Memory")
     double value01 = 0.0;
     ImVec4 color;
 };
@@ -425,8 +426,14 @@ inline void renderHistoryWithNowBars(const char* tableId,
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
             }
 
-            drawVerticalBarWithValue(
-                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", bars[i].valueText.c_str());
+            drawVerticalBarWithValue("##NowBar",
+                                     bars[i].value01,
+                                     bars[i].color,
+                                     plotHeight,
+                                     widthPerBar,
+                                     "",
+                                     "",
+                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -469,8 +476,14 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             ImGui::BeginGroup();
-            drawVerticalBarWithValue(
-                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", bars[i].valueText.c_str());
+            drawVerticalBarWithValue("##NowBar",
+                                     bars[i].value01,
+                                     bars[i].color,
+                                     plotHeight,
+                                     widthPerBar,
+                                     "",
+                                     "",
+                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
             ImGui::EndGroup();
             ImGui::PopID();
 

@@ -41,6 +41,11 @@ class GPUModel
     [[nodiscard]] std::vector<float> utilizationHistory(const std::string& gpuId) const;
     [[nodiscard]] std::vector<float> memoryPercentHistory(const std::string& gpuId) const;
     [[nodiscard]] std::vector<float> gpuClockHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> encoderHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> decoderHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> temperatureHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> powerHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> fanSpeedHistory(const std::string& gpuId) const;
 
     // Get timestamps for GPU history
     [[nodiscard]] std::vector<double> historyTimestamps() const;

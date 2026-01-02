@@ -525,12 +525,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
+                                 .label = "CPU Total",
                                  .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuPercent),
                                  .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
         const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
+                                .label = "User",
                                 .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuUserPercent),
                                 .color = theme.scheme().cpuUser};
         const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
+                                  .label = "System",
                                   .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuSystemPercent),
                                   .color = theme.scheme().cpuSystem};
 
@@ -638,12 +641,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
             std::vector<NowBar> memoryBars;
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
+                                  .label = "Memory Used",
                                   .value01 = UI::Numeric::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
+                                  .label = "Shared",
                                   .value01 = UI::Numeric::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
+                                  .label = "Virtual",
                                   .value01 = UI::Numeric::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 
@@ -776,10 +782,12 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
     const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
 
     const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
+                            .label = "Threads",
                             .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
                             .color = theme.scheme().chartCpu};
 
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
+                           .label = "Page Faults",
                            .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
                            .color = theme.scheme().chartIo};
 
@@ -862,10 +870,12 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
 
     const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
+                         .label = "Disk Read",
                          .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartIo};
 
     const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
+                          .label = "Disk Write",
                           .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
                           .color = theme.accentColor(1)};
 
@@ -942,10 +952,12 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     const auto recvUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.netRecvBytesPerSec);
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
+                         .label = "Network Sent",
                          .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartCpu};
 
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
+                         .label = "Network Received",
                          .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
                          .color = theme.accentColor(2)};
 
@@ -1022,6 +1034,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
 
     const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
+                          .label = "Power Usage",
                           .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
                           .color = theme.scheme().textInfo};
 
@@ -1099,7 +1112,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         ImGui::Text("GPU Memory:");
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-        const std::string memStr = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
+        const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
         // GPU Device(s)
@@ -1123,7 +1136,9 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
             {
                 if (i > 0)
+                {
                     enginesStr += ", ";
+                }
                 enginesStr += proc.gpuEngines[i];
             }
             ImGui::TextUnformatted(enginesStr.c_str());
@@ -1203,7 +1218,9 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                         for (size_t i = 0; i < gpuUsage.engines.size(); ++i)
                         {
                             if (i > 0)
+                            {
                                 engStr += ", ";
+                            }
                             engStr += gpuUsage.engines[i];
                         }
                         ImGui::TextUnformatted(engStr.c_str());
@@ -1317,12 +1334,14 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         // Now bars for current values
         const NowBar gpuUtilBar{
             .valueText = std::format("{:.1f}%", m_SmoothedUsage.gpuUtilPercent),
+            .label = "GPU Utilization",
             .value01 = m_SmoothedUsage.gpuUtilPercent / 100.0,
             .color = theme.scheme().gpuUtilization,
         };
 
         const NowBar gpuMemBar{
-            .valueText = UI::Format::formatBytes(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes)),
+            .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
+            .label = "GPU Memory",
             .value01 = 0.0, // Auto-scale by setting to 0
             .color = theme.scheme().gpuMemory,
         };
@@ -1515,76 +1534,85 @@ void ProcessDetailsPanel::renderActions()
         ImGui::EndPopup();
     }
 
-    // Action buttons
-    ImGui::BeginGroup();
+    // Action buttons - use consistent sizing and 2x2 grid layout
+    constexpr float BUTTON_WIDTH = 180.0F;
+    constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
+    const ImVec2 buttonSize(BUTTON_WIDTH, BUTTON_HEIGHT);
 
-    // Terminate (SIGTERM) - graceful
-    if (m_ActionCapabilities.canTerminate)
+    // Use a table for consistent alignment
+    if (ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
     {
-        if (ImGui::Button(ICON_FA_XMARK " Terminate (SIGTERM)", ImVec2(200, 0)))
+        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, BUTTON_WIDTH + 8.0F);
+        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, BUTTON_WIDTH + 8.0F);
+
+        // Row 1: Terminate and Kill
+        ImGui::TableNextRow();
+
+        // Terminate (SIGTERM) - graceful
+        ImGui::TableNextColumn();
+        if (m_ActionCapabilities.canTerminate)
         {
-            m_ConfirmAction = "terminate";
-            m_ShowConfirmDialog = true;
+            if (ImGui::Button(ICON_FA_XMARK " Terminate (SIGTERM)", buttonSize))
+            {
+                m_ConfirmAction = "terminate";
+                m_ShowConfirmDialog = true;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Send SIGTERM - request graceful shutdown");
+            }
         }
-        if (ImGui::IsItemHovered())
+
+        // Kill (SIGKILL) - forceful
+        ImGui::TableNextColumn();
+        if (m_ActionCapabilities.canKill)
         {
-            ImGui::SetTooltip("Send SIGTERM - request graceful shutdown");
+            if (ImGui::Button(ICON_FA_SKULL " Kill (SIGKILL)", buttonSize))
+            {
+                m_ConfirmAction = "kill";
+                m_ShowConfirmDialog = true;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Send SIGKILL - force kill (cannot be caught)");
+            }
         }
+
+        // Row 2: Stop and Resume
+        ImGui::TableNextRow();
+
+        // Stop (SIGSTOP) - pause
+        ImGui::TableNextColumn();
+        if (m_ActionCapabilities.canStop)
+        {
+            if (ImGui::Button(ICON_FA_PAUSE " Stop (SIGSTOP)", buttonSize))
+            {
+                m_ConfirmAction = "stop";
+                m_ShowConfirmDialog = true;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Send SIGSTOP - pause the process");
+            }
+        }
+
+        // Continue (SIGCONT) - resume
+        ImGui::TableNextColumn();
+        if (m_ActionCapabilities.canContinue)
+        {
+            if (ImGui::Button(ICON_FA_PLAY " Resume (SIGCONT)", buttonSize))
+            {
+                m_ConfirmAction = "resume";
+                m_ShowConfirmDialog = true;
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Send SIGCONT - resume a stopped process");
+            }
+        }
+
+        ImGui::EndTable();
     }
-
-    ImGui::SameLine();
-
-    // Kill (SIGKILL) - forceful
-    if (m_ActionCapabilities.canKill)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().dangerButton);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().dangerButtonHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().dangerButtonActive);
-        if (ImGui::Button(ICON_FA_SKULL " Kill (SIGKILL)", ImVec2(200, 0)))
-        {
-            m_ConfirmAction = "kill";
-            m_ShowConfirmDialog = true;
-        }
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Send SIGKILL - force kill (cannot be caught)");
-        }
-    }
-
-    ImGui::Spacing();
-
-    // Stop (SIGSTOP) - pause
-    if (m_ActionCapabilities.canStop)
-    {
-        if (ImGui::Button("Stop (SIGSTOP)", ImVec2(180, 0)))
-        {
-            m_ConfirmAction = "stop";
-            m_ShowConfirmDialog = true;
-        }
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Send SIGSTOP - pause the process");
-        }
-    }
-
-    ImGui::SameLine();
-
-    // Continue (SIGCONT) - resume
-    if (m_ActionCapabilities.canContinue)
-    {
-        if (ImGui::Button("Resume (SIGCONT)", ImVec2(180, 0)))
-        {
-            m_ConfirmAction = "resume";
-            m_ShowConfirmDialog = true;
-        }
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Send SIGCONT - resume a stopped process");
-        }
-    }
-
-    ImGui::EndGroup();
 
     // Priority adjustment section
     if (m_ActionCapabilities.canSetPriority)

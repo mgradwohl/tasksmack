@@ -3,7 +3,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <ranges>
 
 namespace Domain
 {
@@ -269,6 +268,96 @@ std::vector<float> GPUModel::gpuClockHistory(const std::string& gpuId) const
     for (size_t i = 0; i < it->second.size(); ++i)
     {
         result.push_back(static_cast<float>(it->second[i].gpuClockMHz));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::encoderHistory(const std::string& gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].encoderUtilPercent));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::decoderHistory(const std::string& gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].decoderUtilPercent));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::temperatureHistory(const std::string& gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].temperatureC));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::powerHistory(const std::string& gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].powerDrawWatts));
+    }
+    return result;
+}
+
+std::vector<float> GPUModel::fanSpeedHistory(const std::string& gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(static_cast<float>(it->second[i].fanSpeedRPMPercent));
     }
     return result;
 }
