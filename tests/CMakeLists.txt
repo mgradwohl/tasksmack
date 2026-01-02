@@ -97,6 +97,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
