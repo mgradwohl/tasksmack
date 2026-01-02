@@ -97,9 +97,7 @@ utilization_fill = "#8764B84D"    # Purple with 30% alpha - GPU fill
 memory = "#E74856"                # Red - GPU memory line
 memory_fill = "#E748564D"         # Red with 30% alpha - GPU memory fill
 temperature = "#F7630C"           # Gold - GPU temperature line
-temperature_fill = "#F7630C4D"    # Gold with 30% alpha - GPU temp fill
 power = "#107C10"                 # Green - GPU power draw line
-power_fill = "#107C104D"          # Green with 30% alpha - GPU power fill
 encoder = "#038387"               # Teal - GPU encoder utilization
 decoder = "#BF0077"               # Magenta - GPU decoder utilization
 
