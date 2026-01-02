@@ -102,8 +102,6 @@ power = "#107C10"                 # Green - GPU power draw line
 power_fill = "#107C104D"          # Green with 30% alpha - GPU power fill
 encoder = "#038387"               # Teal - GPU encoder utilization
 decoder = "#BF0077"               # Magenta - GPU decoder utilization
-integrated_badge = "#8A8A8A"      # Muted gray - integrated GPU badge
-discrete_badge = "#0078D4"        # Windows Blue - discrete GPU badge
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
