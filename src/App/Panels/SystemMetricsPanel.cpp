@@ -1555,7 +1555,7 @@ void SystemMetricsPanel::renderGpuSection()
                     {
                         clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
                     }
-                    ImVec4 clockColor = theme.scheme().chartIo;
+                    ImVec4 clockColor = theme.scheme().gpuClock;
                     clockColor.w = 0.8F;
                     plotLineWithFill(
                         "Clock", timeData.data(), clockPercent.data(), UI::Numeric::checkedCount(clockPercent.size()), clockColor);
@@ -1603,7 +1603,7 @@ void SystemMetricsPanel::renderGpuSection()
                         }
                         if (caps.hasClockSpeeds && *idxVal < clockHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().chartIo, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
+                            ImGui::TextColored(theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
                         }
                         if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
                         {
@@ -1639,7 +1639,7 @@ void SystemMetricsPanel::renderGpuSection()
             gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
                                    .label = "GPU Clock",
                                    .value01 = UI::Numeric::percent01(clockPercent),
-                                   .color = theme.scheme().chartIo});
+                                   .color = theme.scheme().gpuClock});
         }
         if (caps.hasEncoderDecoder)
         {

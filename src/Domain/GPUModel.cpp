@@ -220,7 +220,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 }
 
 // Template helper for extracting history fields - reduces code duplication
-template<typename T, typename FieldPtr> std::vector<float> GPUModel::getHistoryField(const std::string& gpuId, FieldPtr field) const
+template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(const std::string& gpuId, FieldPtr field) const
 {
     const std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
@@ -240,42 +240,42 @@ template<typename T, typename FieldPtr> std::vector<float> GPUModel::getHistoryF
 
 std::vector<float> GPUModel::utilizationHistory(const std::string& gpuId) const
 {
-    return getHistoryField<double>(gpuId, &GPUSnapshot::utilizationPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::utilizationPercent);
 }
 
 std::vector<float> GPUModel::memoryPercentHistory(const std::string& gpuId) const
 {
-    return getHistoryField<double>(gpuId, &GPUSnapshot::memoryUsedPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::memoryUsedPercent);
 }
 
 std::vector<float> GPUModel::gpuClockHistory(const std::string& gpuId) const
 {
-    return getHistoryField<std::uint32_t>(gpuId, &GPUSnapshot::gpuClockMHz);
+    return getHistoryField(gpuId, &GPUSnapshot::gpuClockMHz);
 }
 
 std::vector<float> GPUModel::encoderHistory(const std::string& gpuId) const
 {
-    return getHistoryField<double>(gpuId, &GPUSnapshot::encoderUtilPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::encoderUtilPercent);
 }
 
 std::vector<float> GPUModel::decoderHistory(const std::string& gpuId) const
 {
-    return getHistoryField<double>(gpuId, &GPUSnapshot::decoderUtilPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::decoderUtilPercent);
 }
 
 std::vector<float> GPUModel::temperatureHistory(const std::string& gpuId) const
 {
-    return getHistoryField<std::int32_t>(gpuId, &GPUSnapshot::temperatureC);
+    return getHistoryField(gpuId, &GPUSnapshot::temperatureC);
 }
 
 std::vector<float> GPUModel::powerHistory(const std::string& gpuId) const
 {
-    return getHistoryField<double>(gpuId, &GPUSnapshot::powerDrawWatts);
+    return getHistoryField(gpuId, &GPUSnapshot::powerDrawWatts);
 }
 
 std::vector<float> GPUModel::fanSpeedHistory(const std::string& gpuId) const
 {
-    return getHistoryField<std::uint32_t>(gpuId, &GPUSnapshot::fanSpeedRPMPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedRPMPercent);
 }
 
 std::vector<double> GPUModel::historyTimestamps() const
