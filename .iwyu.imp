@@ -24,5 +24,17 @@
 
   # Project-specific: group related platform headers
   { include: ["\"Platform/Linux/LinuxProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },
-  { include: ["\"Platform/Windows/WindowsProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] }
+  { include: ["\"Platform/Windows/WindowsProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxDiskProbe.h\"", "private", "\"Platform/IDiskProbe.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsDiskProbe.h\"", "private", "\"Platform/IDiskProbe.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxGPUProbe.h\"", "private", "\"Platform/IGPUProbe.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsGPUProbe.h\"", "private", "\"Platform/IGPUProbe.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxSystemProbe.h\"", "private", "\"Platform/ISystemProbe.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsSystemProbe.h\"", "private", "\"Platform/ISystemProbe.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxPowerProbe.h\"", "private", "\"Platform/IPowerProbe.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsPowerProbe.h\"", "private", "\"Platform/IPowerProbe.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxPathProvider.h\"", "private", "\"Platform/IPathProvider.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsPathProvider.h\"", "private", "\"Platform/IPathProvider.h\"", "public"] },
+  { include: ["\"Platform/Linux/LinuxProcessActions.h\"", "private", "\"Platform/IProcessActions.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsProcessActions.h\"", "private", "\"Platform/IProcessActions.h\"", "public"] }
 ]
