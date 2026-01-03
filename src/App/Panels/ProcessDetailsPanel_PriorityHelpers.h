@@ -27,6 +27,11 @@ inline constexpr float PRIORITY_BADGE_HEIGHT = 24.0F;
 inline constexpr float PRIORITY_BADGE_ARROW_SIZE = 8.0F;
 inline constexpr float PRIORITY_GRADIENT_SEGMENTS = 40.0F;
 
+// Visual styling constants
+inline constexpr float PRIORITY_SLIDER_CORNER_RADIUS = 2.0F;    // Border rounding for slider bar
+inline constexpr float PRIORITY_BADGE_CORNER_RADIUS = 4.0F;     // Border rounding for value badge
+inline constexpr float PRIORITY_THUMB_OUTLINE_THICKNESS = 2.0F; // Outline width for slider thumb
+
 // Nice value range - imported from Domain for consistency (DRY principle)
 inline constexpr int32_t NICE_MIN = Domain::Priority::MIN_NICE;
 inline constexpr int32_t NICE_MAX = Domain::Priority::MAX_NICE;
@@ -52,8 +57,12 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
  * - nice 0: Green (normal priority)
  * - nice 19: Blue (low priority, yields CPU)
  *
+ * Note: Returns ImU32 directly (rather than ImVec4) because all call sites
+ * use the packed format for ImDrawList operations. This avoids redundant
+ * ImVec4->ImU32 conversions at each call site.
+ *
  * @param nice The nice value (-20 to 19)
- * @return ImU32 The interpolated color
+ * @return ImU32 The interpolated color in packed RGBA format
  */
 [[nodiscard]] inline auto getNiceColor(int32_t nice) -> ImU32
 {

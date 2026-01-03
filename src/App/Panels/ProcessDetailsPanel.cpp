@@ -92,19 +92,22 @@ using detail::NICE_MAX;
 using detail::NICE_MIN;
 using detail::NICE_RANGE;
 using detail::PRIORITY_BADGE_ARROW_SIZE;
+using detail::PRIORITY_BADGE_CORNER_RADIUS;
 using detail::PRIORITY_BADGE_HEIGHT;
 using detail::PRIORITY_GRADIENT_SEGMENTS;
+using detail::PRIORITY_SLIDER_CORNER_RADIUS;
 using detail::PRIORITY_SLIDER_HEIGHT;
 using detail::PRIORITY_SLIDER_WIDTH;
+using detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 
 /// Context structure for priority slider rendering
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext
 {
     ImDrawList* drawList = nullptr;
-    ImVec2 cursorStart;         // Screen position where badge area starts (ImVec2 defaults to 0,0)
-    ImVec2 sliderMin;           // Top-left of slider bar (ImVec2 defaults to 0,0)
-    ImVec2 sliderMax;           // Bottom-right of slider bar (ImVec2 defaults to 0,0)
+    ImVec2 cursorStart{};       // Screen position where badge area starts
+    ImVec2 sliderMin{};         // Top-left of slider bar
+    ImVec2 sliderMax{};         // Bottom-right of slider bar
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
@@ -1707,7 +1710,7 @@ void ProcessDetailsPanel::renderActions()
         drawPriorityGradient(drawList, ctx);
 
         // Draw slider border
-        drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), 2.0F);
+        drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), PRIORITY_SLIDER_CORNER_RADIUS);
 
         // Draw slider thumb/handle
         drawPriorityThumb(drawList, ctx);
@@ -1819,7 +1822,7 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue);
 
     // Draw badge rectangle with rounded corners
-    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, 4.0F);
+    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, PRIORITY_BADGE_CORNER_RADIUS);
 
     // Draw arrow pointing down from badge
     const ImVec2 arrowTip(badgeX, badgeMax.y + PRIORITY_BADGE_ARROW_SIZE);
@@ -1860,7 +1863,7 @@ void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const Priority
     const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (PRIORITY_SLIDER_HEIGHT * 0.5F));
 
     // Thumb outline
-    drawList->AddCircleFilled(thumbCenter, thumbRadius + 2.0F, ImGui::GetColorU32(ImGuiCol_Border));
+    drawList->AddCircleFilled(thumbCenter, thumbRadius + PRIORITY_THUMB_OUTLINE_THICKNESS, ImGui::GetColorU32(ImGuiCol_Border));
     // Thumb fill (white)
     drawList->AddCircleFilled(thumbCenter, thumbRadius, IM_COL32(255, 255, 255, 255));
 }

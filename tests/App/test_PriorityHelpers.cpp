@@ -189,17 +189,18 @@ TEST(PriorityHelpersTest, GetPriorityLabelCategories)
     EXPECT_EQ(getPriorityLabel(-15), "High");
     EXPECT_EQ(getPriorityLabel(-11), "High");
 
-    // Above normal (-10 <= nice < -5)
+    // Above normal (-10 <= nice <= -6). Note: -5 and higher are Normal.
     EXPECT_EQ(getPriorityLabel(-10), "Above Normal");
     EXPECT_EQ(getPriorityLabel(-7), "Above Normal");
-    EXPECT_EQ(getPriorityLabel(-5), "Normal"); // -5 is now Normal boundary
+    EXPECT_EQ(getPriorityLabel(-6), "Above Normal");
 
-    // Normal (-5 <= nice < 5)
+    // Normal (-5 <= nice <= 4). Boundary: nice < ABOVE_NORMAL_THRESHOLD (-5) is Above Normal.
+    EXPECT_EQ(getPriorityLabel(-5), "Normal");
     EXPECT_EQ(getPriorityLabel(-4), "Normal");
     EXPECT_EQ(getPriorityLabel(0), "Normal");
     EXPECT_EQ(getPriorityLabel(4), "Normal");
 
-    // Below normal (5 <= nice < 15)
+    // Below normal (5 <= nice <= 14)
     EXPECT_EQ(getPriorityLabel(5), "Below Normal");
     EXPECT_EQ(getPriorityLabel(10), "Below Normal");
     EXPECT_EQ(getPriorityLabel(14), "Below Normal");
