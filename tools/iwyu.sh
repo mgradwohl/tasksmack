@@ -227,7 +227,7 @@ CURRENT_PLATFORM="unknown"
 UNAME_OUT=$(uname -s 2>/dev/null || echo "")
 case "$UNAME_OUT" in
     Linux*) CURRENT_PLATFORM="linux" ;;
-    Darwin*) CURRENT_PLATFORM="linux" ;; # macOS builds target Linux probes
+    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; treat as non-Windows for source filtering
     CYGWIN*|MINGW*|MSYS*|Windows_NT) CURRENT_PLATFORM="windows" ;;
 esac
 
