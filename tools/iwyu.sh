@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
         -r|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
-        *.cpp|*.h) FILES+=("$1"); shift ;;
+        *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
         *) echo "Error: Unknown argument: $1" >&2; usage ;;
     esac
 done
