@@ -222,6 +222,7 @@ jobs:
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # Check if IWYU found any issues (grep returns 0 if pattern found, 1 if not)
           if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -231,7 +232,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
-          fi
+          fi || true
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Full report available in artifacts." >> $GITHUB_STEP_SUMMARY
