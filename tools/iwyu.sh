@@ -280,16 +280,76 @@ if [[ -n "$IWYU_TOOL" ]]; then
     fi
 else
     # Fall back to running include-what-you-use directly
+    # Extract compiler flags from compile_commands.json for accurate analysis
     for file in "${SOURCE_FILES[@]}"; do
         if $VERBOSE; then
             echo "  Analyzing: ${file#"${PROJECT_ROOT}"/}"
         fi
 
-        # Direct IWYU invocation when iwyu_tool.py is not available
-        $IWYU \
-            -Xiwyu --mapping_file="$IWYU_MAPPING" \
-            -Xiwyu --cxx17ns \
-            "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        # Extract compile flags for this file from compile_commands.json
+        # This ensures IWYU has access to include paths, defines, and other compilation flags
+        COMPILE_FLAGS=$(python3 -c "
+import json
+import sys
+import os
+
+with open('$COMPILE_COMMANDS') as f:
+    commands = json.load(f)
+
+# Find the compile command for this file
+target_file = '${file}'
+for cmd in commands:
+    file_path = cmd.get('file', '')
+    # Match by full path or basename
+    if file_path == target_file or os.path.basename(file_path) == os.path.basename(target_file):
+        command = cmd.get('command', '')
+        # Extract flags: remove compiler name and output-related flags
+        # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+        import shlex
+        tokens = shlex.split(command)
+        flags = []
+        skip_next = False
+        for i, token in enumerate(tokens):
+            if skip_next:
+                skip_next = False
+                continue
+            # Skip compiler name (first token)
+            if i == 0:
+                continue
+            # Skip output flags
+            if token in ['-o', '-c', '-MF', '-MT', '-MD']:
+                skip_next = True
+                continue
+            # Skip output files and source file
+            if token.startswith('-o') or token.endswith('.cpp') or token.endswith('.o'):
+                continue
+            # Keep relevant flags
+            if token.startswith('-I') or token.startswith('-D') or \
+               token.startswith('-std') or token.startswith('--sysroot') or \
+               (token.startswith('-f') and not token.startswith('-fpch')) or \
+               (token.startswith('-W') and not token.startswith('-Winvalid-pch')):
+                flags.append(token)
+        print(' '.join(flags))
+        break
+" 2>/dev/null || echo "")
+
+        # Direct IWYU invocation with extracted compile flags
+        if [[ -n "$COMPILE_FLAGS" ]]; then
+            $IWYU \
+                $COMPILE_FLAGS \
+                -Xiwyu --mapping_file="$IWYU_MAPPING" \
+                -Xiwyu --cxx17ns \
+                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        else
+            # Fallback: run without extracted flags (may produce less accurate results)
+            if $VERBOSE; then
+                echo "  Warning: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}"
+            fi
+            $IWYU \
+                -Xiwyu --mapping_file="$IWYU_MAPPING" \
+                -Xiwyu --cxx17ns \
+                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        fi
     done
 fi
 
