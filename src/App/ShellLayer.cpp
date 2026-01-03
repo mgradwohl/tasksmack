@@ -156,7 +156,7 @@ void ShellLayer::onRender()
 
         // Render content area with padding
         constexpr float CONTENT_PADDING_H = 12.0F;
-        constexpr float CONTENT_PADDING_V = 8.0F;
+        constexpr float CONTENT_PADDING_V = 4.0F;
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
@@ -192,6 +192,10 @@ void ShellLayer::onRender()
 void ShellLayer::renderTabBar()
 {
     const ImGuiStyle& style = ImGui::GetStyle();
+
+    // Add top edge padding for visual balance
+    constexpr float TOP_EDGE_PADDING = 4.0F;
+    ImGui::Dummy(ImVec2(0.0F, TOP_EDGE_PADDING));
 
     // Tab bar with icons on the right
     const float availWidth = ImGui::GetContentRegionAvail().x;
@@ -240,6 +244,13 @@ void ShellLayer::renderTabBar()
     // Right-aligned icon buttons on the same row as tabs
     ImGui::SameLine(availWidth - rightIconsWidth + style.ItemSpacing.x);
 
+    // Vertically center the icon buttons with the tabs
+    // Tabs have 10px vertical padding, buttons have default (~4px), so offset by the difference
+    constexpr float TAB_VERTICAL_PADDING = 10.0F;
+    const float defaultVerticalPadding = style.FramePadding.y;
+    const float verticalOffset = TAB_VERTICAL_PADDING - defaultVerticalPadding;
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + verticalOffset);
+
     // Help button (?)
     if (ImGui::Button(ICON_FA_CIRCLE_QUESTION))
     {
@@ -255,7 +266,8 @@ void ShellLayer::renderTabBar()
 
     ImGui::SameLine();
 
-    // Settings button (gear)
+    // Settings button (gear) - also needs vertical alignment like help button
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + verticalOffset);
     if (ImGui::Button(ICON_FA_GEAR))
     {
         if (auto* settings = SettingsLayer::instance(); settings != nullptr)

@@ -295,6 +295,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_PeakMemoryPercent = 0.0;
         m_PriorityChanged = false;
         m_PriorityNiceValue = 0;
+        m_PriorityError.clear(); // Clear priority error when switching processes
 
         if (pid != -1)
         {
@@ -458,7 +459,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+                ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
                 ImGui::TextUnformatted(row.first.c_str());
                 ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
@@ -484,7 +485,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
 
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_ID_CARD " Identity");
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable("BasicInfoLeftTable",
                     {
@@ -500,7 +501,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::SameLine();
 
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CLOCK " Runtime");
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable(
         "BasicInfoRightTable",
@@ -625,7 +626,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             }
         };
 
-        ImGui::Text(ICON_FA_MICROCHIP " CPU (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU (%zu samples)", alignedCount);
         renderHistoryWithNowBars("ProcessCPUHistoryOverview",
                                  HISTORY_PLOT_HEIGHT_DEFAULT,
                                  cpuPlot,
@@ -763,7 +764,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             };
 
             ImGui::Spacing();
-            ImGui::Text(ICON_FA_MEMORY " Memory (%zu samples)", alignedCount);
+            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory (%zu samples)", alignedCount);
             renderHistoryWithNowBars(
                 "ProcessMemoryOverviewLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, PROCESS_NOW_BAR_COLUMNS);
             ImGui::Spacing();
@@ -849,7 +850,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
         }
     };
 
-    ImGui::Text(ICON_FA_GEARS " Threads & Page Faults (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Threads & Page Faults (%zu samples)", alignedCount);
     renderHistoryWithNowBars(
         "ProcessThreadFaultHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
@@ -932,7 +933,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    ImGui::Text(ICON_FA_HARD_DRIVE " I/O Statistics (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O Statistics (%zu samples)", alignedCount);
     renderHistoryWithNowBars("ProcessIoHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 }
@@ -1015,7 +1016,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
         }
     };
 
-    ImGui::Text(ICON_FA_NETWORK_WIRED " Network - Avg Rate (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network - Avg Rate (%zu samples)", alignedCount);
     if (ImGui::IsItemHovered())
     {
         ImGui::SetTooltip("Average network bytes/sec since monitoring started for this process.");
@@ -1096,7 +1097,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    ImGui::Text(ICON_FA_BOLT " Power Usage (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_BOLT "  Power Usage (%zu samples)", alignedCount);
     renderHistoryWithNowBars("ProcessPowerHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {powerBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 }
@@ -1106,7 +1107,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     auto& theme = UI::Theme::get();
 
     // Show GPU info
-    ImGui::Text(ICON_FA_MICROCHIP " GPU Usage");
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
     ImGui::Spacing();
 
     // Current GPU metrics
@@ -1363,12 +1364,12 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             .color = theme.scheme().gpuMemory,
         };
 
-        ImGui::Text(ICON_FA_CHART_LINE " GPU Utilization History (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Utilization History (%zu samples)", alignedCount);
         renderHistoryWithNowBars(
             "ProcessGPUUtilHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuUtil, {gpuUtilBar}, false, PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
 
-        ImGui::Text(ICON_FA_CHART_LINE " GPU Memory History (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  GPU Memory History (%zu samples)", alignedCount);
         renderHistoryWithNowBars(
             "ProcessGPUMemHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plotGpuMem, {gpuMemBar}, false, PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1477,7 +1478,7 @@ void ProcessDetailsPanel::renderActions()
     ImGui::Spacing();
 
     // Section: Process Control
-    ImGui::Text(ICON_FA_GEARS "  Process Control");
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Process Control");
     ImGui::Spacing();
 
     // Action result feedback
@@ -1640,7 +1641,7 @@ void ProcessDetailsPanel::renderActions()
 
         // Show current nice value in the header
         const int currentNice = m_HasSnapshot ? m_CachedSnapshot.nice : 0;
-        ImGui::Text(ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
         ImGui::Spacing();
 
         // Initialize slider from current process nice value if not changed
@@ -1856,14 +1857,16 @@ void ProcessDetailsPanel::renderActions()
                 auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
                 if (result.success)
                 {
-                    m_LastActionResult = std::format("Success: Priority set to {} for PID {}", m_PriorityNiceValue, m_SelectedPid);
+                    m_PriorityError.clear(); // Clear any previous error
                     m_PriorityChanged = false;
                 }
                 else
                 {
-                    m_LastActionResult = "Error: " + result.errorMessage;
+                    m_PriorityError = result.errorMessage; // Persistent error message
+                    // Revert slider to the actual process priority since the change failed
+                    m_PriorityNiceValue = m_CachedSnapshot.nice;
+                    m_PriorityChanged = false;
                 }
-                m_ActionResultTimer = 5.0F;
             }
             if (!canApply)
             {
@@ -1875,6 +1878,13 @@ void ProcessDetailsPanel::renderActions()
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         {
             ImGui::SetTooltip("Apply the selected priority to the process");
+        }
+
+        // Display persistent error message if priority change failed
+        if (!m_PriorityError.empty())
+        {
+            ImGui::Spacing();
+            ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_PriorityError.c_str());
         }
     }
 }

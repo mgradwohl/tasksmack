@@ -424,7 +424,7 @@ void SystemMetricsPanel::renderOverview()
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     // CPU history with vertical now bars (total + breakdown)
-    ImGui::Text(ICON_FA_MICROCHIP " CPU Usage (%zu samples)", cpuCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
     cropFrontToSize(cpuHist, cpuCount);
     std::vector<float> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
@@ -548,7 +548,8 @@ void SystemMetricsPanel::renderOverview()
         auto swapHist = m_Model->swapHistory();
         double peakMemPercent = 0.0;
 
-        ImGui::Text(ICON_FA_MEMORY " Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
+        ImGui::TextColored(
+            theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
         ImGui::Spacing();
 
         const size_t memCount = std::min(memHist.size(), timestamps.size());
@@ -1016,7 +1017,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_GEARS " Threads & Page Faults (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Threads & Page Faults (%zu samples)", alignedCount);
         renderHistoryWithNowBars(
             "ThreadsFaultsHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1104,7 +1105,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_HARD_DRIVE " I/O (%zu samples)", aligned);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1193,7 +1194,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_NETWORK_WIRED " Network (%zu samples)", aligned);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1213,7 +1214,7 @@ void SystemMetricsPanel::renderCpuSection()
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
-    ImGui::Text(ICON_FA_CHART_LINE " CPU History (%zu samples)", cpuHist.size());
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  CPU History (%zu samples)", cpuHist.size());
     ImGui::Spacing();
 
     const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
@@ -1295,7 +1296,20 @@ void SystemMetricsPanel::renderPerCoreSection()
     auto snap = m_Model->snapshot();
     auto perCoreHist = m_Model->perCoreHistory();
     auto& theme = UI::Theme::get();
-    ImGui::Text("Per-Core CPU Usage (%d cores)", snap.coreCount);
+
+    // CPU model header (same as Overview tab)
+    std::string coreInfo;
+    if (snap.cpuFreqMHz > 0)
+    {
+        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, UI::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
+    }
+    else
+    {
+        coreInfo = std::format(" ({} cores)", snap.coreCount);
+    }
+    ImGui::TextUnformatted(snap.cpuModel.c_str());
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(coreInfo.c_str());
     ImGui::Spacing();
 
     const size_t numCores = snap.cpuPerCore.size();

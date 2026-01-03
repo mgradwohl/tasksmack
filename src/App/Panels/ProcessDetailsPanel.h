@@ -102,6 +102,7 @@ class ProcessDetailsPanel : public Panel
     // Priority adjustment state
     int32_t m_PriorityNiceValue = 0;
     bool m_PriorityChanged = false;
+    std::string m_PriorityError; // Persistent error message for priority changes
 
     struct SmoothedUsage
     {
