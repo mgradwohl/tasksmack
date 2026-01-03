@@ -6,7 +6,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cstring>
 
 namespace App::detail
@@ -102,29 +101,45 @@ TEST(SettingsLayerDetailTest, HistoryOptionsHaveExpectedCount)
 
 TEST(SettingsLayerDetailTest, AllFontSizeOptionsHaveLabels)
 {
-    EXPECT_TRUE(
-        std::ranges::all_of(FONT_SIZE_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0U; }));
+    for (const auto& option : FONT_SIZE_OPTIONS)
+    {
+        EXPECT_NE(option.label, nullptr);
+        EXPECT_GT(std::strlen(option.label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllRefreshRateOptionsHaveLabels)
 {
-    EXPECT_TRUE(
-        std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0U; }));
+    for (const auto& option : REFRESH_RATE_OPTIONS)
+    {
+        EXPECT_NE(option.label, nullptr);
+        EXPECT_GT(std::strlen(option.label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0U; }));
+    for (const auto& option : HISTORY_OPTIONS)
+    {
+        EXPECT_NE(option.label, nullptr);
+        EXPECT_GT(std::strlen(option.label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) { return opt.valueMs > 0; }));
+    for (const auto& option : REFRESH_RATE_OPTIONS)
+    {
+        EXPECT_GT(option.valueMs, 0);
+    }
 }
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) { return opt.valueSeconds > 0; }));
+    for (const auto& option : HISTORY_OPTIONS)
+    {
+        EXPECT_GT(option.valueSeconds, 0);
+    }
 }
 
 } // namespace
