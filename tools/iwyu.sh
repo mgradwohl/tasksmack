@@ -127,14 +127,28 @@ check_version_compatibility() {
     iwyu_clang_version=$(include-what-you-use --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
     clang_version=$(clang --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
 
-    if [[ -n "$iwyu_clang_version" ]] && [[ -n "$clang_version" ]]; then
-        if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
-            echo "Warning: IWYU (clang $iwyu_clang_version) and project clang ($clang_version) version mismatch" >&2
-            echo "  This may cause false positives or assertion failures." >&2
-            echo "  Consider building IWYU from source against clang $clang_version," >&2
-            echo "  or rely on CI results where versions are more aligned." >&2
-            echo "" >&2
+    # Validate that versions are non-empty and numeric
+    if [[ -z "$iwyu_clang_version" ]] || ! [[ "$iwyu_clang_version" =~ ^[0-9]+$ ]]; then
+        if $VERBOSE; then
+            echo "Warning: Could not extract IWYU clang version (got: '$iwyu_clang_version')" >&2
         fi
+        return
+    fi
+    
+    if [[ -z "$clang_version" ]] || ! [[ "$clang_version" =~ ^[0-9]+$ ]]; then
+        if $VERBOSE; then
+            echo "Warning: Could not extract clang version (got: '$clang_version')" >&2
+        fi
+        return
+    fi
+
+    # Both versions are valid integers, safe to compare
+    if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
+        echo "Warning: IWYU (clang $iwyu_clang_version) and project clang ($clang_version) version mismatch" >&2
+        echo "  This may cause false positives or assertion failures." >&2
+        echo "  Consider building IWYU from source against clang $clang_version," >&2
+        echo "  or rely on CI results where versions are more aligned." >&2
+        echo "" >&2
     fi
 }
 
