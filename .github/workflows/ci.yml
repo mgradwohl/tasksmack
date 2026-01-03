@@ -228,7 +228,15 @@ jobs:
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Check if IWYU found any issues (grep returns 0 if pattern found, 1 if not)
+          # Verify iwyu-output.txt exists and has content before processing
+          if [[ ! -f iwyu-output.txt ]] || [[ ! -s iwyu-output.txt ]]; then
+            echo "⚠️ **Status:** No IWYU output file generated" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          # Check if IWYU found any issues
+          # grep -qE: -q for quiet mode (no output), -E for extended regex
+          # Returns exit code 0 if pattern is found, 1 if not found
           if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -237,8 +245,11 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Count files with suggestions (unique filenames with add/remove suggestions)
-            SUGGESTED_FILES=$( (grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null || true) | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l)
+            # Count unique files with suggestions
+            # Extract filenames from lines matching the pattern, deduplicate, and count
+            SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l)
+            # Ensure SUGGESTED_FILES is a valid number (default to 0 if empty/invalid)
+            SUGGESTED_FILES=${SUGGESTED_FILES:-0}
             echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
