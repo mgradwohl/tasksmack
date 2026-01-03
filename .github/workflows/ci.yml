@@ -236,7 +236,7 @@ jobs:
 
           # Check if IWYU found any issues
           # grep -qE: -q for quiet mode (no output), -E for extended regex
-          # Returns exit code 0 if pattern is found, 1 if not found
+          # Exit codes: 0 = pattern found, 1 = not found, 2 = error (e.g., file I/O or invalid regex).
           if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
