@@ -289,7 +289,8 @@ else
 
         # Extract compile flags for this file from compile_commands.json
         # This ensures IWYU has access to include paths, defines, and other compilation flags
-        COMPILE_FLAGS=$(python3 -c "
+        # Read flags into an array for proper handling
+        mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
 import json
 import sys
 import os
@@ -298,21 +299,18 @@ import shlex
 compile_commands_path = sys.argv[1]
 target_file = sys.argv[2]
 
-with open(compile_commands_path) as f:
-    commands = json.load(f)
+try:
+    with open(compile_commands_path) as f:
+        commands = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    sys.stderr.write(f'Error reading compile_commands.json: {e}\n')
+    sys.exit(1)
 
 # Normalize target file path for comparison
 target_file = os.path.abspath(target_file)
-
-# Find the compile command for this file
-for cmd in commands:
-    file_path = cmd.get('file', '')
-    # Normalize and compare full paths
-    if os.path.abspath(file_path) == target_file:
-        command = cmd.get('command', '')
-target_file = os.path.abspath(target_file)
 target_basename = os.path.basename(target_file)
 
+# Find the compile command for this file (prefer exact match, fallback to basename)
 exact_match = None
 basename_matches = []
 
@@ -342,11 +340,9 @@ if selected_cmd is not None:
     command = selected_cmd.get('command', '')
     # Extract flags: remove compiler name and output-related flags
     # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
-    import shlex
     tokens = shlex.split(command)
     flags = []
     skip_next = False
-    cpp_extensions = ('.cpp', '.cc', '.cxx', '.c++', '.C', '.CPP')
     for i, token in enumerate(tokens):
         if skip_next:
             skip_next = False
@@ -358,28 +354,29 @@ if selected_cmd is not None:
         if token in ['-o', '-c', '-MF', '-MT', '-MD']:
             skip_next = True
             continue
-        # Skip output files and source files
-        if token.startswith('-o') or token.endswith('.o') or token.endswith(cpp_extensions):
-            continue
-        # Keep relevant flags
-        if token.startswith('-I') or token.startswith('-D') or \
-           token.startswith('-std') or token.startswith('--sysroot') or \
-           (token.startswith('-f') and not token.startswith('-fpch')) or \
-           (token.startswith('-W') and not token.startswith('-Winvalid-pch')):
+        # Whitelist relevant flags that affect preprocessing/target configuration
+        keep = False
+        # Standalone important flags
+        if token in ['-pthread']:
+            keep = True
+        # Common prefix-based categories
+        elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+            keep = True
+        elif token.startswith('-f') and not token.startswith('-fpch'):
+            keep = True
+        elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
+            keep = True
+        if keep:
             flags.append(token)
-    print(' '.join(flags))
-               token.startswith('-std') or token.startswith('--sysroot') or \
-               (token.startswith('-f') and not token.startswith('-fpch')) or \
-               (token.startswith('-W') and not token.startswith('-Winvalid-pch')):
-                flags.append(token)
-        print(' '.join(flags))
-        break
-" "$COMPILE_COMMANDS" "${file}" 2>/dev/null || echo "")
+    # Print each flag on a separate line for safe array handling
+    for flag in flags:
+        print(flag)
+" "$COMPILE_COMMANDS" "${file}" 2>/dev/null || true)
 
         # Direct IWYU invocation with extracted compile flags
-        if [[ -n "$COMPILE_FLAGS" ]]; then
+        if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
             $IWYU \
-                $COMPILE_FLAGS \
+                "${COMPILE_FLAGS_ARRAY[@]}" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 -Xiwyu --cxx17ns \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
