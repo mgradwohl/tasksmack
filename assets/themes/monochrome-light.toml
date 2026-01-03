@@ -12,20 +12,6 @@ author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
-# HEATMAP GRADIENT
-# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# All green shades from light to dark
-# =============================================================================
-[heatmap]
-gradient = [
-    "#DDEEDD",  # 0%   - Pale parchment green
-    "#B7E0B7",  # 25%  - Soft green
-    "#74C476",  # 50%  - Mid green (moderate)
-    "#4AA54D",  # 75%  - Deep green (warning)
-    "#2F7A33",  # 100% - Dark green (hot)
-]
-
-# =============================================================================
 # ACCENT COLORS
 # 8 shades of green for charts, legends, and UI highlights
 # =============================================================================
@@ -87,6 +73,7 @@ io = "#388E3C"        # Medium-dark green - I/O usage line
 cpu_fill = "#2E7D324D"       # Dark green with 30% alpha - CPU fill
 memory_fill = "#4CAF504D"    # Medium green with 30% alpha - memory fill
 io_fill = "#388E3C4D"        # Medium-dark green with 30% alpha - I/O fill
+peak_line = "#4CAF50B3"      # Medium green with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -98,15 +85,12 @@ utilization_fill = "#66BB6A4D"    # Purple with 30% alpha - GPU fill
 memory = "#388E3C"                # Red - GPU memory line
 memory_fill = "#388E3C4D"         # Red with 30% alpha - GPU memory fill
 temperature = "#4CAF50"           # Gold - GPU temperature line
-temperature_fill = "#4CAF504D"    # Gold with 30% alpha - GPU temp fill
 power = "#2E7D32"                 # Green - GPU power draw line
-power_fill = "#2E7D324D"          # Green with 30% alpha - GPU power fill
 encoder = "#66BB6A"               # Teal - GPU encoder utilization
 decoder = "#388E3C"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
+clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#78909C"                # Blue Gray - GPU fan speed line
-integrated_badge = "#757575"      # Muted gray - integrated GPU badge
-discrete_badge = "#4CAF50"        # Windows Blue - discrete GPU badge
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -117,22 +101,10 @@ user = "#2E7D32"      # Dark green - user CPU time
 system = "#4CAF50"    # Medium green - system/kernel time
 iowait = "#1B5E20"    # Darkest green - I/O wait time
 idle = "#C8E6C9"      # Very light green - idle time
-steal = "#1B5E20"     # Darkest (alert) - VM steal time
 user_fill = "#2E7D3259"      # Dark green with 35% alpha - user fill
 system_fill = "#4CAF5059"    # Medium green with 35% alpha - system fill
 iowait_fill = "#1B5E2059"    # Darkest green with 35% alpha - iowait fill
 idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
-steal_fill = "#1B5E2059"     # Darkest with 35% alpha - steal fill
-
-# =============================================================================
-# DANGER BUTTON COLORS
-# Colors for destructive action buttons (kill process, etc.)
-# Using darkest greens for visibility
-# =============================================================================
-[buttons.danger]
-normal = "#2E7D32"     # Dark green
-hovered = "#1B5E20"    # Darkest green
-active = "#43A047"     # Medium-dark green
 
 [buttons.success]
 normal = "#43A047"     # Medium green
@@ -199,9 +171,9 @@ slider_grab_active = "#388E3C"
 # Standard buttons (not danger buttons)
 # =============================================================================
 [ui.button]
-normal = "#E8F5E0"
-hovered = "#C8E6C9"
-active = "#A5D6A7"
+normal = "#B8D8B8"          # Visible green-tinted gray
+hovered = "#A0C8A0"          # Darker on hover
+active = "#4CAF50"           # Green on click
 
 # =============================================================================
 # HEADER COLORS

@@ -16,9 +16,12 @@ namespace UI
 namespace
 {
 
-[[nodiscard]] auto errorColor() -> ImVec4
+/// Return a bright magenta color to make missing/invalid colors obvious
+/// This is intentionally NOT reading from the current theme to avoid
+/// circular dependencies when loading a new theme
+[[nodiscard]] constexpr auto errorColor() -> ImVec4
 {
-    return Theme::get().scheme().textError;
+    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Bright magenta
 }
 
 } // namespace
@@ -143,16 +146,23 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
 }
 
 /// Get a color from a table, with default fallback
+/// If the key is missing and no default is provided, logs a warning and returns errorColor()
 auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4> defaultColor = std::nullopt) -> ImVec4
 {
     if (auto node = tbl.at_path(key))
     {
         return parseColorView(node);
     }
-    return defaultColor.value_or(errorColor());
+    if (defaultColor.has_value())
+    {
+        return *defaultColor;
+    }
+    // Key is missing and no default provided - this is a theme authoring error
+    spdlog::warn("Theme missing required color key: '{}'", key);
+    return errorColor();
 }
 
-/// Load a color array (like heatmap gradient or accent colors)
+/// Load a color array (e.g., accent colors)
 template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
     if (const auto* arr = tbl.at_path(key).as_array())
@@ -236,9 +246,6 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
             scheme.name = meta->get("name")->value_or("Unknown");
         }
 
-        // Heatmap gradient
-        loadColorArray(tbl, "heatmap.gradient", scheme.heatmap);
-
         // Accents
         loadColorArray(tbl, "accents.colors", scheme.accents);
 
@@ -279,14 +286,12 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.cpuSystem = getColor(tbl, "cpu_breakdown.system");
         scheme.cpuIowait = getColor(tbl, "cpu_breakdown.iowait");
         scheme.cpuIdle = getColor(tbl, "cpu_breakdown.idle");
-        scheme.cpuSteal = getColor(tbl, "cpu_breakdown.steal");
 
         // CPU breakdown fill colors (with fallback to line colors for backward compatibility)
         scheme.cpuUserFill = getColor(tbl, "cpu_breakdown.user_fill", scheme.cpuUser);
         scheme.cpuSystemFill = getColor(tbl, "cpu_breakdown.system_fill", scheme.cpuSystem);
         scheme.cpuIowaitFill = getColor(tbl, "cpu_breakdown.iowait_fill", scheme.cpuIowait);
         scheme.cpuIdleFill = getColor(tbl, "cpu_breakdown.idle_fill", scheme.cpuIdle);
-        scheme.cpuStealFill = getColor(tbl, "cpu_breakdown.steal_fill", scheme.cpuSteal);
 
         // GPU chart colors
         scheme.gpuUtilization = getColor(tbl, "charts.gpu.utilization");
@@ -298,14 +303,13 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
         scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
         scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
+        scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", scheme.gpuClock);
         scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
 
-        // Danger buttons
-        scheme.dangerButton = getColor(tbl, "buttons.danger.normal");
-        scheme.dangerButtonHovered = getColor(tbl, "buttons.danger.hovered");
-        scheme.dangerButtonActive = getColor(tbl, "buttons.danger.active");
+        // Chart overlays
+        scheme.chartPeakLine = getColor(tbl, "charts.peak_line", scheme.textWarning);
 
-        // Success buttons (e.g., Resume)
+        // Success buttons (e.g., Apply, Resume)
         scheme.successButton = getColor(tbl, "buttons.success.normal");
         scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
         scheme.successButtonActive = getColor(tbl, "buttons.success.active");

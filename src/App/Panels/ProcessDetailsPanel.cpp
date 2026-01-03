@@ -203,7 +203,9 @@ std::string ProcessDetailsPanel::tabLabel() const
     {
         return m_CachedSnapshot.name;
     }
-    return "Select a process";
+    // Use static string to avoid heap allocation every frame for the default label
+    static const std::string defaultLabel{"Select a process"};
+    return defaultLabel;
 }
 
 void ProcessDetailsPanel::renderContent()
@@ -686,9 +688,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                     if (m_PeakMemoryPercent > 0.0)
                     {
                         // Use a dashed line style with a distinct color for the peak
-                        ImVec4 peakColor = theme.scheme().textWarning; // Use warning color for visibility
-                        peakColor.w = 0.7F;                            // Slightly transparent
-                        ImPlot::SetNextLineStyle(peakColor, 1.5F);
+                        ImPlot::SetNextLineStyle(theme.scheme().chartPeakLine, 1.5F);
 
                         // Draw horizontal line at peak value across the entire X range
                         const double peakY = m_PeakMemoryPercent;
@@ -1656,6 +1656,17 @@ void ProcessDetailsPanel::renderActions()
 
         // ========================================
         // Custom gradient priority slider
+        // ----------------------------------------
+        // Dimension rationale:
+        // - SLIDER_WIDTH (400px): Fits comfortably in the Process Details panel
+        //   while providing enough precision for the 40-value nice range.
+        // - SLIDER_HEIGHT (12px): Slightly taller than ImGui's default frame height
+        //   to make the gradient clearly visible without dominating the row.
+        // - BADGE_HEIGHT (24px): Matches a typical label-sized pill that fits
+        //   the 1-2 digit nice value text with padding.
+        // - BADGE_ARROW_SIZE: Proportional to badge height (1/4) so the pointer
+        //   visually connects the badge to the slider without overpowering it.
+        // These could be theme-configurable in the future if needed.
         // ========================================
         constexpr float SLIDER_WIDTH = 400.0F;
         constexpr float SLIDER_HEIGHT = 12.0F;
@@ -1783,6 +1794,9 @@ void ProcessDetailsPanel::renderActions()
             {
                 m_PriorityNiceValue = newNice;
                 m_PriorityChanged = true;
+                // Clear any previous error when user interacts with slider
+                // This provides fresher feedback rather than showing stale errors
+                m_PriorityError.clear();
             }
         }
 
@@ -1792,7 +1806,7 @@ void ProcessDetailsPanel::renderActions()
             const float contentStartX = ImGui::GetCursorPosX();
 
             // "High" label (left, colored red)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9F, 0.3F, 0.2F, 1.0F));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
             ImGui::TextUnformatted("High");
             ImGui::PopStyleColor();
 
@@ -1807,7 +1821,7 @@ void ProcessDetailsPanel::renderActions()
 
             // "Low" label (right, colored blue)
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3F, 0.5F, 0.8F, 1.0F));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
             ImGui::TextUnformatted("Low");
             ImGui::PopStyleColor();
 

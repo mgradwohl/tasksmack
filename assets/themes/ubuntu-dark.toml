@@ -12,19 +12,6 @@ author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
-# HEATMAP GRADIENT
-# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# =============================================================================
-[heatmap]
-gradient = [
-    "#1A5FB4",  # 0%   - Dark Blue (cool/idle)
-    "#3584E4",  # 25%  - Blue
-    "#ED7014",  # 50%  - Orange (moderate)
-    "#FF7800",  # 75%  - Bright Orange (warning)
-    "#E01B24",  # 100% - Red (hot/danger)
-]
-
-# =============================================================================
 # ACCENT COLORS
 # 8 colors for charts, legends, and UI highlights
 # Ubuntu color palette
@@ -55,9 +42,9 @@ high = "#E01B24"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
-text_primary = "#EDEDED"   # Near-white for contrast on dark bg
-text_disabled = "#A1A1A1"  # Soft gray for disabled text
-text_muted = "#888888"     # Gray - dimmed text
+text_primary = "#F8F8F8"   # Bright white for maximum contrast on dark bg
+text_disabled = "#C0C0C0"  # Brighter gray for disabled text
+text_muted = "#CCCCCC"     # Much brighter for chart axis labels
 text_error = "#ED333B"     # Light Red - error messages
 text_warning = "#FFA348"   # Light Orange - warning messages
 text_success = "#33D17A"   # Light Green - success messages
@@ -86,6 +73,7 @@ io = "#ED333B"        # Light Red - I/O usage line
 cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#33D17A4D"    # Light Green with 30% alpha - memory fill
 io_fill = "#ED333B4D"        # Light Red with 30% alpha - I/O fill
+peak_line = "#F5C211B3"      # Gold with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -97,15 +85,12 @@ utilization_fill = "#9141AC4D"    # Purple with 30% alpha - GPU fill
 memory = "#ED333B"                # Red - GPU memory line
 memory_fill = "#ED333B4D"         # Red with 30% alpha - GPU memory fill
 temperature = "#F5C211"           # Gold - GPU temperature line
-temperature_fill = "#F5C2114D"    # Gold with 30% alpha - GPU temp fill
 power = "#33D17A"                 # Green - GPU power draw line
-power_fill = "#33D17A4D"          # Green with 30% alpha - GPU power fill
 encoder = "#33C7DE"               # Teal - GPU encoder utilization
 decoder = "#F66151"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
+clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#78909C"                # Blue Gray - GPU fan speed line
-integrated_badge = "#9A9996"      # Muted gray - integrated GPU badge
-discrete_badge = "#3584E4"        # Windows Blue - discrete GPU badge
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -116,21 +101,10 @@ user = "#3584E4"      # Blue - user CPU time
 system = "#ED333B"    # Light Red - system/kernel time
 iowait = "#FFA348"    # Light Orange - I/O wait time
 idle = "#3D3D3D"      # Dark gray - idle time
-steal = "#E01B24"     # Red - VM steal time
 user_fill = "#3584E459"      # Blue with 35% alpha - user fill
 system_fill = "#ED333B59"    # Light Red with 35% alpha - system fill
 iowait_fill = "#FFA34859"    # Light Orange with 35% alpha - iowait fill
 idle_fill = "#3D3D3D33"      # Dark gray with 20% alpha - idle fill
-steal_fill = "#E01B2459"     # Red with 35% alpha - steal fill
-
-# =============================================================================
-# DANGER BUTTON COLORS
-# Colors for destructive action buttons (kill process, etc.)
-# =============================================================================
-[buttons.danger]
-normal = "#C01C28"     # Dark red
-hovered = "#ED333B"    # Light red
-active = "#A51D2D"     # Darker red
 
 [buttons.success]
 normal = "#26A269"     # Ubuntu green
@@ -197,18 +171,18 @@ slider_grab_active = "#C94017"
 # Standard buttons (not danger buttons) - Ubuntu/Adwaita dark style
 # =============================================================================
 [ui.button]
-normal = "#303030"
-hovered = "#383838"
-active = "#404040"
+normal = "#404040"          # Lighter gray for better contrast
+hovered = "#4A4A4A"
+active = "#E95420"           # Ubuntu Orange on click
 
 # =============================================================================
 # HEADER COLORS
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#303030"
-hovered = "#383838"
-active = "#404040"
+normal = "#3D3D3D"
+hovered = "#474747"
+active = "#505050"
 
 # =============================================================================
 # SEPARATOR COLORS
@@ -233,12 +207,12 @@ active = "#C94017"
 # Tab bar tabs - Ubuntu/GNOME dark style
 # =============================================================================
 [ui.tab]
-normal = "#303030"
-hovered = "#383838"
-active = "#242424"
+normal = "#3D3D3D"
+hovered = "#474747"
+active = "#303030"
 active_overline = "#E95420"             # Ubuntu orange overline
-unfocused = "#242424"
-unfocused_active = "#303030"
+unfocused = "#303030"
+unfocused_active = "#3D3D3D"
 unfocused_active_overline = "#E9542080" # Semi-transparent orange overline
 
 # =============================================================================

@@ -369,36 +369,22 @@ void UserConfig::save() const
     spdlog::info("Saved config to {}", m_ConfigPath.string());
 }
 
-void UserConfig::applyToApplication()
+void UserConfig::applyToApplication() const
 {
     auto& theme = UI::Theme::get();
 
-    // Apply theme
+    // Apply theme and font size
     theme.setThemeById(m_Settings.themeId);
-
-    // Apply font size
     theme.setFontSize(m_Settings.fontSize);
-
-    spdlog::debug("Applied user config: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  // Use 0 as fallback if enum value is out of int range
-                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 void UserConfig::captureFromApplication()
 {
     auto& theme = UI::Theme::get();
 
-    // Capture current theme
+    // Capture current theme and font size
     m_Settings.themeId = theme.currentThemeId();
-
-    // Capture font size
     m_Settings.fontSize = theme.currentFontSize();
-
-    spdlog::debug("Captured app state: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  // Use 0 as fallback if enum value is out of int range
-                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 } // namespace App

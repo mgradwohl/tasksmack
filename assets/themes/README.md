@@ -38,21 +38,6 @@ author = "Your Name"
 version = "1.0"
 ```
 
-### `[heatmap]` - CPU/Memory Heatmap Gradient
-
-5 color stops from cool (idle) to hot (100%):
-
-```toml
-[heatmap]
-gradient = [
-    "#1565C0",  # 0%   - Cool/idle
-    "#2196F3",  # 25%
-    "#00E676",  # 50%  - Moderate
-    "#FFB300",  # 75%  - Warning
-    "#E53935",  # 100% - Hot/danger
-]
-```
-
 ### `[accents]` - Chart and UI Accent Colors
 
 8 colors for charts, legends, and highlights:
@@ -115,6 +100,7 @@ memory = "#00E676"           # Memory line color
 memory_fill = "#00E6764D"    # Memory fill
 io = "#FF7043"               # I/O line color
 io_fill = "#FF70434D"        # I/O fill
+peak_line = "#FFD54FB3"      # Peak reference line (e.g., peak memory)
 ```
 
 ### `[charts.gpu]` - GPU Metrics Colors
@@ -126,19 +112,33 @@ utilization_fill = "#BA68C84D"
 memory = "#FF7043"
 memory_fill = "#FF70434D"
 temperature = "#FFD54F"
-temperature_fill = "#FFD54F4D"
 power = "#00E676"
-power_fill = "#00E6764D"
+encoder = "#26C6DA"
+decoder = "#EC407A"
+clock = "#64B5F6"
+clock_fill = "#64B5F6CC"
+fan = "#78909C"
 ```
 
-### `[buttons.danger]` / `[buttons.success]` - Button Colors
+### `[cpu_breakdown]` - CPU Usage Breakdown Colors
+
+Colors for stacked CPU usage charts showing user/system/iowait/idle:
 
 ```toml
-[buttons.danger]
-normal = "#C62828"
-hovered = "#E53935"
-active = "#8B0000"
+[cpu_breakdown]
+user = "#42A5F5"          # User CPU time
+system = "#FF7043"        # System/kernel time
+iowait = "#FFB300"        # I/O wait time
+idle = "#808080"          # Idle time
+user_fill = "#42A5F559"   # User fill (35% alpha)
+system_fill = "#FF704359" # System fill
+iowait_fill = "#FFB30059" # I/O wait fill
+idle_fill = "#80808033"   # Idle fill (20% alpha)
+```
 
+### `[buttons.success]` - Success Button Colors
+
+```toml
 [buttons.success]
 normal = "#00ACC1"
 hovered = "#26C6DA"
@@ -189,12 +189,12 @@ Alpha values:
 |-------|-------------|
 | Arctic Fire | Blue → Emerald → Amber → Red gradient (dark) |
 | Arctic Fire Light | Light version of Arctic Fire |
-| Cyberpunk | Neon pink/cyan cyberpunk aesthetic (dark) |
+| Cyberpunk | Neon pink/cyan synthwave aesthetic (dark) |
 | Cyberpunk Light | Light version of Cyberpunk |
-| Monochrome | Grayscale for accessibility |
-| Monochrome Light | Light grayscale variant |
-| Ubuntu Dark | Ubuntu terminal-inspired dark theme |
-| Ubuntu Light | Ubuntu-inspired light theme |
+| Monochrome | Classic green terminal/CRT aesthetic (dark) |
+| Monochrome Light | Light version with green accents |
+| Ubuntu Dark | Ubuntu/GNOME-inspired dark theme |
+| Ubuntu Light | Ubuntu/GNOME-inspired light theme |
 | Windows Dark | Windows 11 dark mode inspired |
 | Windows Light | Windows 11 light mode inspired |
 

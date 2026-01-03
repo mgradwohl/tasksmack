@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.h"
+#include "UI/Theme.h"
 
 #include <string>
 #include <vector>
@@ -44,8 +45,7 @@ class SettingsLayer : public Core::Layer
     int m_SelectedHistoryIndex = 0;
 
     // Available options
-    std::vector<std::string> m_ThemeNames;
-    std::vector<std::string> m_ThemeIds;
+    std::vector<UI::DiscoveredTheme> m_Themes;
 
     static SettingsLayer* s_Instance;
 };

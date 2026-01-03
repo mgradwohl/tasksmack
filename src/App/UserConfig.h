@@ -77,7 +77,7 @@ class UserConfig
     }
 
     /// Apply loaded settings to the application (theme, font size, etc.)
-    void applyToApplication();
+    void applyToApplication() const;
 
     /// Capture current application state into settings
     void captureFromApplication();

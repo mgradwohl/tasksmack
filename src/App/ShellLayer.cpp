@@ -26,11 +26,9 @@ void ShellLayer::onAttach()
 {
     spdlog::info("ShellLayer attached");
 
-    // Load user configuration
+    // Load user configuration and apply to theme
     auto& config = UserConfig::get();
     config.load();
-
-    // Apply config to theme (must be after UILayer loads themes)
     config.applyToApplication();
 
     // Initialize panels
@@ -251,6 +249,10 @@ void ShellLayer::renderTabBar()
     const float verticalOffset = TAB_VERTICAL_PADDING - defaultVerticalPadding;
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + verticalOffset);
 
+    // Push text color for icon buttons to ensure visibility
+    auto& theme = UI::Theme::get();
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+
     // Help button (?)
     if (ImGui::Button(ICON_FA_CIRCLE_QUESTION))
     {
@@ -279,6 +281,8 @@ void ShellLayer::renderTabBar()
     {
         ImGui::SetTooltip("Settings");
     }
+
+    ImGui::PopStyleColor(); // Text
 }
 
 void ShellLayer::renderStatusBar() const

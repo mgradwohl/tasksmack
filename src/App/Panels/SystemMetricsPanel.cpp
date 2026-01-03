@@ -675,16 +675,6 @@ void SystemMetricsPanel::renderOverview()
         ImGui::Spacing();
     }
 
-    // Load average (Linux only, shows nothing on Windows)
-    if (snap.loadAvg1 > 0.0 || snap.loadAvg5 > 0.0 || snap.loadAvg15 > 0.0)
-    {
-        ImGui::Text("Load Avg:");
-        ImGui::SameLine(m_OverviewLabelWidth);
-
-        const std::string loadStr = std::format("{:.2f} / {:.2f} / {:.2f} (1/5/15 min)", snap.loadAvg1, snap.loadAvg5, snap.loadAvg15);
-        ImGui::TextUnformatted(loadStr.c_str());
-    }
-
     // Power & Battery history chart (combines per-process power aggregation with battery charge %)
     if (m_ProcessModel != nullptr || snap.power.hasBattery)
     {
@@ -842,7 +832,7 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
-                headerLeft = std::format("Power & Battery ({} samples)", alignedCount);
+                headerLeft = std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount);
 
                 // Build right-aligned status string with icons
                 const int chargeInt = snap.power.chargePercent;
@@ -885,11 +875,11 @@ void SystemMetricsPanel::renderOverview()
             }
             else
             {
-                headerLeft = std::format("Power ({} samples)", alignedCount);
+                headerLeft = std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount);
             }
 
             // Render header with left and right parts
-            ImGui::TextUnformatted(headerLeft.c_str());
+            ImGui::TextColored(theme.scheme().textPrimary, "%s", headerLeft.c_str());
             if (!headerRight.empty())
             {
                 // Calculate right-aligned position to align with chart's right edge (not NowBars)
@@ -1544,7 +1534,7 @@ void SystemMetricsPanel::renderGpuSection()
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        ImGui::Text("GPU Core & Video (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
 
         auto gpuCorePlot = [&]()
         {
@@ -1580,10 +1570,11 @@ void SystemMetricsPanel::renderGpuSection()
                     {
                         clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
                     }
-                    ImVec4 clockColor = theme.scheme().gpuClock;
-                    clockColor.w = 0.8F;
-                    plotLineWithFill(
-                        "Clock", timeData.data(), clockPercent.data(), UI::Numeric::checkedCount(clockPercent.size()), clockColor);
+                    plotLineWithFill("Clock",
+                                     timeData.data(),
+                                     clockPercent.data(),
+                                     UI::Numeric::checkedCount(clockPercent.size()),
+                                     theme.scheme().gpuClockFill);
                 }
 
                 // Encoder utilization
@@ -1747,7 +1738,7 @@ void SystemMetricsPanel::renderGpuSection()
         // ========================================
         if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            ImGui::Text("Thermal & Power");
+            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
 
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
             // Note: Fan speed is already a percentage (0-100%), no max needed

@@ -189,7 +189,19 @@ void openPath(const std::filesystem::path& path)
 
     // Parent: wait for first child to prevent zombie
     int status = 0;
-    ::waitpid(pid, &status, 0);
+    const pid_t waited = ::waitpid(pid, &status, 0);
+    if (waited == -1)
+    {
+        spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
+    }
+    else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    {
+        spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
+    }
+    else if (WIFSIGNALED(status))
+    {
+        spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
+    }
 #endif
 }
 
@@ -251,18 +263,15 @@ void SettingsLayer::loadCurrentSettings()
     auto& themeManager = UI::Theme::get();
 
     // Load theme options
-    m_ThemeNames.clear();
-    m_ThemeIds.clear();
+    m_Themes = themeManager.discoveredThemes();
     m_SelectedThemeIndex = 0;
 
-    const auto& themes = themeManager.discoveredThemes();
-    for (size_t i = 0; i < themes.size(); ++i)
+    for (size_t i = 0; i < m_Themes.size(); ++i)
     {
-        m_ThemeNames.push_back(themes[i].name);
-        m_ThemeIds.push_back(themes[i].id);
-        if (themes[i].id == settings.themeId)
+        if (m_Themes[i].id == settings.themeId)
         {
             m_SelectedThemeIndex = static_cast<int>(i);
+            break;
         }
     }
 
@@ -279,14 +288,14 @@ void SettingsLayer::applySettings()
     auto& themeManager = UI::Theme::get();
 
     // Apply theme
-    if (m_SelectedThemeIndex >= 0 && static_cast<size_t>(m_SelectedThemeIndex) < m_ThemeIds.size())
+    if (m_SelectedThemeIndex >= 0 && static_cast<size_t>(m_SelectedThemeIndex) < m_Themes.size())
     {
-        const std::string& newThemeId = m_ThemeIds[static_cast<size_t>(m_SelectedThemeIndex)];
+        const std::string& newThemeId = m_Themes[static_cast<size_t>(m_SelectedThemeIndex)].id;
         if (newThemeId != settings.themeId)
         {
             settings.themeId = newThemeId;
             themeManager.setThemeById(newThemeId);
-            spdlog::info("Settings: Theme changed to {}", newThemeId);
+            spdlog::info("Theme changed to {}", newThemeId);
         }
     }
 
@@ -296,7 +305,7 @@ void SettingsLayer::applySettings()
     {
         settings.fontSize = newFontSize;
         themeManager.setFontSize(newFontSize);
-        spdlog::info("Settings: Font size changed to {}", m_SelectedFontSizeIndex);
+        spdlog::info("Font size changed to {}", m_SelectedFontSizeIndex);
     }
 
     // Apply refresh rate
@@ -361,17 +370,17 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(LABEL_WIDTH);
         ImGui::SetNextItemWidth(COMBO_WIDTH);
 
-        if (!m_ThemeNames.empty())
+        if (!m_Themes.empty())
         {
-            const char* currentTheme = m_ThemeNames[static_cast<size_t>(m_SelectedThemeIndex)].c_str();
+            const char* currentTheme = m_Themes[static_cast<size_t>(m_SelectedThemeIndex)].name.c_str();
             if (ImGui::BeginCombo("##Theme", currentTheme))
             {
-                for (size_t i = 0; i < m_ThemeNames.size(); ++i)
+                for (size_t i = 0; i < m_Themes.size(); ++i)
                 {
                     // NOTE: std::cmp_equal is used intentionally for safe signed/unsigned comparison.
                     // The m_Selected*Index members are int (for ImGui compatibility) while loop indices are size_t.
                     const bool isSelected = std::cmp_equal(m_SelectedThemeIndex, i);
-                    if (ImGui::Selectable(m_ThemeNames[i].c_str(), isSelected))
+                    if (ImGui::Selectable(m_Themes[i].name.c_str(), isSelected))
                     {
                         m_SelectedThemeIndex = static_cast<int>(i);
                     }
@@ -489,6 +498,8 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Spacing();
 
         // Button row for config file and themes folder
+        // Push text color to ensure visibility on button backgrounds
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
         if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
         {
             openPath(UserConfig::get().configPath());
@@ -498,6 +509,7 @@ void SettingsLayer::renderSettingsDialog()
         {
             openPath(getThemesDir());
         }
+        ImGui::PopStyleColor();
 
         ImGui::Spacing();
         ImGui::Spacing();
@@ -516,10 +528,13 @@ void SettingsLayer::renderSettingsDialog()
         // Right-align buttons
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + availWidth - totalButtonWidth);
 
+        // Push text color to ensure visibility on button backgrounds
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
         if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0F)))
         {
             ImGui::CloseCurrentPopup();
         }
+        ImGui::PopStyleColor();
 
         ImGui::SameLine();
 
@@ -527,6 +542,7 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
         if (ImGui::Button("Apply", ImVec2(buttonWidth, 0.0F)))
         {
@@ -534,7 +550,7 @@ void SettingsLayer::renderSettingsDialog()
             ImGui::CloseCurrentPopup();
         }
 
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4); // Button, ButtonHovered, ButtonActive, Text
 
         ImGui::EndPopup();
     }
