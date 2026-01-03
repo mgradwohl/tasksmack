@@ -247,7 +247,7 @@ jobs:
 
             # Count unique files with suggestions
             # Extract filenames from lines matching the pattern, deduplicate, and count
-            SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l)
+            SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l || echo "0")
             # Ensure SUGGESTED_FILES is a valid number (default to 0 if empty/invalid)
             SUGGESTED_FILES=${SUGGESTED_FILES:-0}
             echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
