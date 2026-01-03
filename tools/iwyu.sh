@@ -273,27 +273,11 @@ else
             echo "  Analyzing: ${file#"${PROJECT_ROOT}"/}"
         fi
 
-        # Extract compile command for this file from compile_commands.json
-        COMPILE_CMD=$(python3 -c "
-import json
-import sys
-with open('$COMPILE_COMMANDS') as f:
-    commands = json.load(f)
-for cmd in commands:
-    if cmd.get('file', '').endswith('${file##*/}'):
-        # Replace compiler with IWYU
-        command = cmd.get('command', '')
-        # Remove the compiler and output flags
-        print(command)
-        break
-" 2>/dev/null || echo "")
-
-        if [[ -n "$COMPILE_CMD" ]]; then
-            $IWYU \
-                -Xiwyu --mapping_file="$IWYU_MAPPING" \
-                -Xiwyu --cxx17ns \
-                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
-        fi
+        # Direct IWYU invocation when iwyu_tool.py is not available
+        $IWYU \
+            -Xiwyu --mapping_file="$IWYU_MAPPING" \
+            -Xiwyu --cxx17ns \
+            "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
     done
 fi
 
