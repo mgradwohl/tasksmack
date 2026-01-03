@@ -124,8 +124,8 @@ fi
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
     local iwyu_clang_version clang_version
-    iwyu_clang_version=$(include-what-you-use --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
-    clang_version=$(clang --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
+    iwyu_clang_version=$(include-what-you-use --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
+    clang_version=$(clang --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
 
     if [[ -n "$iwyu_clang_version" ]] && [[ -n "$clang_version" ]]; then
         if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
