@@ -203,7 +203,7 @@ fi
 # Verify IWYU mapping file exists
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"
 if [[ ! -f "$IWYU_MAPPING" ]]; then
-    echo "Error: IWYU mapping file not found: $IWYU_MAPPING"
+    echo "Error: IWYU mapping file not found: $IWYU_MAPPING" >&2
     echo "The .iwyu.imp file is required in the repository root."
     exit 1
 fi
