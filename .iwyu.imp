@@ -10,6 +10,7 @@
   { include: ["<fmt/format.h>", "private", "<spdlog/spdlog.h>", "public"] },
 
   # GLFW/GLAD - platform-specific handling
+  { include: ["<GL/gl.h>", "private", "<glad/gl.h>", "public"] },
 
   # Standard library mappings (C++ prefers <cstdint> over <stdint.h>, etc.)
   { include: ["<stdint.h>", "private", "<cstdint>", "public"] },
