@@ -293,6 +293,7 @@ else
 import json
 import sys
 import os
+import shlex
 
 compile_commands_path = sys.argv[1]
 target_file = sys.argv[2]
@@ -300,15 +301,17 @@ target_file = sys.argv[2]
 with open(compile_commands_path) as f:
     commands = json.load(f)
 
+# Normalize target file path for comparison
+target_file = os.path.abspath(target_file)
+
 # Find the compile command for this file
 for cmd in commands:
     file_path = cmd.get('file', '')
-    # Match by full path or basename
-    if file_path == target_file or os.path.basename(file_path) == os.path.basename(target_file):
+    # Normalize and compare full paths
+    if os.path.abspath(file_path) == target_file:
         command = cmd.get('command', '')
         # Extract flags: remove compiler name and output-related flags
         # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
-        import shlex
         tokens = shlex.split(command)
         flags = []
         skip_next = False
@@ -324,8 +327,11 @@ for cmd in commands:
             if token in ['-o', '-c', '-MF', '-MT', '-MD']:
                 skip_next = True
                 continue
-            # Skip output files and source files
-            if token.startswith('-o') or token.endswith('.o') or token.endswith(cpp_extensions):
+            # Skip output files (token.endswith('.o'))
+            if token.startswith('-o') or token.endswith('.o'):
+                continue
+            # Skip source files - must look like a path (contains / or is just filename)
+            if ('/' in token or not token.startswith('-')) and token.endswith(cpp_extensions):
                 continue
             # Keep relevant flags
             if token.startswith('-I') or token.startswith('-D') or \
