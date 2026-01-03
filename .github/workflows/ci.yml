@@ -221,7 +221,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Check if IWYU found any issues (grep returns 0 if pattern found, 1 if not)
-          if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
+          if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
