@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <iterator>
 
 namespace App::detail
 {
@@ -77,7 +76,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 {
     // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
     const auto it = std::ranges::find_if(FONT_SIZE_OPTIONS, [size](const auto& opt) { return opt.value == size; });
-    return it != FONT_SIZE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(FONT_SIZE_OPTIONS.begin(), it)) : 1;
+    return it != FONT_SIZE_OPTIONS.end() ? static_cast<std::size_t>(it - FONT_SIZE_OPTIONS.begin()) : 1;
 }
 
 /// Find the index for a given refresh rate in milliseconds.
@@ -86,7 +85,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 {
     // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
     const auto it = std::ranges::find_if(REFRESH_RATE_OPTIONS, [ms](const auto& opt) { return opt.valueMs == ms; });
-    return it != REFRESH_RATE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(REFRESH_RATE_OPTIONS.begin(), it)) : 3;
+    return it != REFRESH_RATE_OPTIONS.end() ? static_cast<std::size_t>(it - REFRESH_RATE_OPTIONS.begin()) : 3;
 }
 
 /// Find the index for a given history duration in seconds.
@@ -95,7 +94,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 {
     // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
     const auto it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
-    return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(std::distance(HISTORY_OPTIONS.begin(), it)) : 2;
+    return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(it - HISTORY_OPTIONS.begin()) : 2;
 }
 
 } // namespace App::detail
