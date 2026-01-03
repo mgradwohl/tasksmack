@@ -1,4 +1,5 @@
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
+#include "Domain/PriorityConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -168,43 +169,46 @@ TEST(PriorityHelpersTest, GetNiceColorClampsOutOfRange)
 }
 
 // =============================================================================
-// getPriorityLabel Tests
+// getPriorityLabel Tests (Domain::Priority version)
 // =============================================================================
 
-TEST(PriorityHelpersTest, GetPriorityLabelReturnsNonNull)
+TEST(PriorityHelpersTest, GetPriorityLabelReturnsNonEmpty)
 {
+    using Domain::Priority::getPriorityLabel;
     for (int32_t nice = NICE_MIN; nice <= NICE_MAX; ++nice)
     {
-        const char* label = getPriorityLabel(nice);
-        EXPECT_NE(label, nullptr) << "Label should not be null for nice=" << nice;
-        EXPECT_GT(strlen(label), 0U) << "Label should not be empty for nice=" << nice;
+        const auto label = getPriorityLabel(nice);
+        EXPECT_FALSE(label.empty()) << "Label should not be empty for nice=" << nice;
     }
 }
 
 TEST(PriorityHelpersTest, GetPriorityLabelCategories)
 {
-    // High priority (< -10)
-    EXPECT_STREQ(getPriorityLabel(-20), "High Priority");
-    EXPECT_STREQ(getPriorityLabel(-15), "High Priority");
-    EXPECT_STREQ(getPriorityLabel(-11), "High Priority");
+    using Domain::Priority::getPriorityLabel;
 
-    // Above normal (-10 to -1)
-    EXPECT_STREQ(getPriorityLabel(-10), "Above Normal");
-    EXPECT_STREQ(getPriorityLabel(-5), "Above Normal");
-    EXPECT_STREQ(getPriorityLabel(-1), "Above Normal");
+    // High priority (nice < -10)
+    EXPECT_EQ(getPriorityLabel(-20), "High");
+    EXPECT_EQ(getPriorityLabel(-15), "High");
+    EXPECT_EQ(getPriorityLabel(-11), "High");
 
-    // Normal (0)
-    EXPECT_STREQ(getPriorityLabel(0), "Normal");
+    // Above normal (-10 <= nice < -5)
+    EXPECT_EQ(getPriorityLabel(-10), "Above Normal");
+    EXPECT_EQ(getPriorityLabel(-7), "Above Normal");
+    EXPECT_EQ(getPriorityLabel(-5), "Normal"); // -5 is now Normal boundary
 
-    // Below normal (1 to 10)
-    EXPECT_STREQ(getPriorityLabel(1), "Below Normal");
-    EXPECT_STREQ(getPriorityLabel(5), "Below Normal");
-    EXPECT_STREQ(getPriorityLabel(10), "Below Normal");
+    // Normal (-5 <= nice < 5)
+    EXPECT_EQ(getPriorityLabel(-4), "Normal");
+    EXPECT_EQ(getPriorityLabel(0), "Normal");
+    EXPECT_EQ(getPriorityLabel(4), "Normal");
 
-    // Low priority (> 10)
-    EXPECT_STREQ(getPriorityLabel(11), "Low Priority");
-    EXPECT_STREQ(getPriorityLabel(15), "Low Priority");
-    EXPECT_STREQ(getPriorityLabel(19), "Low Priority");
+    // Below normal (5 <= nice < 15)
+    EXPECT_EQ(getPriorityLabel(5), "Below Normal");
+    EXPECT_EQ(getPriorityLabel(10), "Below Normal");
+    EXPECT_EQ(getPriorityLabel(14), "Below Normal");
+
+    // Idle (nice >= 15)
+    EXPECT_EQ(getPriorityLabel(15), "Idle");
+    EXPECT_EQ(getPriorityLabel(19), "Idle");
 }
 
 } // namespace

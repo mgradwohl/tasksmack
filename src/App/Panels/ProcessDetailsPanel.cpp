@@ -84,8 +84,18 @@ template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, st
 namespace App
 {
 
-// Import priority slider constants and helpers
-using namespace detail;
+// Import priority slider constants and helpers selectively
+using detail::getNiceColor;
+using detail::getNiceFromPosition;
+using detail::getNicePosition;
+using detail::NICE_MAX;
+using detail::NICE_MIN;
+using detail::NICE_RANGE;
+using detail::PRIORITY_BADGE_ARROW_SIZE;
+using detail::PRIORITY_BADGE_HEIGHT;
+using detail::PRIORITY_GRADIENT_SEGMENTS;
+using detail::PRIORITY_SLIDER_HEIGHT;
+using detail::PRIORITY_SLIDER_WIDTH;
 
 /// Context structure for priority slider rendering
 /// Captures all computed layout values in one place for helper methods
@@ -1905,7 +1915,7 @@ void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext&
         {
             newNice = NICE_MAX; // Lowest priority (19)
         }
-        else if (ImGui::IsKeyPressed(ImGuiKey_0))
+        else if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Keypad0))
         {
             newNice = 0; // Default priority
         }
@@ -1922,6 +1932,7 @@ void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext&
 void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /*ctx*/)
 {
     const auto& theme = UI::Theme::get();
+    const auto& style = ImGui::GetStyle();
     const float contentStartX = ImGui::GetCursorPosX();
 
     // "High" label (left, colored red)
@@ -1932,7 +1943,8 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /
     // Dynamically positioned scale tick labels for font-size independence
     ImGui::SameLine();
     const float scaleRowY = ImGui::GetCursorPosY();
-    const float scaleStartX = contentStartX + 35.0F; // Offset past "High" label
+    // Calculate offset dynamically based on "High" label width
+    const float scaleStartX = contentStartX + ImGui::CalcTextSize("High").x + style.ItemSpacing.x;
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
 
     // Scale spans from -20 to 19 over NICE_RANGE (39), matching the slider

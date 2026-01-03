@@ -4,6 +4,8 @@
 // internal use. These were extracted from ProcessDetailsPanel::renderActions()
 // to improve testability and code organization.
 
+#include "Domain/PriorityConfig.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -25,9 +27,9 @@ inline constexpr float PRIORITY_BADGE_HEIGHT = 24.0F;
 inline constexpr float PRIORITY_BADGE_ARROW_SIZE = 8.0F;
 inline constexpr float PRIORITY_GRADIENT_SEGMENTS = 40.0F;
 
-// Nice value range (POSIX standard)
-inline constexpr int32_t NICE_MIN = -20;
-inline constexpr int32_t NICE_MAX = 19;
+// Nice value range - imported from Domain for consistency (DRY principle)
+inline constexpr int32_t NICE_MIN = Domain::Priority::MIN_NICE;
+inline constexpr int32_t NICE_MAX = Domain::Priority::MAX_NICE;
 inline constexpr int32_t NICE_RANGE = NICE_MAX - NICE_MIN; // 39
 
 // Color anchors for gradient (at nice values -20, 0, 19)
@@ -83,7 +85,11 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
         b = PRIORITY_COLOR_NORMAL[2] + (t * (PRIORITY_COLOR_LOW[2] - PRIORITY_COLOR_NORMAL[2]));
     }
 
-    return IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255), static_cast<int>(b * 255), 255);
+    // Use std::lround for accurate color representation (avoids truncation)
+    return IM_COL32(static_cast<int>(std::lround(r * 255.0F)),
+                    static_cast<int>(std::lround(g * 255.0F)),
+                    static_cast<int>(std::lround(b * 255.0F)),
+                    255);
 }
 
 /**
@@ -110,31 +116,7 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
     return NICE_MIN + static_cast<int32_t>(std::round(position * static_cast<float>(NICE_RANGE)));
 }
 
-/**
- * @brief Get a human-readable priority label for a nice value
- *
- * @param nice The nice value (-20 to 19)
- * @return const char* A descriptive label
- */
-[[nodiscard]] inline auto getPriorityLabel(int32_t nice) -> const char*
-{
-    if (nice < -10)
-    {
-        return "High Priority";
-    }
-    if (nice < 0)
-    {
-        return "Above Normal";
-    }
-    if (nice == 0)
-    {
-        return "Normal";
-    }
-    if (nice <= 10)
-    {
-        return "Below Normal";
-    }
-    return "Low Priority";
-}
+// Note: For priority labels, use Domain::Priority::getPriorityLabel() from PriorityConfig.h
+// to maintain consistency across the application.
 
 } // namespace App::detail
