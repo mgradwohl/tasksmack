@@ -9,6 +9,9 @@
 #include <memory>
 #include <string>
 
+// Forward declaration for ImGui draw list
+struct ImDrawList;
+
 namespace App
 {
 
@@ -58,6 +61,14 @@ class ProcessDetailsPanel : public Panel
     void renderGpuUsage(const Domain::ProcessSnapshot& proc);
     void renderActions();
     void trimHistory(double nowSeconds);
+
+    // Priority slider helper methods (extracted for testability and clarity)
+    struct PrioritySliderContext;
+    static void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx);
+    static void drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx);
+    static void drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx);
+    void handlePrioritySliderInput(const PrioritySliderContext& ctx);
+    static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
     std::int32_t m_SelectedPid = -1;

@@ -6,6 +6,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/Format.h"
 #include "UI/HistoryWidgets.h"
 #include "UI/IconsFontAwesome6.h"
@@ -82,6 +83,37 @@ template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, st
 
 namespace App
 {
+
+// Import priority slider constants and helpers selectively
+using detail::getNiceColor;
+using detail::getNiceFromPosition;
+using detail::getNicePosition;
+using detail::NICE_MAX;
+using detail::NICE_MIN;
+using detail::NICE_RANGE;
+using detail::PRIORITY_BADGE_ARROW_SIZE;
+using detail::PRIORITY_BADGE_CORNER_RADIUS;
+using detail::PRIORITY_BADGE_HEIGHT;
+using detail::PRIORITY_GRADIENT_SEGMENTS;
+using detail::PRIORITY_LABEL_PADDING;
+using detail::PRIORITY_SLIDER_CORNER_RADIUS;
+using detail::PRIORITY_SLIDER_HEIGHT;
+using detail::PRIORITY_SLIDER_WIDTH;
+using detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
+
+/// Context structure for priority slider rendering
+/// Captures all computed layout values in one place for helper methods
+struct ProcessDetailsPanel::PrioritySliderContext
+{
+    ImDrawList* drawList = nullptr;
+    ImVec2 cursorStart{};       // Screen position where badge area starts
+    ImVec2 sliderMin{};         // Top-left of slider bar (screen coords)
+    ImVec2 sliderMax{};         // Bottom-right of slider bar (screen coords)
+    float sliderLocalX = 0.0F;  // Slider X position in window-local coords (for cursor positioning)
+    float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
+    int32_t niceValue = 0;      // Current nice value
+    const ImGuiStyle* style = nullptr;
+};
 
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
@@ -1655,217 +1687,76 @@ void ProcessDetailsPanel::renderActions()
         const ImGuiStyle& style = ImGui::GetStyle();
 
         // ========================================
-        // Custom gradient priority slider
-        // ----------------------------------------
-        // Dimension rationale:
-        // - SLIDER_WIDTH (400px): Fits comfortably in the Process Details panel
-        //   while providing enough precision for the 40-value nice range.
-        // - SLIDER_HEIGHT (12px): Slightly taller than ImGui's default frame height
-        //   to make the gradient clearly visible without dominating the row.
-        // - BADGE_HEIGHT (24px): Matches a typical label-sized pill that fits
-        //   the 1-2 digit nice value text with padding.
-        // - BADGE_ARROW_SIZE: Proportional to badge height (1/4) so the pointer
-        //   visually connects the badge to the slider without overpowering it.
-        // These could be theme-configurable in the future if needed.
+        // Custom gradient priority slider (refactored into helper methods)
+        // Layout: High [====gradient====] Low
+        //                   Default
         // ========================================
-        constexpr float SLIDER_WIDTH = 400.0F;
-        constexpr float SLIDER_HEIGHT = 12.0F;
-        constexpr float BADGE_HEIGHT = 24.0F;
-        constexpr float BADGE_ARROW_SIZE = BADGE_HEIGHT * 0.25F; // Proportional to badge height
 
-        // Calculate normalized position (0.0 = -20, 1.0 = 19)
-        constexpr float NICE_RANGE = static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
-        const float normalizedPos = static_cast<float>(m_PriorityNiceValue - Domain::Priority::MIN_NICE) / NICE_RANGE;
+        // Calculate "High" label width for offsetting the slider
+        const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
+        const float highLabelOffset = highLabelSize.x + PRIORITY_LABEL_PADDING;
 
-        // ========================================
-        // Gradient color anchor points for priority visualization
-        // The gradient transitions: Red (high priority) -> Green (normal) -> Blue (low priority)
-        // ========================================
-        // Red anchor (high priority, nice=-20)
-        constexpr float RED_R = 1.0F;
-        constexpr float RED_G = 0.3F;
-        constexpr float RED_B = 0.2F;
-        // Green anchor (normal priority, nice=0)
-        constexpr float GREEN_R = 0.5F;
-        constexpr float GREEN_G = 0.8F;
-        constexpr float GREEN_B = 0.2F;
-        // Blue anchor (low priority, nice=19)
-        constexpr float BLUE_R = 0.4F;
-        constexpr float BLUE_G = 0.4F;
-        constexpr float BLUE_B = 0.8F;
+        // Build context for helper methods
+        PrioritySliderContext ctx;
+        ctx.drawList = drawList;
+        ctx.niceValue = m_PriorityNiceValue;
+        ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
+        ctx.style = &style;
 
-        // Get color for current nice value by interpolating between anchor colors
-        auto getNiceColor = [](int nice) -> ImVec4
-        {
-            // Normalize to 0-1 range
-            const float t = static_cast<float>(nice - Domain::Priority::MIN_NICE) /
-                            static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
-
-            if (t < 0.5F)
-            {
-                // Red to Green (high priority to normal)
-                const float localT = t * 2.0F; // 0-1 within red-green range
-                return ImVec4(RED_R - (localT * (RED_R - GREEN_R)),
-                              RED_G + (localT * (GREEN_G - RED_G)),
-                              RED_B, // Constant low blue in red-green transition
-                              1.0F);
-            }
-            // Green to Blue (normal to low priority)
-            const float localT = (t - 0.5F) * 2.0F; // 0-1 within green-blue range
-            return ImVec4(GREEN_R - (localT * (GREEN_R - BLUE_R)),
-                          GREEN_G - (localT * (GREEN_G - BLUE_G)),
-                          GREEN_B + (localT * (BLUE_B - GREEN_B)),
-                          1.0F);
-        };
-
-        // Reserve space for badge above slider
-        const ImVec2 cursorStart = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(SLIDER_WIDTH, BADGE_HEIGHT + BADGE_ARROW_SIZE));
+        // Reserve space for badge above slider (offset by High label width)
+        const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+        ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
+        ImGui::Dummy(ImVec2(highLabelOffset + PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
 
         // Draw the value badge/callout above the slider position
-        {
-            const float badgeX = cursorStart.x + (normalizedPos * SLIDER_WIDTH);
-            const float badgeY = cursorStart.y;
+        drawPriorityBadge(drawList, ctx);
 
-            // Badge text
-            const std::string valueText = std::to_string(m_PriorityNiceValue);
-            const ImVec2 textSize = ImGui::CalcTextSize(valueText.c_str());
-            const float badgeWidth = textSize.x + (style.FramePadding.x * 2.0F);
-            const float badgeHalfWidth = badgeWidth * 0.5F;
+        // Draw "High" label (left of slider, vertically centered with slider)
+        // Note: 'theme' is already declared in the outer scope
+        const float sliderRowY = ImGui::GetCursorPosY();
+        const float labelCenterY = sliderRowY + ((PRIORITY_SLIDER_HEIGHT - highLabelSize.y) * 0.5F);
+        ImGui::SetCursorPosY(labelCenterY);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
+        ImGui::TextUnformatted("High");
+        ImGui::PopStyleColor();
 
-            // Clamp badge position to stay within slider bounds
-            const float clampedBadgeX = std::clamp(badgeX, cursorStart.x + badgeHalfWidth, cursorStart.x + SLIDER_WIDTH - badgeHalfWidth);
-
-            // Badge rectangle
-            const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
-            const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + BADGE_HEIGHT);
-
-            // Badge color based on nice value
-            const ImVec4 badgeColor = getNiceColor(m_PriorityNiceValue);
-            const ImU32 badgeColorU32 = ImGui::ColorConvertFloat4ToU32(badgeColor);
-
-            // Draw badge rectangle with rounded corners
-            drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, 4.0F);
-
-            // Draw arrow pointing down from badge
-            const ImVec2 arrowTip(badgeX, badgeMax.y + BADGE_ARROW_SIZE);
-            const ImVec2 arrowLeft(badgeX - BADGE_ARROW_SIZE, badgeMax.y);
-            const ImVec2 arrowRight(badgeX + BADGE_ARROW_SIZE, badgeMax.y);
-            drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
-
-            // Draw badge text (white for contrast)
-            const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((BADGE_HEIGHT - textSize.y) * 0.5F));
-            drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), valueText.c_str());
-        }
+        // Position the slider after "High" label on same line
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(sliderRowY);
 
         // Draw the gradient slider bar
-        const ImVec2 sliderStart = ImGui::GetCursorScreenPos();
-        const ImVec2 sliderMin = sliderStart;
-        const ImVec2 sliderMax(sliderStart.x + SLIDER_WIDTH, sliderStart.y + SLIDER_HEIGHT);
+        ctx.sliderMin = ImGui::GetCursorScreenPos();
+        ctx.sliderMax = ImVec2(ctx.sliderMin.x + PRIORITY_SLIDER_WIDTH, ctx.sliderMin.y + PRIORITY_SLIDER_HEIGHT);
+        // Store window-local X coordinate for scale label positioning
+        ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
 
         // Draw gradient background (red -> green -> blue)
-        constexpr int GRADIENT_SEGMENTS = 40;
-        constexpr float SEGMENT_WIDTH = SLIDER_WIDTH / static_cast<float>(GRADIENT_SEGMENTS);
-        for (int i = 0; i < GRADIENT_SEGMENTS; ++i)
-        {
-            const float t1 = static_cast<float>(i) / static_cast<float>(GRADIENT_SEGMENTS);
-            const float t2 = static_cast<float>(i + 1) / static_cast<float>(GRADIENT_SEGMENTS);
-            const int nice1 = Domain::Priority::MIN_NICE + static_cast<int>(t1 * NICE_RANGE);
-            const int nice2 = Domain::Priority::MIN_NICE + static_cast<int>(t2 * NICE_RANGE);
-            const ImU32 col1 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice1));
-            const ImU32 col2 = ImGui::ColorConvertFloat4ToU32(getNiceColor(nice2));
-
-            const ImVec2 segMin(sliderMin.x + (static_cast<float>(i) * SEGMENT_WIDTH), sliderMin.y);
-            const ImVec2 segMax(sliderMin.x + (static_cast<float>(i + 1) * SEGMENT_WIDTH), sliderMax.y);
-
-            drawList->AddRectFilledMultiColor(segMin, segMax, col1, col2, col2, col1);
-        }
+        drawPriorityGradient(drawList, ctx);
 
         // Draw slider border
-        drawList->AddRect(sliderMin, sliderMax, ImGui::GetColorU32(ImGuiCol_Border), 2.0F);
+        drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), PRIORITY_SLIDER_CORNER_RADIUS);
 
         // Draw slider thumb/handle
-        {
-            const float thumbX = sliderMin.x + (normalizedPos * SLIDER_WIDTH);
-            const float thumbRadius = SLIDER_HEIGHT * 0.6F;
-            const ImVec2 thumbCenter(thumbX, sliderMin.y + (SLIDER_HEIGHT * 0.5F));
-
-            // Thumb outline
-            drawList->AddCircleFilled(thumbCenter, thumbRadius + 2.0F, ImGui::GetColorU32(ImGuiCol_Border));
-            // Thumb fill (white)
-            drawList->AddCircleFilled(thumbCenter, thumbRadius, IM_COL32(255, 255, 255, 255));
-        }
+        drawPriorityThumb(drawList, ctx);
 
         // Make the slider interactive with an invisible button
-        ImGui::InvisibleButton("##priority_slider", ImVec2(SLIDER_WIDTH, SLIDER_HEIGHT));
-        if (ImGui::IsItemActive())
-        {
-            const float mouseX = ImGui::GetIO().MousePos.x;
-            const float relX = std::clamp((mouseX - sliderMin.x) / SLIDER_WIDTH, 0.0F, 1.0F);
-            const int newNice = Domain::Priority::MIN_NICE + static_cast<int>(relX * NICE_RANGE);
-            if (newNice != m_PriorityNiceValue)
-            {
-                m_PriorityNiceValue = newNice;
-                m_PriorityChanged = true;
-                // Clear any previous error when user interacts with slider
-                // This provides fresher feedback rather than showing stale errors
-                m_PriorityError.clear();
-            }
-        }
+        ImGui::InvisibleButton("##priority_slider", ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_SLIDER_HEIGHT));
+        handlePrioritySliderInput(ctx);
 
-        // Draw scale labels below the slider
-        ImGui::Spacing();
-        {
-            const float contentStartX = ImGui::GetCursorPosX();
+        // Draw "Low" label and "Default" label
+        drawPriorityScaleLabels(ctx);
 
-            // "High" label (left, colored red)
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
-            ImGui::TextUnformatted("High");
-            ImGui::PopStyleColor();
-
-            // Dynamically positioned scale tick labels for font-size independence
-            ImGui::SameLine();
-            const float scaleRowY = ImGui::GetCursorPosY();
-            const float scaleStartX = contentStartX + 35.0F; // Offset past "High" label
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-
-            // Scale spans from -20 to 19 over NICE_RANGE (39), matching the slider
-            constexpr std::array<int, 9> SCALE_VALUES{-20, -15, -10, -5, 0, 5, 10, 15, 19};
-            for (const int value : SCALE_VALUES)
-            {
-                const float normalized = static_cast<float>(value - Domain::Priority::MIN_NICE) / NICE_RANGE;
-                const std::string label = std::to_string(value);
-                const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
-                const float labelCenterX = scaleStartX + (normalized * SLIDER_WIDTH);
-                ImGui::SetCursorPos(ImVec2(labelCenterX - (labelSize.x * 0.5F), scaleRowY));
-                ImGui::TextUnformatted(label.c_str());
-            }
-            ImGui::PopStyleColor();
-
-            // "Low" label (right, colored blue) - position after last scale tick
-            const float lowLabelX = scaleStartX + SLIDER_WIDTH + 10.0F;
-            ImGui::SetCursorPos(ImVec2(lowLabelX, scaleRowY));
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
-            ImGui::TextUnformatted("Low");
-            ImGui::PopStyleColor();
-
-            // "Default" label centered below the 0 position
-            // 0 is at normalized position 0.5128 (20 out of 39 range)
-            constexpr float ZERO_NORMALIZED = 20.0F / 39.0F;
-            const float defaultX = contentStartX + (ZERO_NORMALIZED * SLIDER_WIDTH);
-            const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
-            ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-            ImGui::TextUnformatted("Default");
-            ImGui::PopStyleColor();
-        }
-
-        // Tooltip on hover
+        // Tooltip on hover with keyboard shortcut hints
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
                               "Lower values = higher priority (more CPU time)\n"
                               "Normal priority = 0\n\n"
+                              "Keyboard shortcuts:\n"
+                              "  Left/Right: Adjust by 1\n"
+                              "  PgUp/PgDown: Adjust by 5\n"
+                              "  Home/End: Min/Max priority\n"
+                              "  0: Reset to default\n\n"
                               "Note: Setting values below 0 typically requires root/admin privileges");
         }
 
@@ -1878,7 +1769,7 @@ void ProcessDetailsPanel::renderActions()
 
         // Right-align the Apply button
         constexpr float APPLY_BUTTON_WIDTH = 120.0F;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PRIORITY_SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
 
         // Apply button with success (green) styling
         {
@@ -1925,6 +1816,166 @@ void ProcessDetailsPanel::renderActions()
             ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_PriorityError.c_str());
         }
     }
+}
+
+// =============================================================================
+// Priority Slider Helper Methods
+// =============================================================================
+
+void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
+{
+    const float badgeX = ctx.cursorStart.x + (ctx.normalizedPos * PRIORITY_SLIDER_WIDTH);
+    const float badgeY = ctx.cursorStart.y;
+
+    // Badge text
+    const std::string valueText = std::to_string(ctx.niceValue);
+    const ImVec2 textSize = ImGui::CalcTextSize(valueText.c_str());
+    const float badgeWidth = textSize.x + (ctx.style->FramePadding.x * 2.0F);
+    const float badgeHalfWidth = badgeWidth * 0.5F;
+
+    // Clamp badge position to stay within slider bounds
+    const float clampedBadgeX =
+        std::clamp(badgeX, ctx.cursorStart.x + badgeHalfWidth, ctx.cursorStart.x + PRIORITY_SLIDER_WIDTH - badgeHalfWidth);
+
+    // Badge rectangle
+    const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
+    const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + PRIORITY_BADGE_HEIGHT);
+
+    // Badge color based on nice value
+    const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue);
+
+    // Draw badge rectangle with rounded corners
+    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, PRIORITY_BADGE_CORNER_RADIUS);
+
+    // Draw arrow pointing down from badge
+    const ImVec2 arrowTip(badgeX, badgeMax.y + PRIORITY_BADGE_ARROW_SIZE);
+    const ImVec2 arrowLeft(badgeX - PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
+    const ImVec2 arrowRight(badgeX + PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
+    drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
+
+    // Draw badge text (white for contrast)
+    const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((PRIORITY_BADGE_HEIGHT - textSize.y) * 0.5F));
+    drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), valueText.c_str());
+}
+
+void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
+{
+    constexpr auto SEGMENTS = static_cast<int>(PRIORITY_GRADIENT_SEGMENTS);
+    const float segmentWidth = PRIORITY_SLIDER_WIDTH / PRIORITY_GRADIENT_SEGMENTS;
+
+    for (int i = 0; i < SEGMENTS; ++i)
+    {
+        const float t1 = static_cast<float>(i) / PRIORITY_GRADIENT_SEGMENTS;
+        const float t2 = static_cast<float>(i + 1) / PRIORITY_GRADIENT_SEGMENTS;
+        const int nice1 = NICE_MIN + static_cast<int>(t1 * static_cast<float>(NICE_RANGE));
+        const int nice2 = NICE_MIN + static_cast<int>(t2 * static_cast<float>(NICE_RANGE));
+        const ImU32 col1 = getNiceColor(nice1);
+        const ImU32 col2 = getNiceColor(nice2);
+
+        const ImVec2 segMin(ctx.sliderMin.x + (static_cast<float>(i) * segmentWidth), ctx.sliderMin.y);
+        const ImVec2 segMax(ctx.sliderMin.x + (static_cast<float>(i + 1) * segmentWidth), ctx.sliderMax.y);
+
+        drawList->AddRectFilledMultiColor(segMin, segMax, col1, col2, col2, col1);
+    }
+}
+
+void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx)
+{
+    const float thumbX = ctx.sliderMin.x + (ctx.normalizedPos * PRIORITY_SLIDER_WIDTH);
+    const float thumbRadius = PRIORITY_SLIDER_HEIGHT * 0.6F;
+    const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (PRIORITY_SLIDER_HEIGHT * 0.5F));
+
+    // Thumb outline
+    drawList->AddCircleFilled(thumbCenter, thumbRadius + PRIORITY_THUMB_OUTLINE_THICKNESS, ImGui::GetColorU32(ImGuiCol_Border));
+    // Thumb fill (white)
+    drawList->AddCircleFilled(thumbCenter, thumbRadius, IM_COL32(255, 255, 255, 255));
+}
+
+void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext& ctx)
+{
+    // Mouse input: drag to set value
+    if (ImGui::IsItemActive())
+    {
+        const float mouseX = ImGui::GetIO().MousePos.x;
+        const float relX = std::clamp((mouseX - ctx.sliderMin.x) / PRIORITY_SLIDER_WIDTH, 0.0F, 1.0F);
+        const int32_t newNice = getNiceFromPosition(relX);
+        if (newNice != m_PriorityNiceValue)
+        {
+            m_PriorityNiceValue = newNice;
+            m_PriorityChanged = true;
+            // Clear any previous error when user interacts with slider
+            // This provides fresher feedback rather than showing stale errors
+            m_PriorityError.clear();
+        }
+    }
+
+    // Keyboard input: adjust value when focused
+    // Keys: Left/Right (±1), PgUp/PgDown (±5), Home/End (min/max), 0 (default)
+    if (ImGui::IsItemFocused())
+    {
+        int32_t newNice = m_PriorityNiceValue;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+        {
+            newNice = std::max(NICE_MIN, m_PriorityNiceValue - 1);
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+        {
+            newNice = std::min(NICE_MAX, m_PriorityNiceValue + 1);
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_PageUp))
+        {
+            // Page Up = higher priority = lower nice value
+            newNice = std::max(NICE_MIN, m_PriorityNiceValue - 5);
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_PageDown))
+        {
+            // Page Down = lower priority = higher nice value
+            newNice = std::min(NICE_MAX, m_PriorityNiceValue + 5);
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_Home))
+        {
+            newNice = NICE_MIN; // Highest priority (-20)
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_End))
+        {
+            newNice = NICE_MAX; // Lowest priority (19)
+        }
+        else if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Keypad0))
+        {
+            newNice = 0; // Default priority
+        }
+
+        if (newNice != m_PriorityNiceValue)
+        {
+            m_PriorityNiceValue = newNice;
+            m_PriorityChanged = true;
+            m_PriorityError.clear();
+        }
+    }
+}
+
+void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& ctx)
+{
+    const auto& theme = UI::Theme::get();
+
+    // "Low" label (right of slider, colored blue)
+    // Position it after the slider with padding (sliderLocalX + width = right edge)
+    const float lowLabelX = ctx.sliderLocalX + PRIORITY_SLIDER_WIDTH + PRIORITY_LABEL_PADDING;
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(lowLabelX);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
+    ImGui::TextUnformatted("Low");
+    ImGui::PopStyleColor();
+
+    // "Default" label centered below the 0 position on the slider
+    // Use getNicePosition(0) for consistency with other position calculations
+    const float defaultX = ctx.sliderLocalX + (getNicePosition(0) * PRIORITY_SLIDER_WIDTH);
+    const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
+    ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+    ImGui::TextUnformatted("Default");
+    ImGui::PopStyleColor();
 }
 
 } // namespace App

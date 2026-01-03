@@ -6,9 +6,9 @@
 
 #include <gtest/gtest.h>
 
-#include <ranges>
 #include <cstring>
 #include <format>
+#include <ranges>
 
 namespace App::detail
 {
