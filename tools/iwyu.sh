@@ -264,6 +264,7 @@ if [[ -n "$IWYU_TOOL" ]]; then
     )
     IWYU_ARGS=(
         "-Xiwyu" "--mapping_file=$IWYU_MAPPING"
+        "-Xiwyu" "--cxx17ns"
     )
 
     if [[ ${#FILES[@]} -gt 0 ]]; then
@@ -293,11 +294,13 @@ import json
 import sys
 import os
 
-with open('$COMPILE_COMMANDS') as f:
+compile_commands_path = sys.argv[1]
+target_file = sys.argv[2]
+
+with open(compile_commands_path) as f:
     commands = json.load(f)
 
 # Find the compile command for this file
-target_file = '${file}'
 for cmd in commands:
     file_path = cmd.get('file', '')
     # Match by full path or basename
@@ -309,6 +312,7 @@ for cmd in commands:
         tokens = shlex.split(command)
         flags = []
         skip_next = False
+        cpp_extensions = ('.cpp', '.cc', '.cxx', '.c++', '.C', '.CPP')
         for i, token in enumerate(tokens):
             if skip_next:
                 skip_next = False
@@ -320,8 +324,8 @@ for cmd in commands:
             if token in ['-o', '-c', '-MF', '-MT', '-MD']:
                 skip_next = True
                 continue
-            # Skip output files and source file
-            if token.startswith('-o') or token.endswith('.cpp') or token.endswith('.o'):
+            # Skip output files and source files
+            if token.startswith('-o') or token.endswith('.o') or token.endswith(cpp_extensions):
                 continue
             # Keep relevant flags
             if token.startswith('-I') or token.startswith('-D') or \
@@ -331,7 +335,7 @@ for cmd in commands:
                 flags.append(token)
         print(' '.join(flags))
         break
-" 2>/dev/null || echo "")
+" "$COMPILE_COMMANDS" "${file}" 2>/dev/null || echo "")
 
         # Direct IWYU invocation with extracted compile flags
         if [[ -n "$COMPILE_FLAGS" ]]; then
