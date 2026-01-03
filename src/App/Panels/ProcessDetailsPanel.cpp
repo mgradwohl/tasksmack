@@ -1970,7 +1970,7 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /
     // "Default" label centered below the 0 position
     // 0 is at normalized position 0.5128 (20 out of 39 range)
     constexpr float ZERO_NORMALIZED = 20.0F / 39.0F;
-    const float defaultX = contentStartX + (ZERO_NORMALIZED * PRIORITY_SLIDER_WIDTH);
+    const float defaultX = scaleStartX + (ZERO_NORMALIZED * PRIORITY_SLIDER_WIDTH);
     const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
     ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
