@@ -122,7 +122,7 @@ check_version_compatibility() {
     iwyu_clang_version=$(include-what-you-use --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
     clang_version=$(clang --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
 
-    if [[ -n "$iwyu_clang_version" ]] && [[ -n "$clang_version" ]] ; then
+    if [[ -n "$iwyu_clang_version" ]] && [[ -n "$clang_version" ]]; then
         if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
             echo "Warning: IWYU (clang $iwyu_clang_version) and project clang ($clang_version) version mismatch" >&2
             echo "  This may cause false positives or assertion failures." >&2
@@ -158,16 +158,30 @@ fi
 if $VERBOSE; then
     echo "Stripping PCH flags from compile_commands.json..."
 fi
-sed -i.bak \
-    -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
-    -e 's/-Xclang -emit-pch//g' \
-    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-    -e 's/-Winvalid-pch//g' \
-    -e 's/-fpch-instantiate-templates//g' \
-    -e 's/@[^ ]*\.modmap//g' \
-    -e 's/-fmodule-output=[^ ]*//g' \
-    "$COMPILE_COMMANDS"
-rm -f "${COMPILE_COMMANDS}.bak"
+# Use portable sed in-place editing that works on both GNU sed (Linux) and BSD sed (macOS)
+if [[ "$(uname)" == "Darwin" ]]; then
+    # BSD sed requires a separate argument for backup extension
+    sed -i '' \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
+        -e 's/-Xclang -emit-pch//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Winvalid-pch//g' \
+        -e 's/-fpch-instantiate-templates//g' \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        "$COMPILE_COMMANDS"
+else
+    # GNU sed: -i with no argument for in-place without backup
+    sed -i \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
+        -e 's/-Xclang -emit-pch//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Winvalid-pch//g' \
+        -e 's/-fpch-instantiate-templates//g' \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        "$COMPILE_COMMANDS"
+fi
 
 # Verify IWYU mapping file exists
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"

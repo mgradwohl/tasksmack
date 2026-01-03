@@ -249,6 +249,7 @@ void UILayer::onAttach()
     // Load themes from TOML files (built-ins)
     auto themesDir = getExecutableDir() / "assets" / "themes";
     Theme::get().loadThemes(themesDir);
+    spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
     // Optional: load user-provided themes from the same directory as config.toml (../themes)
     const auto userThemesDir = getUserConfigDir() / "themes";
@@ -257,16 +258,16 @@ void UILayer::onAttach()
         Theme::get().loadThemes(userThemesDir);
     }
 
-    // Style - start with dark base, then apply theme colors
-    ImGui::StyleColorsDark();
+    // Apply default/fallback theme colors (user config will override later)
     Theme::get().applyImGuiStyle();
 
     // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
+    // NOTE: This alpha override is required by ImGui for multi-viewport support - not a theme color
     ImGuiStyle& style = ImGui::GetStyle();
     if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
     {
         style.WindowRounding = 0.0F;
-        style.Colors[ImGuiCol_WindowBg].w = 1.0F;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0F; // NOLINT: Required by ImGui viewports
     }
 
     // Setup Platform/Renderer backends
@@ -307,6 +308,10 @@ void UILayer::onPostRender()
 
 void UILayer::beginFrame()
 {
+    // Apply any pending theme change BEFORE starting the ImGui frame
+    // This ensures all widgets rendered this frame use the new theme colors
+    Theme::get().applyPendingTheme();
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();

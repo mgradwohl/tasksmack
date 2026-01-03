@@ -3,6 +3,7 @@
 #endif
 
 #include "App/AboutLayer.h"
+#include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -165,6 +166,9 @@ auto runApp() -> int
 
     // About dialog layer (modal overlay)
     app.pushLayer<App::AboutLayer>();
+
+    // Settings dialog layer (modal overlay)
+    app.pushLayer<App::SettingsLayer>();
 
     // Run the application
     app.run();

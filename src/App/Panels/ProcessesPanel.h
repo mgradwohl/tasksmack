@@ -39,9 +39,12 @@ class ProcessesPanel : public Panel
     /// Update logic (no longer needed for refresh, kept for interface compatibility).
     void onUpdate(float deltaTime) override;
 
-    /// Render the panel.
+    /// Render the panel (with ImGui window wrapper).
     /// @param open Pointer to visibility flag (for window close button).
     void render(bool* open) override;
+
+    /// Render content only (for embedding in tab, without window wrapper).
+    void renderContent();
 
     /// Get the currently selected process PID.
     /// @return Selected PID, or -1 if none selected.

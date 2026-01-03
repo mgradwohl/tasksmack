@@ -176,7 +176,9 @@ void SystemMetricsPanel::onAttach()
     m_ForceRefresh = false;
 
     const auto initialSnap = m_Model->snapshot();
-    m_Hostname = std::string(ICON_FA_COMPUTER) + " " + (initialSnap.hostname.empty() ? "System" : initialSnap.hostname);
+    // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
+    // UI code (e.g., tab labels) is responsible for adding icons when rendering.
+    m_Hostname = initialSnap.hostname.empty() ? "System" : initialSnap.hostname;
 }
 
 void SystemMetricsPanel::onDetach()
@@ -243,7 +245,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         const auto snap = m_Model->snapshot();
         if (!snap.hostname.empty())
         {
-            m_Hostname = std::string(ICON_FA_COMPUTER) + " " + snap.hostname;
+            m_Hostname = snap.hostname;
         }
 
         if (intervalSec > 0.0F)
@@ -268,11 +270,17 @@ void SystemMetricsPanel::render(bool* open)
         return;
     }
 
+    renderContent();
+
+    ImGui::End();
+}
+
+void SystemMetricsPanel::renderContent()
+{
     if (!m_Model)
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textError, "System model not initialized");
-        ImGui::End();
         return;
     }
 
@@ -297,9 +305,12 @@ void SystemMetricsPanel::render(bool* open)
         m_LayoutDirty = false;
     }
 
+    // Add padding inside tabs for better spacing
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 8.0F));
+
     if (ImGui::BeginTabBar("SystemTabs"))
     {
-        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH " Overview"))
+        if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
         {
             renderOverview();
             ImGui::EndTabItem();
@@ -307,7 +318,7 @@ void SystemMetricsPanel::render(bool* open)
 
         if (snap.coreCount > 1)
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " CPU Cores"))
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
                 renderPerCoreSection();
                 ImGui::EndTabItem();
@@ -320,7 +331,7 @@ void SystemMetricsPanel::render(bool* open)
             const auto gpuInfos = m_GPUModel->gpuInfo();
             if (!gpuInfos.empty())
             {
-                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP " GPU"))
+                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
                 {
                     renderGpuSection();
                     ImGui::EndTabItem();
@@ -331,7 +342,7 @@ void SystemMetricsPanel::render(bool* open)
         ImGui::EndTabBar();
     }
 
-    ImGui::End();
+    ImGui::PopStyleVar(); // FramePadding
 }
 
 void SystemMetricsPanel::renderOverview()
@@ -413,7 +424,7 @@ void SystemMetricsPanel::renderOverview()
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     // CPU history with vertical now bars (total + breakdown)
-    ImGui::Text(ICON_FA_MICROCHIP " CPU Usage (last %zu samples)", cpuCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
     cropFrontToSize(cpuHist, cpuCount);
     std::vector<float> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
@@ -537,7 +548,8 @@ void SystemMetricsPanel::renderOverview()
         auto swapHist = m_Model->swapHistory();
         double peakMemPercent = 0.0;
 
-        ImGui::Text(ICON_FA_MEMORY " Memory & Swap (last %zu samples)", std::min(memHist.size(), timestamps.size()));
+        ImGui::TextColored(
+            theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
         ImGui::Spacing();
 
         const size_t memCount = std::min(memHist.size(), timestamps.size());
@@ -661,16 +673,6 @@ void SystemMetricsPanel::renderOverview()
             "MemorySwapHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, OVERVIEW_NOW_BAR_COLUMNS);
 
         ImGui::Spacing();
-    }
-
-    // Load average (Linux only, shows nothing on Windows)
-    if (snap.loadAvg1 > 0.0 || snap.loadAvg5 > 0.0 || snap.loadAvg15 > 0.0)
-    {
-        ImGui::Text("Load Avg:");
-        ImGui::SameLine(m_OverviewLabelWidth);
-
-        const std::string loadStr = std::format("{:.2f} / {:.2f} / {:.2f} (1/5/15 min)", snap.loadAvg1, snap.loadAvg5, snap.loadAvg15);
-        ImGui::TextUnformatted(loadStr.c_str());
     }
 
     // Power & Battery history chart (combines per-process power aggregation with battery charge %)
@@ -830,7 +832,7 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
-                headerLeft = std::format("Power & Battery ({} samples)", alignedCount);
+                headerLeft = std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount);
 
                 // Build right-aligned status string with icons
                 const int chargeInt = snap.power.chargePercent;
@@ -873,11 +875,11 @@ void SystemMetricsPanel::renderOverview()
             }
             else
             {
-                headerLeft = std::format("Power ({} samples)", alignedCount);
+                headerLeft = std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount);
             }
 
             // Render header with left and right parts
-            ImGui::TextUnformatted(headerLeft.c_str());
+            ImGui::TextColored(theme.scheme().textPrimary, "%s", headerLeft.c_str());
             if (!headerRight.empty())
             {
                 // Calculate right-aligned position to align with chart's right edge (not NowBars)
@@ -1005,7 +1007,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_GEARS " Threads & Page Faults (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Threads & Page Faults (%zu samples)", alignedCount);
         renderHistoryWithNowBars(
             "ThreadsFaultsHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1093,7 +1095,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_HARD_DRIVE " I/O (%zu samples)", aligned);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1182,7 +1184,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::Text(ICON_FA_NETWORK_WIRED " Network (%zu samples)", aligned);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
@@ -1202,7 +1204,7 @@ void SystemMetricsPanel::renderCpuSection()
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
-    ImGui::Text(ICON_FA_CHART_LINE " CPU History (last %zu samples)", cpuHist.size());
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CHART_LINE "  CPU History (%zu samples)", cpuHist.size());
     ImGui::Spacing();
 
     const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
@@ -1284,7 +1286,20 @@ void SystemMetricsPanel::renderPerCoreSection()
     auto snap = m_Model->snapshot();
     auto perCoreHist = m_Model->perCoreHistory();
     auto& theme = UI::Theme::get();
-    ImGui::Text("Per-Core CPU Usage (%d cores)", snap.coreCount);
+
+    // CPU model header (same as Overview tab)
+    std::string coreInfo;
+    if (snap.cpuFreqMHz > 0)
+    {
+        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, UI::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
+    }
+    else
+    {
+        coreInfo = std::format(" ({} cores)", snap.coreCount);
+    }
+    ImGui::TextUnformatted(snap.cpuModel.c_str());
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(coreInfo.c_str());
     ImGui::Spacing();
 
     const size_t numCores = snap.cpuPerCore.size();
@@ -1519,7 +1534,7 @@ void SystemMetricsPanel::renderGpuSection()
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        ImGui::Text("GPU Core & Video (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
 
         auto gpuCorePlot = [&]()
         {
@@ -1555,10 +1570,11 @@ void SystemMetricsPanel::renderGpuSection()
                     {
                         clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
                     }
-                    ImVec4 clockColor = theme.scheme().gpuClock;
-                    clockColor.w = 0.8F;
-                    plotLineWithFill(
-                        "Clock", timeData.data(), clockPercent.data(), UI::Numeric::checkedCount(clockPercent.size()), clockColor);
+                    plotLineWithFill("Clock",
+                                     timeData.data(),
+                                     clockPercent.data(),
+                                     UI::Numeric::checkedCount(clockPercent.size()),
+                                     theme.scheme().gpuClockFill);
                 }
 
                 // Encoder utilization
@@ -1722,7 +1738,7 @@ void SystemMetricsPanel::renderGpuSection()
         // ========================================
         if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            ImGui::Text("Thermal & Power");
+            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
 
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
             // Note: Fan speed is already a percentage (0-100%), no max needed
@@ -1851,16 +1867,6 @@ void SystemMetricsPanel::renderGpuSection()
 
         ImGui::Unindent();
         ImGui::Spacing();
-    }
-
-    // Show capability information at the bottom
-    if (!caps.hasPerProcessMetrics)
-    {
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textInfo, "%s Per-process GPU metrics not available on this platform", ICON_FA_CIRCLE_INFO);
-        ImGui::TextWrapped("Per-process GPU usage requires vendor-specific support (NVIDIA NVML on Linux/Windows, D3DKMT on Windows).");
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "ThemeLoader.h"
 
+#include <implot.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -43,7 +44,6 @@ void Theme::loadDefaultFallbackTheme()
     const auto blue = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
     const auto darkBg = ImVec4(0.1F, 0.1F, 0.1F, 1.0F);
 
-    fallback.heatmap = {blue, blue, gray, gray, gray};
     fallback.accents = {blue, blue, blue, blue, blue, blue, blue, blue};
     fallback.progressLow = blue;
     fallback.progressMedium = gray;
@@ -74,18 +74,12 @@ void Theme::loadDefaultFallbackTheme()
     fallback.cpuSystem = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
     fallback.cpuIowait = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
     fallback.cpuIdle = gray;
-    fallback.cpuSteal = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
 
     // CPU breakdown fill colors (semi-transparent versions)
     fallback.cpuUserFill = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
     fallback.cpuSystemFill = ImVec4(1.0F, 0.5F, 0.0F, 0.35F);
     fallback.cpuIowaitFill = ImVec4(1.0F, 1.0F, 0.0F, 0.35F);
     fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F);
-    fallback.cpuStealFill = ImVec4(1.0F, 0.0F, 0.0F, 0.35F);
-
-    fallback.dangerButton = ImVec4(0.8F, 0.0F, 0.0F, 1.0F);
-    fallback.dangerButtonHovered = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
-    fallback.dangerButtonActive = ImVec4(0.5F, 0.0F, 0.0F, 1.0F);
 
     fallback.windowBg = darkBg;
     fallback.childBg = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
@@ -236,9 +230,32 @@ void Theme::setTheme(std::size_t index)
         spdlog::warn("Invalid theme index: {}", index);
         return;
     }
+    // Defer the theme change to next frame to avoid mid-frame style changes
+    // that would leave already-rendered widgets with stale colors
+    m_PendingThemeIndex = index;
+    spdlog::debug("Theme change queued: index={}", index);
+}
+
+auto Theme::applyPendingTheme() -> bool
+{
+    if (!m_PendingThemeIndex.has_value())
+    {
+        return false;
+    }
+
+    const std::size_t index = m_PendingThemeIndex.value();
+    m_PendingThemeIndex.reset();
+
+    if (index >= m_LoadedSchemes.size())
+    {
+        spdlog::warn("Pending theme index out of range: {}", index);
+        return false;
+    }
+
     m_CurrentThemeIndex = index;
-    spdlog::info("Theme changed to: {}", m_DiscoveredThemes[m_CurrentThemeIndex].name);
     applyImGuiStyle();
+    spdlog::info("Applied pending theme: index={}", index);
+    return true;
 }
 
 void Theme::setThemeById(const std::string& id)
@@ -256,10 +273,31 @@ void Theme::setThemeById(const std::string& id)
 
 void Theme::applyImGuiStyle() const
 {
-    ImGuiStyle& style = ImGui::GetStyle();
     const auto& s = scheme();
 
-    // Apply colors
+    // Determine if this is a light or dark theme based on window background luminance
+    // Y = 0.299*R + 0.587*G + 0.114*B (standard luminance formula)
+    const float luminance = (0.299F * s.windowBg.x) + (0.587F * s.windowBg.y) + (0.114F * s.windowBg.z);
+    constexpr float LIGHT_THRESHOLD = 0.5F;
+    const bool isLightTheme = luminance > LIGHT_THRESHOLD;
+
+    spdlog::info(
+        "Applying theme '{}' (luminance={:.2f}, isLight={})", m_DiscoveredThemes[m_CurrentThemeIndex].name, luminance, isLightTheme);
+
+    // Reset to appropriate base style first to ensure ALL color indices are initialized
+    // This is critical because ImGui has more color indices than we explicitly set
+    if (isLightTheme)
+    {
+        ImGui::StyleColorsLight();
+    }
+    else
+    {
+        ImGui::StyleColorsDark();
+    }
+
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    // Now override with our theme colors
     style.Colors[ImGuiCol_Text] = s.textPrimary;
     style.Colors[ImGuiCol_TextDisabled] = s.textDisabled;
     style.Colors[ImGuiCol_WindowBg] = s.windowBg;
@@ -340,6 +378,28 @@ void Theme::applyImGuiStyle() const
     style.IndentSpacing = 20.0F;
     style.ScrollbarSize = 14.0F;
     style.GrabMinSize = 10.0F;
+
+    // Apply ImPlot style colors from theme
+    // StyleColorsAuto() derives colors from current ImGui style
+    ImPlot::StyleColorsAuto();
+
+    // Override specific ImPlot colors to match our theme exactly
+    ImPlotStyle& plotStyle = ImPlot::GetStyle();
+    plotStyle.Colors[ImPlotCol_LegendText] = s.textPrimary;
+    plotStyle.Colors[ImPlotCol_InlayText] = s.textPrimary;
+    plotStyle.Colors[ImPlotCol_AxisText] = s.textMuted;
+    plotStyle.Colors[ImPlotCol_AxisTick] = s.textMuted;
+    plotStyle.Colors[ImPlotCol_AxisGrid] = s.border;
+    plotStyle.Colors[ImPlotCol_TitleText] = s.textPrimary;
+    plotStyle.Colors[ImPlotCol_PlotBg] = s.childBg;
+    plotStyle.Colors[ImPlotCol_FrameBg] = s.frameBg;
+    plotStyle.Colors[ImPlotCol_LegendBg] = s.popupBg;
+    plotStyle.Colors[ImPlotCol_LegendBorder] = s.border;
+
+    // CRITICAL: Bust ImPlot's color cache to force re-read of style colors
+    // ImPlot caches colors when SetupAxis() is called - without this,
+    // runtime theme changes won't update existing plots' axis labels/ticks
+    ImPlot::BustColorCache();
 }
 
 auto Theme::scheme() const -> const ColorScheme&
@@ -354,38 +414,6 @@ auto Theme::themeName(std::size_t index) const -> std::string_view
         return "Unknown";
     }
     return m_DiscoveredThemes[index].name;
-}
-
-auto Theme::heatmapColor(double percent) const -> ImVec4
-{
-    const auto& colors = scheme().heatmap;
-    const float t = static_cast<float>(std::clamp(percent, 0.0, 100.0) / 100.0);
-
-    // 5 stops: 0, 0.25, 0.5, 0.75, 1.0
-    constexpr float STEP = 0.25F;
-    constexpr std::array<float, 4> SEGMENT_STARTS{0.0F, 0.25F, 0.50F, 0.75F};
-
-    std::size_t idx = 0;
-    if (t >= SEGMENT_STARTS[3])
-    {
-        idx = 3;
-    }
-    else if (t >= SEGMENT_STARTS[2])
-    {
-        idx = 2;
-    }
-    else if (t >= SEGMENT_STARTS[1])
-    {
-        idx = 1;
-    }
-
-    const float localT = (t - SEGMENT_STARTS[idx]) / STEP;
-
-    const ImVec4& c1 = colors[idx];
-    const ImVec4& c2 = colors[idx + 1];
-
-    return ImVec4(
-        c1.x + ((c2.x - c1.x) * localT), c1.y + ((c2.y - c1.y) * localT), c1.z + ((c2.z - c1.z) * localT), c1.w + ((c2.w - c1.w) * localT));
 }
 
 auto Theme::progressColor(double percent) const -> ImVec4

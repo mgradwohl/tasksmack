@@ -54,8 +54,17 @@ class SystemMetricsPanel : public Panel
         }
     }
 
-    /// Render the panel.
+    /// Render the panel (with ImGui window wrapper).
     void render(bool* open) override;
+
+    /// Render content only (for embedding in tab, without window wrapper).
+    void renderContent();
+
+    /// Get the hostname (for tab/window title).
+    [[nodiscard]] const std::string& hostname() const
+    {
+        return m_Hostname;
+    }
 
   private:
     void renderOverview();

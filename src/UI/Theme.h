@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,13 +37,10 @@ inline constexpr auto ALL_FONT_SIZES = std::to_array<FontSize>({
 
 inline constexpr std::size_t FONT_SIZE_COUNT = ALL_FONT_SIZES.size();
 
-/// Color scheme definition with heatmap gradient and accent colors
+/// Color scheme definition with accent colors
 struct ColorScheme
 {
     std::string name;
-
-    // Heatmap gradient (5 stops: 0%, 25%, 50%, 75%, 100%)
-    std::array<ImVec4, 5> heatmap{};
 
     // Accent colors for line charts, legends, etc. (8 colors)
     std::array<ImVec4, 8> accents{};
@@ -85,14 +83,12 @@ struct ColorScheme
     ImVec4 cpuSystem{}; // System/kernel CPU time
     ImVec4 cpuIowait{}; // I/O wait time
     ImVec4 cpuIdle{};   // Idle time
-    ImVec4 cpuSteal{};  // VM steal time
 
     // CPU breakdown fill colors (semi-transparent versions for stacked area charts)
     ImVec4 cpuUserFill{};   // User CPU time fill
     ImVec4 cpuSystemFill{}; // System/kernel CPU time fill
     ImVec4 cpuIowaitFill{}; // I/O wait time fill
     ImVec4 cpuIdleFill{};   // Idle time fill
-    ImVec4 cpuStealFill{};  // VM steal time fill
 
     // GPU chart colors
     ImVec4 gpuUtilization{};     // GPU utilization line
@@ -104,14 +100,13 @@ struct ColorScheme
     ImVec4 gpuEncoder{};         // GPU encoder utilization
     ImVec4 gpuDecoder{};         // GPU decoder utilization
     ImVec4 gpuClock{};           // GPU clock speed line
+    ImVec4 gpuClockFill{};       // GPU clock speed fill (semi-transparent)
     ImVec4 gpuFan{};             // GPU fan speed line
 
-    // Danger button colors
-    ImVec4 dangerButton{};
-    ImVec4 dangerButtonHovered{};
-    ImVec4 dangerButtonActive{};
+    // Chart overlay colors
+    ImVec4 chartPeakLine{}; // Peak value reference line (semi-transparent)
 
-    // Success button colors (e.g., Resume)
+    // Success button colors (e.g., Apply, Resume)
     ImVec4 successButton{};
     ImVec4 successButtonHovered{};
     ImVec4 successButtonActive{};
@@ -224,23 +219,24 @@ class Theme
     /// Get current theme ID (filename without extension)
     [[nodiscard]] auto currentThemeId() const -> const std::string&;
 
-    /// Set current theme by index
+    /// Set current theme by index (deferred to next frame to avoid mid-frame style changes)
     void setTheme(std::size_t index);
 
-    /// Set current theme by ID
+    /// Set current theme by ID (deferred to next frame)
     void setThemeById(const std::string& id);
 
     /// Apply current theme colors to ImGui style
     void applyImGuiStyle() const;
+
+    /// Apply any pending theme change (call at start of frame before rendering)
+    /// Returns true if a theme was applied
+    auto applyPendingTheme() -> bool;
 
     /// Get current color scheme
     [[nodiscard]] auto scheme() const -> const ColorScheme&;
 
     /// Get theme name
     [[nodiscard]] auto themeName(std::size_t index) const -> std::string_view;
-
-    /// Interpolate heatmap color for a value 0-100
-    [[nodiscard]] auto heatmapColor(double percent) const -> ImVec4;
 
     /// Get progress bar color based on percent
     [[nodiscard]] auto progressColor(double percent) const -> ImVec4;
@@ -299,6 +295,7 @@ class Theme
     std::vector<DiscoveredTheme> m_DiscoveredThemes;
     std::vector<ColorScheme> m_LoadedSchemes;
     std::size_t m_CurrentThemeIndex = 0;
+    std::optional<std::size_t> m_PendingThemeIndex; // Deferred theme change (applied next frame)
 
     FontSize m_CurrentFontSize = FontSize::Medium;
     std::array<FontSizeConfig, FONT_SIZE_COUNT> m_FontSizes;

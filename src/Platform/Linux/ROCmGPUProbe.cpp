@@ -35,6 +35,7 @@ constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_UNKNOWN_ERROR = 0xFFFFFFFF;
 
 // ROCm SMI temperature types
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
 {
     RSMI_TEMP_TYPE_EDGE = 0,
@@ -45,8 +46,10 @@ enum rsmi_temperature_type_t : std::uint32_t
     RSMI_TEMP_TYPE_HBM_2 = 5,
     RSMI_TEMP_TYPE_HBM_3 = 6
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
 
 // ROCm SMI temperature metric
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
 enum rsmi_temperature_metric_t : std::uint32_t
 {
     RSMI_TEMP_CURRENT = 0,
@@ -64,8 +67,10 @@ enum rsmi_temperature_metric_t : std::uint32_t
     RSMI_TEMP_LOWEST = 12,
     RSMI_TEMP_HIGHEST = 13
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
 
 // ROCm SMI clock types
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
 enum rsmi_clk_type_t : std::uint32_t
 {
     RSMI_CLK_TYPE_SYS = 0,
@@ -76,8 +81,10 @@ enum rsmi_clk_type_t : std::uint32_t
     RSMI_CLK_TYPE_FIRST = RSMI_CLK_TYPE_SYS,
     RSMI_CLK_TYPE_LAST = RSMI_CLK_TYPE_MEM
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
 
 // ROCm SMI memory types
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
 enum rsmi_memory_type_t : std::uint32_t
 {
     RSMI_MEM_TYPE_VRAM = 0,
@@ -86,6 +93,7 @@ enum rsmi_memory_type_t : std::uint32_t
     RSMI_MEM_TYPE_FIRST = RSMI_MEM_TYPE_VRAM,
     RSMI_MEM_TYPE_LAST = RSMI_MEM_TYPE_GTT
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
 
 // ROCm SMI buffer size constants
 constexpr std::size_t RSMI_MAX_BUFFER_LENGTH = 256;
@@ -147,6 +155,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         rocmHandle = dlopen("librocm_smi64.so", RTLD_NOW);
         if (rocmHandle == nullptr)
         {
+            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() is safe in single-threaded init
             spdlog::debug("ROCmGPUProbe: Failed to load librocm_smi64.so - {}", dlerror());
             return false;
         }
@@ -155,6 +164,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
 // Load function pointers
 // Note: dlsym returns void* by POSIX definition; reinterpret_cast to the function pointer type is required
 // and safe here because we only use it for known ROCm SMI symbols with matching signatures.
+// NOLINTBEGIN(concurrency-mt-unsafe,bugprone-macro-parentheses) - dlerror() safe in single-threaded init, macro pattern is correct
 #define LOAD_ROCM_FUNC(name)                                                                                                               \
     name = reinterpret_cast<decltype(name)>(dlsym(rocmHandle, #name));                                                                     \
     if (name == nullptr)                                                                                                                   \
@@ -182,6 +192,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
+    // NOLINTEND(concurrency-mt-unsafe,bugprone-macro-parentheses)
 
     // Initialize ROCm SMI (flags = 0 for default initialization)
     rsmi_status_t result = rsmi_init(0);
