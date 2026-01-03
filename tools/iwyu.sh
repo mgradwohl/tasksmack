@@ -34,7 +34,7 @@ Options:
   -h, --help        Show this help
 
 FILES:
-  Optional list of specific files to analyze (default: all src/*.cpp)
+  Optional list of specific files to analyze (default: all src/**/*.cpp recursively)
 
 Examples:
   $(basename "$0")                          # Analyze all files
