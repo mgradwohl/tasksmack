@@ -218,6 +218,7 @@ jobs:
 
       - name: Build (debug preset)
         run: cmake --build --preset debug
+
       - name: Run include-what-you-use
         run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
 
