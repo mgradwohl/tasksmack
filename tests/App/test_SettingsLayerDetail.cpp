@@ -6,8 +6,8 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cstring>
+#include <format>
 
 namespace App::detail
 {
@@ -102,37 +102,50 @@ TEST(SettingsLayerDetailTest, HistoryOptionsHaveExpectedCount)
 
 TEST(SettingsLayerDetailTest, AllFontSizeOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(FONT_SIZE_OPTIONS, [](const auto& opt) {
-        return opt.label != nullptr && std::strlen(opt.label) > 0;
-    }));
+    for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
+    {
+        SCOPED_TRACE(std::format("FONT_SIZE_OPTIONS[{}]", i));
+        EXPECT_NE(FONT_SIZE_OPTIONS[i].label, nullptr);
+        EXPECT_GT(std::strlen(FONT_SIZE_OPTIONS[i].label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllRefreshRateOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) {
-        return opt.label != nullptr && std::strlen(opt.label) > 0;
-    }));
+    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+    {
+        SCOPED_TRACE(std::format("REFRESH_RATE_OPTIONS[{}]", i));
+        EXPECT_NE(REFRESH_RATE_OPTIONS[i].label, nullptr);
+        EXPECT_GT(std::strlen(REFRESH_RATE_OPTIONS[i].label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) {
-        return opt.label != nullptr && std::strlen(opt.label) > 0;
-    }));
+    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+    {
+        SCOPED_TRACE(std::format("HISTORY_OPTIONS[{}]", i));
+        EXPECT_NE(HISTORY_OPTIONS[i].label, nullptr);
+        EXPECT_GT(std::strlen(HISTORY_OPTIONS[i].label), 0U);
+    }
 }
 
 TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) {
-        return opt.valueMs > 0;
-    }));
+    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+    {
+        SCOPED_TRACE(std::format("REFRESH_RATE_OPTIONS[{}]", i));
+        EXPECT_GT(REFRESH_RATE_OPTIONS[i].valueMs, 0);
+    }
 }
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) {
-        return opt.valueSeconds > 0;
-    }));
+    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+    {
+        SCOPED_TRACE(std::format("HISTORY_OPTIONS[{}]", i));
+        EXPECT_GT(HISTORY_OPTIONS[i].valueSeconds, 0);
+    }
 }
 
 } // namespace
