@@ -280,15 +280,113 @@ if [[ -n "$IWYU_TOOL" ]]; then
     fi
 else
     # Fall back to running include-what-you-use directly
+    # Extract compiler flags from compile_commands.json for accurate analysis
     for file in "${SOURCE_FILES[@]}"; do
         if $VERBOSE; then
             echo "  Analyzing: ${file#"${PROJECT_ROOT}"/}"
         fi
 
-        # Direct IWYU invocation when iwyu_tool.py is not available
-        $IWYU \
-            -Xiwyu --mapping_file="$IWYU_MAPPING" \
-            "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        # Extract compile flags for this file from compile_commands.json
+        # This ensures IWYU has access to include paths, defines, and other compilation flags
+        # Read flags into an array for proper handling
+        mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
+import json
+import sys
+import os
+import shlex
+
+compile_commands_path = sys.argv[1]
+target_file = sys.argv[2]
+
+try:
+    with open(compile_commands_path) as f:
+        commands = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    sys.stderr.write(f'Error reading compile_commands.json: {e}\n')
+    sys.exit(1)
+
+# Normalize target file path for comparison
+target_file = os.path.abspath(target_file)
+target_basename = os.path.basename(target_file)
+
+# Find the compile command for this file (prefer exact match, fallback to basename)
+exact_match = None
+basename_matches = []
+
+for cmd in commands:
+    file_path = cmd.get('file', '')
+    if not file_path:
+        continue
+    file_path_abs = os.path.abspath(file_path)
+    if file_path_abs == target_file:
+        exact_match = cmd
+        break
+    if os.path.basename(file_path_abs) == target_basename:
+        basename_matches.append(cmd)
+
+selected_cmd = None
+if exact_match is not None:
+    selected_cmd = exact_match
+elif len(basename_matches) == 1:
+    selected_cmd = basename_matches[0]
+elif len(basename_matches) > 1:
+    sys.stderr.write(
+        f'Warning: multiple compile_commands entries found matching basename '
+        f'{target_basename}; skipping ambiguous match.\n'
+    )
+
+if selected_cmd is not None:
+    command = selected_cmd.get('command', '')
+    # Extract flags: remove compiler name and output-related flags
+    # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+    tokens = shlex.split(command)
+    flags = []
+    skip_next = False
+    for i, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        # Skip compiler name (first token)
+        if i == 0:
+            continue
+        # Skip output flags
+        if token in ['-o', '-c', '-MF', '-MT', '-MD']:
+            skip_next = True
+            continue
+        # Whitelist relevant flags that affect preprocessing/target configuration
+        keep = False
+        # Standalone important flags
+        if token in ['-pthread']:
+            keep = True
+        # Common prefix-based categories
+        elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+            keep = True
+        elif token.startswith('-f') and not token.startswith('-fpch'):
+            keep = True
+        elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
+            keep = True
+        if keep:
+            flags.append(token)
+    # Print each flag on a separate line for safe array handling
+    for flag in flags:
+        print(flag)
+" "$COMPILE_COMMANDS" "${file}" 2>/dev/null || true)
+
+        # Direct IWYU invocation with extracted compile flags
+        if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
+            $IWYU \
+                "${COMPILE_FLAGS_ARRAY[@]}" \
+                -Xiwyu --mapping_file="$IWYU_MAPPING" \
+                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        else
+            # Fallback: run without extracted flags (may produce less accurate results)
+            if $VERBOSE; then
+                echo "  Warning: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}"
+            fi
+            $IWYU \
+                -Xiwyu --mapping_file="$IWYU_MAPPING" \
+                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        fi
     done
 fi
 
