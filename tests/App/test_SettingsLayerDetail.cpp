@@ -118,7 +118,15 @@ TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 
 TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) { return opt.valueMs > 0; }));
+    for (const auto& opt : REFRESH_RATE_OPTIONS)
+    {
+        EXPECT_GT(opt.valueMs, 0)
+            << "Refresh rate option has non-positive valueMs: "
+            << opt.valueMs
+            << " (label="
+            << (opt.label != nullptr ? opt.label : "<null>")
+            << ")";
+    }
 }
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
