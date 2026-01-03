@@ -75,7 +75,8 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 /// @return Index into FONT_SIZE_OPTIONS, or 1 (Medium) if not found.
 [[nodiscard]] inline auto findFontSizeIndex(UI::FontSize size) -> std::size_t
 {
-    const auto* it = std::ranges::find_if(FONT_SIZE_OPTIONS, [size](const auto& opt) { return opt.value == size; });
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
+    const auto it = std::ranges::find_if(FONT_SIZE_OPTIONS, [size](const auto& opt) { return opt.value == size; });
     return it != FONT_SIZE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(FONT_SIZE_OPTIONS.begin(), it)) : 1;
 }
 
@@ -83,7 +84,8 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 /// @return Index into REFRESH_RATE_OPTIONS, or 3 (1 second) if not found.
 [[nodiscard]] inline auto findRefreshRateIndex(int ms) -> std::size_t
 {
-    const auto* it = std::ranges::find_if(REFRESH_RATE_OPTIONS, [ms](const auto& opt) { return opt.valueMs == ms; });
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
+    const auto it = std::ranges::find_if(REFRESH_RATE_OPTIONS, [ms](const auto& opt) { return opt.valueMs == ms; });
     return it != REFRESH_RATE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(REFRESH_RATE_OPTIONS.begin(), it)) : 3;
 }
 
@@ -91,7 +93,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 /// @return Index into HISTORY_OPTIONS, or 2 (5 minutes) if not found.
 [[nodiscard]] inline auto findHistoryIndex(int seconds) -> std::size_t
 {
-    const auto* it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
+    const auto it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
     return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(std::distance(HISTORY_OPTIONS.begin(), it)) : 2;
 }
 
