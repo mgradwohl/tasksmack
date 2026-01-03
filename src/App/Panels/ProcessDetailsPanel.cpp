@@ -1961,7 +1961,7 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /
     ImGui::PopStyleColor();
 
     // "Low" label (right, colored blue) - position after last scale tick
-    const float lowLabelX = scaleStartX + PRIORITY_SLIDER_WIDTH + 10.0F;
+    const float lowLabelX = scaleStartX + PRIORITY_SLIDER_WIDTH + style.ItemSpacing.x;
     ImGui::SetCursorPos(ImVec2(lowLabelX, scaleRowY));
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
     ImGui::TextUnformatted("Low");
