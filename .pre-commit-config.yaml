@@ -43,3 +43,19 @@ repos:
       - id: shellcheck
         name: Lint shell scripts
         args: [-x]  # Follow sourced files
+
+  # Include-what-you-use (IWYU) - optional, runs in report-only mode
+  # Note: Requires IWYU to be installed (apt install iwyu)
+  # This hook is slow and advisory-only, so it's set to manual stage
+  - repo: local
+    hooks:
+      - id: iwyu
+        name: Include What You Use (IWYU)
+        entry: ./tools/iwyu.sh --report -j 4
+        language: script
+        files: \.(cpp|h|hpp)$
+        exclude: ^(build/|tests/|\.cache/)
+        stages: [manual]  # Run with: pre-commit run iwyu --hook-stage manual
+        pass_filenames: false
+        require_serial: true
+        verbose: true

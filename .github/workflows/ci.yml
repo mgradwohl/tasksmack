@@ -184,6 +184,68 @@ jobs:
           path: clang-tidy-output.txt
           retention-days: 14
 
+  include-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # Run IWYU analysis but don't block PRs (advisory only)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Install include-what-you-use
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iwyu
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-iwyu
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
+
+      - name: Run include-what-you-use
+        run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
+
+      - name: Add IWYU summary to workflow summary
+        if: always()
+        run: |
+          echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
+            echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Summary of Suggestions" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Full report available in artifacts." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*Note: IWYU suggestions are advisory. Some suggestions may not be appropriate.*" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload IWYU results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iwyu-results
+          path: iwyu-output.txt
+          retention-days: 14
+
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

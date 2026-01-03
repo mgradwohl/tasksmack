@@ -265,6 +265,40 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
+### Include-What-You-Use (IWYU)
+
+IWYU analyzes `#include` directives and suggests additions/removals for cleaner dependencies:
+
+```bash
+# Analyze all files (report only)
+./tools/iwyu.sh debug
+
+# Analyze with verbose output
+./tools/iwyu.sh -v debug
+
+# Apply suggested fixes (use with caution - review changes!)
+./tools/iwyu.sh --fix debug
+
+# Analyze specific file
+./tools/iwyu.sh src/Domain/ProcessModel.cpp
+```
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt install iwyu
+
+# macOS
+brew install include-what-you-use
+```
+
+**Notes:**
+- IWYU suggestions are advisory and may not always be appropriate
+- CI runs IWYU in report-only mode (does not block PRs)
+- The project includes a `.iwyu.imp` mapping file for project-specific rules
+- To run via pre-commit: `pre-commit run iwyu --hook-stage manual`
+- **Version compatibility:** IWYU must be built against the same clang version as your project. The system package (`apt install iwyu`) may produce warnings if versions mismatch. This is expected - rely on CI for accurate results.
+
 ### Formatting (required before PRs)
 
 ```bash
@@ -434,6 +468,7 @@ In Actions → workflow run → Artifacts, you may see:
 - `tsan-report`
 - `linux-test-results` / `windows-test-results`
 - `clang-tidy-results`
+- `iwyu-results`
 
 ### CI Artifacts (GitHub CLI)
 

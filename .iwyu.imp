@@ -1,0 +1,28 @@
+# IWYU mapping file for TaskSmack
+# See: https://github.com/include-what-you-use/include-what-you-use/blob/master/docs/IWYUMappings.md
+
+[
+  # ImGui - treat imgui.h as the main include
+  { include: ["<imgui_internal.h>", "private", "<imgui.h>", "public"] },
+
+  # spdlog - allow fmt through spdlog
+  { include: ["<fmt/core.h>", "private", "<spdlog/spdlog.h>", "public"] },
+  { include: ["<fmt/format.h>", "private", "<spdlog/spdlog.h>", "public"] },
+
+  # GLFW/GLAD - platform-specific handling
+  { include: ["<glad/gl.h>", "private", "<glad/gl.h>", "public"] },
+
+  # Standard library mappings (C++ prefers <cstdint> over <stdint.h>, etc.)
+  { include: ["<stdint.h>", "private", "<cstdint>", "public"] },
+  { include: ["<stdlib.h>", "private", "<cstdlib>", "public"] },
+  { include: ["<string.h>", "private", "<cstring>", "public"] },
+  { include: ["<stdio.h>", "private", "<cstdio>", "public"] },
+  { include: ["<math.h>", "private", "<cmath>", "public"] },
+  { include: ["<assert.h>", "private", "<cassert>", "public"] },
+  { include: ["<errno.h>", "private", "<cerrno>", "public"] },
+  { include: ["<time.h>", "private", "<ctime>", "public"] },
+
+  # Project-specific: group related platform headers
+  { include: ["\"Platform/Linux/LinuxProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },
+  { include: ["\"Platform/Windows/WindowsProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] }
+]
