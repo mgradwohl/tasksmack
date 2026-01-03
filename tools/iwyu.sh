@@ -158,42 +158,12 @@ sed -i.bak \
     "$COMPILE_COMMANDS"
 rm -f "${COMPILE_COMMANDS}.bak"
 
-# Create IWYU mapping file for project-specific rules
+# Verify IWYU mapping file exists
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"
 if [[ ! -f "$IWYU_MAPPING" ]]; then
-    if $VERBOSE; then
-        echo "Creating default IWYU mapping file..."
-    fi
-    cat > "$IWYU_MAPPING" <<'MAPPING'
-# IWYU mapping file for TaskSmack
-# See: https://github.com/include-what-you-use/include-what-you-use/blob/master/docs/IWYUMappings.md
-
-[
-  # ImGui - treat imgui.h as the main include
-  { include: ["<imgui_internal.h>", "private", "<imgui.h>", "public"] },
-
-  # spdlog - allow fmt through spdlog
-  { include: ["<fmt/core.h>", "private", "<spdlog/spdlog.h>", "public"] },
-  { include: ["<fmt/format.h>", "private", "<spdlog/spdlog.h>", "public"] },
-
-  # GLFW/GLAD - platform-specific handling
-  { include: ["<glad/gl.h>", "private", "<glad/gl.h>", "public"] },
-
-  # Standard library mappings (C++ prefers <cstdint> over <stdint.h>, etc.)
-  { include: ["<stdint.h>", "private", "<cstdint>", "public"] },
-  { include: ["<stdlib.h>", "private", "<cstdlib>", "public"] },
-  { include: ["<string.h>", "private", "<cstring>", "public"] },
-  { include: ["<stdio.h>", "private", "<cstdio>", "public"] },
-  { include: ["<math.h>", "private", "<cmath>", "public"] },
-  { include: ["<assert.h>", "private", "<cassert>", "public"] },
-  { include: ["<errno.h>", "private", "<cerrno>", "public"] },
-  { include: ["<time.h>", "private", "<ctime>", "public"] },
-
-  # Project-specific: group related platform headers
-  { include: ["\"Platform/Linux/LinuxProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },
-  { include: ["\"Platform/Windows/WindowsProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] }
-]
-MAPPING
+    echo "Error: IWYU mapping file not found: $IWYU_MAPPING"
+    echo "The .iwyu.imp file should be committed in the repository root."
+    exit 1
 fi
 
 # Detect current platform to exclude non-current platform files by default
