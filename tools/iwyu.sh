@@ -52,7 +52,18 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
-        -j|--jobs) JOBS="$2"; shift 2 ;;
+        -j|--jobs)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --jobs requires a positive integer argument" >&2
+                exit 1
+            fi
+            if ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: Invalid jobs value '$2'. --jobs must be a positive integer" >&2
+                exit 1
+            fi
+            JOBS="$2"
+            shift 2
+            ;;
         -f|--fix) FIX=true; shift ;;
         -r|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
