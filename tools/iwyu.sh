@@ -327,11 +327,20 @@ for cmd in commands:
             if token in ['-o', '-c', '-MF', '-MT', '-MD']:
                 skip_next = True
                 continue
-            # Skip output files (token.endswith('.o'))
-            if token.startswith('-o') or token.endswith('.o'):
-                continue
-            # Skip source files - must look like a path (contains / or is just filename)
-            if ('/' in token or not token.startswith('-')) and token.endswith(cpp_extensions):
+            # Keep relevant flags. We mostly whitelist categories that affect
+            # preprocessing / target configuration and avoid problematic PCH flags.
+            keep = False
+            # Standalone important flags
+            if token in ['-pthread']:
+                keep = True
+            # Common prefix-based categories
+            elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+                keep = True
+            elif token.startswith('-f') and not token.startswith('-fpch'):
+                keep = True
+            elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
+                keep = True
+            if keep:
                 continue
             # Keep relevant flags
             if token.startswith('-I') or token.startswith('-D') or \
