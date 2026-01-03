@@ -12,19 +12,6 @@ author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
-# HEATMAP GRADIENT
-# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# =============================================================================
-[heatmap]
-gradient = [
-    "#C5E0FF",  # 0%   - Pale Windows Blue (cool/idle)
-    "#9BCBFF",  # 25%  - Sky Blue
-    "#FFD980",  # 50%  - Soft Gold (moderate)
-    "#FFB455",  # 75%  - Warm Amber (warning)
-    "#F26B73",  # 100% - Coral Red (hot/danger)
-]
-
-# =============================================================================
 # ACCENT COLORS
 # 8 colors for charts, legends, and UI highlights
 # Based on Windows 11 accent colors
@@ -86,6 +73,7 @@ io = "#E74856"        # Red - I/O usage line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
 memory_fill = "#107C104D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O fill
+peak_line = "#F7630CB3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -101,6 +89,7 @@ power = "#107C10"                 # Green - GPU power draw line
 encoder = "#038387"               # Teal - GPU encoder utilization
 decoder = "#BF0077"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
+clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#78909C"                # Blue Gray - GPU fan speed line
 
 # =============================================================================
@@ -112,21 +101,10 @@ user = "#0078D4"      # Windows Blue - user CPU time
 system = "#E74856"    # Red - system/kernel time
 iowait = "#FFB900"    # Gold - I/O wait time
 idle = "#D0D0D0"      # Light gray - idle time
-steal = "#C50F1F"     # Dark red - VM steal time
 user_fill = "#0078D459"      # Windows Blue with 35% alpha - user fill
 system_fill = "#E7485659"    # Red with 35% alpha - system fill
 iowait_fill = "#FFB90059"    # Gold with 35% alpha - iowait fill
 idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
-steal_fill = "#C50F1F59"     # Dark red with 35% alpha - steal fill
-
-# =============================================================================
-# DANGER BUTTON COLORS
-# Colors for destructive action buttons (kill process, etc.)
-# =============================================================================
-[buttons.danger]
-normal = "#C50F1F"     # Dark red
-hovered = "#E74856"    # Red
-active = "#A40912"     # Darker red
 
 [buttons.success]
 normal = "#16825D"     # Windows green
@@ -193,9 +171,9 @@ slider_grab_active = "#005A9E"
 # Standard buttons (not danger buttons) - Windows 11 style
 # =============================================================================
 [ui.button]
-normal = "#F3F3F3"
-hovered = "#EBEBEB"
-active = "#E0E0E0"
+normal = "#D0D0D0"          # Medium gray - visible on light popup
+hovered = "#C0C0C0"          # Darker on hover
+active = "#0078D4"           # Windows Blue on click
 
 # =============================================================================
 # HEADER COLORS

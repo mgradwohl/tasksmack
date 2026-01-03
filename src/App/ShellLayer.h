@@ -5,8 +5,18 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 
+#include <cstdint>
+
 namespace App
 {
+
+/// Main active tab in the application
+enum class ActiveTab : std::uint8_t
+{
+    SystemOverview,
+    Processes,
+    ProcessDetails
+};
 
 class ShellLayer : public Core::Layer
 {
@@ -25,8 +35,7 @@ class ShellLayer : public Core::Layer
     void onRender() override;
 
   private:
-    static void setupDockspace();
-    void renderMenuBar();
+    void renderTabBar();
     void renderStatusBar() const;
 
     // Panels
@@ -34,10 +43,8 @@ class ShellLayer : public Core::Layer
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
 
-    // Panel visibility
-    bool m_ShowProcesses = true;
-    bool m_ShowMetrics = true;
-    bool m_ShowDetails = true;
+    // Active tab
+    ActiveTab m_ActiveTab = ActiveTab::SystemOverview;
 
     // Frame timing
     float m_FrameTime = 0.0F;

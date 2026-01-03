@@ -12,19 +12,6 @@ author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
-# HEATMAP GRADIENT
-# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# =============================================================================
-[heatmap]
-gradient = [
-    "#0078D4",  # 0%   - Windows Blue (cool/idle)
-    "#4EA0D8",  # 25%  - Light Blue
-    "#FFB900",  # 50%  - Gold (moderate)
-    "#F7630C",  # 75%  - Orange (warning)
-    "#E74856",  # 100% - Red (hot/danger)
-]
-
-# =============================================================================
 # ACCENT COLORS
 # 8 colors for charts, legends, and UI highlights
 # Based on Windows 11 accent colors
@@ -55,9 +42,9 @@ high = "#E74856"      # 80-100% - Red (critical)
 # Colors for different types of text/messages
 # =============================================================================
 [semantic]
-text_primary = "#E6E6E6"   # Light gray-white for contrast on dark bg
-text_disabled = "#A6A6A6"  # Muted gray for disabled text
-text_muted = "#8A8A8A"     # Gray - dimmed text
+text_primary = "#F5F5F5"   # Bright white for maximum contrast on dark bg
+text_disabled = "#C0C0C0"  # Brighter gray for disabled text
+text_muted = "#CCCCCC"     # Much brighter for chart axis labels
 text_error = "#F1707B"     # Light Red - error messages
 text_warning = "#F7630C"   # Orange - warning messages
 text_success = "#6CCB5F"   # Light Green - success messages
@@ -86,6 +73,7 @@ io = "#E74856"        # Red - I/O usage line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
 memory_fill = "#10893E4D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O fill
+peak_line = "#FFB900B3"      # Gold with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -97,15 +85,12 @@ utilization_fill = "#8E8CD84D"    # Purple with 30% alpha - GPU fill
 memory = "#E74856"                # Red - GPU memory line
 memory_fill = "#E748564D"         # Red with 30% alpha - GPU memory fill
 temperature = "#FFB900"           # Gold - GPU temperature line
-temperature_fill = "#FFB9004D"    # Gold with 30% alpha - GPU temp fill
 power = "#10893E"                 # Green - GPU power draw line
-power_fill = "#10893E4D"          # Green with 30% alpha - GPU power fill
 encoder = "#00B7C3"               # Teal - GPU encoder utilization
 decoder = "#E3008C"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
+clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#78909C"                # Blue Gray - GPU fan speed line
-integrated_badge = "#8A8A8A"      # Muted gray - integrated GPU badge
-discrete_badge = "#0078D4"        # Windows Blue - discrete GPU badge
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -116,21 +101,10 @@ user = "#0078D4"      # Windows Blue - user CPU time
 system = "#E74856"    # Red - system/kernel time
 iowait = "#FFB900"    # Gold - I/O wait time
 idle = "#3F3F3F"      # Dark gray - idle time
-steal = "#C50F1F"     # Dark red - VM steal time
 user_fill = "#0078D459"      # Windows Blue with 35% alpha - user fill
 system_fill = "#E7485659"    # Red with 35% alpha - system fill
 iowait_fill = "#FFB90059"    # Gold with 35% alpha - iowait fill
 idle_fill = "#3F3F3F33"      # Dark gray with 20% alpha - idle fill
-steal_fill = "#C50F1F59"     # Dark red with 35% alpha - steal fill
-
-# =============================================================================
-# DANGER BUTTON COLORS
-# Colors for destructive action buttons (kill process, etc.)
-# =============================================================================
-[buttons.danger]
-normal = "#C50F1F"     # Dark red
-hovered = "#E74856"    # Red
-active = "#A40912"     # Darker red
 
 [buttons.success]
 normal = "#16825D"     # Windows green
@@ -197,18 +171,18 @@ slider_grab_active = "#005A9E"
 # Standard buttons (not danger buttons) - Windows 11 dark style
 # =============================================================================
 [ui.button]
-normal = "#2B2B2B"
-hovered = "#323232"
-active = "#3A3A3A"
+normal = "#3A3A3A"          # Lighter gray for better contrast
+hovered = "#4A4A4A"
+active = "#0078D4"           # Windows Blue on click
 
 # =============================================================================
 # HEADER COLORS
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#2B2B2B"
-hovered = "#323232"
-active = "#3A3A3A"
+normal = "#383838"
+hovered = "#424242"
+active = "#4A4A4A"
 
 # =============================================================================
 # SEPARATOR COLORS
@@ -233,12 +207,12 @@ active = "#005A9E"
 # Tab bar tabs - Windows 11 dark style
 # =============================================================================
 [ui.tab]
-normal = "#2B2B2B"
-hovered = "#323232"
-active = "#202020"
+normal = "#383838"
+hovered = "#424242"
+active = "#2B2B2B"
 active_overline = "#0078D4"             # Windows accent color overline
-unfocused = "#202020"
-unfocused_active = "#2B2B2B"
+unfocused = "#2B2B2B"
+unfocused_active = "#383838"
 unfocused_active_overline = "#0078D480" # Semi-transparent accent overline
 
 # =============================================================================

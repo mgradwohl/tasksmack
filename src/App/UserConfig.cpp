@@ -3,7 +3,6 @@
 #include "Domain/Numeric.h"
 #include "UI/Theme.h"
 
-#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -199,23 +198,7 @@ void UserConfig::load()
             }
         }
 
-        // Panel visibility
-        if (auto val = config["panels"]["processes"].value<bool>())
-        {
-            m_Settings.showProcesses = *val;
-        }
-        if (auto val = config["panels"]["metrics"].value<bool>())
-        {
-            m_Settings.showMetrics = *val;
-        }
-        if (auto val = config["panels"]["details"].value<bool>())
-        {
-            m_Settings.showDetails = *val;
-        }
-        if (auto val = config["panels"]["storage"].value<bool>())
-        {
-            m_Settings.showStorage = *val;
-        }
+        // Note: panels visibility is no longer used (removed in favor of tabbed UI)
 
         // Window state
         if (auto val = config["window"]["width"].value<std::int64_t>())
@@ -278,11 +261,7 @@ void UserConfig::load()
             }
         }
 
-        // ImGui layout state
-        if (auto layout = config["imgui_layout"].value<std::string>())
-        {
-            m_Settings.imguiLayout = *layout;
-        }
+        // Note: imgui_layout is no longer used (removed in favor of tabbed UI)
 
         spdlog::info("Loaded config from {}", m_ConfigPath.string());
     }
@@ -367,25 +346,9 @@ void UserConfig::save() const
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
-        {"panels",
-         toml::table{
-             {"processes", m_Settings.showProcesses},
-             {"metrics", m_Settings.showMetrics},
-             {"details", m_Settings.showDetails},
-             {"storage", m_Settings.showStorage},
-         }},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
     };
-
-    // Add ImGui layout if not empty
-    // Note: The ImGui INI-format string may contain newlines, quotes, and other special
-    // characters. The toml++ library handles this automatically using TOML's multi-line
-    // string literals with proper escaping.
-    if (!m_Settings.imguiLayout.empty())
-    {
-        config.insert("imgui_layout", m_Settings.imguiLayout);
-    }
 
     // Write to file
     std::ofstream file(m_ConfigPath);
@@ -400,75 +363,28 @@ void UserConfig::save() const
     file << "# Notes:\n";
     file << "# - sampling: interval_ms controls refresh cadence (ms); history_max_seconds caps timeline history.\n";
     file << "# - process_columns: toggle columns on/off; true shows the column.\n";
-    file << "# - imgui_layout: auto-generated docking/layout state; editing is optional but may be noisy.\n";
     file << "# - Themes: built-in themes live in assets/themes. Add your own .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
 }
 
-void UserConfig::applyToApplication()
+void UserConfig::applyToApplication() const
 {
     auto& theme = UI::Theme::get();
 
-    // Apply theme
+    // Apply theme and font size
     theme.setThemeById(m_Settings.themeId);
-
-    // Apply font size
     theme.setFontSize(m_Settings.fontSize);
-
-    spdlog::debug("Applied user config: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  // Use 0 as fallback if enum value is out of int range
-                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
 }
 
 void UserConfig::captureFromApplication()
 {
     auto& theme = UI::Theme::get();
 
-    // Capture current theme
+    // Capture current theme and font size
     m_Settings.themeId = theme.currentThemeId();
-
-    // Capture font size
     m_Settings.fontSize = theme.currentFontSize();
-
-    spdlog::debug("Captured app state: theme={}, fontSize={}",
-                  m_Settings.themeId,
-                  // Use 0 as fallback if enum value is out of int range
-                  Domain::Numeric::narrowOr<int>(std::to_underlying(m_Settings.fontSize), 0));
-}
-
-void UserConfig::applyImGuiLayout() const
-{
-    if (m_Settings.imguiLayout.empty())
-    {
-        spdlog::debug("No ImGui layout state to restore");
-        return;
-    }
-
-    spdlog::debug("Restoring ImGui layout state ({} bytes)", m_Settings.imguiLayout.size());
-    ImGui::LoadIniSettingsFromMemory(m_Settings.imguiLayout.c_str(), m_Settings.imguiLayout.size());
-}
-
-void UserConfig::captureImGuiLayout()
-{
-    std::size_t iniSize = 0;
-    const char* iniData = ImGui::SaveIniSettingsToMemory(&iniSize);
-    // ImGui::SaveIniSettingsToMemory() returns a pointer that is only valid until the next
-    // ImGui call or until the context/layout changes (see imgui.h documentation).
-    // We copy the data immediately into our own std::string and do not make any further
-    // ImGui calls in this function, so this use is safe even during shutdown.
-    if (iniData != nullptr && iniSize > 0)
-    {
-        m_Settings.imguiLayout = std::string{iniData, iniSize};
-        spdlog::debug("Captured ImGui layout state ({} bytes)", iniSize);
-    }
-    else
-    {
-        m_Settings.imguiLayout.clear();
-        spdlog::debug("No ImGui layout state to capture");
-    }
 }
 
 } // namespace App

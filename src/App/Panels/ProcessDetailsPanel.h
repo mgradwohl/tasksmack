@@ -29,9 +29,15 @@ class ProcessDetailsPanel : public Panel
     /// Call each frame with the snapshot for the selected process (or nullptr if none).
     void updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime);
 
-    /// Render the panel.
+    /// Render the panel (with ImGui window wrapper).
     /// @param open Pointer to visibility flag (for window close button).
     void render(bool* open) override;
+
+    /// Render content only (for embedding in tab, without window wrapper).
+    void renderContent();
+
+    /// Get a label for this panel (process name or "Select a process").
+    [[nodiscard]] std::string tabLabel() const;
 
     /// Set the process to display.
     void setSelectedPid(std::int32_t pid);
@@ -96,6 +102,7 @@ class ProcessDetailsPanel : public Panel
     // Priority adjustment state
     int32_t m_PriorityNiceValue = 0;
     bool m_PriorityChanged = false;
+    std::string m_PriorityError; // Persistent error message for priority changes
 
     struct SmoothedUsage
     {

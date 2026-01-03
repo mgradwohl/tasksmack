@@ -12,19 +12,6 @@ author = "TaskSmack"
 version = "1.0"
 
 # =============================================================================
-# HEATMAP GRADIENT
-# 5 color stops for CPU/memory heatmaps: 0%, 25%, 50%, 75%, 100%
-# =============================================================================
-[heatmap]
-gradient = [
-    "#C7DAF5",  # 0%   - Ice Blue (cool/idle)
-    "#9BC6F0",  # 25%  - Glacier Blue
-    "#7FC8A5",  # 50%  - Frosted Emerald (moderate)
-    "#FFC980",  # 75%  - Frosted Amber (warning)
-    "#F29AA5",  # 100% - Soft Red (hot/danger)
-]
-
-# =============================================================================
 # ACCENT COLORS
 # 8 colors for charts, legends, and UI highlights
 # =============================================================================
@@ -85,6 +72,7 @@ io = "#D32F2F"        # Red - I/O usage line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
 io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O fill
+peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -96,15 +84,12 @@ utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
 memory = "#D32F2F"                # Red - GPU memory line
 memory_fill = "#D32F2F4D"         # Red with 30% alpha - GPU memory fill
 temperature = "#F57C00"           # Gold - GPU temperature line
-temperature_fill = "#F57C004D"    # Gold with 30% alpha - GPU temp fill
 power = "#388E3C"                 # Green - GPU power draw line
-power_fill = "#388E3C4D"          # Green with 30% alpha - GPU power fill
 encoder = "#0097A7"               # Teal - GPU encoder utilization
 decoder = "#C2185B"               # Magenta - GPU decoder utilization
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
+clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
 fan = "#78909C"                # Blue Gray - GPU fan speed line
-integrated_badge = "#757575"      # Muted gray - integrated GPU badge
-discrete_badge = "#1976D2"        # Windows Blue - discrete GPU badge
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -115,21 +100,10 @@ user = "#1976D2"      # Blue - user CPU time
 system = "#D32F2F"    # Red - system/kernel time
 iowait = "#F57C00"    # Orange - I/O wait time
 idle = "#D0D0D0"      # Light gray - idle time
-steal = "#D32F2F"     # Red - VM steal time
 user_fill = "#1976D259"      # Blue with 35% alpha - user fill
 system_fill = "#D32F2F59"    # Red with 35% alpha - system fill
 iowait_fill = "#F57C0059"    # Orange with 35% alpha - iowait fill
 idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
-steal_fill = "#D32F2F59"     # Red with 35% alpha - steal fill
-
-# =============================================================================
-# DANGER BUTTON COLORS
-# Colors for destructive action buttons (kill process, etc.)
-# =============================================================================
-[buttons.danger]
-normal = "#D32F2F"     # Red
-hovered = "#F44336"    # Bright red
-active = "#B71C1C"     # Dark red
 
 [buttons.success]
 normal = "#0097A7"     # Teal
@@ -196,18 +170,18 @@ slider_grab_active = "#1565C0"
 # Standard buttons (not danger buttons)
 # =============================================================================
 [ui.button]
-normal = "#E8E8E8"
-hovered = "#BDBDBD"
-active = "#9E9E9E"
+normal = "#C8D8E8"          # Visible blue-gray
+hovered = "#B0C8E0"          # Darker on hover
+active = "#00A8E8"           # Cyan on click
 
 # =============================================================================
 # HEADER COLORS
 # Collapsible headers, tree nodes
 # =============================================================================
 [ui.header]
-normal = "#E8E8E8"
-hovered = "#BDBDBD"
-active = "#9E9E9E"
+normal = "#D0E0F0"
+hovered = "#B8D0E8"
+active = "#A0C0E0"
 
 # =============================================================================
 # SEPARATOR COLORS
@@ -232,13 +206,13 @@ active = "#1565C0"
 # Tab bar tabs
 # =============================================================================
 [ui.tab]
-normal = "#EEEEEE"
-hovered = "#BDBDBD"
-active = "#F5F5F5"
-active_overline = "#00000000"           # Transparent - no overline
-unfocused = "#F5F5F5"
-unfocused_active = "#E8E8E8"
-unfocused_active_overline = "#00000000" # Transparent - no overline
+normal = "#D8E8F5"
+hovered = "#C0D8F0"
+active = "#E8F0F8"
+active_overline = "#1976D2"           # Blue accent overline for visibility
+unfocused = "#E0EAF5"
+unfocused_active = "#D0E0F0"
+unfocused_active_overline = "#1976D280" # Semi-transparent blue overline
 
 # =============================================================================
 # DOCKING COLORS
