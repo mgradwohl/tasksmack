@@ -221,10 +221,10 @@ esac
 if [[ ${#FILES[@]} -eq 0 ]]; then
     # Get all source files from project, excluding other-platform files
     if [[ "$CURRENT_PLATFORM" == "windows" ]]; then
-        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
             ! -path "*/Platform/Linux/*" 2>/dev/null)
     else
-        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
             ! -path "*/Platform/Windows/*" 2>/dev/null)
     fi
 else
