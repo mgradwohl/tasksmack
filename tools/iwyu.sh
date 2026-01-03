@@ -134,7 +134,7 @@ check_version_compatibility() {
         fi
         return
     fi
-    
+
     if [[ -z "$clang_version" ]] || ! [[ "$clang_version" =~ ^[0-9]+$ ]]; then
         if $VERBOSE; then
             echo "Warning: Could not extract clang version (got: '$clang_version')" >&2
