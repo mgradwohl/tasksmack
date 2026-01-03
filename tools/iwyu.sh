@@ -147,16 +147,30 @@ fi
 if $VERBOSE; then
     echo "Stripping PCH flags from compile_commands.json..."
 fi
-sed -i.bak \
-    -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
-    -e 's/-Xclang -emit-pch//g' \
-    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-    -e 's/-Winvalid-pch//g' \
-    -e 's/-fpch-instantiate-templates//g' \
-    -e 's/@[^ ]*\.modmap//g' \
-    -e 's/-fmodule-output=[^ ]*//g' \
-    "$COMPILE_COMMANDS"
-rm -f "${COMPILE_COMMANDS}.bak"
+# Use portable sed in-place editing that works on both GNU sed (Linux) and BSD sed (macOS)
+if [[ "$(uname)" == "Darwin" ]]; then
+    # BSD sed requires a separate argument for backup extension
+    sed -i '' \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
+        -e 's/-Xclang -emit-pch//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Winvalid-pch//g' \
+        -e 's/-fpch-instantiate-templates//g' \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        "$COMPILE_COMMANDS"
+else
+    # GNU sed: -i with no argument for in-place without backup
+    sed -i \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
+        -e 's/-Xclang -emit-pch//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Winvalid-pch//g' \
+        -e 's/-fpch-instantiate-templates//g' \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        "$COMPILE_COMMANDS"
+fi
 
 # Create IWYU mapping file for project-specific rules
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"

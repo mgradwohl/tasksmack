@@ -1671,17 +1671,30 @@ void ProcessDetailsPanel::renderActions()
         constexpr float SLIDER_WIDTH = 400.0F;
         constexpr float SLIDER_HEIGHT = 12.0F;
         constexpr float BADGE_HEIGHT = 24.0F;
-        constexpr float BADGE_ARROW_SIZE = 6.0F;
+        constexpr float BADGE_ARROW_SIZE = BADGE_HEIGHT * 0.25F; // Proportional to badge height
 
         // Calculate normalized position (0.0 = -20, 1.0 = 19)
         constexpr float NICE_RANGE = static_cast<float>(Domain::Priority::MAX_NICE - Domain::Priority::MIN_NICE);
         const float normalizedPos = static_cast<float>(m_PriorityNiceValue - Domain::Priority::MIN_NICE) / NICE_RANGE;
 
-        // Get color for current nice value using a red-green-blue gradient:
-        //   - Red (high priority, nice=-20): R=1.0, G=0.3, B=0.2
-        //   - Green (normal, nice=0): R=0.5, G=0.8, B=0.2
-        //   - Blue (low priority, nice=19): R=0.4, G=0.4, B=0.8
-        // The gradient interpolates smoothly between these anchor colors.
+        // ========================================
+        // Gradient color anchor points for priority visualization
+        // The gradient transitions: Red (high priority) -> Green (normal) -> Blue (low priority)
+        // ========================================
+        // Red anchor (high priority, nice=-20)
+        constexpr float RED_R = 1.0F;
+        constexpr float RED_G = 0.3F;
+        constexpr float RED_B = 0.2F;
+        // Green anchor (normal priority, nice=0)
+        constexpr float GREEN_R = 0.5F;
+        constexpr float GREEN_G = 0.8F;
+        constexpr float GREEN_B = 0.2F;
+        // Blue anchor (low priority, nice=19)
+        constexpr float BLUE_R = 0.4F;
+        constexpr float BLUE_G = 0.4F;
+        constexpr float BLUE_B = 0.8F;
+
+        // Get color for current nice value by interpolating between anchor colors
         auto getNiceColor = [](int nice) -> ImVec4
         {
             // Normalize to 0-1 range
@@ -1691,17 +1704,17 @@ void ProcessDetailsPanel::renderActions()
             if (t < 0.5F)
             {
                 // Red to Green (high priority to normal)
-                const float localT = t * 2.0F;        // 0-1 within red-green range
-                return ImVec4(1.0F - (localT * 0.5F), // R: 1.0 -> 0.5
-                              0.3F + (localT * 0.5F), // G: 0.3 -> 0.8
-                              0.2F,                   // B: constant low
+                const float localT = t * 2.0F; // 0-1 within red-green range
+                return ImVec4(RED_R - (localT * (RED_R - GREEN_R)),
+                              RED_G + (localT * (GREEN_G - RED_G)),
+                              RED_B, // Constant low blue in red-green transition
                               1.0F);
             }
             // Green to Blue (normal to low priority)
             const float localT = (t - 0.5F) * 2.0F; // 0-1 within green-blue range
-            return ImVec4(0.2F + (localT * 0.2F),   // R: 0.2 -> 0.4
-                          0.8F - (localT * 0.4F),   // G: 0.8 -> 0.4
-                          0.3F + (localT * 0.5F),   // B: 0.3 -> 0.8
+            return ImVec4(GREEN_R - (localT * (GREEN_R - BLUE_R)),
+                          GREEN_G - (localT * (GREEN_G - BLUE_G)),
+                          GREEN_B + (localT * (BLUE_B - GREEN_B)),
                           1.0F);
         };
 
@@ -1810,17 +1823,28 @@ void ProcessDetailsPanel::renderActions()
             ImGui::TextUnformatted("High");
             ImGui::PopStyleColor();
 
-            // Scale tick labels (muted color)
-            // NOTE: The spacing in this string is approximate and may not perfectly align
-            // with all font sizes. Consider dynamically positioning labels if precision is needed.
+            // Dynamically positioned scale tick labels for font-size independence
             ImGui::SameLine();
-            ImGui::SetCursorPosX(contentStartX + 35.0F);
+            const float scaleRowY = ImGui::GetCursorPosY();
+            const float scaleStartX = contentStartX + 35.0F; // Offset past "High" label
             ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-            ImGui::TextUnformatted("-20   -15   -10   -5    0    5    10    15    19");
+
+            // Scale spans from -20 to 19 over NICE_RANGE (39), matching the slider
+            constexpr std::array<int, 9> SCALE_VALUES{-20, -15, -10, -5, 0, 5, 10, 15, 19};
+            for (const int value : SCALE_VALUES)
+            {
+                const float normalized = static_cast<float>(value - Domain::Priority::MIN_NICE) / NICE_RANGE;
+                const std::string label = std::to_string(value);
+                const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
+                const float labelCenterX = scaleStartX + (normalized * SLIDER_WIDTH);
+                ImGui::SetCursorPos(ImVec2(labelCenterX - (labelSize.x * 0.5F), scaleRowY));
+                ImGui::TextUnformatted(label.c_str());
+            }
             ImGui::PopStyleColor();
 
-            // "Low" label (right, colored blue)
-            ImGui::SameLine();
+            // "Low" label (right, colored blue) - position after last scale tick
+            const float lowLabelX = scaleStartX + SLIDER_WIDTH + 10.0F;
+            ImGui::SetCursorPos(ImVec2(lowLabelX, scaleRowY));
             ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
             ImGui::TextUnformatted("Low");
             ImGui::PopStyleColor();

@@ -39,10 +39,11 @@ class SettingsLayer : public Core::Layer
     bool m_OpenRequested = false;
 
     // Cached settings for editing (applied on "Apply")
-    int m_SelectedThemeIndex = 0;
-    int m_SelectedFontSizeIndex = 0;
-    int m_SelectedRefreshRateIndex = 0;
-    int m_SelectedHistoryIndex = 0;
+    // Using size_t to match vector indices, avoiding signed/unsigned comparisons
+    std::size_t m_SelectedThemeIndex = 0;
+    std::size_t m_SelectedFontSizeIndex = 0;
+    std::size_t m_SelectedRefreshRateIndex = 0;
+    std::size_t m_SelectedHistoryIndex = 0;
 
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;

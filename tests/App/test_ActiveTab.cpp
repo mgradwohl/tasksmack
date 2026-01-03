@@ -48,8 +48,9 @@ TEST(ActiveTabTest, CanBeUsedInSwitch)
             return "Processes";
         case ActiveTab::ProcessDetails:
             return "Process Details";
+        default:
+            return "Unknown";
         }
-        return "Unknown";
     };
 
     EXPECT_STREQ(getTabName(ActiveTab::SystemOverview), "System Overview");

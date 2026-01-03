@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #ifdef __linux__
@@ -85,37 +86,37 @@ constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 }};
 
 // Helper to find index by value
-[[nodiscard]] auto findFontSizeIndex(UI::FontSize size) -> int
+[[nodiscard]] auto findFontSizeIndex(UI::FontSize size) -> std::size_t
 {
-    for (size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
+    for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
     {
         if (FONT_SIZE_OPTIONS[i].value == size)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
     return 1; // Default to Medium
 }
 
-[[nodiscard]] auto findRefreshRateIndex(int ms) -> int
+[[nodiscard]] auto findRefreshRateIndex(int ms) -> std::size_t
 {
-    for (size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
     {
         if (REFRESH_RATE_OPTIONS[i].valueMs == ms)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
     return 3; // Default to 1 second
 }
 
-[[nodiscard]] auto findHistoryIndex(int seconds) -> int
+[[nodiscard]] auto findHistoryIndex(int seconds) -> std::size_t
 {
-    for (size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
     {
         if (HISTORY_OPTIONS[i].valueSeconds == seconds)
         {
-            return static_cast<int>(i);
+            return i;
         }
     }
     return 2; // Default to 5 minutes
@@ -129,7 +130,8 @@ constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 }
 
 // Open a file or folder with the system default handler
-void openPath(const std::filesystem::path& path)
+// Returns true on success, false on failure (with logged warning)
+[[nodiscard]] bool openPath(const std::filesystem::path& path)
 {
     const std::string pathStr = path.string();
 
@@ -139,7 +141,7 @@ void openPath(const std::filesystem::path& path)
     if (wideSize == 0)
     {
         spdlog::warn("Failed to convert UTF-8 path to UTF-16: {}", pathStr);
-        return;
+        return false;
     }
 
     // wideSize includes the null terminator; std::wstring length excludes it.
@@ -148,7 +150,7 @@ void openPath(const std::filesystem::path& path)
     if (result == 0)
     {
         spdlog::warn("Failed to convert UTF-8 path to UTF-16 on second pass: {}", pathStr);
-        return;
+        return false;
     }
 
     // ShellExecuteW returns > 32 on success
@@ -158,14 +160,16 @@ void openPath(const std::filesystem::path& path)
     if (shellCode <= 32)
     {
         spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, pathStr);
+        return false;
     }
+    return true;
 #else
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
     const pid_t pid = ::fork();
     if (pid == -1)
     {
         spdlog::warn("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
-        return;
+        return false;
     }
 
     if (pid == 0)
@@ -193,15 +197,19 @@ void openPath(const std::filesystem::path& path)
     if (waited == -1)
     {
         spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
+        return false;
     }
-    else if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
     {
         spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
+        return false;
     }
-    else if (WIFSIGNALED(status))
+    if (WIFSIGNALED(status))
     {
         spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
+        return false;
     }
+    return true;
 #endif
 }
 
@@ -223,7 +231,13 @@ SettingsLayer::~SettingsLayer()
 
 void SettingsLayer::onAttach()
 {
-    assert(s_Instance == nullptr && "SettingsLayer instance already exists!");
+    // Runtime check in addition to assert - logs error in release builds where assert is stripped
+    if (s_Instance != nullptr && s_Instance != this)
+    {
+        spdlog::error("SettingsLayer::onAttach called while another instance is already attached");
+        return;
+    }
+    assert((s_Instance == nullptr || s_Instance == this) && "SettingsLayer instance already exists!");
     s_Instance = this;
 }
 
@@ -266,11 +280,11 @@ void SettingsLayer::loadCurrentSettings()
     m_Themes = themeManager.discoveredThemes();
     m_SelectedThemeIndex = 0;
 
-    for (size_t i = 0; i < m_Themes.size(); ++i)
+    for (std::size_t i = 0; i < m_Themes.size(); ++i)
     {
         if (m_Themes[i].id == settings.themeId)
         {
-            m_SelectedThemeIndex = static_cast<int>(i);
+            m_SelectedThemeIndex = i;
             break;
         }
     }
@@ -288,9 +302,9 @@ void SettingsLayer::applySettings()
     auto& themeManager = UI::Theme::get();
 
     // Apply theme
-    if (m_SelectedThemeIndex >= 0 && static_cast<size_t>(m_SelectedThemeIndex) < m_Themes.size())
+    if (m_SelectedThemeIndex < m_Themes.size())
     {
-        const std::string& newThemeId = m_Themes[static_cast<size_t>(m_SelectedThemeIndex)].id;
+        const std::string& newThemeId = m_Themes[m_SelectedThemeIndex].id;
         if (newThemeId != settings.themeId)
         {
             settings.themeId = newThemeId;
@@ -300,7 +314,7 @@ void SettingsLayer::applySettings()
     }
 
     // Apply font size
-    const auto newFontSize = FONT_SIZE_OPTIONS[static_cast<size_t>(m_SelectedFontSizeIndex)].value;
+    const auto newFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].value;
     if (newFontSize != settings.fontSize)
     {
         settings.fontSize = newFontSize;
@@ -309,7 +323,7 @@ void SettingsLayer::applySettings()
     }
 
     // Apply refresh rate
-    const int newRefreshMs = REFRESH_RATE_OPTIONS[static_cast<size_t>(m_SelectedRefreshRateIndex)].valueMs;
+    const int newRefreshMs = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].valueMs;
     if (newRefreshMs != settings.refreshIntervalMs)
     {
         settings.refreshIntervalMs = newRefreshMs;
@@ -317,7 +331,7 @@ void SettingsLayer::applySettings()
     }
 
     // Apply history duration
-    const int newHistorySeconds = HISTORY_OPTIONS[static_cast<size_t>(m_SelectedHistoryIndex)].valueSeconds;
+    const int newHistorySeconds = HISTORY_OPTIONS[m_SelectedHistoryIndex].valueSeconds;
     if (newHistorySeconds != settings.maxHistorySeconds)
     {
         settings.maxHistorySeconds = newHistorySeconds;
@@ -372,17 +386,15 @@ void SettingsLayer::renderSettingsDialog()
 
         if (!m_Themes.empty())
         {
-            const char* currentTheme = m_Themes[static_cast<size_t>(m_SelectedThemeIndex)].name.c_str();
+            const char* currentTheme = m_Themes[m_SelectedThemeIndex].name.c_str();
             if (ImGui::BeginCombo("##Theme", currentTheme))
             {
-                for (size_t i = 0; i < m_Themes.size(); ++i)
+                for (std::size_t i = 0; i < m_Themes.size(); ++i)
                 {
-                    // NOTE: std::cmp_equal is used intentionally for safe signed/unsigned comparison.
-                    // The m_Selected*Index members are int (for ImGui compatibility) while loop indices are size_t.
-                    const bool isSelected = std::cmp_equal(m_SelectedThemeIndex, i);
+                    const bool isSelected = (m_SelectedThemeIndex == i);
                     if (ImGui::Selectable(m_Themes[i].name.c_str(), isSelected))
                     {
-                        m_SelectedThemeIndex = static_cast<int>(i);
+                        m_SelectedThemeIndex = i;
                     }
                     if (isSelected)
                     {
@@ -401,15 +413,15 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(LABEL_WIDTH);
         ImGui::SetNextItemWidth(COMBO_WIDTH);
 
-        const char* currentFontSize = FONT_SIZE_OPTIONS[static_cast<size_t>(m_SelectedFontSizeIndex)].label;
+        const char* currentFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label;
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
-            for (size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
+            for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = std::cmp_equal(m_SelectedFontSizeIndex, i);
+                const bool isSelected = (m_SelectedFontSizeIndex == i);
                 if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label, isSelected))
                 {
-                    m_SelectedFontSizeIndex = static_cast<int>(i);
+                    m_SelectedFontSizeIndex = i;
                 }
                 if (isSelected)
                 {
@@ -441,15 +453,15 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentRefresh = REFRESH_RATE_OPTIONS[static_cast<size_t>(m_SelectedRefreshRateIndex)].label;
+        const char* currentRefresh = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label;
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
-            for (size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+            for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
-                const bool isSelected = std::cmp_equal(m_SelectedRefreshRateIndex, i);
+                const bool isSelected = (m_SelectedRefreshRateIndex == i);
                 if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label, isSelected))
                 {
-                    m_SelectedRefreshRateIndex = static_cast<int>(i);
+                    m_SelectedRefreshRateIndex = i;
                 }
                 if (isSelected)
                 {
@@ -467,15 +479,15 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentHistory = HISTORY_OPTIONS[static_cast<size_t>(m_SelectedHistoryIndex)].label;
+        const char* currentHistory = HISTORY_OPTIONS[m_SelectedHistoryIndex].label;
         if (ImGui::BeginCombo("##History", currentHistory))
         {
-            for (size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+            for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
-                const bool isSelected = std::cmp_equal(m_SelectedHistoryIndex, i);
+                const bool isSelected = (m_SelectedHistoryIndex == i);
                 if (ImGui::Selectable(HISTORY_OPTIONS[i].label, isSelected))
                 {
-                    m_SelectedHistoryIndex = static_cast<int>(i);
+                    m_SelectedHistoryIndex = i;
                 }
                 if (isSelected)
                 {
@@ -502,12 +514,14 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
         if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
         {
-            openPath(UserConfig::get().configPath());
+            // Result intentionally ignored - openPath logs warnings on failure
+            std::ignore = openPath(UserConfig::get().configPath());
         }
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
         {
-            openPath(getThemesDir());
+            // Result intentionally ignored - openPath logs warnings on failure
+            std::ignore = openPath(getThemesDir());
         }
         ImGui::PopStyleColor();
 
