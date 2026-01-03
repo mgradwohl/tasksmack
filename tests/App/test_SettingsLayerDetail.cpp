@@ -137,7 +137,10 @@ TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) { return opt.valueSeconds > 0; }));
+    for (const auto& option : HISTORY_OPTIONS)
+    {
+        EXPECT_GT(option.valueSeconds, 0);
+    }
 }
 
 } // namespace
