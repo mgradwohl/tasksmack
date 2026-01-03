@@ -95,6 +95,7 @@ using detail::PRIORITY_BADGE_ARROW_SIZE;
 using detail::PRIORITY_BADGE_CORNER_RADIUS;
 using detail::PRIORITY_BADGE_HEIGHT;
 using detail::PRIORITY_GRADIENT_SEGMENTS;
+using detail::PRIORITY_LABEL_PADDING;
 using detail::PRIORITY_SLIDER_CORNER_RADIUS;
 using detail::PRIORITY_SLIDER_HEIGHT;
 using detail::PRIORITY_SLIDER_WIDTH;
@@ -106,8 +107,9 @@ struct ProcessDetailsPanel::PrioritySliderContext
 {
     ImDrawList* drawList = nullptr;
     ImVec2 cursorStart{};       // Screen position where badge area starts
-    ImVec2 sliderMin{};         // Top-left of slider bar
-    ImVec2 sliderMax{};         // Bottom-right of slider bar
+    ImVec2 sliderMin{};         // Top-left of slider bar (screen coords)
+    ImVec2 sliderMax{};         // Bottom-right of slider bar (screen coords)
+    float sliderLocalX = 0.0F;  // Slider X position in window-local coords (for cursor positioning)
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
@@ -1686,7 +1688,13 @@ void ProcessDetailsPanel::renderActions()
 
         // ========================================
         // Custom gradient priority slider (refactored into helper methods)
+        // Layout: High [====gradient====] Low
+        //                   Default
         // ========================================
+
+        // Calculate "High" label width for offsetting the slider
+        const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
+        const float highLabelOffset = highLabelSize.x + PRIORITY_LABEL_PADDING;
 
         // Build context for helper methods
         PrioritySliderContext ctx;
@@ -1695,16 +1703,32 @@ void ProcessDetailsPanel::renderActions()
         ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
         ctx.style = &style;
 
-        // Reserve space for badge above slider
-        ctx.cursorStart = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
+        // Reserve space for badge above slider (offset by High label width)
+        const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+        ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
+        ImGui::Dummy(ImVec2(highLabelOffset + PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
 
         // Draw the value badge/callout above the slider position
         drawPriorityBadge(drawList, ctx);
 
+        // Draw "High" label (left of slider, vertically centered with slider)
+        // Note: 'theme' is already declared in the outer scope
+        const float sliderRowY = ImGui::GetCursorPosY();
+        const float labelCenterY = sliderRowY + ((PRIORITY_SLIDER_HEIGHT - highLabelSize.y) * 0.5F);
+        ImGui::SetCursorPosY(labelCenterY);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
+        ImGui::TextUnformatted("High");
+        ImGui::PopStyleColor();
+
+        // Position the slider after "High" label on same line
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(sliderRowY);
+
         // Draw the gradient slider bar
         ctx.sliderMin = ImGui::GetCursorScreenPos();
         ctx.sliderMax = ImVec2(ctx.sliderMin.x + PRIORITY_SLIDER_WIDTH, ctx.sliderMin.y + PRIORITY_SLIDER_HEIGHT);
+        // Store window-local X coordinate for scale label positioning
+        ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
 
         // Draw gradient background (red -> green -> blue)
         drawPriorityGradient(drawList, ctx);
@@ -1719,8 +1743,7 @@ void ProcessDetailsPanel::renderActions()
         ImGui::InvisibleButton("##priority_slider", ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_SLIDER_HEIGHT));
         handlePrioritySliderInput(ctx);
 
-        // Draw scale labels below the slider
-        ImGui::Spacing();
+        // Draw "Low" label and "Default" label
         drawPriorityScaleLabels(ctx);
 
         // Tooltip on hover with keyboard shortcut hints
@@ -1935,46 +1958,19 @@ void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext&
 void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
-    const auto& style = ImGui::GetStyle();
-    const float contentStartX = ImGui::GetCursorPosX();
 
-    // "High" label (left, colored red)
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
-    ImGui::TextUnformatted("High");
-    ImGui::PopStyleColor();
-
-    // Dynamically positioned scale tick labels for font-size independence
-    // Use ctx.sliderMin.x for precise alignment with the slider gradient
+    // "Low" label (right of slider, colored blue)
+    // Position it after the slider with padding (sliderLocalX + width = right edge)
+    const float lowLabelX = ctx.sliderLocalX + PRIORITY_SLIDER_WIDTH + PRIORITY_LABEL_PADDING;
     ImGui::SameLine();
-    const float scaleRowY = ImGui::GetCursorPosY();
-    // Use the same x-coordinate as the slider bar for precise alignment
-    const float scaleStartX = ImGui::GetCursorPosX() + (ctx.sliderMin.x - ImGui::GetWindowPos().x - contentStartX);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-
-    // Scale spans from -20 to 19 over NICE_RANGE (39), matching the slider
-    constexpr std::array<int, 9> SCALE_VALUES{-20, -15, -10, -5, 0, 5, 10, 15, 19};
-    for (const int value : SCALE_VALUES)
-    {
-        const float normalized = static_cast<float>(value - NICE_MIN) / static_cast<float>(NICE_RANGE);
-        const std::string label = std::to_string(value);
-        const ImVec2 labelSize = ImGui::CalcTextSize(label.c_str());
-        const float labelCenterX = scaleStartX + (normalized * PRIORITY_SLIDER_WIDTH);
-        ImGui::SetCursorPos(ImVec2(labelCenterX - (labelSize.x * 0.5F), scaleRowY));
-        ImGui::TextUnformatted(label.c_str());
-    }
-    ImGui::PopStyleColor();
-
-    // "Low" label (right, colored blue) - position after last scale tick
-    const float lowLabelX = scaleStartX + PRIORITY_SLIDER_WIDTH + style.ItemSpacing.x;
-    ImGui::SetCursorPos(ImVec2(lowLabelX, scaleRowY));
+    ImGui::SetCursorPosX(lowLabelX);
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
     ImGui::TextUnformatted("Low");
     ImGui::PopStyleColor();
 
-    // "Default" label centered below the 0 position
-    // 0 is at normalized position 0.5128 (20 out of 39 range)
-    constexpr float ZERO_NORMALIZED = 20.0F / 39.0F;
-    const float defaultX = scaleStartX + (ZERO_NORMALIZED * PRIORITY_SLIDER_WIDTH);
+    // "Default" label centered below the 0 position on the slider
+    // Use getNicePosition(0) for consistency with other position calculations
+    const float defaultX = ctx.sliderLocalX + (getNicePosition(0) * PRIORITY_SLIDER_WIDTH);
     const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
     ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);

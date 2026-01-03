@@ -31,6 +31,7 @@ inline constexpr float PRIORITY_GRADIENT_SEGMENTS = 40.0F;
 inline constexpr float PRIORITY_SLIDER_CORNER_RADIUS = 2.0F;    // Border rounding for slider bar
 inline constexpr float PRIORITY_BADGE_CORNER_RADIUS = 4.0F;     // Border rounding for value badge
 inline constexpr float PRIORITY_THUMB_OUTLINE_THICKNESS = 2.0F; // Outline width for slider thumb
+inline constexpr float PRIORITY_LABEL_PADDING = 8.0F;           // Padding between High/Low labels and slider
 
 // Nice value range - imported from Domain for consistency (DRY principle)
 inline constexpr int32_t NICE_MIN = Domain::Priority::MIN_NICE;
