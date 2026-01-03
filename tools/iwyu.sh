@@ -22,6 +22,11 @@ Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE] [FILES...]
 Run include-what-you-use (IWYU) analysis on source files.
 IWYU analyzes #include directives and suggests additions/removals.
 
+Prerequisites:
+  - IWYU must be installed (apt install iwyu or brew install include-what-you-use)
+  - Project must be configured and built at least once:
+    cmake --preset debug && cmake --build build/debug
+
 BUILD_TYPE:
   debug           Use debug build (default)
   relwithdebinfo  Use relwithdebinfo build
@@ -142,16 +147,28 @@ if $VERBOSE; then
     fi
 fi
 
-# Configure if needed (using CMake presets)
-if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
-    echo "Build not configured. Running cmake --preset $BUILD_TYPE..."
-    cmake --preset "$BUILD_TYPE"
+# Check for build prerequisites
+if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$COMPILE_COMMANDS" ]]; then
+    echo "Error: Build directory or compile_commands.json not found" >&2
+    echo "" >&2
+    echo "IWYU requires the project to be configured and built at least once." >&2
+    echo "Please run the following commands first:" >&2
+    echo "" >&2
+    echo "  cmake --preset $BUILD_TYPE" >&2
+    echo "  cmake --build build/$BUILD_TYPE" >&2
+    echo "" >&2
+    echo "For more information, see CONTRIBUTING.md" >&2
+    exit 1
 fi
 
-# Ensure compile_commands.json exists
-if [[ ! -f "$COMPILE_COMMANDS" ]]; then
-    echo "Building to generate compile_commands.json..."
-    cmake --build "$BUILD_DIR" --target copy-compile-commands
+# Verify build.ninja exists (should exist after configuration)
+if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
+    echo "Error: Build system not configured properly" >&2
+    echo "Expected to find: $BUILD_DIR/build.ninja" >&2
+    echo "" >&2
+    echo "Please reconfigure the build:" >&2
+    echo "  cmake --preset $BUILD_TYPE" >&2
+    exit 1
 fi
 
 # Strip PCH flags from compile_commands.json (IWYU doesn't support PCH)
