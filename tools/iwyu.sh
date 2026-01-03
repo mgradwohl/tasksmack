@@ -336,40 +336,55 @@ elif len(basename_matches) > 1:
     )
 
 if selected_cmd is not None:
-    command = selected_cmd.get('command', '')
-    # Extract flags: remove compiler name and output-related flags
-    # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
-    tokens = shlex.split(command)
-    flags = []
-    skip_next = False
-    for i, token in enumerate(tokens):
-        if skip_next:
-            skip_next = False
-            continue
-        # Skip compiler name (first token)
-        if i == 0:
-            continue
-        # Skip output flags
-        if token in ['-o', '-c', '-MF', '-MT', '-MD']:
-            skip_next = True
-            continue
-        # Whitelist relevant flags that affect preprocessing/target configuration
-        keep = False
-        # Standalone important flags
-        if token in ['-pthread']:
-            keep = True
-        # Common prefix-based categories
-        elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
-            keep = True
-        elif token.startswith('-f') and not token.startswith('-fpch'):
-            keep = True
-        elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
-            keep = True
-        if keep:
-            flags.append(token)
-    # Print each flag on a separate line for safe array handling
-    for flag in flags:
-        print(flag)
+    # Safely extract the compile command; handle malformed entries gracefully.
+    try:
+        command = selected_cmd.get('command', '')
+    except AttributeError:
+        sys.stderr.write(
+            'Warning: malformed compile_commands entry (expected object with '
+            '"command" field); skipping entry.\n'
+        )
+        command = ''
+    if not isinstance(command, str) or not command:
+        sys.stderr.write(
+            'Warning: compile_commands entry missing valid "command" string; '
+            'skipping entry.\n'
+        )
+        command = ''
+    if command:
+        # Extract flags: remove compiler name and output-related flags
+        # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+        tokens = shlex.split(command)
+        flags = []
+        skip_next = False
+        for i, token in enumerate(tokens):
+            if skip_next:
+                skip_next = False
+                continue
+            # Skip compiler name (first token)
+            if i == 0:
+                continue
+            # Skip output flags
+            if token in ['-o', '-c', '-MF', '-MT', '-MD']:
+                skip_next = True
+                continue
+            # Whitelist relevant flags that affect preprocessing/target configuration
+            keep = False
+            # Standalone important flags
+            if token in ['-pthread']:
+                keep = True
+            # Common prefix-based categories
+            elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+                keep = True
+            elif token.startswith('-f') and not token.startswith('-fpch'):
+                keep = True
+            elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
+                keep = True
+            if keep:
+                flags.append(token)
+        # Print each flag on a separate line for safe array handling
+        for flag in flags:
+            print(flag)
 " "$COMPILE_COMMANDS" "${file}" 2>/dev/null || true)
 
         # Direct IWYU invocation with extracted compile flags
