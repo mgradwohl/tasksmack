@@ -295,6 +295,7 @@ brew install include-what-you-use
 **Notes:**
 - IWYU suggestions are advisory and may not always be appropriate.
 - CI runs IWYU in report-only mode (does not block PRs).
+- **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
 - **Version compatibility:** IWYU must be built against the same clang version as your project. The system package (`apt install iwyu`) may produce warnings if versions mismatch. This is expected - rely on CI for accurate results.
