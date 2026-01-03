@@ -121,6 +121,7 @@ add_executable(TaskSmackTests
     App/test_ProcessColumnConfig.cpp
     App/test_UserConfig.cpp
     App/test_ActiveTab.cpp
+    App/test_PriorityHelpers.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
