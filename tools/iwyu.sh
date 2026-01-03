@@ -196,11 +196,25 @@ if [[ ! -f "$IWYU_MAPPING" ]]; then
 MAPPING
 fi
 
+# Detect current platform to exclude non-current platform files by default
+CURRENT_PLATFORM="unknown"
+UNAME_OUT="$(uname -s 2>/dev/null || echo "")"
+case "$UNAME_OUT" in
+    Linux*) CURRENT_PLATFORM="linux" ;;
+    Darwin*) CURRENT_PLATFORM="linux" ;; # macOS builds target Linux probes
+    CYGWIN*|MINGW*|MSYS*|Windows_NT) CURRENT_PLATFORM="windows" ;;
+esac
+
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
     # Get all source files from project, excluding other-platform files
-    mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
-        ! -path "*/Platform/Windows/*" 2>/dev/null)
+    if [[ "$CURRENT_PLATFORM" == "windows" ]]; then
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+            ! -path "*/Platform/Linux/*" 2>/dev/null)
+    else
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+            ! -path "*/Platform/Windows/*" 2>/dev/null)
+    fi
 else
     SOURCE_FILES=()
     for f in "${FILES[@]}"; do
