@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-#include <cmath>
 
 namespace App::detail
 {
