@@ -187,8 +187,6 @@ jobs:
   include-analysis:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # Run IWYU analysis but don't block PRs (advisory only)
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -223,21 +221,27 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           # Check if IWYU found any issues (grep returns 0 if pattern found, 1 if not)
-          if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
+          if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Summary of Suggestions" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Count files with suggestions
+            SUGGESTED_FILES=$(grep -cE "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null || echo "0")
+            echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
           fi || true
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full report available in artifacts." >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "*Note: IWYU suggestions are advisory. Some suggestions may not be appropriate.*" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Full report available in artifacts (retention: 14 days)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💡 **Tip:** IWYU suggestions are advisory and context-dependent. Review each suggestion before applying." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload IWYU results
         if: always()
