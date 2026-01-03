@@ -356,12 +356,12 @@ if selected_cmd is not None:
     except AttributeError:
         sys.stderr.write(
             'Warning: malformed compile_commands entry (expected object with '
-            '"command" field); skipping entry.\n'
+            '\"command\" field); skipping entry.\n'
         )
         command = ''
     if not isinstance(command, str) or not command:
         sys.stderr.write(
-            'Warning: compile_commands entry missing valid "command" string; '
+            'Warning: compile_commands entry missing valid \"command\" string; '
             'skipping entry.\n'
         )
         command = ''
