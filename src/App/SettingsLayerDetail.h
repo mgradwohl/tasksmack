@@ -93,6 +93,7 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 /// @return Index into HISTORY_OPTIONS, or 2 (5 minutes) if not found.
 [[nodiscard]] inline auto findHistoryIndex(int seconds) -> std::size_t
 {
+    // NOLINTNEXTLINE(readability-qualified-auto) - iterator type varies by platform
     const auto it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
     return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(std::distance(HISTORY_OPTIONS.begin(), it)) : 2;
 }
