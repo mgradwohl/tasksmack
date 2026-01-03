@@ -121,6 +121,24 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     exit 1
 fi
 
+# Check for Python 3 (required for compile flag extraction)
+PYTHON3=$(command -v python3 2>/dev/null || echo "")
+if [[ -z "$PYTHON3" ]]; then
+    echo "Error: python3 not found in PATH" >&2
+    echo "" >&2
+    echo "Python 3 is required for extracting compiler flags from compile_commands.json." >&2
+    echo "" >&2
+    echo "Install Python 3:" >&2
+    echo "  Ubuntu/Debian: sudo apt install python3" >&2
+    echo "  macOS:         brew install python3 (or use system python3)" >&2
+    echo "  Windows:       Download from https://www.python.org/downloads/" >&2
+    exit 1
+fi
+
+if $VERBOSE; then
+    echo "Using python3: $PYTHON3"
+fi
+
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
     local iwyu_clang_version clang_version
@@ -303,7 +321,7 @@ else
         # Extract compile flags for this file from compile_commands.json
         # This ensures IWYU has access to include paths, defines, and other compilation flags
         # Read flags into an array for proper handling
-        mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
+        mapfile -t COMPILE_FLAGS_ARRAY < <($PYTHON3 -c "
 import json
 import sys
 import os
