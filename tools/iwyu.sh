@@ -210,7 +210,7 @@ fi
 
 # Detect current platform to exclude non-current platform files by default
 CURRENT_PLATFORM="unknown"
-UNAME_OUT="$(uname -s 2>/dev/null || echo "")"
+UNAME_OUT=$(uname -s 2>/dev/null || echo "")
 case "$UNAME_OUT" in
     Linux*) CURRENT_PLATFORM="linux" ;;
     Darwin*) CURRENT_PLATFORM="linux" ;; # macOS builds target Linux probes
