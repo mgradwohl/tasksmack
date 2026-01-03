@@ -264,7 +264,6 @@ if [[ -n "$IWYU_TOOL" ]]; then
     )
     IWYU_ARGS=(
         "-Xiwyu" "--mapping_file=$IWYU_MAPPING"
-        "-Xiwyu" "--cxx17ns"
     )
 
     if [[ ${#FILES[@]} -gt 0 ]]; then
@@ -378,7 +377,6 @@ if selected_cmd is not None:
             $IWYU \
                 "${COMPILE_FLAGS_ARRAY[@]}" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
-                -Xiwyu --cxx17ns \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         else
             # Fallback: run without extracted flags (may produce less accurate results)
@@ -387,7 +385,6 @@ if selected_cmd is not None:
             fi
             $IWYU \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
-                -Xiwyu --cxx17ns \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         fi
     done
