@@ -288,7 +288,6 @@ else
         # Direct IWYU invocation when iwyu_tool.py is not available
         $IWYU \
             -Xiwyu --mapping_file="$IWYU_MAPPING" \
-            -Xiwyu --cxx17ns \
             "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
     done
 fi
