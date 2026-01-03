@@ -8,6 +8,7 @@
 
 #include <ranges>
 #include <cstring>
+#include <format>
 
 namespace App::detail
 {
