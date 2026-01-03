@@ -1,5 +1,6 @@
 #include "SettingsLayer.h"
 
+#include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
 #include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
@@ -8,9 +9,7 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <array>
 #include <cassert>
-#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <tuple>
@@ -36,91 +35,16 @@
 namespace App
 {
 
+// Import detail types and functions into this translation unit
+using detail::findFontSizeIndex;
+using detail::findHistoryIndex;
+using detail::findRefreshRateIndex;
+using detail::FONT_SIZE_OPTIONS;
+using detail::HISTORY_OPTIONS;
+using detail::REFRESH_RATE_OPTIONS;
+
 namespace
 {
-
-// Font size options
-struct FontSizeOption
-{
-    const char* label;
-    UI::FontSize value;
-};
-
-constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
-    {.label = "Small", .value = UI::FontSize::Small},
-    {.label = "Medium", .value = UI::FontSize::Medium},
-    {.label = "Large", .value = UI::FontSize::Large},
-    {.label = "Extra Large", .value = UI::FontSize::ExtraLarge},
-    {.label = "Huge", .value = UI::FontSize::Huge},
-    {.label = "Even Huger", .value = UI::FontSize::EvenHuger},
-}};
-
-// Refresh rate options (milliseconds)
-struct RefreshRateOption
-{
-    const char* label;
-    int valueMs;
-};
-
-constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
-    {.label = "100 ms", .valueMs = 100},
-    {.label = "250 ms", .valueMs = 250},
-    {.label = "500 ms", .valueMs = 500},
-    {.label = "1 second", .valueMs = 1000},
-    {.label = "2 seconds", .valueMs = 2000},
-    {.label = "5 seconds", .valueMs = 5000},
-}};
-
-// History duration options (seconds)
-struct HistoryOption
-{
-    const char* label;
-    int valueSeconds;
-};
-
-constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
-    {.label = "1 minute", .valueSeconds = 60},
-    {.label = "2 minutes", .valueSeconds = 120},
-    {.label = "5 minutes", .valueSeconds = 300},
-    {.label = "10 minutes", .valueSeconds = 600},
-}};
-
-// Helper to find index by value
-[[nodiscard]] auto findFontSizeIndex(UI::FontSize size) -> std::size_t
-{
-    for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
-    {
-        if (FONT_SIZE_OPTIONS[i].value == size)
-        {
-            return i;
-        }
-    }
-    return 1; // Default to Medium
-}
-
-[[nodiscard]] auto findRefreshRateIndex(int ms) -> std::size_t
-{
-    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
-    {
-        if (REFRESH_RATE_OPTIONS[i].valueMs == ms)
-        {
-            return i;
-        }
-    }
-    return 3; // Default to 1 second
-}
-
-[[nodiscard]] auto findHistoryIndex(int seconds) -> std::size_t
-{
-    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
-    {
-        if (HISTORY_OPTIONS[i].valueSeconds == seconds)
-        {
-            return i;
-        }
-    }
-    return 2; // Default to 5 minutes
-}
 
 // Get the themes directory path (relative to executable)
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
