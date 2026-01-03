@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <ranges>
 #include <cstring>
 #include <format>
 
@@ -102,49 +103,55 @@ TEST(SettingsLayerDetailTest, HistoryOptionsHaveExpectedCount)
 
 TEST(SettingsLayerDetailTest, AllFontSizeOptionsHaveLabels)
 {
-    for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
+    for (const auto& opt : FONT_SIZE_OPTIONS)
     {
-        SCOPED_TRACE(std::format("FONT_SIZE_OPTIONS[{}]", i));
-        EXPECT_NE(FONT_SIZE_OPTIONS[i].label, nullptr);
-        EXPECT_GT(std::strlen(FONT_SIZE_OPTIONS[i].label), 0U);
+        EXPECT_NE(opt.label, nullptr) << "Font size option has null label";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "Font size option has empty label";
+        }
     }
 }
 
 TEST(SettingsLayerDetailTest, AllRefreshRateOptionsHaveLabels)
 {
-    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+    for (const auto& opt : REFRESH_RATE_OPTIONS)
     {
-        SCOPED_TRACE(std::format("REFRESH_RATE_OPTIONS[{}]", i));
-        EXPECT_NE(REFRESH_RATE_OPTIONS[i].label, nullptr);
-        EXPECT_GT(std::strlen(REFRESH_RATE_OPTIONS[i].label), 0U);
+        EXPECT_NE(opt.label, nullptr) << "Refresh rate option has null label (valueMs=" << opt.valueMs << ")";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "Refresh rate option has empty label (valueMs=" << opt.valueMs << ")";
+        }
     }
 }
 
 TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 {
-    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+    for (const auto& opt : HISTORY_OPTIONS)
     {
-        SCOPED_TRACE(std::format("HISTORY_OPTIONS[{}]", i));
-        EXPECT_NE(HISTORY_OPTIONS[i].label, nullptr);
-        EXPECT_GT(std::strlen(HISTORY_OPTIONS[i].label), 0U);
+        EXPECT_NE(opt.label, nullptr) << "History option has null label (valueSeconds=" << opt.valueSeconds << ")";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "History option has empty label (valueSeconds=" << opt.valueSeconds << ")";
+        }
     }
 }
 
 TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
-    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
+    for (const auto& opt : REFRESH_RATE_OPTIONS)
     {
-        SCOPED_TRACE(std::format("REFRESH_RATE_OPTIONS[{}]", i));
-        EXPECT_GT(REFRESH_RATE_OPTIONS[i].valueMs, 0);
+        EXPECT_GT(opt.valueMs, 0) << "Refresh rate option has non-positive valueMs: " << opt.valueMs
+                                  << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
     }
 }
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
-    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
+    for (const auto& opt : HISTORY_OPTIONS)
     {
-        SCOPED_TRACE(std::format("HISTORY_OPTIONS[{}]", i));
-        EXPECT_GT(HISTORY_OPTIONS[i].valueSeconds, 0);
+        EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds
+                                       << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
     }
 }
 
