@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 namespace App::detail
 {
 namespace

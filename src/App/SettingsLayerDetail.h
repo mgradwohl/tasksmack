@@ -6,8 +6,10 @@
 
 #include "UI/Theme.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <iterator>
 
 namespace App::detail
 {
@@ -73,42 +75,24 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
 /// @return Index into FONT_SIZE_OPTIONS, or 1 (Medium) if not found.
 [[nodiscard]] inline auto findFontSizeIndex(UI::FontSize size) -> std::size_t
 {
-    for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
-    {
-        if (FONT_SIZE_OPTIONS[i].value == size)
-        {
-            return i;
-        }
-    }
-    return 1; // Default to Medium
+    const auto* it = std::ranges::find_if(FONT_SIZE_OPTIONS, [size](const auto& opt) { return opt.value == size; });
+    return it != FONT_SIZE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(FONT_SIZE_OPTIONS.begin(), it)) : 1;
 }
 
 /// Find the index for a given refresh rate in milliseconds.
 /// @return Index into REFRESH_RATE_OPTIONS, or 3 (1 second) if not found.
 [[nodiscard]] inline auto findRefreshRateIndex(int ms) -> std::size_t
 {
-    for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
-    {
-        if (REFRESH_RATE_OPTIONS[i].valueMs == ms)
-        {
-            return i;
-        }
-    }
-    return 3; // Default to 1 second
+    const auto* it = std::ranges::find_if(REFRESH_RATE_OPTIONS, [ms](const auto& opt) { return opt.valueMs == ms; });
+    return it != REFRESH_RATE_OPTIONS.end() ? static_cast<std::size_t>(std::distance(REFRESH_RATE_OPTIONS.begin(), it)) : 3;
 }
 
 /// Find the index for a given history duration in seconds.
 /// @return Index into HISTORY_OPTIONS, or 2 (5 minutes) if not found.
 [[nodiscard]] inline auto findHistoryIndex(int seconds) -> std::size_t
 {
-    for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
-    {
-        if (HISTORY_OPTIONS[i].valueSeconds == seconds)
-        {
-            return i;
-        }
-    }
-    return 2; // Default to 5 minutes
+    const auto* it = std::ranges::find_if(HISTORY_OPTIONS, [seconds](const auto& opt) { return opt.valueSeconds == seconds; });
+    return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(std::distance(HISTORY_OPTIONS.begin(), it)) : 2;
 }
 
 } // namespace App::detail
