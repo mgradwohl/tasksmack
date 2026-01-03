@@ -310,40 +310,64 @@ for cmd in commands:
     # Normalize and compare full paths
     if os.path.abspath(file_path) == target_file:
         command = cmd.get('command', '')
-        # Extract flags: remove compiler name and output-related flags
-        # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
-        tokens = shlex.split(command)
-        flags = []
-        skip_next = False
-        cpp_extensions = ('.cpp', '.cc', '.cxx', '.c++', '.C', '.CPP')
-        for i, token in enumerate(tokens):
-            if skip_next:
-                skip_next = False
-                continue
-            # Skip compiler name (first token)
-            if i == 0:
-                continue
-            # Skip output flags
-            if token in ['-o', '-c', '-MF', '-MT', '-MD']:
-                skip_next = True
-                continue
-            # Keep relevant flags. We mostly whitelist categories that affect
-            # preprocessing / target configuration and avoid problematic PCH flags.
-            keep = False
-            # Standalone important flags
-            if token in ['-pthread']:
-                keep = True
-            # Common prefix-based categories
-            elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
-                keep = True
-            elif token.startswith('-f') and not token.startswith('-fpch'):
-                keep = True
-            elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
-                keep = True
-            if keep:
-                continue
-            # Keep relevant flags
-            if token.startswith('-I') or token.startswith('-D') or \
+target_file = os.path.abspath(target_file)
+target_basename = os.path.basename(target_file)
+
+exact_match = None
+basename_matches = []
+
+for cmd in commands:
+    file_path = cmd.get('file', '')
+    if not file_path:
+        continue
+    file_path_abs = os.path.abspath(file_path)
+    if file_path_abs == target_file:
+        exact_match = cmd
+        break
+    if os.path.basename(file_path_abs) == target_basename:
+        basename_matches.append(cmd)
+
+selected_cmd = None
+if exact_match is not None:
+    selected_cmd = exact_match
+elif len(basename_matches) == 1:
+    selected_cmd = basename_matches[0]
+elif len(basename_matches) > 1:
+    sys.stderr.write(
+        f'Warning: multiple compile_commands entries found matching basename '
+        f'{target_basename}; skipping ambiguous match.\n'
+    )
+
+if selected_cmd is not None:
+    command = selected_cmd.get('command', '')
+    # Extract flags: remove compiler name and output-related flags
+    # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+    import shlex
+    tokens = shlex.split(command)
+    flags = []
+    skip_next = False
+    cpp_extensions = ('.cpp', '.cc', '.cxx', '.c++', '.C', '.CPP')
+    for i, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        # Skip compiler name (first token)
+        if i == 0:
+            continue
+        # Skip output flags
+        if token in ['-o', '-c', '-MF', '-MT', '-MD']:
+            skip_next = True
+            continue
+        # Skip output files and source files
+        if token.startswith('-o') or token.endswith('.o') or token.endswith(cpp_extensions):
+            continue
+        # Keep relevant flags
+        if token.startswith('-I') or token.startswith('-D') or \
+           token.startswith('-std') or token.startswith('--sysroot') or \
+           (token.startswith('-f') and not token.startswith('-fpch')) or \
+           (token.startswith('-W') and not token.startswith('-Winvalid-pch')):
+            flags.append(token)
+    print(' '.join(flags))
                token.startswith('-std') or token.startswith('--sysroot') or \
                (token.startswith('-f') and not token.startswith('-fpch')) or \
                (token.startswith('-W') and not token.startswith('-Winvalid-pch')):
