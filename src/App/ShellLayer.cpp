@@ -195,6 +195,10 @@ void ShellLayer::renderTabBar()
     constexpr float TOP_EDGE_PADDING = 4.0F;
     ImGui::Dummy(ImVec2(0.0F, TOP_EDGE_PADDING));
 
+    // Add left indent to align main tabs with panel tabs below (content area has 12px padding)
+    constexpr float LEFT_INDENT = 12.0F;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + LEFT_INDENT);
+
     // Tab bar with icons on the right
     const float availWidth = ImGui::GetContentRegionAvail().x;
 
@@ -253,6 +257,12 @@ void ShellLayer::renderTabBar()
     auto& theme = UI::Theme::get();
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
+    // Make buttons have transparent background matching tab bar
+    const ImVec4& windowBg = theme.scheme().windowBg;
+    ImGui::PushStyleColor(ImGuiCol_Button, windowBg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(windowBg.x, windowBg.y, windowBg.z, 0.8F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(windowBg.x, windowBg.y, windowBg.z, 0.6F));
+
     // Help button (?)
     if (ImGui::Button(ICON_FA_CIRCLE_QUESTION))
     {
@@ -282,7 +292,7 @@ void ShellLayer::renderTabBar()
         ImGui::SetTooltip("Settings");
     }
 
-    ImGui::PopStyleColor(); // Text
+    ImGui::PopStyleColor(4); // Text + Button colors
 }
 
 void ShellLayer::renderStatusBar() const
