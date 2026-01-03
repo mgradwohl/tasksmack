@@ -102,28 +102,56 @@ TEST(SettingsLayerDetailTest, HistoryOptionsHaveExpectedCount)
 
 TEST(SettingsLayerDetailTest, AllFontSizeOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(FONT_SIZE_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0; }));
+    for (const auto& opt : FONT_SIZE_OPTIONS)
+    {
+        EXPECT_NE(opt.label, nullptr) << "Font size option has null label";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "Font size option has empty label";
+        }
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllRefreshRateOptionsHaveLabels)
 {
-    EXPECT_TRUE(
-        std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0; }));
+    for (const auto& opt : REFRESH_RATE_OPTIONS)
+    {
+        EXPECT_NE(opt.label, nullptr) << "Refresh rate option has null label (valueMs=" << opt.valueMs << ")";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "Refresh rate option has empty label (valueMs=" << opt.valueMs << ")";
+        }
+    }
 }
 
 TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) { return opt.label != nullptr && std::strlen(opt.label) > 0; }));
+    for (const auto& opt : HISTORY_OPTIONS)
+    {
+        EXPECT_NE(opt.label, nullptr) << "History option has null label (valueSeconds=" << opt.valueSeconds << ")";
+        if (opt.label != nullptr)
+        {
+            EXPECT_GT(std::strlen(opt.label), 0U) << "History option has empty label (valueSeconds=" << opt.valueSeconds << ")";
+        }
+    }
 }
 
 TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(REFRESH_RATE_OPTIONS, [](const auto& opt) { return opt.valueMs > 0; }));
+    for (const auto& opt : REFRESH_RATE_OPTIONS)
+    {
+        EXPECT_GT(opt.valueMs, 0) << "Refresh rate option has non-positive valueMs: " << opt.valueMs
+                                  << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
+    }
 }
 
 TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
-    EXPECT_TRUE(std::ranges::all_of(HISTORY_OPTIONS, [](const auto& opt) { return opt.valueSeconds > 0; }));
+    for (const auto& opt : HISTORY_OPTIONS)
+    {
+        EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds
+                                       << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
+    }
 }
 
 } // namespace
