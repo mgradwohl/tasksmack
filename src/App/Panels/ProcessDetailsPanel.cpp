@@ -102,9 +102,9 @@ using detail::PRIORITY_SLIDER_WIDTH;
 struct ProcessDetailsPanel::PrioritySliderContext
 {
     ImDrawList* drawList = nullptr;
-    ImVec2 cursorStart;         // Screen position where badge area starts
-    ImVec2 sliderMin;           // Top-left of slider bar
-    ImVec2 sliderMax;           // Bottom-right of slider bar
+    ImVec2 cursorStart;         // Screen position where badge area starts (ImVec2 defaults to 0,0)
+    ImVec2 sliderMin;           // Top-left of slider bar (ImVec2 defaults to 0,0)
+    ImVec2 sliderMax;           // Bottom-right of slider bar (ImVec2 defaults to 0,0)
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
@@ -1929,7 +1929,7 @@ void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext&
     }
 }
 
-void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /*ctx*/)
+void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
     const auto& style = ImGui::GetStyle();
@@ -1941,10 +1941,11 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& /
     ImGui::PopStyleColor();
 
     // Dynamically positioned scale tick labels for font-size independence
+    // Use ctx.sliderMin.x for precise alignment with the slider gradient
     ImGui::SameLine();
     const float scaleRowY = ImGui::GetCursorPosY();
-    // Calculate offset dynamically based on "High" label width
-    const float scaleStartX = contentStartX + ImGui::CalcTextSize("High").x + style.ItemSpacing.x;
+    // Use the same x-coordinate as the slider bar for precise alignment
+    const float scaleStartX = ImGui::GetCursorPosX() + (ctx.sliderMin.x - ImGui::GetWindowPos().x - contentStartX);
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
 
     // Scale spans from -20 to 19 over NICE_RANGE (39), matching the slider

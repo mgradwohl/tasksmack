@@ -3,7 +3,6 @@
 
 #include <gtest/gtest.h>
 
-
 namespace App::detail
 {
 namespace
