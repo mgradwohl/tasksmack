@@ -187,8 +187,6 @@ jobs:
   include-analysis:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # Run IWYU analysis but don't block PRs (advisory only)
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 
@@ -223,20 +221,35 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
-            echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
+            echo "> [!WARNING]" >> $GITHUB_STEP_SUMMARY
+            echo "> **IWYU found include suggestions (advisory only)**" >> $GITHUB_STEP_SUMMARY
+            echo "> " >> $GITHUB_STEP_SUMMARY
+            echo "> Review the suggestions below and in the full artifact." >> $GITHUB_STEP_SUMMARY
+            echo "> Not all suggestions need to be applied." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Summary of Suggestions" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 Summary of Suggestions" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Count files with suggestions
+            SUGGESTED_FILES=$(grep -c "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null || echo "0")
+            echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
-            echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
+            echo "> [!NOTE]" >> $GITHUB_STEP_SUMMARY
+            echo "> ✅ **No include issues found**" >> $GITHUB_STEP_SUMMARY
+            echo "> " >> $GITHUB_STEP_SUMMARY
+            echo "> All source files have correct includes." >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full report available in artifacts." >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "*Note: IWYU suggestions are advisory. Some suggestions may not be appropriate.*" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Full report available in artifacts (retention: 14 days)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💡 **Tip:** IWYU suggestions are advisory and context-dependent. Review each suggestion before applying." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload IWYU results
         if: always()
