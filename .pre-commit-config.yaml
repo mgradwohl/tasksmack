@@ -56,6 +56,6 @@ repos:
         files: \.(cpp|h|hpp)$
         exclude: ^(build/|tests/|\.cache/)
         stages: [manual]  # Run with: pre-commit run iwyu --hook-stage manual
-        pass_filenames: false
+        pass_filenames: true
         require_serial: true
         verbose: true

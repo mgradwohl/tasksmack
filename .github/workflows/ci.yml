@@ -220,14 +220,9 @@ jobs:
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if grep -qE "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null; then
-            echo "> [!WARNING]" >> $GITHUB_STEP_SUMMARY
-            echo "> **IWYU found include suggestions (advisory only)**" >> $GITHUB_STEP_SUMMARY
-            echo "> " >> $GITHUB_STEP_SUMMARY
-            echo "> Review the suggestions below and in the full artifact." >> $GITHUB_STEP_SUMMARY
-            echo "> Not all suggestions need to be applied." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📋 Summary of Suggestions" >> $GITHUB_STEP_SUMMARY
+          # Check if IWYU found any issues (grep returns 0 if pattern found, 1 if not)
+          if grep -q "should add these lines:\|should remove these lines:" iwyu-output.txt 2>/dev/null; then
+            echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
@@ -238,11 +233,8 @@ jobs:
             SUGGESTED_FILES=$(grep -cE "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null || echo "0")
             echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
-            echo "> [!NOTE]" >> $GITHUB_STEP_SUMMARY
-            echo "> ✅ **No include issues found**" >> $GITHUB_STEP_SUMMARY
-            echo "> " >> $GITHUB_STEP_SUMMARY
-            echo "> All source files have correct includes." >> $GITHUB_STEP_SUMMARY
-          fi
+            echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
+          fi || true
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
