@@ -211,6 +211,11 @@ jobs:
           key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-deps-
 
+      - name: Configure (debug preset)
+        run: cmake --preset debug
+
+      - name: Build (debug preset)
+        run: cmake --build --preset debug
       - name: Run include-what-you-use
         run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
 
