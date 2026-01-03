@@ -246,10 +246,18 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
 
             # Count unique files with suggestions
-            # Extract filenames from lines matching the pattern, deduplicate, and count
+            # Expected IWYU line format (per-file summary), e.g.:
+            #   path/to/file.cpp should add these lines:
+            #   path/to/file.cpp should remove these lines:
+            # The sed expression captures the filename (everything before " should add/remove these lines:"),
+            # deduplicates filenames, and counts them.
             SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l || echo "0")
-            # Ensure SUGGESTED_FILES is a valid number (default to 0 if empty/invalid)
+            # Ensure SUGGESTED_FILES is a valid non-negative integer (default to 0 if empty/invalid)
             SUGGESTED_FILES=${SUGGESTED_FILES:-0}
+            if ! [[ "$SUGGESTED_FILES" =~ ^[0-9]+$ ]]; then
+              echo "⚠️ Warning: IWYU output format changed or parse error; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
+              SUGGESTED_FILES=0
+            fi
             echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
