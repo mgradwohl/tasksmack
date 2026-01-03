@@ -39,7 +39,7 @@ Options:
   -h, --help        Show this help
 
 FILES:
-  Optional list of specific files to analyze (default: all src/**/*.cpp recursively)
+  Optional list of specific files to analyze (default: all src/**/*.cpp, *.h, *.hpp recursively)
 
 Examples:
   $(basename "$0")                          # Analyze all files
@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
         -r|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
-        *.cpp|*.h) FILES+=("$1"); shift ;;
+        *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
         *) echo "Error: Unknown argument: $1" >&2; usage ;;
     esac
 done
