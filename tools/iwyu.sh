@@ -447,7 +447,7 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" 2>/dev/null || true)
+" || echo "  Warning: Failed to extract compile flags via Python; falling back to default IWYU invocation." >&2)
 
         # Direct IWYU invocation with extracted compile flags
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
