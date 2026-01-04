@@ -43,3 +43,21 @@ repos:
       - id: shellcheck
         name: Lint shell scripts
         args: [-x]  # Follow sourced files
+
+  # Include-what-you-use (IWYU) - optional, runs in report-only mode
+  # Prerequisites:
+  #   - IWYU installed (apt install iwyu or brew install include-what-you-use)
+  #   - Project built at least once (cmake --preset debug && cmake --build build/debug)
+  # This hook is slow and advisory-only, so it's set to manual stage
+  - repo: local
+    hooks:
+      - id: iwyu
+        name: Include What You Use (IWYU)
+        entry: ./tools/iwyu.sh --report
+        language: script
+        files: \.(cpp|h|hpp)$
+        exclude: ^(build/|\.cache/)
+        stages: [manual]  # Run with: pre-commit run iwyu --hook-stage manual
+        pass_filenames: false
+        require_serial: true
+        verbose: true

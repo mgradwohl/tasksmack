@@ -171,11 +171,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessAffinity(pid, counters);
 
         // Only attempt I/O counters if we know they're readable
-        if (!m_IoCountersAvailabilityChecked)
-        {
-            m_IoCountersAvailable = checkIoCountersAvailability();
-            m_IoCountersAvailabilityChecked = true;
-        }
+        // Use std::call_once for thread-safe lazy initialization
+        std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
         if (m_IoCountersAvailable)
         {
             parseProcessIo(pid, counters);
@@ -200,12 +197,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
 ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
-    // Check I/O counters availability on first call
-    if (!m_IoCountersAvailabilityChecked)
-    {
-        m_IoCountersAvailable = checkIoCountersAvailability();
-        m_IoCountersAvailabilityChecked = true;
-    }
+    // Check I/O counters availability on first call (thread-safe)
+    std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
                                .hasThreadCount = true,
