@@ -413,16 +413,14 @@ if selected_cmd is not None:
             if token in ['-pthread']:
                 keep = True
             # Common prefix-based categories
-            # -m flags: Intentionally broad to capture all machine/target flags that
-            # affect preprocessing and code generation:
-            #   -march=<arch>  : Target architecture (e.g., x86-64-v3, native)
-            #   -mtune=<cpu>   : Tuning optimizations
-            #   -mcpu=<cpu>    : CPU-specific optimizations
-            #   -m32/-m64      : Address model (32-bit vs 64-bit)
-            #   -msse/-mavx/etc: Instruction set extensions
-            # These flags can affect conditional compilation via __SSE__, __AVX__, etc.,
-            # so IWYU must see them to correctly analyze includes.
-            elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+            elif token.startswith(('-I', '-D', '-std', '--sysroot')):
+                keep = True
+            # Target/architecture flags: -march, -mcpu, -mtune, -m32, -m64, -msse*, -mavx*, etc.
+            # These affect type sizes, predefined macros, and available compiler intrinsics
+            # (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly parse headers. The
+            # broad '-m' match is intentional to cover all target configuration flags without
+            # maintaining an exhaustive list.
+            elif token.startswith('-m'):
                 keep = True
             elif token.startswith('-f') and not token.startswith('-fpch'):
                 keep = True
