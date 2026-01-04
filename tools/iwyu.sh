@@ -250,7 +250,7 @@ CURRENT_PLATFORM="unknown"
 UNAME_OUT=$(uname -s 2>/dev/null || echo "")
 case "$UNAME_OUT" in
     Linux*) CURRENT_PLATFORM="linux" ;;
-    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; treat as non-Windows for source filtering
+    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; analyze Linux-compatible files (exclude Windows platform files)
     CYGWIN*|MINGW*|MSYS*|Windows_NT) CURRENT_PLATFORM="windows" ;;
 esac
 
@@ -473,7 +473,7 @@ if selected_cmd is not None:
 
         # Direct IWYU invocation with extracted compile flags
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
-            $IWYU \
+            "$IWYU" \
                 "${COMPILE_FLAGS_ARRAY[@]}" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
@@ -482,7 +482,7 @@ if selected_cmd is not None:
             if $VERBOSE; then
                 echo "  Warning: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}"
             fi
-            $IWYU \
+            "$IWYU" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         fi
