@@ -255,7 +255,7 @@ jobs:
             # Execute pipeline and capture both output and exit status
             SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l)
             PIPELINE_STATUS=$?
-            
+
             # Check if pipeline succeeded and output is valid
             if [[ $PIPELINE_STATUS -ne 0 ]]; then
               echo "⚠️ Warning: Pipeline command failed (exit code: $PIPELINE_STATUS); falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
@@ -267,7 +267,7 @@ jobs:
               echo "⚠️ Warning: IWYU output format changed or parse error (got: '$SUGGESTED_FILES'); falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
               SUGGESTED_FILES=0
             fi
-            
+
             echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
