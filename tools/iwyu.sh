@@ -527,14 +527,18 @@ if selected_cmd is not None:
             # or a Python error that produced no output - we check patterns first
             PYTHON_ERROR=false
         else
+            # Enable case-insensitive matching for error detection
+            # (catches Error:/error:/ERROR:, Warning:/warning:/WARNING:, etc.)
+            shopt -s nocasematch
             for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
                 # Use wildcards on both sides to match error text anywhere in the line
                 # (Python may prefix errors with timestamps, context, or other info)
-                if [[ "$line" == *Error:* ]] || [[ "$line" == *Usage:* ]] || [[ "$line" == *Traceback* ]] || [[ "$line" == *WARNING:* ]]; then
+                if [[ "$line" == *Error:* ]] || [[ "$line" == *Usage:* ]] || [[ "$line" == *Traceback* ]] || [[ "$line" == *Warning:* ]]; then
                     PYTHON_ERROR=true
                     break
                 fi
             done
+            shopt -u nocasematch
         fi
 
         if [[ $PYTHON_ERROR == true ]]; then
