@@ -146,9 +146,10 @@ check_version_compatibility() {
     local iwyu_cmd="${IWYU:-include-what-you-use}"
     # IWYU output format: "include-what-you-use X.XX based on Ubuntu clang version YY.Z.Z"
     # Clang output format: "Ubuntu clang version YY.Z.Z ..."
-    # Extract major version number after "clang version" text
-    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
-    clang_version=$(clang --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
+    # Extract major version number after "clang version" text using awk for reliability
+    # (sed's greedy .* could match incorrectly if "clang version" appears multiple times)
+    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | awk '/clang version/ { for (i = 1; i <= NF; ++i) { if ($i == "version") { split($(i + 1), v, "."); print v[1]; exit } } }' || echo "")
+    clang_version=$(clang --version 2>&1 | awk '/clang version/ { for (i = 1; i <= NF; ++i) { if ($i == "version") { split($(i + 1), v, "."); print v[1]; exit } } }' || echo "")
 
     # Validate that versions are non-empty and numeric
     if [[ -z "$iwyu_clang_version" ]] || ! [[ "$iwyu_clang_version" =~ ^[0-9]+$ ]]; then
@@ -442,9 +443,23 @@ if selected_cmd is not None:
             # Use specific patterns to avoid catching unrelated -m flags like -mllvm, -mwindows.
             arch_prefixes = ('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=', '-mabi=')
             arch_standalone = ('-m32', '-m64', '-mthumb', '-marm')
-            simd_prefixes = ('-msse', '-mavx', '-maes', '-mpclmul', '-mbmi', '-mpopcnt',
-                             '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd', '-msha', '-madx',
-                             '-mpku', '-mcx16')
+            # SIMD instruction set flags - one per line for maintainability
+            simd_prefixes = (
+                '-msse',
+                '-mavx',
+                '-maes',
+                '-mpclmul',
+                '-mbmi',
+                '-mpopcnt',
+                '-mlzcnt',
+                '-mfma',
+                '-mf16c',
+                '-mrdrnd',
+                '-msha',
+                '-madx',
+                '-mpku',
+                '-mcx16',
+            )
             is_arch_flag = (token.startswith(arch_prefixes) or
                             token in arch_standalone or
                             token.startswith(simd_prefixes))
@@ -461,12 +476,19 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" "$COMPILE_COMMANDS" "$file")
-        PYTHON_EXIT_CODE=${PIPESTATUS[0]:-0}
+" "$COMPILE_COMMANDS" "$file" 2>&1)
+        # Capture Python's exit code - it's at index 0 since mapfile reads from process substitution
+        # The pipeline is: python3 ... | mapfile, so PIPESTATUS[0] is python, PIPESTATUS[1] is mapfile
+        # However, with process substitution <(...), we need to save the exit code differently
+        PYTHON_EXIT_CODE=$?
 
-        # Check if Python script failed
+        # Check if Python script failed - display any error output
         if [[ $PYTHON_EXIT_CODE -ne 0 ]]; then
             echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
+            # Show Python's error output if any was captured in the array
+            if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
+                echo "  Python output: ${COMPILE_FLAGS_ARRAY[*]}" >&2
+            fi
             echo "  Please ensure compile_commands.json is valid and Python is available." >&2
             exit 1
         fi
@@ -478,10 +500,16 @@ if selected_cmd is not None:
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         else
-            # Fallback: run without extracted flags (may produce less accurate results)
-            if $VERBOSE; then
-                echo "  Warning: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}"
+            # Missing compile flags will produce incorrect results - IWYU needs accurate
+            # include paths, defines, and language standard to analyze headers correctly.
+            echo "  Error: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}." >&2
+            echo "  IWYU requires accurate compile flags (include paths, defines, language standard)." >&2
+            if ! $REPORT_ONLY; then
+                echo "  Aborting. Fix compile_commands.json or rebuild, then retry." >&2
+                echo "  Hint: Use --report-only for best-effort run without flags (results may be inaccurate)." >&2
+                exit 1
             fi
+            echo "  Report-only mode: running IWYU without extracted flags; results may be inaccurate." >&2
             "$IWYU" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true

@@ -260,12 +260,16 @@ jobs:
             # Expected IWYU line format (per-file summary), e.g.:
             #   path/to/file.cpp should add these lines:
             #   path/to/file.cpp should remove these lines:
-            # The sed expression captures the filename (everything before " should add/remove these lines:"),
+            # The sed expression removes " should add/remove these lines:..." suffix from each line,
             # deduplicates filenames, and counts them.
             #
+            # Initialize PIPELINE_FAILED before subshell (subshell vars don't propagate to parent)
+            PIPELINE_FAILED=false
             # Use subshell with pipefail to properly capture pipeline errors
             # (without pipefail, $? only reflects the last command - wc -l - which rarely fails)
-            SUGGESTED_FILES=$(set -o pipefail; grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l) || PIPELINE_FAILED=true
+            # Use anchored sed pattern 's/ should ... these lines:.*$//' to avoid issues if
+            # filename contains " should " in its path
+            SUGGESTED_FILES=$(set -o pipefail; grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/ should (add|remove) these lines:.*$//' | sort -u | wc -l) || PIPELINE_FAILED=true
 
             # Trim whitespace from wc output (some implementations add leading spaces)
             SUGGESTED_FILES=$(echo "$SUGGESTED_FILES" | tr -d ' ')
