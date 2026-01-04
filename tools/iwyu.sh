@@ -344,6 +344,22 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     sys.stderr.write(f'Error reading compile_commands.json: {e}\n')
     sys.exit(1)
 
+# Validate that commands is a list
+if not isinstance(commands, list):
+    sys.stderr.write(
+        f'Error: compile_commands.json must contain a JSON array at the root level, '
+        f'but found {type(commands).__name__} instead.\n'
+    )
+    sys.exit(1)
+
+# Check for empty compile_commands.json
+if len(commands) == 0:
+    sys.stderr.write(
+        'Error: compile_commands.json is empty; no compile flags available. '
+        'Run cmake to generate the compilation database.\n'
+    )
+    sys.exit(1)
+
 # Normalize target file path for comparison
 target_file = os.path.abspath(target_file)
 target_basename = os.path.basename(target_file)
