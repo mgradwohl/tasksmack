@@ -24,6 +24,7 @@ IWYU analyzes #include directives and suggests additions/removals.
 
 Prerequisites:
   - IWYU must be installed (apt install iwyu or brew install include-what-you-use)
+  - Python 3.6+ available as 'python3' on PATH (for embedded helper scripts)
   - Project must be configured and built at least once:
     cmake --preset debug && cmake --build build/debug
 
@@ -156,8 +157,16 @@ fi
 
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
+    # Skip version check when using IWYU_TOOL wrapper - it handles compatibility internally
+    if [[ -n "$IWYU_TOOL" ]]; then
+        if $VERBOSE; then
+            echo "Using iwyu_tool wrapper; skipping version compatibility check."
+        fi
+        return
+    fi
+
     local iwyu_clang_version clang_version
-    # Use the discovered IWYU path (or iwyu_tool if available) for version check
+    # Use the discovered IWYU path for version check
     local iwyu_cmd="${IWYU:-include-what-you-use}"
     # IWYU output format: "include-what-you-use X.XX based on Ubuntu clang version YY.Z.Z"
     # Clang output format: "Ubuntu clang version YY.Z.Z ..."
@@ -402,8 +411,9 @@ for cmd in commands:
     if file_path_abs == target_file:
         exact_match = cmd
         break
-    # Only collect basename matches while no exact match has been found
-    if exact_match is None and os.path.basename(file_path_abs) == target_basename:
+    # Collect basename matches for fallback (loop breaks on exact match, so these are only
+    # collected when no exact match has been found yet)
+    if os.path.basename(file_path_abs) == target_basename:
         basename_matches.append(cmd)
 
 selected_cmd = None
@@ -548,7 +558,7 @@ if selected_cmd is not None:
         else
             # Missing compile flags will produce incorrect results - IWYU needs accurate
             # include paths, defines, and language standard to analyze headers correctly.
-            echo "  Error: No compile flags found for ${file#"${PROJECT_ROOT}"} in compile_commands.json." >&2
+            echo "  Error: No compile flags found for ${file#"${PROJECT_ROOT}"/} in compile_commands.json." >&2
             echo "  The Python helper succeeded but did not find a matching compile command for this file." >&2
             echo "  This usually means the file is not listed in compile_commands.json (e.g., header-only," >&2
             echo "  not compiled directly, or the database is stale). IWYU requires accurate compile flags" >&2
