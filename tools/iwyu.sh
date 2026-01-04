@@ -121,6 +121,24 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     exit 1
 fi
 
+# Check for Python 3 (required for compile flag extraction)
+PYTHON3=$(command -v python3 2>/dev/null || echo "")
+if [[ -z "$PYTHON3" ]]; then
+    echo "Error: python3 not found in PATH" >&2
+    echo "" >&2
+    echo "Python 3 is required for extracting compiler flags from compile_commands.json." >&2
+    echo "" >&2
+    echo "Install Python 3:" >&2
+    echo "  Ubuntu/Debian: sudo apt install python3" >&2
+    echo "  macOS:         brew install python3 (or use system python3)" >&2
+    echo "  Windows:       Download from https://www.python.org/downloads/" >&2
+    exit 1
+fi
+
+if $VERBOSE; then
+    echo "Using python3: $PYTHON3"
+fi
+
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
     local iwyu_clang_version clang_version
@@ -395,6 +413,15 @@ if selected_cmd is not None:
             if token in ['-pthread']:
                 keep = True
             # Common prefix-based categories
+            # -m flags: Intentionally broad to capture all machine/target flags that
+            # affect preprocessing and code generation:
+            #   -march=<arch>  : Target architecture (e.g., x86-64-v3, native)
+            #   -mtune=<cpu>   : Tuning optimizations
+            #   -mcpu=<cpu>    : CPU-specific optimizations
+            #   -m32/-m64      : Address model (32-bit vs 64-bit)
+            #   -msse/-mavx/etc: Instruction set extensions
+            # These flags can affect conditional compilation via __SSE__, __AVX__, etc.,
+            # so IWYU must see them to correctly analyze includes.
             elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
                 keep = True
             elif token.startswith('-f') and not token.startswith('-fpch'):
