@@ -435,12 +435,12 @@ if selected_cmd is not None:
             # compiler intrinsics (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly
             # parse headers. Use specific patterns to avoid catching unrelated -m flags like
             # -mllvm, -mwindows, etc.
-            elif (token.startswith(('-march=', '-mcpu=', '-mtune=')) or
-                  token in ('-m32', '-m64') or
-                  token.startswith(('-msse', '-mavx', '-mfpu=', '-mfloat-abi=', '-mabi=',
-                                     '-mthumb', '-marm', '-maes', '-mpclmul', '-mbmi', '-mbmi2',
-                                     '-mpopcnt', '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd',
-                                     '-msha', '-madx', '-mpku', '-mcx16'))):
+            elif (token.startswith(('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=',
+                                     '-mabi=')) or
+                  token in ('-m32', '-m64', '-mthumb', '-marm') or
+                  token.startswith(('-msse', '-mavx', '-maes', '-mpclmul', '-mbmi', '-mpopcnt',
+                                     '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd', '-msha', '-madx',
+                                     '-mpku', '-mcx16'))):
                 keep = True
             elif token.startswith('-f') and not token.startswith('-fpch'):
                 keep = True
