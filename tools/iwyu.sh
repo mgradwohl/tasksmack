@@ -322,8 +322,8 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
 # Validate that commands is a list
 if not isinstance(commands, list):
     sys.stderr.write(
-        f'Error: compile_commands.json must contain a JSON array, '
-        f'got {type(commands).__name__}\n'
+        f'Error: compile_commands.json must contain a JSON array at the root level, '
+        f'but found {type(commands).__name__} instead.\n'
     )
     sys.exit(1)
 
