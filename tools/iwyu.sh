@@ -361,8 +361,9 @@ if not isinstance(commands, list):
 # Check for empty compile_commands.json
 if len(commands) == 0:
     sys.stderr.write(
-        'Error: compile_commands.json is empty; no compile flags available. '
-        'Run cmake to generate the compilation database.\n'
+        'Error: compile_commands.json exists but is empty (contains no compilation '
+        'commands). Ensure your build system is configured to emit compilation commands '
+        '(for CMake, use -DCMAKE_EXPORT_COMPILE_COMMANDS=ON and run a build).\n'
     )
     sys.exit(1)
 
@@ -459,6 +460,12 @@ if selected_cmd is not None:
                 '-madx',
                 '-mpku',
                 '-mcx16',
+                # AVX-512 and newer instruction sets
+                '-mavx512',
+                '-mvzeroupper',
+                '-mgfni',
+                '-mvaes',
+                '-mvpclmulqdq',
             )
             is_arch_flag = (token.startswith(arch_prefixes) or
                             token in arch_standalone or
@@ -476,11 +483,9 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" "$COMPILE_COMMANDS" "$file" 2>&1)
-        # Capture Python's exit code - it's at index 0 since mapfile reads from process substitution
-        # The pipeline is: python3 ... | mapfile, so PIPESTATUS[0] is python, PIPESTATUS[1] is mapfile
-        # However, with process substitution <(...), we need to save the exit code differently
-        PYTHON_EXIT_CODE=$?
+" "$COMPILE_COMMANDS" "$file" 2>&1 | readarray -t COMPILE_FLAGS_ARRAY)
+        # Capture Python's exit code using PIPESTATUS (index 0 is python3, index 1 is readarray)
+        PYTHON_EXIT_CODE=${PIPESTATUS[0]}
 
         # Check if Python script failed - display any error output
         if [[ $PYTHON_EXIT_CODE -ne 0 ]]; then

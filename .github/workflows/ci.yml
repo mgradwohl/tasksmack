@@ -263,20 +263,25 @@ jobs:
             # The sed expression removes " should add/remove these lines:..." suffix from each line,
             # deduplicates filenames, and counts them.
             #
-            # Initialize PIPELINE_FAILED before subshell (subshell vars don't propagate to parent)
-            PIPELINE_FAILED=false
-            # Use subshell with pipefail to properly capture pipeline errors
+            # Use subshell with pipefail to properly capture pipeline errors and exit status
             # (without pipefail, $? only reflects the last command - wc -l - which rarely fails)
             # Use anchored sed pattern 's/ should ... these lines:.*$//' to avoid issues if
             # filename contains " should " in its path
-            SUGGESTED_FILES=$(set -o pipefail; grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/ should (add|remove) these lines:.*$//' | sort -u | wc -l) || PIPELINE_FAILED=true
+            SUGGESTED_FILES=$(
+              set -o pipefail
+              grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null \
+                | sed -E 's/ should (add|remove) these lines:.*$//' \
+                | sort -u \
+                | wc -l
+            )
+            PIPELINE_STATUS=$?
 
             # Trim whitespace from wc output (some implementations add leading spaces)
             SUGGESTED_FILES=$(echo "$SUGGESTED_FILES" | tr -d ' ')
 
             # Check if pipeline failed or output is invalid
             # Note: wc -l always outputs a number, so we only check for pipeline failure and numeric format
-            if [[ "${PIPELINE_FAILED:-false}" == "true" ]]; then
+            if [[ "${PIPELINE_STATUS:-0}" -ne 0 ]]; then
               echo "⚠️ Warning: Pipeline command failed; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
               SUGGESTED_FILES=0
             elif ! [[ "$SUGGESTED_FILES" =~ ^[0-9]+$ ]]; then
