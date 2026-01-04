@@ -429,12 +429,16 @@ if selected_cmd is not None:
             # Common prefix-based categories
             elif token.startswith(('-I', '-D', '-std', '--sysroot')):
                 keep = True
-            # Target/architecture flags: -march, -mcpu, -mtune, -m32, -m64, -msse*, -mavx*, etc.
-            # These affect type sizes, predefined macros, and available compiler intrinsics
-            # (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly parse headers. The
-            # broad '-m' match is intentional to cover all target configuration flags without
-            # maintaining an exhaustive list.
-            elif token.startswith('-m'):
+            # Target/architecture flags that affect type sizes, predefined macros, and available
+            # compiler intrinsics (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly
+            # parse headers. Use specific patterns to avoid catching unrelated -m flags like
+            # -mllvm, -mwindows, etc.
+            elif (token.startswith(('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=',
+                                     '-mabi=')) or
+                  token in ('-m32', '-m64', '-mthumb', '-marm') or
+                  token.startswith(('-msse', '-mavx', '-maes', '-mpclmul', '-mbmi', '-mpopcnt',
+                                     '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd', '-msha', '-madx',
+                                     '-mpku', '-mcx16'))):
                 keep = True
             elif token.startswith('-f') and not token.startswith('-fpch'):
                 keep = True
