@@ -388,7 +388,13 @@ if selected_cmd is not None:
             if token in ['-pthread']:
                 keep = True
             # Common prefix-based categories
-            elif token.startswith(('-I', '-D', '-std', '--sysroot', '-m')):
+            elif token.startswith(('-I', '-D', '-std', '--sysroot')):
+                keep = True
+            # Target/architecture flags: -march, -mcpu, -mtune, -m32, -m64, -msse*, -mavx*, etc.
+            # These affect type sizes, predefined macros, and available intrinsics that IWYU
+            # needs to correctly parse headers. The broad '-m' match is intentional to cover
+            # all target configuration flags without maintaining an exhaustive list.
+            elif token.startswith('-m'):
                 keep = True
             elif token.startswith('-f') and not token.startswith('-fpch'):
                 keep = True
