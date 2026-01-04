@@ -538,7 +538,7 @@ if selected_cmd is not None:
             echo "  IWYU requires accurate compile flags (include paths, defines, language standard)." >&2
             if ! $REPORT_ONLY; then
                 echo "  Aborting. Fix compile_commands.json or rebuild, then retry." >&2
-                echo "  Hint: Use --report-only for best-effort run without flags (results may be inaccurate)." >&2
+                echo "  Hint: Use --report for best-effort run without flags (results may be inaccurate)." >&2
                 exit 1
             fi
             echo "  Report-only mode: running IWYU without extracted flags; results may be inaccurate." >&2
