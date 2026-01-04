@@ -282,8 +282,8 @@ jobs:
             # Check if pipeline failed or output is invalid
             # Note: while wc -l itself always outputs a count, earlier grep/sed/sort stages can fail,
             # so we validate the entire pipeline's exit status (PIPELINE_STATUS) and ensure the output is numeric.
-            # Exit code 1 from grep means "no matches" which is valid; only treat exit code >= 2 as error.
-            if [[ "$PIPELINE_STATUS" -ne 0 && "$PIPELINE_STATUS" -ne 1 ]]; then
+            # Exit code 1 from grep means "no matches" which is valid; only exit codes >= 2 indicate errors.
+            if [[ "$PIPELINE_STATUS" -ge 2 ]]; then
               echo "⚠️ Warning: Pipeline command failed; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
               SUGGESTED_FILES=0
             elif ! [[ "$SUGGESTED_FILES" =~ ^[0-9]+$ ]]; then

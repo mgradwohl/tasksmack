@@ -36,7 +36,7 @@ Options:
   -v, --verbose     Show verbose output with per-file progress
   -j, --jobs N      Number of parallel jobs (default: $JOBS)
   -f, --fix         Apply suggested fixes using iwyu-fix-includes
-  -R, --report      Generate report only, don't fail on issues
+  -r/-R, --report   Generate report only, don't fail on issues
   -h, --help        Show this help
 
 FILES:
@@ -152,7 +152,7 @@ if [[ -z "$PYTHON3" ]]; then
 fi
 
 if $VERBOSE; then
-    echo "Using python3: $PYTHON3"
+    echo "Python 3 found."
 fi
 
 # Version check: warn if IWYU and Clang versions are mismatched
@@ -276,7 +276,7 @@ CURRENT_PLATFORM="unknown"
 UNAME_OUT=$(uname -s 2>/dev/null || echo "")
 case "$UNAME_OUT" in
     Linux*) CURRENT_PLATFORM="linux" ;;
-    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; analyze Linux-compatible files (exclude Windows platform files)
+    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; treat as non-Windows platform for file selection
     CYGWIN*|MINGW*|MSYS*|Windows_NT) CURRENT_PLATFORM="windows" ;;
 esac
 
@@ -504,27 +504,23 @@ if selected_cmd is not None:
                             token in arch_standalone or
                             token.startswith(simd_prefixes))
 
-            # Category 4: Feature flags (excluding precompiled header flags)
+            # Compiler feature flags (excluding precompiled header flags)
             is_feature_flag = token.startswith('-f') and not token.startswith('-fpch')
 
-            # Category 5: Warning flags (excluding PCH-related warnings)
+            # Warning flags (excluding PCH-related warnings)
             is_warning_flag = token.startswith('-W') and not token.startswith('-Winvalid-pch')
 
-            # Keep flag if it matches any category
+            # Keep flag if it matches any of the allowed patterns above
             if is_standalone or is_include_define_std or is_arch_flag or is_feature_flag or is_warning_flag:
                 flags.append(token)
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
 " "$COMPILE_COMMANDS" "$file" 2>&1)
-        # Capture the exit code from the process substitution
-        # Note: With process substitution, $? captures the mapfile exit code, not Python.
-        # Python errors are detected via empty output + stderr messages in the array.
-        MAPFILE_EXIT_CODE=$?
 
-        # Check if mapfile failed or Python script produced error output
-        # With process substitution, Python stdout/stderr are mixed into the array.
-        # Treat empty output or common error prefixes as a Python error.
+        # Check if Python script produced error output
+        # Note: With process substitution, we can't capture Python's exit code directly.
+        # Instead, we detect errors by checking for common error patterns in the output.
         PYTHON_ERROR=false
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -eq 0 ]]; then
             # Empty output could mean no matching compile command (handled later)
@@ -541,7 +537,7 @@ if selected_cmd is not None:
             done
         fi
 
-        if [[ $MAPFILE_EXIT_CODE -ne 0 ]] || [[ $PYTHON_ERROR == true ]]; then
+        if [[ $PYTHON_ERROR == true ]]; then
             echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
             # Show Python's error output if any was captured in the array
             if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then

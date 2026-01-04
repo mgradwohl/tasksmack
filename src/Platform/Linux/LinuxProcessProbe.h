@@ -2,7 +2,6 @@
 
 #include "Platform/IProcessProbe.h"
 
-#include <atomic>
 #include <mutex>
 
 namespace Platform
@@ -18,8 +17,9 @@ class LinuxProcessProbe : public IProcessProbe
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
     LinuxProcessProbe& operator=(const LinuxProcessProbe&) = delete;
-    LinuxProcessProbe(LinuxProcessProbe&&) = delete;            // std::once_flag is not movable
-    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = delete; // std::once_flag is not movable
+    // std::once_flag is not movable, so this type cannot be stored in move-requiring containers
+    LinuxProcessProbe(LinuxProcessProbe&&) = delete;
+    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = delete;
 
     [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
     [[nodiscard]] ProcessCapabilities capabilities() const override;
