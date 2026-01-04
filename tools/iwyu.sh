@@ -22,6 +22,12 @@ Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE] [FILES...]
 Run include-what-you-use (IWYU) analysis on source files.
 IWYU analyzes #include directives and suggests additions/removals.
 
+Prerequisites:
+  - IWYU must be installed (apt install iwyu or brew install include-what-you-use)
+  - Python 3.6+ available as 'python3' on PATH (for embedded helper scripts)
+  - Project must be configured and built at least once:
+    cmake --preset debug && cmake --build build/debug
+
 BUILD_TYPE:
   debug           Use debug build (default)
   relwithdebinfo  Use relwithdebinfo build
@@ -30,11 +36,11 @@ Options:
   -v, --verbose     Show verbose output with per-file progress
   -j, --jobs N      Number of parallel jobs (default: $JOBS)
   -f, --fix         Apply suggested fixes using iwyu-fix-includes
-  -r, --report      Generate report only, don't fail on issues
+  -r/-R, --report   Generate report only, don't fail on issues
   -h, --help        Show this help
 
 FILES:
-  Optional list of specific files to analyze (default: all src/*.cpp)
+  Optional list of specific files to analyze (default: all .cpp, .h, and .hpp files under src/ recursively)
 
 Examples:
   $(basename "$0")                          # Analyze all files
@@ -52,12 +58,23 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
-        -j|--jobs) JOBS="$2"; shift 2 ;;
+        -j|--jobs)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --jobs requires a positive integer argument" >&2
+                exit 1
+            fi
+            if ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: Invalid jobs value '$2'. --jobs must be a positive integer" >&2
+                exit 1
+            fi
+            JOBS="$2"
+            shift 2
+            ;;
         -f|--fix) FIX=true; shift ;;
-        -r|--report) REPORT_ONLY=true; shift ;;
+        -r|-R|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
-        *.cpp|*.h) FILES+=("$1"); shift ;;
+        *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
         *) echo "Error: Unknown argument: $1" >&2; usage ;;
     esac
 done
@@ -105,20 +122,82 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     exit 1
 fi
 
+# Basic functionality check for the discovered IWYU tool
+if [[ -n "$IWYU_TOOL" ]]; then
+    if ! "$IWYU_TOOL" --help >/dev/null 2>&1; then
+        echo "Error: IWYU tool '$IWYU_TOOL' was found but is not functional (help check failed)." >&2
+        echo "Please verify your include-what-you-use installation." >&2
+        exit 1
+    fi
+elif [[ -n "$IWYU" ]]; then
+    if ! "$IWYU" --version >/dev/null 2>&1; then
+        echo "Error: IWYU binary '$IWYU' was found but is not functional (version check failed)." >&2
+        echo "Please verify your include-what-you-use installation." >&2
+        exit 1
+    fi
+fi
+
+# Check for Python 3 (required for compile flag extraction)
+PYTHON3=$(command -v python3 2>/dev/null || echo "")
+if [[ -z "$PYTHON3" ]]; then
+    echo "Error: python3 not found in PATH" >&2
+    echo "" >&2
+    echo "Python 3 is required for extracting compiler flags from compile_commands.json." >&2
+    echo "" >&2
+    echo "Install Python 3:" >&2
+    echo "  Ubuntu/Debian: sudo apt install python3" >&2
+    echo "  macOS:         brew install python3 (or use system python3)" >&2
+    echo "  Windows:       Download from https://www.python.org/downloads/" >&2
+    exit 1
+fi
+
+if $VERBOSE; then
+    echo "Python 3 found."
+fi
+
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
-    local iwyu_clang_version clang_version
-    iwyu_clang_version=$(include-what-you-use --version 2>&1 | grep -oP 'clang version \K[0-9]+' | head -1 || echo "")
-    clang_version=$(clang --version 2>&1 | grep -oP 'clang version \K[0-9]+' | head -1 || echo "")
-
-    if [[ -n "$iwyu_clang_version" ]] && [[ -n "$clang_version" ]]; then
-        if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
-            echo "Warning: IWYU (clang $iwyu_clang_version) and project clang ($clang_version) version mismatch" >&2
-            echo "  This may cause false positives or assertion failures." >&2
-            echo "  Consider building IWYU from source against clang $clang_version," >&2
-            echo "  or rely on CI results where versions are more aligned." >&2
-            echo "" >&2
+    # Skip version check when using IWYU_TOOL wrapper - it handles compatibility internally
+    if [[ -n "$IWYU_TOOL" ]]; then
+        if $VERBOSE; then
+            echo "Using iwyu_tool wrapper; skipping version compatibility check."
         fi
+        return
+    fi
+
+    local iwyu_clang_version clang_version
+    # Use the discovered IWYU path for version check
+    local iwyu_cmd="${IWYU:-include-what-you-use}"
+    # IWYU output format: "include-what-you-use X.XX based on Ubuntu clang version YY.Z.Z"
+    # Clang output format: "Ubuntu clang version YY.Z.Z ..."
+    # Extract major version number using regex match for "clang version <digits>" pattern.
+    # Using match() with capture group is more robust than iterating fields, as it directly
+    # targets the version number immediately following "clang version" regardless of line format.
+    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | awk 'match($0, /clang version[[:space:]]+([0-9]+)/, m) { print m[1]; exit }' || echo "")
+    clang_version=$(clang --version 2>&1 | awk 'match($0, /clang version[[:space:]]+([0-9]+)/, m) { print m[1]; exit }' || echo "")
+
+    # Validate that versions are non-empty and numeric
+    if [[ -z "$iwyu_clang_version" ]] || ! [[ "$iwyu_clang_version" =~ ^[0-9]+$ ]]; then
+        if $VERBOSE; then
+            echo "Warning: Could not extract IWYU clang version (got: '$iwyu_clang_version')" >&2
+        fi
+        return
+    fi
+
+    if [[ -z "$clang_version" ]] || ! [[ "$clang_version" =~ ^[0-9]+$ ]]; then
+        if $VERBOSE; then
+            echo "Warning: Could not extract clang version (got: '$clang_version')" >&2
+        fi
+        return
+    fi
+
+    # Both versions are valid integers, safe to compare
+    if [[ "$iwyu_clang_version" != "$clang_version" ]]; then
+        echo "Warning: IWYU (clang $iwyu_clang_version) and project clang ($clang_version) version mismatch" >&2
+        echo "  This may cause false positives or assertion failures." >&2
+        echo "  Consider building IWYU from source against clang $clang_version," >&2
+        echo "  or rely on CI results where versions are more aligned." >&2
+        echo "" >&2
     fi
 }
 
@@ -131,16 +210,28 @@ if $VERBOSE; then
     fi
 fi
 
-# Configure if needed (using CMake presets)
-if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
-    echo "Build not configured. Running cmake --preset $BUILD_TYPE..."
-    cmake --preset "$BUILD_TYPE"
+# Check for build prerequisites
+if [[ ! -d "$BUILD_DIR" ]] || [[ ! -f "$COMPILE_COMMANDS" ]]; then
+    echo "Error: Build directory or compile_commands.json not found" >&2
+    echo "" >&2
+    echo "IWYU requires the project to be configured and built at least once." >&2
+    echo "Please run the following commands first:" >&2
+    echo "" >&2
+    echo "  cmake --preset $BUILD_TYPE" >&2
+    echo "  cmake --build build/$BUILD_TYPE" >&2
+    echo "" >&2
+    echo "For more information, see CONTRIBUTING.md" >&2
+    exit 1
 fi
 
-# Ensure compile_commands.json exists
-if [[ ! -f "$COMPILE_COMMANDS" ]]; then
-    echo "Building to generate compile_commands.json..."
-    cmake --build "$BUILD_DIR" --target copy-compile-commands
+# Verify build.ninja exists (should exist after configuration)
+if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
+    echo "Error: Build system not configured properly" >&2
+    echo "Expected to find: $BUILD_DIR/build.ninja" >&2
+    echo "" >&2
+    echo "Please reconfigure the build:" >&2
+    echo "  cmake --preset $BUILD_TYPE" >&2
+    exit 1
 fi
 
 # Strip PCH flags from compile_commands.json (IWYU doesn't support PCH)
@@ -172,49 +263,35 @@ else
         "$COMPILE_COMMANDS"
 fi
 
-# Create IWYU mapping file for project-specific rules
+# Verify IWYU mapping file exists
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"
 if [[ ! -f "$IWYU_MAPPING" ]]; then
-    if $VERBOSE; then
-        echo "Creating default IWYU mapping file..."
-    fi
-    cat > "$IWYU_MAPPING" <<'MAPPING'
-# IWYU mapping file for TaskSmack
-# See: https://github.com/include-what-you-use/include-what-you-use/blob/master/docs/IWYUMappings.md
-
-[
-  # ImGui - treat imgui.h as the main include
-  { include: ["<imgui_internal.h>", "private", "<imgui.h>", "public"] },
-
-  # spdlog - allow fmt through spdlog
-  { include: ["<fmt/core.h>", "private", "<spdlog/spdlog.h>", "public"] },
-  { include: ["<fmt/format.h>", "private", "<spdlog/spdlog.h>", "public"] },
-
-  # GLFW/GLAD - platform-specific handling
-  { include: ["<glad/gl.h>", "private", "<glad/gl.h>", "public"] },
-
-  # Standard library mappings (C++ prefers <cstdint> over <stdint.h>, etc.)
-  { include: ["<stdint.h>", "private", "<cstdint>", "public"] },
-  { include: ["<stdlib.h>", "private", "<cstdlib>", "public"] },
-  { include: ["<string.h>", "private", "<cstring>", "public"] },
-  { include: ["<stdio.h>", "private", "<cstdio>", "public"] },
-  { include: ["<math.h>", "private", "<cmath>", "public"] },
-  { include: ["<assert.h>", "private", "<cassert>", "public"] },
-  { include: ["<errno.h>", "private", "<cerrno>", "public"] },
-  { include: ["<time.h>", "private", "<ctime>", "public"] },
-
-  # Project-specific: group related platform headers
-  { include: ["\"Platform/Linux/LinuxProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },
-  { include: ["\"Platform/Windows/WindowsProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] }
-]
-MAPPING
+    echo "Error: IWYU mapping file not found: $IWYU_MAPPING" >&2
+    echo "The .iwyu.imp file is required in the repository root and must be valid JSON in IWYU mapping format." >&2
+    exit 1
 fi
+
+# Detect current platform to exclude non-current platform files by default
+CURRENT_PLATFORM="unknown"
+UNAME_OUT=$(uname -s 2>/dev/null || echo "")
+case "$UNAME_OUT" in
+    Linux*) CURRENT_PLATFORM="linux" ;;
+    Darwin*) CURRENT_PLATFORM="macos" ;; # macOS host; treat as non-Windows platform for file selection
+    CYGWIN*|MINGW*|MSYS*|Windows_NT) CURRENT_PLATFORM="windows" ;;
+esac
 
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
     # Get all source files from project, excluding other-platform files
-    mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
-        ! -path "*/Platform/Windows/*" 2>/dev/null)
+    # Note: unknown platforms default to Linux behavior (exclude Windows files)
+    if [[ "$CURRENT_PLATFORM" == "windows" ]]; then
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
+            ! -path "*/Platform/Linux/*" 2>/dev/null)
+    else
+        # Linux, macOS, or unknown platform: exclude Windows-specific files
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
+            ! -path "*/Platform/Windows/*" 2>/dev/null)
+    fi
 else
     SOURCE_FILES=()
     for f in "${FILES[@]}"; do
@@ -268,30 +345,234 @@ if [[ -n "$IWYU_TOOL" ]]; then
     fi
 else
     # Fall back to running include-what-you-use directly
+    # Extract compiler flags from compile_commands.json for accurate analysis
     for file in "${SOURCE_FILES[@]}"; do
         if $VERBOSE; then
             echo "  Analyzing: ${file#"${PROJECT_ROOT}"/}"
         fi
 
-        # Extract compile command for this file from compile_commands.json
-        COMPILE_CMD=$(python3 -c "
+        # Extract compile flags for this file from compile_commands.json
+        # This ensures IWYU has access to include paths, defines, and other compilation flags
+        # Read flags into an array for proper handling
+        mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
 import json
 import sys
-with open('$COMPILE_COMMANDS') as f:
-    commands = json.load(f)
-for cmd in commands:
-    if cmd.get('file', '').endswith('${file##*/}'):
-        # Replace compiler with IWYU
-        command = cmd.get('command', '')
-        # Remove the compiler and output flags
-        print(command)
-        break
-" 2>/dev/null || echo "")
+import os
+import shlex
 
-        if [[ -n "$COMPILE_CMD" ]]; then
-            $IWYU \
+# Read paths from command-line arguments
+if len(sys.argv) < 3:
+    sys.stderr.write('Usage: script.py <compile_commands_path> <target_file>\n')
+    sys.exit(1)
+
+compile_commands_path = sys.argv[1]
+target_file = sys.argv[2]
+
+try:
+    with open(compile_commands_path) as f:
+        commands = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError) as e:
+    sys.stderr.write(f'Error reading compile_commands.json: {e}\n')
+    sys.exit(1)
+
+# Validate that commands is a list
+if not isinstance(commands, list):
+    sys.stderr.write(
+        f'Error: compile_commands.json must contain a JSON array at the root level, '
+        f'but found {type(commands).__name__} instead.\n'
+    )
+    sys.exit(1)
+
+# Check for empty compile_commands.json
+if len(commands) == 0:
+    sys.stderr.write(
+        'Error: compile_commands.json exists but is empty (contains no compilation '
+        'commands). Ensure your build system is configured to emit compilation commands '
+        '(for CMake, use -DCMAKE_EXPORT_COMPILE_COMMANDS=ON and run a build).\n'
+    )
+    sys.exit(1)
+
+# Normalize target file path for comparison
+target_file = os.path.abspath(target_file)
+target_basename = os.path.basename(target_file)
+
+# Find the compile command for this file (prefer exact match, fallback to basename)
+exact_match = None
+basename_matches = []
+
+for cmd in commands:
+    # Validate that each entry is a dictionary before accessing attributes
+    if not isinstance(cmd, dict):
+        continue
+    file_path = cmd.get('file', '')
+    if not file_path:
+        continue
+    file_path_abs = os.path.abspath(file_path)
+    if file_path_abs == target_file:
+        exact_match = cmd
+        break
+    # Collect basename matches only for fallback. The break above stops the loop once an
+    # exact match is found, so basename_matches is only populated when exact_match stays None.
+    if os.path.basename(file_path_abs) == target_basename:
+        basename_matches.append(cmd)
+
+selected_cmd = None
+if exact_match is not None:
+    selected_cmd = exact_match
+elif len(basename_matches) == 1:
+    selected_cmd = basename_matches[0]
+elif len(basename_matches) > 1:
+    sys.stderr.write(
+        f'Warning: multiple compile_commands entries found matching basename '
+        f'{target_basename}; skipping ambiguous match.\n'
+    )
+
+if selected_cmd is not None:
+    # Safely extract the compile command.
+    command = selected_cmd.get('command', '')
+    if not isinstance(command, str) or not command:
+        sys.stderr.write(
+            'Warning: compile_commands entry missing valid \"command\" string; '
+            'skipping entry.\n'
+        )
+        command = ''
+    if command:
+        # Extract flags: remove compiler name and output-related flags
+        # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+        tokens = shlex.split(command)
+        flags = []
+        skip_next = False
+        for i, token in enumerate(tokens):
+            if skip_next:
+                skip_next = False
+                continue
+            # Skip compiler name (first token)
+            if i == 0:
+                continue
+            # Skip output flags: separate form '-o file' and combined form '-ofile'
+            if token in ['-o', '-c', '-MF', '-MT', '-MD']:
+                skip_next = True
+                continue
+            # Handle combined forms like -ooutput.o, -MFdeps.d, -MTtarget, -MDdeps
+            if any(token.startswith(prefix) and len(token) > len(prefix)
+                   for prefix in ['-o', '-MF', '-MT', '-MD']):
+                continue
+            # Whitelist relevant flags that affect preprocessing/target configuration
+            # Categorized for maintainability:
+            #   1. Standalone flags (threading, etc.)
+            #   2. Include/define/standard flags
+            #   3. Architecture/target flags (affect type sizes, intrinsics)
+            #   4. Feature flags (-f*, excluding PCH)
+            #   5. Warning flags (-W*, excluding PCH warnings)
+
+            # Category 1: Standalone important flags
+            is_standalone = token in ['-pthread']
+
+            # Category 2: Common prefix-based categories (includes, defines, standard)
+            is_include_define_std = token.startswith(('-I', '-D', '-std', '--sysroot'))
+
+            # Category 3: Target/architecture flags
+            # These affect type sizes, predefined macros, and available compiler intrinsics
+            # (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly parse headers.
+            # Use specific patterns to avoid catching unrelated -m flags like -mllvm, -mwindows.
+            arch_prefixes = ('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=', '-mabi=')
+            arch_standalone = ('-m32', '-m64', '-mthumb', '-marm')
+            # SIMD instruction set flags - one per line for maintainability
+            simd_prefixes = (
+                '-msse',
+                '-mavx',
+                '-maes',
+                '-mpclmul',
+                '-mbmi',
+                '-mpopcnt',
+                '-mlzcnt',
+                '-mfma',
+                '-mf16c',
+                '-mrdrnd',
+                '-msha',
+                '-madx',
+                '-mpku',
+                '-mcx16',
+                # AVX-512 and newer instruction sets
+                '-mavx512',
+                '-mvzeroupper',
+                '-mgfni',
+                '-mvaes',
+                '-mvpclmulqdq',
+            )
+            is_arch_flag = (token.startswith(arch_prefixes) or
+                            token in arch_standalone or
+                            token.startswith(simd_prefixes))
+
+            # Compiler feature flags (excluding precompiled header flags)
+            is_feature_flag = token.startswith('-f') and not token.startswith('-fpch')
+
+            # Warning flags (excluding PCH-related warnings)
+            is_warning_flag = token.startswith('-W') and not token.startswith('-Winvalid-pch')
+
+            # Keep flag if it matches any of the allowed patterns above
+            if is_standalone or is_include_define_std or is_arch_flag or is_feature_flag or is_warning_flag:
+                flags.append(token)
+        # Print each flag on a separate line for safe array handling
+        for flag in flags:
+            print(flag)
+" "$COMPILE_COMMANDS" "$file" 2>&1)
+
+        # Check if Python script produced error output
+        # Note: With process substitution, we can't capture Python's exit code directly.
+        # Instead, we detect errors by checking for common error patterns in the output.
+        PYTHON_ERROR=false
+        if [[ ${#COMPILE_FLAGS_ARRAY[@]} -eq 0 ]]; then
+            # Empty output could mean no matching compile command (handled later)
+            # or a Python error that produced no output - we check patterns first
+            PYTHON_ERROR=false
+        else
+            # Enable case-insensitive matching for error detection
+            # (catches Error:/error:/ERROR:, Warning:/warning:/WARNING:, etc.)
+            shopt -s nocasematch
+            for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
+                # Use wildcards on both sides to match error text anywhere in the line
+                # (Python may prefix errors with timestamps, context, or other info)
+                if [[ "$line" == *Error:* ]] || [[ "$line" == *Usage:* ]] || [[ "$line" == *Traceback* ]] || [[ "$line" == *Warning:* ]]; then
+                    PYTHON_ERROR=true
+                    break
+                fi
+            done
+            shopt -u nocasematch
+        fi
+
+        if [[ $PYTHON_ERROR == true ]]; then
+            echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
+            # Show Python's error output if any was captured in the array
+            if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
+                echo "  Python output: ${COMPILE_FLAGS_ARRAY[*]}" >&2
+            fi
+            echo "  Please ensure compile_commands.json is valid and Python is available." >&2
+            exit 1
+        fi
+
+        # Direct IWYU invocation with extracted compile flags
+        if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
+            "$IWYU" \
+                "${COMPILE_FLAGS_ARRAY[@]}" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
-                -Xiwyu --cxx17ns \
+                "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
+        else
+            # Missing compile flags will produce incorrect results - IWYU needs accurate
+            # include paths, defines, and language standard to analyze headers correctly.
+            echo "  Error: No compile flags found for ${file#"${PROJECT_ROOT}"/} in compile_commands.json." >&2
+            echo "  The Python helper succeeded but did not find a matching compile command for this file." >&2
+            echo "  This usually means the file is not listed in compile_commands.json (e.g., header-only," >&2
+            echo "  not compiled directly, or the database is stale). IWYU requires accurate compile flags" >&2
+            echo "  (include paths, defines, language standard) to produce reliable results." >&2
+            if ! $REPORT_ONLY; then
+                echo "  Aborting. Add a matching entry to compile_commands.json or rebuild your build directory," >&2
+                echo "  then retry. Hint: Use --report for a best-effort run without flags (results may be inaccurate)." >&2
+                exit 1
+            fi
+            echo "  Report-only mode: no compile flags found; running IWYU without flags as a best-effort run." >&2
+            "$IWYU" \
+                -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         fi
     done

@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   validate-environment:
@@ -182,6 +183,132 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
+          retention-days: 14
+
+  include-analysis:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Install include-what-you-use
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iwyu
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-iwyu
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: build/_deps
+          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-deps-
+
+      - name: Configure (debug preset)
+        run: cmake --preset debug
+
+      - name: Build (debug preset)
+        run: cmake --build --preset debug
+
+      - name: Run include-what-you-use
+        run: ./tools/iwyu.sh --report debug 2>&1 | tee iwyu-output.txt
+
+      - name: Add IWYU summary to workflow summary
+        if: always()
+        run: |
+          echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Verify iwyu-output.txt exists and has content before processing
+          if [[ ! -f iwyu-output.txt ]] || [[ ! -s iwyu-output.txt ]]; then
+            echo "⚠️ **Status:** No IWYU output file generated" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          # Check if IWYU found any issues
+          # grep -qE: -q for quiet mode (no output), -E for extended regex
+          # Exit codes: 0 = pattern found, 1 = not found, 2 = error (e.g., file I/O or invalid regex).
+          if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
+            echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Count total suggestion lines to detect truncation from head -50
+            TOTAL_SUGGESTION_LINES=$(grep -cE "(should add|should remove|has correct)" iwyu-output.txt 2>/dev/null || echo 0)
+            TOTAL_SUGGESTION_LINES=$(echo "$TOTAL_SUGGESTION_LINES" | tr -d ' ')
+
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # If we truncated the suggestions, let the user know how many lines exist in total
+            if [[ "$TOTAL_SUGGESTION_LINES" =~ ^[0-9]+$ ]] && [[ "$TOTAL_SUGGESTION_LINES" -gt 50 ]]; then
+              echo "_Note: Showing first 50 of $TOTAL_SUGGESTION_LINES suggestion lines. See artifacts for the full report._" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            # Count unique files with suggestions
+            # Expected IWYU line format (per-file summary), e.g.:
+            #   path/to/file.cpp should add these lines:
+            #   path/to/file.cpp should remove these lines:
+            # The sed expression removes " should add/remove these lines:..." suffix from each line,
+            # deduplicates filenames, and counts them.
+            #
+            # Use subshell with pipefail to properly capture pipeline errors and exit status
+            # (without pipefail, $? only reflects the last command - wc -l - which rarely fails)
+            # Use anchored sed pattern 's/ should ... these lines:.*$//' to avoid issues if
+            # filename contains " should " in its path
+            SUGGESTED_FILES=$(
+              set -o pipefail
+              grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null \
+                | sed -E 's/ should (add|remove) these lines:.*$//' \
+                | sort -u \
+                | wc -l
+            )
+            PIPELINE_STATUS=$?
+
+            # Trim whitespace from wc output (some implementations add leading spaces)
+            SUGGESTED_FILES=$(echo "$SUGGESTED_FILES" | tr -d ' ')
+
+            # Check if pipeline failed or output is invalid
+            # Note: while wc -l itself always outputs a count, earlier grep/sed/sort stages can fail,
+            # so we validate the entire pipeline's exit status (PIPELINE_STATUS) and ensure the output is numeric.
+            # Exit code 1 from grep means "no matches" which is valid; only exit codes >= 2 indicate errors.
+            if [[ "$PIPELINE_STATUS" -ge 2 ]]; then
+              echo "⚠️ Warning: Pipeline command failed; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
+              SUGGESTED_FILES=0
+            elif ! [[ "$SUGGESTED_FILES" =~ ^[0-9]+$ ]]; then
+              echo "⚠️ Warning: IWYU output format changed or parse error (got: '$SUGGESTED_FILES'); falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
+              SUGGESTED_FILES=0
+            fi
+
+            echo "**Files with suggestions:** $SUGGESTED_FILES" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Status:** No include issues found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Full report available in artifacts (retention: 14 days)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💡 **Tip:** IWYU suggestions are advisory and context-dependent. Review each suggestion before applying." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload IWYU results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iwyu-results
+          path: iwyu-output.txt
           retention-days: 14
 
   coverage:
