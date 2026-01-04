@@ -39,7 +39,7 @@ Options:
   -h, --help        Show this help
 
 FILES:
-  Optional list of specific files to analyze (default: all src/**/*.cpp, *.h, *.hpp recursively)
+  Optional list of specific files to analyze (default: all .cpp, .h, and .hpp files under src/ recursively)
 
 Examples:
   $(basename "$0")                          # Analyze all files
@@ -161,10 +161,11 @@ check_version_compatibility() {
     local iwyu_cmd="${IWYU:-include-what-you-use}"
     # IWYU output format: "include-what-you-use X.XX based on Ubuntu clang version YY.Z.Z"
     # Clang output format: "Ubuntu clang version YY.Z.Z ..."
-    # Extract major version number after "clang version" text using awk for reliability
-    # (sed's greedy .* could match incorrectly if "clang version" appears multiple times)
-    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | awk '/clang version/ { for (i = 1; i <= NF; ++i) { if ($i == "version") { split($(i + 1), v, "."); print v[1]; exit } } }' || echo "")
-    clang_version=$(clang --version 2>&1 | awk '/clang version/ { for (i = 1; i <= NF; ++i) { if ($i == "version") { split($(i + 1), v, "."); print v[1]; exit } } }' || echo "")
+    # Extract major version number using regex match for "clang version <digits>" pattern.
+    # Using match() with capture group is more robust than iterating fields, as it directly
+    # targets the version number immediately following "clang version" regardless of line format.
+    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | awk 'match($0, /clang version[[:space:]]+([0-9]+)/, m) { print m[1]; exit }' || echo "")
+    clang_version=$(clang --version 2>&1 | awk 'match($0, /clang version[[:space:]]+([0-9]+)/, m) { print m[1]; exit }' || echo "")
 
     # Validate that versions are non-empty and numeric
     if [[ -z "$iwyu_clang_version" ]] || ! [[ "$iwyu_clang_version" =~ ^[0-9]+$ ]]; then
@@ -391,6 +392,9 @@ exact_match = None
 basename_matches = []
 
 for cmd in commands:
+    # Validate that each entry is a dictionary before accessing attributes
+    if not isinstance(cmd, dict):
+        continue
     file_path = cmd.get('file', '')
     if not file_path:
         continue
@@ -435,9 +439,13 @@ if selected_cmd is not None:
             # Skip compiler name (first token)
             if i == 0:
                 continue
-            # Skip output flags
+            # Skip output flags: separate form '-o file' and combined form '-ofile'
             if token in ['-o', '-c', '-MF', '-MT', '-MD']:
                 skip_next = True
+                continue
+            # Handle combined forms like -ooutput.o, -MFdeps.d, -MTtarget, -MDdeps
+            if any(token.startswith(prefix) and len(token) > len(prefix)
+                   for prefix in ['-o', '-MF', '-MT', '-MD']):
                 continue
             # Whitelist relevant flags that affect preprocessing/target configuration
             # Categorized for maintainability:
@@ -505,15 +513,21 @@ if selected_cmd is not None:
         MAPFILE_EXIT_CODE=$?
 
         # Check if mapfile failed or Python script produced error output
-        # With process substitution, Python errors appear as stderr mixed into the array
-        # We detect errors by checking for "Error:" prefix in captured output
+        # With process substitution, Python stdout/stderr are mixed into the array.
+        # Treat empty output or common error prefixes as a Python error.
         PYTHON_ERROR=false
-        for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
-            if [[ "$line" == Error:* ]] || [[ "$line" == "Usage:"* ]]; then
-                PYTHON_ERROR=true
-                break
-            fi
-        done
+        if [[ ${#COMPILE_FLAGS_ARRAY[@]} -eq 0 ]]; then
+            # Empty output could mean no matching compile command (handled later)
+            # or a Python error that produced no output - we check patterns first
+            PYTHON_ERROR=false
+        else
+            for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
+                if [[ "$line" == Error:* ]] || [[ "$line" == "Usage:"* ]] || [[ "$line" == Traceback* ]] || [[ "$line" == WARNING:* ]]; then
+                    PYTHON_ERROR=true
+                    break
+                fi
+            done
+        fi
 
         if [[ $MAPFILE_EXIT_CODE -ne 0 ]] || [[ $PYTHON_ERROR == true ]]; then
             echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
@@ -534,14 +548,17 @@ if selected_cmd is not None:
         else
             # Missing compile flags will produce incorrect results - IWYU needs accurate
             # include paths, defines, and language standard to analyze headers correctly.
-            echo "  Error: Could not extract compile flags for ${file#"${PROJECT_ROOT}"/}." >&2
-            echo "  IWYU requires accurate compile flags (include paths, defines, language standard)." >&2
+            echo "  Error: No compile flags found for ${file#"${PROJECT_ROOT}"} in compile_commands.json." >&2
+            echo "  The Python helper succeeded but did not find a matching compile command for this file." >&2
+            echo "  This usually means the file is not listed in compile_commands.json (e.g., header-only," >&2
+            echo "  not compiled directly, or the database is stale). IWYU requires accurate compile flags" >&2
+            echo "  (include paths, defines, language standard) to produce reliable results." >&2
             if ! $REPORT_ONLY; then
-                echo "  Aborting. Fix compile_commands.json or rebuild, then retry." >&2
-                echo "  Hint: Use --report for best-effort run without flags (results may be inaccurate)." >&2
+                echo "  Aborting. Add a matching entry to compile_commands.json or rebuild your build directory," >&2
+                echo "  then retry. Hint: Use --report for a best-effort run without flags (results may be inaccurate)." >&2
                 exit 1
             fi
-            echo "  Report-only mode: running IWYU without extracted flags; results may be inaccurate." >&2
+            echo "  Report-only mode: no compile flags found; running IWYU without flags as a best-effort run." >&2
             "$IWYU" \
                 -Xiwyu --mapping_file="$IWYU_MAPPING" \
                 "$file" 2>&1 | tee -a "$IWYU_OUTPUT" || true
