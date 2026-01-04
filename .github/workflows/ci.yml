@@ -240,10 +240,21 @@ jobs:
           if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Count total suggestion lines to detect truncation from head -50
+            TOTAL_SUGGESTION_LINES=$(grep -cE "(should add|should remove|has correct)" iwyu-output.txt 2>/dev/null || echo 0)
+            TOTAL_SUGGESTION_LINES=$(echo "$TOTAL_SUGGESTION_LINES" | tr -d ' ')
+
             echo '```' >> $GITHUB_STEP_SUMMARY
             grep -E "(should add|should remove|has correct)" iwyu-output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
+
+            # If we truncated the suggestions, let the user know how many lines exist in total
+            if [[ "$TOTAL_SUGGESTION_LINES" =~ ^[0-9]+$ ]] && [[ "$TOTAL_SUGGESTION_LINES" -gt 50 ]]; then
+              echo "_Note: Showing first 50 of $TOTAL_SUGGESTION_LINES suggestion lines. See artifacts for the full report._" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
 
             # Count unique files with suggestions
             # Expected IWYU line format (per-file summary), e.g.:

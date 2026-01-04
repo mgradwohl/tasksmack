@@ -241,7 +241,7 @@ fi
 IWYU_MAPPING="${PROJECT_ROOT}/.iwyu.imp"
 if [[ ! -f "$IWYU_MAPPING" ]]; then
     echo "Error: IWYU mapping file not found: $IWYU_MAPPING" >&2
-    echo "The .iwyu.imp file is required in the repository root." >&2
+    echo "The .iwyu.imp file is required in the repository root and must be valid JSON in IWYU mapping format." >&2
     exit 1
 fi
 
@@ -257,10 +257,12 @@ esac
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
     # Get all source files from project, excluding other-platform files
+    # Note: unknown platforms default to Linux behavior (exclude Windows files)
     if [[ "$CURRENT_PLATFORM" == "windows" ]]; then
         mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
             ! -path "*/Platform/Linux/*" 2>/dev/null)
     else
+        # Linux, macOS, or unknown platform: exclude Windows-specific files
         mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) -type f \
             ! -path "*/Platform/Windows/*" 2>/dev/null)
     fi
@@ -379,8 +381,7 @@ for cmd in commands:
     if file_path_abs == target_file:
         exact_match = cmd
         break
-    # Only collect basename matches if we haven't found an exact match yet
-    # (optimization: avoid unnecessary work since we'll break on exact match)
+    # Only collect basename matches while no exact match has been found
     if exact_match is None and os.path.basename(file_path_abs) == target_basename:
         basename_matches.append(cmd)
 
@@ -396,15 +397,8 @@ elif len(basename_matches) > 1:
     )
 
 if selected_cmd is not None:
-    # Safely extract the compile command; handle malformed entries gracefully.
-    try:
-        command = selected_cmd.get('command', '')
-    except AttributeError:
-        sys.stderr.write(
-            'Warning: malformed compile_commands entry (expected object with '
-            '\"command\" field); skipping entry.\n'
-        )
-        command = ''
+    # Safely extract the compile command.
+    command = selected_cmd.get('command', '')
     if not isinstance(command, str) or not command:
         sys.stderr.write(
             'Warning: compile_commands entry missing valid \"command\" string; '
@@ -467,7 +461,15 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" "$COMPILE_COMMANDS" "$file" || echo "  Warning: Failed to extract compile flags via Python; falling back to default IWYU invocation." >&2)
+" "$COMPILE_COMMANDS" "$file")
+        PYTHON_EXIT_CODE=${PIPESTATUS[0]:-0}
+
+        # Check if Python script failed
+        if [[ $PYTHON_EXIT_CODE -ne 0 ]]; then
+            echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
+            echo "  Please ensure compile_commands.json is valid and Python is available." >&2
+            exit 1
+        fi
 
         # Direct IWYU invocation with extracted compile flags
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
