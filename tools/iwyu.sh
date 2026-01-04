@@ -35,7 +35,7 @@ Options:
   -v, --verbose     Show verbose output with per-file progress
   -j, --jobs N      Number of parallel jobs (default: $JOBS)
   -f, --fix         Apply suggested fixes using iwyu-fix-includes
-  -r, --report      Generate report only, don't fail on issues
+  -R, --report      Generate report only, don't fail on issues
   -h, --help        Show this help
 
 FILES:
@@ -70,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -f|--fix) FIX=true; shift ;;
-        -r|--report) REPORT_ONLY=true; shift ;;
+        -R|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
@@ -119,6 +119,21 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     echo "  macOS:         brew install include-what-you-use" >&2
     echo "  From source:   https://github.com/include-what-you-use/include-what-you-use" >&2
     exit 1
+fi
+
+# Basic functionality check for the discovered IWYU tool
+if [[ -n "$IWYU_TOOL" ]]; then
+    if ! "$IWYU_TOOL" --help >/dev/null 2>&1; then
+        echo "Error: IWYU tool '$IWYU_TOOL' was found but is not functional (help check failed)." >&2
+        echo "Please verify your include-what-you-use installation." >&2
+        exit 1
+    fi
+elif [[ -n "$IWYU" ]]; then
+    if ! "$IWYU" --version >/dev/null 2>&1; then
+        echo "Error: IWYU binary '$IWYU' was found but is not functional (version check failed)." >&2
+        echo "Please verify your include-what-you-use installation." >&2
+        exit 1
+    fi
 fi
 
 # Check for Python 3 (required for compile flag extraction)
@@ -483,12 +498,24 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" "$COMPILE_COMMANDS" "$file" 2>&1 | readarray -t COMPILE_FLAGS_ARRAY)
-        # Capture Python's exit code using PIPESTATUS (index 0 is python3, index 1 is readarray)
-        PYTHON_EXIT_CODE=${PIPESTATUS[0]}
+" "$COMPILE_COMMANDS" "$file" 2>&1)
+        # Capture the exit code from the process substitution
+        # Note: With process substitution, $? captures the mapfile exit code, not Python.
+        # Python errors are detected via empty output + stderr messages in the array.
+        MAPFILE_EXIT_CODE=$?
 
-        # Check if Python script failed - display any error output
-        if [[ $PYTHON_EXIT_CODE -ne 0 ]]; then
+        # Check if mapfile failed or Python script produced error output
+        # With process substitution, Python errors appear as stderr mixed into the array
+        # We detect errors by checking for "Error:" prefix in captured output
+        PYTHON_ERROR=false
+        for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
+            if [[ "$line" == Error:* ]] || [[ "$line" == "Usage:"* ]]; then
+                PYTHON_ERROR=true
+                break
+            fi
+        done
+
+        if [[ $MAPFILE_EXIT_CODE -ne 0 ]] || [[ $PYTHON_ERROR == true ]]; then
             echo "  Error: Failed to extract compile flags via Python for ${file#"${PROJECT_ROOT}"/}." >&2
             # Show Python's error output if any was captured in the array
             if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then

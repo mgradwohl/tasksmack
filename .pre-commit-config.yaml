@@ -53,7 +53,7 @@ repos:
     hooks:
       - id: iwyu
         name: Include What You Use (IWYU)
-        entry: ./tools/iwyu.sh --report -j 4
+        entry: ./tools/iwyu.sh --report
         language: script
         files: \.(cpp|h|hpp)$
         exclude: ^(build/|\.cache/)
