@@ -321,21 +321,19 @@ else
         # Extract compile flags for this file from compile_commands.json
         # This ensures IWYU has access to include paths, defines, and other compilation flags
         # Read flags into an array for proper handling
-        # Use environment variables to safely pass paths (avoids shell injection issues)
-        IWYU_COMPILE_COMMANDS="$COMPILE_COMMANDS" IWYU_TARGET_FILE="${file}" \
         mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
 import json
 import sys
 import os
 import shlex
 
-# Read paths from environment variables (safer than command-line arguments)
-compile_commands_path = os.environ.get('IWYU_COMPILE_COMMANDS', '')
-target_file = os.environ.get('IWYU_TARGET_FILE', '')
-
-if not compile_commands_path or not target_file:
-    sys.stderr.write('Error: IWYU_COMPILE_COMMANDS and IWYU_TARGET_FILE must be set\n')
+# Read paths from command-line arguments
+if len(sys.argv) < 3:
+    sys.stderr.write('Usage: script.py <compile_commands_path> <target_file>\n')
     sys.exit(1)
+
+compile_commands_path = sys.argv[1]
+target_file = sys.argv[2]
 
 try:
     with open(compile_commands_path) as f:
@@ -447,7 +445,7 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" || echo "  Warning: Failed to extract compile flags via Python; falling back to default IWYU invocation." >&2)
+" "$COMPILE_COMMANDS" "$file" || echo "  Warning: Failed to extract compile flags via Python; falling back to default IWYU invocation." >&2)
 
         # Direct IWYU invocation with extracted compile flags
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
