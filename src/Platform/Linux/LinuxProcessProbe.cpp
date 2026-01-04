@@ -174,7 +174,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         // Use acquire/release semantics for thread-safe lazy initialization
         if (!m_IoCountersAvailabilityChecked.load(std::memory_order_acquire))
         {
-            m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed);
+            m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release);
             m_IoCountersAvailabilityChecked.store(true, std::memory_order_release);
         }
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
