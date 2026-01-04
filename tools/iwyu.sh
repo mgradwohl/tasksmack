@@ -142,8 +142,13 @@ fi
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
     local iwyu_clang_version clang_version
-    iwyu_clang_version=$(include-what-you-use --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
-    clang_version=$(clang --version 2>&1 | awk '/clang version/ { print $3; exit }' | cut -d. -f1 || echo "")
+    # Use the discovered IWYU path (or iwyu_tool if available) for version check
+    local iwyu_cmd="${IWYU:-include-what-you-use}"
+    # IWYU output format: "include-what-you-use X.XX based on Ubuntu clang version YY.Z.Z"
+    # Clang output format: "Ubuntu clang version YY.Z.Z ..."
+    # Extract major version number after "clang version" text
+    iwyu_clang_version=$("$iwyu_cmd" --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
+    clang_version=$(clang --version 2>&1 | sed -n 's/.*clang version \([0-9][0-9]*\).*/\1/p' | head -1 || echo "")
 
     # Validate that versions are non-empty and numeric
     if [[ -z "$iwyu_clang_version" ]] || ! [[ "$iwyu_clang_version" =~ ^[0-9]+$ ]]; then
@@ -374,7 +379,9 @@ for cmd in commands:
     if file_path_abs == target_file:
         exact_match = cmd
         break
-    if os.path.basename(file_path_abs) == target_basename:
+    # Only collect basename matches if we haven't found an exact match yet
+    # (optimization: avoid unnecessary work since we'll break on exact match)
+    if exact_match is None and os.path.basename(file_path_abs) == target_basename:
         basename_matches.append(cmd)
 
 selected_cmd = None
@@ -422,29 +429,40 @@ if selected_cmd is not None:
                 skip_next = True
                 continue
             # Whitelist relevant flags that affect preprocessing/target configuration
-            keep = False
-            # Standalone important flags
-            if token in ['-pthread']:
-                keep = True
-            # Common prefix-based categories
-            elif token.startswith(('-I', '-D', '-std', '--sysroot')):
-                keep = True
-            # Target/architecture flags that affect type sizes, predefined macros, and available
-            # compiler intrinsics (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly
-            # parse headers. Use specific patterns to avoid catching unrelated -m flags like
-            # -mllvm, -mwindows, etc.
-            elif (token.startswith(('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=',
-                                     '-mabi=')) or
-                  token in ('-m32', '-m64', '-mthumb', '-marm') or
-                  token.startswith(('-msse', '-mavx', '-maes', '-mpclmul', '-mbmi', '-mpopcnt',
-                                     '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd', '-msha', '-madx',
-                                     '-mpku', '-mcx16'))):
-                keep = True
-            elif token.startswith('-f') and not token.startswith('-fpch'):
-                keep = True
-            elif token.startswith('-W') and not token.startswith('-Winvalid-pch'):
-                keep = True
-            if keep:
+            # Categorized for maintainability:
+            #   1. Standalone flags (threading, etc.)
+            #   2. Include/define/standard flags
+            #   3. Architecture/target flags (affect type sizes, intrinsics)
+            #   4. Feature flags (-f*, excluding PCH)
+            #   5. Warning flags (-W*, excluding PCH warnings)
+
+            # Category 1: Standalone important flags
+            is_standalone = token in ['-pthread']
+
+            # Category 2: Common prefix-based categories (includes, defines, standard)
+            is_include_define_std = token.startswith(('-I', '-D', '-std', '--sysroot'))
+
+            # Category 3: Target/architecture flags
+            # These affect type sizes, predefined macros, and available compiler intrinsics
+            # (e.g., __SSE4_2__, __AVX2__) that IWYU needs to correctly parse headers.
+            # Use specific patterns to avoid catching unrelated -m flags like -mllvm, -mwindows.
+            arch_prefixes = ('-march=', '-mcpu=', '-mtune=', '-mfpu=', '-mfloat-abi=', '-mabi=')
+            arch_standalone = ('-m32', '-m64', '-mthumb', '-marm')
+            simd_prefixes = ('-msse', '-mavx', '-maes', '-mpclmul', '-mbmi', '-mpopcnt',
+                             '-mlzcnt', '-mfma', '-mf16c', '-mrdrnd', '-msha', '-madx',
+                             '-mpku', '-mcx16')
+            is_arch_flag = (token.startswith(arch_prefixes) or
+                            token in arch_standalone or
+                            token.startswith(simd_prefixes))
+
+            # Category 4: Feature flags (excluding precompiled header flags)
+            is_feature_flag = token.startswith('-f') and not token.startswith('-fpch')
+
+            # Category 5: Warning flags (excluding PCH-related warnings)
+            is_warning_flag = token.startswith('-W') and not token.startswith('-Winvalid-pch')
+
+            # Keep flag if it matches any category
+            if is_standalone or is_include_define_std or is_arch_flag or is_feature_flag or is_warning_flag:
                 flags.append(token)
         # Print each flag on a separate line for safe array handling
         for flag in flags:
