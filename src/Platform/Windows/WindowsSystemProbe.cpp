@@ -11,6 +11,7 @@
 #endif
 #include <windows.h>
 #include <winternl.h>
+#include <iphlpapi.h>
 // clang-format on
 
 #include "WinString.h"
@@ -157,6 +158,7 @@ SystemCounters WindowsSystemProbe::read()
     readUptime(counters);
     readStaticInfo(counters);
     readCpuFreq(counters);
+    readNetworkCounters(counters);
 
     return counters;
 }
@@ -328,10 +330,11 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasMemoryAvailable = true,
         .hasSwap = true,
         .hasUptime = true,
-        .hasIoWait = false,  // Windows doesn't expose iowait
-        .hasSteal = false,   // Windows doesn't expose steal time
-        .hasLoadAvg = false, // Windows doesn't have load average
-        .hasCpuFreq = true,  // From registry ~MHz
+        .hasIoWait = false,         // Windows doesn't expose iowait
+        .hasSteal = false,          // Windows doesn't expose steal time
+        .hasLoadAvg = false,        // Windows doesn't have load average
+        .hasCpuFreq = true,         // From registry ~MHz
+        .hasNetworkCounters = true, // Via GetIfTable2
     };
 }
 
@@ -339,6 +342,71 @@ long WindowsSystemProbe::ticksPerSecond() const
 {
     // Windows FILETIME uses 100-nanosecond intervals
     return 10'000'000L;
+}
+
+void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
+{
+    // Use GetIfTable2 to enumerate network interfaces and read byte counters
+    MIB_IF_TABLE2* table = nullptr;
+
+    if (GetIfTable2(&table) != NO_ERROR)
+    {
+        spdlog::warn("GetIfTable2 failed");
+        return;
+    }
+
+    uint64_t totalRxBytes = 0;
+    uint64_t totalTxBytes = 0;
+
+    for (ULONG i = 0; i < table->NumEntries; ++i)
+    {
+        const MIB_IF_ROW2& row = table->Table[i];
+
+        // Filter interfaces:
+        // - Skip loopback (internal traffic)
+        // - Skip non-network interface types (Bluetooth, etc.)
+        // - Include Ethernet, Wi-Fi, and virtual adapters (VPN, Docker, etc.)
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+        {
+            continue;
+        }
+
+        // Only include network-type interfaces:
+        // IF_TYPE_ETHERNET_CSMACD (6) - Ethernet
+        // IF_TYPE_IEEE80211 (71) - Wi-Fi
+        // IF_TYPE_TUNNEL (131) - VPN tunnels
+        // IF_TYPE_PPP (23) - PPP connections
+        // IF_TYPE_PROP_VIRTUAL (53) - Virtual adapters (Hyper-V, Docker, etc.)
+        const bool isNetworkInterface = (row.Type == IF_TYPE_ETHERNET_CSMACD || row.Type == IF_TYPE_IEEE80211 ||
+                                         row.Type == IF_TYPE_TUNNEL || row.Type == IF_TYPE_PPP || row.Type == IF_TYPE_PROP_VIRTUAL);
+
+        if (!isNetworkInterface)
+        {
+            continue;
+        }
+
+        const uint64_t rxBytes = row.InOctets;
+        const uint64_t txBytes = row.OutOctets;
+
+        totalRxBytes += rxBytes;
+        totalTxBytes += txBytes;
+
+        // Store per-interface data
+        SystemCounters::InterfaceCounters ifaceCounters;
+        ifaceCounters.name = WinString::wideToUtf8(row.Alias);
+        ifaceCounters.displayName = WinString::wideToUtf8(row.Description);
+        ifaceCounters.rxBytes = rxBytes;
+        ifaceCounters.txBytes = txBytes;
+        ifaceCounters.isUp = (row.OperStatus == IfOperStatusUp);
+        // TransmitLinkSpeed is in bits per second, convert to Mbps
+        ifaceCounters.linkSpeedMbps = row.TransmitLinkSpeed / 1'000'000ULL;
+        counters.networkInterfaces.push_back(std::move(ifaceCounters));
+    }
+
+    FreeMibTable(table);
+
+    counters.netRxBytes = totalRxBytes;
+    counters.netTxBytes = totalTxBytes;
 }
 
 } // namespace Platform

@@ -141,6 +141,9 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedNetwork;
 
+    // Selected network interface (-1 means "Total" / all interfaces combined)
+    int m_SelectedNetworkInterface = -1;
+
     struct SmoothedGPU
     {
         double utilizationPercent = 0.0;

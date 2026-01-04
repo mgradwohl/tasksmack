@@ -391,11 +391,44 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         {
             totalRxBytes += rxBytes;
             totalTxBytes += txBytes;
+
+            // Store per-interface data
+            SystemCounters::InterfaceCounters ifaceCounters;
+            ifaceCounters.name = iface;
+            ifaceCounters.displayName = iface; // Linux: use system name as display name
+            ifaceCounters.rxBytes = rxBytes;
+            ifaceCounters.txBytes = txBytes;
+            ifaceCounters.isUp = (rxBytes > 0 || txBytes > 0); // Heuristic: has traffic = up
+            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface);
+            counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
     }
 
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
+}
+
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName)
+{
+    // Read link speed from /sys/class/net/<iface>/speed (in Mbps)
+    // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces)
+    const std::string speedPath = "/sys/class/net/" + ifaceName + "/speed";
+    std::ifstream speedFile(speedPath);
+    if (!speedFile.is_open())
+    {
+        return 0;
+    }
+
+    int64_t speedMbps = 0;
+    speedFile >> speedMbps;
+
+    // -1 means speed is unknown/unavailable
+    if (speedFile.fail() || speedMbps < 0)
+    {
+        return 0;
+    }
+
+    return static_cast<uint64_t>(speedMbps);
 }
 
 } // namespace Platform

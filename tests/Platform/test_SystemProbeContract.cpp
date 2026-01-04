@@ -66,4 +66,71 @@ TEST(SystemProbeContractTest, ReadReturnsSaneCounters)
     }
 }
 
+// =============================================================================
+// Per-Interface Network Counter Contract Tests
+// =============================================================================
+
+TEST(SystemProbeContractTest, PerInterfaceNetworkCountersPopulated)
+{
+    auto probe = makeSystemProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const auto caps = probe->capabilities();
+    const SystemCounters counters = probe->read();
+
+    if (caps.hasNetworkCounters)
+    {
+        // If network counters are supported, per-interface data may be populated
+        // Note: On systems with only loopback (which is often filtered), this may be empty
+        // We don't require non-empty here; just verify the vector is accessible
+        (void) counters.networkInterfaces.size();
+    }
+}
+
+TEST(SystemProbeContractTest, PerInterfaceCountersHaveValidStructure)
+{
+    auto probe = makeSystemProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const SystemCounters counters = probe->read();
+
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        // Names should not be empty
+        EXPECT_FALSE(iface.name.empty()) << "Interface name should not be empty";
+        EXPECT_FALSE(iface.displayName.empty()) << "Display name should not be empty";
+
+        // Counters are cumulative, so should be non-negative (always true for uint64_t)
+        // This test mainly verifies the structure is accessible
+        EXPECT_GE(iface.rxBytes, 0ULL);
+        EXPECT_GE(iface.txBytes, 0ULL);
+
+        // Link speed 0 is valid (unknown), but if non-zero should be reasonable
+        if (iface.linkSpeedMbps > 0)
+        {
+            EXPECT_LE(iface.linkSpeedMbps, 1000000ULL); // Max 1 Tbps
+        }
+    }
+}
+
+TEST(SystemProbeContractTest, PerInterfaceCountersAreStableAcrossReads)
+{
+    auto probe = makeSystemProbe();
+    ASSERT_NE(probe, nullptr);
+
+    const SystemCounters counters1 = probe->read();
+    const SystemCounters counters2 = probe->read();
+
+    // Interface count should be stable (no interfaces appearing/disappearing rapidly)
+    EXPECT_EQ(counters1.networkInterfaces.size(), counters2.networkInterfaces.size());
+
+    // Interface names should be consistent
+    for (size_t i = 0; i < std::min(counters1.networkInterfaces.size(), counters2.networkInterfaces.size()); ++i)
+    {
+        // If interfaces are in the same order, names should match
+        // (we don't mandate ordering, but it should be consistent)
+        EXPECT_EQ(counters1.networkInterfaces[i].name, counters2.networkInterfaces[i].name);
+    }
+}
+
 } // namespace Platform

@@ -34,6 +34,9 @@ class LinuxSystemProbe : public ISystemProbe
     static void readNetworkCounters(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
 
+    /// Read interface link speed from sysfs (returns 0 if unavailable).
+    [[nodiscard]] static uint64_t readInterfaceLinkSpeed(const std::string& ifaceName);
+
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 

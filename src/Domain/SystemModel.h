@@ -106,6 +106,9 @@ class SystemModel
     void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
+
+    /// Find a previous interface by name for rate calculation.
+    [[nodiscard]] const Platform::SystemCounters::InterfaceCounters* findPreviousInterface(const std::string& name) const;
 };
 
 } // namespace Domain
