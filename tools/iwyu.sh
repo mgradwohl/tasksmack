@@ -330,10 +330,10 @@ if not isinstance(commands, list):
 # Check for empty compile_commands.json
 if len(commands) == 0:
     sys.stderr.write(
-        'Warning: compile_commands.json is empty; no compile flags available. '
-        'Run \"cmake --preset <preset>\" to populate the compilation database.\n'
+        'Error: compile_commands.json is empty; no compile flags available. '
+        'Run cmake to generate the compilation database.\n'
     )
-    sys.exit(0)
+    sys.exit(1)
 
 # Normalize target file path for comparison
 target_file = os.path.abspath(target_file)
