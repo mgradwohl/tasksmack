@@ -254,6 +254,9 @@ jobs:
             SUGGESTED_FILES=$(grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null | sed -E 's/^(.*) should (add|remove) these lines:.*/\1/' | sort -u | wc -l || echo "0")
             # Ensure SUGGESTED_FILES is a valid non-negative integer (default to 0 if empty/invalid)
             SUGGESTED_FILES=${SUGGESTED_FILES:-0}
+            # Trim whitespace that wc -l may add (using parameter expansion)
+            SUGGESTED_FILES="${SUGGESTED_FILES#"${SUGGESTED_FILES%%[![:space:]]*}"}"
+            SUGGESTED_FILES="${SUGGESTED_FILES%"${SUGGESTED_FILES##*[![:space:]]}"}"
             if ! [[ "$SUGGESTED_FILES" =~ ^[0-9]+$ ]]; then
               echo "⚠️ Warning: IWYU output format changed or parse error; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
               SUGGESTED_FILES=0
