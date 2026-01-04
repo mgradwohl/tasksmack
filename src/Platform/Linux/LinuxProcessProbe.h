@@ -2,6 +2,8 @@
 
 #include "Platform/IProcessProbe.h"
 
+#include <atomic>
+
 namespace Platform
 {
 
@@ -15,8 +17,8 @@ class LinuxProcessProbe : public IProcessProbe
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
     LinuxProcessProbe& operator=(const LinuxProcessProbe&) = delete;
-    LinuxProcessProbe(LinuxProcessProbe&&) = default;
-    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = default;
+    LinuxProcessProbe(LinuxProcessProbe&&) = delete;
+    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = delete;
 
     [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
     [[nodiscard]] ProcessCapabilities capabilities() const override;
@@ -27,8 +29,8 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
-    mutable bool m_IoCountersAvailable{false};           // Cached capability check
-    mutable bool m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
+    mutable std::atomic<bool> m_IoCountersAvailable{false};           // Cached capability check
+    mutable std::atomic<bool> m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
 

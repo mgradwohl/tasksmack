@@ -171,12 +171,13 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         parseProcessAffinity(pid, counters);
 
         // Only attempt I/O counters if we know they're readable
-        if (!m_IoCountersAvailabilityChecked)
+        // Use acquire/release semantics for thread-safe lazy initialization
+        if (!m_IoCountersAvailabilityChecked.load(std::memory_order_acquire))
         {
-            m_IoCountersAvailable = checkIoCountersAvailability();
-            m_IoCountersAvailabilityChecked = true;
+            m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed);
+            m_IoCountersAvailabilityChecked.store(true, std::memory_order_release);
         }
-        if (m_IoCountersAvailable)
+        if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pid, counters);
         }

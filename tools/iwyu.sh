@@ -532,7 +532,9 @@ if selected_cmd is not None:
             PYTHON_ERROR=false
         else
             for line in "${COMPILE_FLAGS_ARRAY[@]}"; do
-                if [[ "$line" == Error:* ]] || [[ "$line" == "Usage:"* ]] || [[ "$line" == Traceback* ]] || [[ "$line" == WARNING:* ]]; then
+                # Use wildcards on both sides to match error text anywhere in the line
+                # (Python may prefix errors with timestamps, context, or other info)
+                if [[ "$line" == *Error:* ]] || [[ "$line" == *Usage:* ]] || [[ "$line" == *Traceback* ]] || [[ "$line" == *WARNING:* ]]; then
                     PYTHON_ERROR=true
                     break
                 fi
