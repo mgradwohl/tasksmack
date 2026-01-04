@@ -121,6 +121,24 @@ if [[ -z "$IWYU_TOOL" ]] && [[ -z "$IWYU" ]]; then
     exit 1
 fi
 
+# Check for Python 3 (required for compile flag extraction)
+PYTHON3=$(command -v python3 2>/dev/null || echo "")
+if [[ -z "$PYTHON3" ]]; then
+    echo "Error: python3 not found in PATH" >&2
+    echo "" >&2
+    echo "Python 3 is required for extracting compiler flags from compile_commands.json." >&2
+    echo "" >&2
+    echo "Install Python 3:" >&2
+    echo "  Ubuntu/Debian: sudo apt install python3" >&2
+    echo "  macOS:         brew install python3 (or use system python3)" >&2
+    echo "  Windows:       Download from https://www.python.org/downloads/" >&2
+    exit 1
+fi
+
+if $VERBOSE; then
+    echo "Using python3: $PYTHON3"
+fi
+
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
     local iwyu_clang_version clang_version
@@ -303,14 +321,21 @@ else
         # Extract compile flags for this file from compile_commands.json
         # This ensures IWYU has access to include paths, defines, and other compilation flags
         # Read flags into an array for proper handling
+        # Use environment variables to safely pass paths (avoids shell injection issues)
+        IWYU_COMPILE_COMMANDS="$COMPILE_COMMANDS" IWYU_TARGET_FILE="${file}" \
         mapfile -t COMPILE_FLAGS_ARRAY < <(python3 -c "
 import json
 import sys
 import os
 import shlex
 
-compile_commands_path = sys.argv[1]
-target_file = sys.argv[2]
+# Read paths from environment variables (safer than command-line arguments)
+compile_commands_path = os.environ.get('IWYU_COMPILE_COMMANDS', '')
+target_file = os.environ.get('IWYU_TARGET_FILE', '')
+
+if not compile_commands_path or not target_file:
+    sys.stderr.write('Error: IWYU_COMPILE_COMMANDS and IWYU_TARGET_FILE must be set\n')
+    sys.exit(1)
 
 try:
     with open(compile_commands_path) as f:
@@ -406,7 +431,7 @@ if selected_cmd is not None:
         # Print each flag on a separate line for safe array handling
         for flag in flags:
             print(flag)
-" "$COMPILE_COMMANDS" "${file}" 2>/dev/null || true)
+" 2>/dev/null || true)
 
         # Direct IWYU invocation with extracted compile flags
         if [[ ${#COMPILE_FLAGS_ARRAY[@]} -gt 0 ]]; then
