@@ -3,6 +3,7 @@
 #include "Platform/IProcessProbe.h"
 
 #include <atomic>
+#include <mutex>
 
 namespace Platform
 {
@@ -17,8 +18,8 @@ class LinuxProcessProbe : public IProcessProbe
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
     LinuxProcessProbe& operator=(const LinuxProcessProbe&) = delete;
-    LinuxProcessProbe(LinuxProcessProbe&&) = delete;
-    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = delete;
+    LinuxProcessProbe(LinuxProcessProbe&&) = delete;            // std::once_flag is not movable
+    LinuxProcessProbe& operator=(LinuxProcessProbe&&) = delete; // std::once_flag is not movable
 
     [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
     [[nodiscard]] ProcessCapabilities capabilities() const override;
@@ -29,8 +30,8 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
-    mutable std::atomic<bool> m_IoCountersAvailable{false};           // Cached capability check
-    mutable std::atomic<bool> m_IoCountersAvailabilityChecked{false}; // Whether we've checked yet
+    mutable std::once_flag m_IoCountersCheckFlag; // Thread-safe one-time initialization
+    mutable bool m_IoCountersAvailable = false;   // Cached capability check (guarded by once_flag)
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
 

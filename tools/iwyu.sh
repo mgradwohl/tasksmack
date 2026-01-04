@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -f|--fix) FIX=true; shift ;;
-        -R|--report) REPORT_ONLY=true; shift ;;
+        -r|-R|--report) REPORT_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h|*.hpp) FILES+=("$1"); shift ;;
@@ -411,8 +411,8 @@ for cmd in commands:
     if file_path_abs == target_file:
         exact_match = cmd
         break
-    # Collect basename matches for fallback (loop breaks on exact match, so these are only
-    # collected when no exact match has been found yet)
+    # Collect basename matches only for fallback. The break above stops the loop once an
+    # exact match is found, so basename_matches is only populated when exact_match stays None.
     if os.path.basename(file_path_abs) == target_basename:
         basename_matches.append(cmd)
 
