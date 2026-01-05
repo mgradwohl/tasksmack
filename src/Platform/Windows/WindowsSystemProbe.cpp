@@ -3,17 +3,17 @@
 #include <spdlog/spdlog.h>
 
 // clang-format off
-// Windows headers - _WIN32_WINNT is set via CMake compile definitions
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+// Windows headers - version macros set via CMake compile definitions
+// (WIN32_LEAN_AND_MEAN, NOMINMAX, _WIN32_WINNT, WINVER, NTDDI_VERSION)
+#include <winsock2.h>    // Must come before windows.h
+#include <ws2ipdef.h>    // Required for MIB_IF_ROW2/MIB_IF_TABLE2 definitions in netioapi.h
 #include <windows.h>
 #include <winternl.h>
-#include <iphlpapi.h>
+#include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 // clang-format on
+
+#undef max
+#undef min
 
 #include "WinString.h"
 #include "WindowsProcAddress.h"
@@ -21,6 +21,7 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <format>
 #include <type_traits>
 #include <vector>
 
@@ -405,7 +406,11 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         ifaceCounters.name = WinString::wideToUtf8(row.Alias);
         ifaceCounters.displayName = WinString::wideToUtf8(row.Description);
 
-        // Fall back to alias if description is empty
+        // Fallback chain: if both Alias and Description are empty, use interface index
+        if (ifaceCounters.name.empty())
+        {
+            ifaceCounters.name = std::format("Interface {}", row.InterfaceIndex);
+        }
         if (ifaceCounters.displayName.empty())
         {
             ifaceCounters.displayName = ifaceCounters.name;

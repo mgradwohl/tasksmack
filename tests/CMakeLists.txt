@@ -156,12 +156,15 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(WIN32)
-    # Windows SDK version - required for GetIfTable2 and MIB_IF_TABLE2 (Vista+)
+    # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
+    # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
+    # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
     target_compile_definitions(TaskSmackTests PRIVATE
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
+        NTDDI_VERSION=0x0A000000
     )
     # Windows needs additional system libraries
     target_link_libraries(TaskSmackTests PRIVATE
