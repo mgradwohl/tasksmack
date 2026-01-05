@@ -402,19 +402,25 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // MIB_IF_ROW2 provides proper Unicode strings:
         // - Alias: friendly name (e.g., "Wi-Fi", "Ethernet")
         // - Description: full adapter description (e.g., "Intel(R) Wi-Fi 6 AX201 160MHz")
-        // Use Alias for name (shorter, user-friendly) and Description for display
-        ifaceCounters.name = WinString::wideToUtf8(row.Alias);
-        ifaceCounters.displayName = WinString::wideToUtf8(row.Description);
+        // Fallback chain for name: Alias -> Description -> Interface index
+        std::string alias = WinString::wideToUtf8(row.Alias);
+        std::string description = WinString::wideToUtf8(row.Description);
 
-        // Fallback chain: if both Alias and Description are empty, use interface index
-        if (ifaceCounters.name.empty())
+        if (!alias.empty())
+        {
+            ifaceCounters.name = alias;
+        }
+        else if (!description.empty())
+        {
+            ifaceCounters.name = description;
+        }
+        else
         {
             ifaceCounters.name = std::format("Interface {}", row.InterfaceIndex);
         }
-        if (ifaceCounters.displayName.empty())
-        {
-            ifaceCounters.displayName = ifaceCounters.name;
-        }
+
+        // Display name: prefer Description, fall back to name
+        ifaceCounters.displayName = description.empty() ? ifaceCounters.name : description;
 
         ifaceCounters.rxBytes = rxBytes;
         ifaceCounters.txBytes = txBytes;
@@ -424,7 +430,16 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)
-        ifaceCounters.linkSpeedMbps = row.TransmitLinkSpeed / 1'000'000ULL;
+        // Windows uses 0 or ULONG64_MAX to indicate unknown speed
+        constexpr uint64_t UNKNOWN_SPEED_MAX = std::numeric_limits<uint64_t>::max();
+        if (row.TransmitLinkSpeed == 0 || row.TransmitLinkSpeed == UNKNOWN_SPEED_MAX)
+        {
+            ifaceCounters.linkSpeedMbps = 0;
+        }
+        else
+        {
+            ifaceCounters.linkSpeedMbps = row.TransmitLinkSpeed / 1'000'000ULL;
+        }
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
     }
