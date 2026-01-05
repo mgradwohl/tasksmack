@@ -404,7 +404,10 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         // Store per-interface data
         SystemCounters::InterfaceCounters ifaceCounters;
-        // MIB_IFROW uses narrow strings for description (ANSI)
+        // KNOWN LIMITATION: MIB_IFROW.bDescr contains ANSI strings in the system's default code page,
+        // not UTF-8. Interface names with non-ASCII characters may display incorrectly (mojibake).
+        // This will be resolved when we upgrade to GetIfTable2() which provides proper Unicode strings.
+        // See issue #349 for the GetIfTable2 migration plan.
         // bDescr is a fixed-size char array, null-terminated
         ifaceCounters.name = std::string(reinterpret_cast<const char*>(row.bDescr), row.dwDescrLen);
         // Remove any trailing null characters using std::erase

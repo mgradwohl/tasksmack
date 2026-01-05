@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <memory>
 #include <ranges>
 #include <string>
@@ -220,7 +221,20 @@ void NetworkPanel::renderInterfaceSelector()
     // Clamp selected interface if interfaces disappeared
     if (std::cmp_greater_equal(m_SelectedInterface, interfaceCount))
     {
-        m_SelectedInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
+        // Guard against potential overflow when converting from size_t to int.
+        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
+        if (interfaceCount == 0)
+        {
+            m_SelectedInterface = -1;
+        }
+        else if (interfaceCount > maxIntIndex)
+        {
+            m_SelectedInterface = std::numeric_limits<int>::max();
+        }
+        else
+        {
+            m_SelectedInterface = static_cast<int>(interfaceCount) - 1;
+        }
     }
 
     ImGui::AlignTextToFramePadding();
@@ -273,6 +287,10 @@ void NetworkPanel::renderInterfaceSelector()
         ImGui::SameLine();
         ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
                            selectedIface.isUp ? "[Up]" : "[Down]");
+
+        // Note: Per-interface history tracking is not yet implemented.
+        // Graph shows total traffic; current rates reflect selected interface.
+        ImGui::TextColored(theme.scheme().textMuted, "(Graph shows total traffic; current rates show selected interface)");
     }
 }
 

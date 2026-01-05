@@ -2057,8 +2057,21 @@ void SystemMetricsPanel::renderNetworkSection()
     // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
     if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
     {
-        // If there are no interfaces, force "Total"; otherwise clamp to last interface.
-        m_SelectedNetworkInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
+        // Guard against potential overflow when converting from size_t to int.
+        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
+        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
+        if (interfaceCount == 0)
+        {
+            m_SelectedNetworkInterface = -1;
+        }
+        else if (interfaceCount > maxIntIndex)
+        {
+            m_SelectedNetworkInterface = std::numeric_limits<int>::max();
+        }
+        else
+        {
+            m_SelectedNetworkInterface = static_cast<int>(interfaceCount) - 1;
+        }
     }
 
     // Interface selector
@@ -2106,6 +2119,10 @@ void SystemMetricsPanel::renderNetworkSection()
         ImGui::SameLine();
         ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
                            selectedIface.isUp ? "[Up]" : "[Down]");
+
+        // Note: Per-interface history is not yet implemented. Graph shows total traffic.
+        // Current rates (Now Bar) reflect the selected interface. See #295 for per-interface history.
+        ImGui::TextColored(theme.scheme().textMuted, "(Graph shows total traffic; current rates show selected interface)");
     }
 
     ImGui::Spacing();
