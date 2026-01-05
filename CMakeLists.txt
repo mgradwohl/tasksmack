@@ -690,7 +690,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 if(WIN32)
-    target_compile_definitions(TaskSmack PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
+    # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
+    # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
+    target_compile_definitions(TaskSmack PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        NTDDI_VERSION=0x0A000000
+    )
 endif()
 
 target_include_directories(TaskSmack PRIVATE
