@@ -477,10 +477,33 @@ In Actions → workflow run → Artifacts, you may see:
 gh run download <run-id> -n coverage-html-report
 ```
 
+## Branching Strategy
+
+The project uses the following branch patterns:
+
+| Branch | Purpose | CI Runs |
+|--------|---------|---------|
+| `main` | Stable release branch | Yes |
+| `feature/*` | Individual feature branches | On PR to main |
+| `dev/*` | Integration branches for multi-PR epics | Yes |
+
+### When to use `dev/*` branches
+
+Use a `dev/` branch when working on a large feature that spans multiple PRs (an "epic"). For example:
+- `dev/network-monitoring` - Collects multiple network-related PRs before merging to main
+- `dev/gpu-support` - Integration branch for GPU monitoring features
+
+Workflow:
+1. Create `dev/epic-name` from `main`
+2. Create feature branches and PR them into `dev/epic-name`
+3. Once all features are complete and tested, PR `dev/epic-name` into `main`
+
+For simple single-PR features, branch directly from `main` with a `feature/` prefix.
+
 ## Pull Request Process
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (or target a `dev/*` branch for epic work)
 3. Make your changes
 4. Run clang-tidy: `./tools/clang-tidy.sh debug` (Linux) or `pwsh tools/clang-tidy.ps1 debug` (Windows)
 5. Run formatting: `./tools/clang-format.sh` (Linux) or `pwsh tools/clang-format.ps1` (Windows)

@@ -67,6 +67,16 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_NetRxHistory);
     trimSamples(m_NetTxHistory);
 
+    // Per-interface network history
+    for (auto& [name, hist] : m_PerInterfaceRxHistory)
+    {
+        trimSamples(hist);
+    }
+    for (auto& [name, hist] : m_PerInterfaceTxHistory)
+    {
+        trimSamples(hist);
+    }
+
     for (auto& coreHist : m_PerCoreHistory)
     {
         trimSamples(coreHist);
@@ -249,6 +259,28 @@ std::vector<float> SystemModel::netTxHistory() const
     return std::vector<float>(m_NetTxHistory.begin(), m_NetTxHistory.end());
 }
 
+std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& interfaceName) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    const auto it = m_PerInterfaceRxHistory.find(interfaceName);
+    if (it != m_PerInterfaceRxHistory.end())
+    {
+        return std::vector<float>(it->second.begin(), it->second.end());
+    }
+    return {};
+}
+
+std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& interfaceName) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    const auto it = m_PerInterfaceTxHistory.find(interfaceName);
+    if (it != m_PerInterfaceTxHistory.end())
+    {
+        return std::vector<float>(it->second.begin(), it->second.end());
+    }
+    return {};
+}
+
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -336,6 +368,38 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.loadAvg15 = counters.loadAvg15;
     snap.cpuFreqMHz = counters.cpuFreqMHz;
 
+    // Per-interface network - always populate metadata, compute rates only with previous data
+    const double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        SystemSnapshot::InterfaceSnapshot ifaceSnap;
+        ifaceSnap.name = iface.name;
+        ifaceSnap.displayName = iface.displayName;
+        ifaceSnap.isUp = iface.isUp;
+        ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
+
+        // Compute rates only if we have previous data and positive time delta
+        if (m_HasPrevious && timeDelta > 0.0)
+        {
+            const auto* prevIface = findPreviousInterface(iface.name);
+            if (prevIface != nullptr)
+            {
+                if (iface.rxBytes >= prevIface->rxBytes)
+                {
+                    const uint64_t rxDelta = iface.rxBytes - prevIface->rxBytes;
+                    ifaceSnap.rxBytesPerSec = Numeric::toDouble(rxDelta) / timeDelta;
+                }
+                if (iface.txBytes >= prevIface->txBytes)
+                {
+                    const uint64_t txDelta = iface.txBytes - prevIface->txBytes;
+                    ifaceSnap.txBytesPerSec = Numeric::toDouble(txDelta) / timeDelta;
+                }
+            }
+        }
+
+        snap.networkInterfaces.push_back(std::move(ifaceSnap));
+    }
+
     // CPU usage (requires previous sample for delta)
     if (m_HasPrevious)
     {
@@ -358,8 +422,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             snap.cpuPerCore.push_back(coreUsage);
         }
 
-        // Network rates (bytes per second)
-        const double timeDelta = nowSeconds - m_PrevTimestamp;
+        // Compute total network rates (aggregate of all interfaces, bytes per second)
         if (timeDelta > 0.0)
         {
             // Only compute if counters increased (handle overflow/restart)
@@ -399,6 +462,14 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Network history (bytes per second)
         m_NetRxHistory.push_back(static_cast<float>(snap.netRxBytesPerSec));
         m_NetTxHistory.push_back(static_cast<float>(snap.netTxBytesPerSec));
+
+        // Per-interface network history
+        for (const auto& ifaceSnap : snap.networkInterfaces)
+        {
+            m_PerInterfaceRxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            m_PerInterfaceTxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.txBytesPerSec));
+        }
+
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
@@ -486,6 +557,12 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     status.model = counters.model;
 
     return status;
+}
+
+const Platform::SystemCounters::InterfaceCounters* SystemModel::findPreviousInterface(const std::string& name) const
+{
+    auto it = std::ranges::find_if(m_PrevCounters.networkInterfaces, [&name](const auto& iface) { return iface.name == name; });
+    return (it != m_PrevCounters.networkInterfaces.end()) ? &(*it) : nullptr;
 }
 
 } // namespace Domain

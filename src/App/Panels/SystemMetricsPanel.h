@@ -71,6 +71,7 @@ class SystemMetricsPanel : public Panel
     void renderCpuSection();
     void renderPerCoreSection();
     void renderGpuSection();
+    void renderNetworkSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
@@ -140,6 +141,9 @@ class SystemMetricsPanel : public Panel
         double recvBytesPerSec = 0.0;
         bool initialized = false;
     } m_SmoothedNetwork;
+
+    // Selected network interface (-1 means "Total" / all interfaces combined)
+    int m_SelectedNetworkInterface = -1;
 
     struct SmoothedGPU
     {

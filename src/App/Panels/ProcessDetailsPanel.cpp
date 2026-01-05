@@ -273,8 +273,6 @@ void ProcessDetailsPanel::renderContent()
             renderThreadAndFaultHistory(m_CachedSnapshot);
             ImGui::Separator();
             renderIoStats(m_CachedSnapshot);
-            ImGui::Separator();
-            renderNetworkStats(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
@@ -282,6 +280,20 @@ void ProcessDetailsPanel::renderContent()
         {
             renderActions();
             ImGui::EndTabItem();
+        }
+
+        // Network tab - show if process has network data
+        {
+            const bool hasNetworkData = ((m_CachedSnapshot.netSentBytesPerSec > 0.0) || (m_CachedSnapshot.netReceivedBytesPerSec > 0.0) ||
+                                         (!m_NetSentHistory.empty()) || (!m_NetRecvHistory.empty()));
+            if (hasNetworkData)
+            {
+                if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network"))
+                {
+                    renderNetworkStats(m_CachedSnapshot);
+                    ImGui::EndTabItem();
+                }
+            }
         }
 
         // GPU tab - show if process has GPU usage

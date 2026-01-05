@@ -8,6 +8,8 @@
 #include <deque>
 #include <memory>
 #include <shared_mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Domain
@@ -63,6 +65,8 @@ class SystemModel
     [[nodiscard]] std::vector<float> batteryChargeHistory() const;
     [[nodiscard]] std::vector<float> netRxHistory() const;
     [[nodiscard]] std::vector<float> netTxHistory() const;
+    [[nodiscard]] std::vector<float> netRxHistoryForInterface(const std::string& interfaceName) const;
+    [[nodiscard]] std::vector<float> netTxHistoryForInterface(const std::string& interfaceName) const;
     [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
     [[nodiscard]] std::vector<double> timestamps() const;
 
@@ -93,6 +97,9 @@ class SystemModel
     std::deque<float> m_BatteryChargeHistory;
     std::deque<float> m_NetRxHistory;
     std::deque<float> m_NetTxHistory;
+    // Per-interface network history (keyed by interface name)
+    std::unordered_map<std::string, std::deque<float>> m_PerInterfaceRxHistory;
+    std::unordered_map<std::string, std::deque<float>> m_PerInterfaceTxHistory;
     std::deque<double> m_Timestamps;
     std::vector<std::deque<float>> m_PerCoreHistory;
 
@@ -106,6 +113,9 @@ class SystemModel
     void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
+
+    /// Find a previous interface by name for rate calculation.
+    [[nodiscard]] const Platform::SystemCounters::InterfaceCounters* findPreviousInterface(const std::string& name) const;
 };
 
 } // namespace Domain
