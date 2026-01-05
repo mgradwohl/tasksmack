@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -18,10 +19,11 @@ class LinuxSystemProbe : public ISystemProbe
     LinuxSystemProbe();
     ~LinuxSystemProbe() override = default;
 
+    // Non-copyable, non-movable (contains mutex)
     LinuxSystemProbe(const LinuxSystemProbe&) = delete;
     LinuxSystemProbe& operator=(const LinuxSystemProbe&) = delete;
-    LinuxSystemProbe(LinuxSystemProbe&&) = default;
-    LinuxSystemProbe& operator=(LinuxSystemProbe&&) = default;
+    LinuxSystemProbe(LinuxSystemProbe&&) = delete;
+    LinuxSystemProbe& operator=(LinuxSystemProbe&&) = delete;
 
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;
@@ -70,12 +72,14 @@ class LinuxSystemProbe : public ISystemProbe
     // This is analogous to m_Hostname and m_CpuModel above: caching values that rarely change
     // (link speed only changes on cable replug or driver reload) to reduce sysfs I/O overhead.
     // The cached values don't affect correctness, only performance.
+    // Protected by m_InterfaceCacheMutex for thread safety.
     struct InterfaceCacheEntry
     {
         uint64_t linkSpeedMbps = 0;
         bool wasUp = false; // Track state transitions
         std::chrono::steady_clock::time_point lastSpeedCheck{};
     };
+    mutable std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
 
     static constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;

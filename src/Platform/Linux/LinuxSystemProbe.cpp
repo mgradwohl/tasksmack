@@ -426,6 +426,7 @@ void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::
     // Remove cache entries for interfaces that are no longer present.
     // This prevents unbounded cache growth when interfaces come and go
     // (e.g., USB network adapters, VMs, containers, VPNs).
+    const std::scoped_lock lock(m_InterfaceCacheMutex);
     std::erase_if(m_InterfaceCache,
                   [&currentInterfaces](const auto& entry)
                   { return std::ranges::find(currentInterfaces, entry.first) == currentInterfaces.end(); });
@@ -441,6 +442,7 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     // 3. TTL expired (periodic refresh every 60 seconds)
 
     const auto now = std::chrono::steady_clock::now();
+    const std::scoped_lock lock(m_InterfaceCacheMutex);
 
     auto it = m_InterfaceCache.find(ifaceName);
     if (it != m_InterfaceCache.end())
