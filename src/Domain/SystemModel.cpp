@@ -521,14 +521,8 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
 
 const Platform::SystemCounters::InterfaceCounters* SystemModel::findPreviousInterface(const std::string& name) const
 {
-    for (const auto& iface : m_PrevCounters.networkInterfaces)
-    {
-        if (iface.name == name)
-        {
-            return &iface;
-        }
-    }
-    return nullptr;
+    auto it = std::ranges::find_if(m_PrevCounters.networkInterfaces, [&name](const auto& iface) { return iface.name == name; });
+    return (it != m_PrevCounters.networkInterfaces.end()) ? &(*it) : nullptr;
 }
 
 } // namespace Domain

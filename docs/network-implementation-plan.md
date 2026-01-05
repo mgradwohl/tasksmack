@@ -45,7 +45,7 @@ main
 
 | Platform | API | Provided By |
 |----------|-----|-------------|
-| Windows | `GetIfTable2()`, `FreeMibTable()` | `iphlpapi.lib` (Windows SDK, always available) |
+| Windows | `GetIfTable()` | `iphlpapi.lib` (Windows SDK, always available) |
 | Linux | `/proc/net/dev` | Linux kernel (always available) |
 
 Only CMake change needed: link `iphlpapi` on Windows.
@@ -91,10 +91,11 @@ The interface dropdown shows **TCP/IP network adapters only**:
    ```
 2. Add `std::vector<InterfaceCounters> interfaces` to `NetworkCounters`
 3. **Linux:** Update probe to store per-interface data (already parsing `/proc/net/dev`)
-4. **Windows:** Implement `readNetworkCounters()` using `GetIfTable2()`:
+4. **Windows:** Implement `readNetworkCounters()` using `GetIfTable()`:
    - Enumerate interfaces, store per-interface counters
    - Filter by interface type (exclude loopback, non-network)
    - Set `.hasNetworkCounters = true` in capabilities
+   - Note: Uses older API for SDK compatibility; see issue #349 for GetIfTable2 upgrade
 5. Add per-interface rates to `SystemSnapshot`
 6. Update `SystemModel` to compute per-interface rates
 7. Add interface selector dropdown to System Overview network section

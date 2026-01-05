@@ -334,7 +334,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
         .hasCpuFreq = true,         // From registry ~MHz
-        .hasNetworkCounters = true, // Via GetIfTable2
+        .hasNetworkCounters = true, // Via GetIfTable
     };
 }
 
@@ -407,11 +407,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // MIB_IFROW uses narrow strings for description (ANSI)
         // bDescr is a fixed-size char array, null-terminated
         ifaceCounters.name = std::string(reinterpret_cast<const char*>(row.bDescr), row.dwDescrLen);
-        // Remove any trailing null characters
-        while (!ifaceCounters.name.empty() && ifaceCounters.name.back() == '\0')
-        {
-            ifaceCounters.name.pop_back();
-        }
+        // Remove any trailing null characters using C++20 std::erase
+        std::erase(ifaceCounters.name, '\0');
         ifaceCounters.displayName = ifaceCounters.name; // Use same name for display
         ifaceCounters.rxBytes = rxBytes;
         ifaceCounters.txBytes = txBytes;
