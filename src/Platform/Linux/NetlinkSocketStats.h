@@ -25,7 +25,7 @@ class NetlinkSocketStats
 {
   public:
     NetlinkSocketStats();
-    ~NetlinkSocketStats();
+    ~NetlinkSocketStats() noexcept;
 
     NetlinkSocketStats(const NetlinkSocketStats&) = delete;
     NetlinkSocketStats& operator=(const NetlinkSocketStats&) = delete;
@@ -37,7 +37,7 @@ class NetlinkSocketStats
     [[nodiscard]] std::vector<SocketStats> queryAllSockets();
 
     /// Check if Netlink INET_DIAG is available and functional
-    [[nodiscard]] bool isAvailable() const
+    [[nodiscard]] bool isAvailable() const noexcept
     {
         return m_Available;
     }

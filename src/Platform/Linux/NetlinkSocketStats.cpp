@@ -89,7 +89,7 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
 
     // Calculate where attributes start (after the inet_diag_msg)
     const auto* attrStart = reinterpret_cast<const std::uint8_t*>(diagMsg + 1);
-    std::size_t attrLen = msgLen - sizeof(inet_diag_msg);
+    std::size_t attrLen = (msgLen - sizeof(inet_diag_msg));
 
     // Ensure we have room for attributes
     if (attrLen < sizeof(rtattr))
@@ -114,11 +114,11 @@ void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
             // Check we have enough data for the byte counter fields
             // bytes_acked and bytes_received were added in Linux 4.2
             // They're at offset ~144 bytes into tcp_info
-            if (infoLen >= offsetof(tcp_info, tcpi_bytes_received) + sizeof(tcpInfo->tcpi_bytes_received))
+            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_received) + sizeof(tcpInfo->tcpi_bytes_received)))
             {
                 stats.bytesReceived = tcpInfo->tcpi_bytes_received;
             }
-            if (infoLen >= offsetof(tcp_info, tcpi_bytes_acked) + sizeof(tcpInfo->tcpi_bytes_acked))
+            if (infoLen >= (offsetof(tcp_info, tcpi_bytes_acked) + sizeof(tcpInfo->tcpi_bytes_acked)))
             {
                 stats.bytesSent = tcpInfo->tcpi_bytes_acked;
             }
@@ -266,11 +266,15 @@ NetlinkSocketStats::NetlinkSocketStats()
     }
 }
 
-NetlinkSocketStats::~NetlinkSocketStats()
+NetlinkSocketStats::~NetlinkSocketStats() noexcept
 {
     if (m_Socket >= 0)
     {
-        close(m_Socket);
+        // Invalidate m_Socket before close() for consistency with constructor cleanup.
+        // Destructor cannot throw, so close() errors are ignored (common POSIX pattern).
+        const int oldSocket = m_Socket;
+        m_Socket = -1;
+        close(oldSocket);
     }
 }
 
@@ -312,8 +316,8 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
     req.req.idiag_states = static_cast<std::uint32_t>(-1); // All states
 
     // Request INET_DIAG_INFO extension to get tcp_info with byte counters
-    // This is a bitmask: (1 << (INET_DIAG_INFO - 1))
-    req.req.idiag_ext = (1U << (INET_DIAG_INFO - 1));
+    // This is a bitmask: (1 << ((INET_DIAG_INFO) - 1))
+    req.req.idiag_ext = (1U << ((INET_DIAG_INFO) -1));
 
     // Query both IPv4 and IPv6 sockets using the extracted helper
     querySocketsForFamily(m_Socket, AF_INET, req, results);
@@ -345,7 +349,7 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
         // Check if directory name is a PID (numeric)
         const std::string& pidStr = procEntry.path().filename().string();
         std::int32_t pid = 0;
-        auto result = std::from_chars(pidStr.data(), pidStr.data() + pidStr.size(), pid);
+        auto result = std::from_chars(pidStr.data(), (pidStr.data() + pidStr.size()), pid);
         if (result.ec != std::errc{} || pid <= 0)
         {
             continue;
@@ -398,7 +402,7 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
             }
 
             std::uint64_t inode = 0;
-            auto parseResult = std::from_chars(target.data() + start, target.data() + end, inode);
+            auto parseResult = std::from_chars((target.data() + start), (target.data() + end), inode);
             if (parseResult.ec == std::errc{} && inode != 0)
             {
                 inodeToPid[inode] = pid;
@@ -431,7 +435,7 @@ aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map
         // Note: UINT64_MAX is a reasonable sentinel for "counter saturated"
         // Check: if received > (MAX - bytesReceived) then adding would overflow
         constexpr auto kMaxBytes = std::numeric_limits<std::uint64_t>::max();
-        if (received > (kMaxBytes - socket.bytesReceived))
+        if (received > ((kMaxBytes) -socket.bytesReceived))
         {
             received = kMaxBytes; // Saturate on overflow
         }
@@ -439,7 +443,7 @@ aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map
         {
             received += socket.bytesReceived;
         }
-        if (sent > (kMaxBytes - socket.bytesSent))
+        if (sent > ((kMaxBytes) -socket.bytesSent))
         {
             sent = kMaxBytes; // Saturate on overflow
         }
