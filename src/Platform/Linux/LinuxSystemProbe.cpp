@@ -4,14 +4,20 @@
 
 #include "LinuxSystemProbe.h"
 
+#include "Domain/SamplingConfig.h"
+
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
+#include <vector>
 
 #include <unistd.h>
 
@@ -399,16 +405,91 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(iface);
-            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface);
+            ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(iface, ifaceCounters.isUp);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
     }
 
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
+
+    // Clean up cache entries for interfaces that no longer exist
+    // (e.g., USB network adapters unplugged, VMs/containers destroyed)
+    std::vector<std::string> currentInterfaces;
+    currentInterfaces.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        currentInterfaces.push_back(iface.name);
+    }
+    cleanupStaleInterfaceCacheEntries(currentInterfaces);
 }
 
-uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName)
+void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces)
+{
+    // Remove cache entries for interfaces that are no longer present.
+    // This prevents unbounded cache growth when interfaces come and go
+    // (e.g., USB network adapters, VMs, containers, VPNs).
+    // Convert to unordered_set for O(1) lookup instead of O(n) linear search.
+    const std::unordered_set<std::string> currentSet(currentInterfaces.begin(), currentInterfaces.end());
+
+    const std::scoped_lock lock(m_InterfaceCacheMutex);
+    std::erase_if(m_InterfaceCache, [&currentSet](const auto& entry) { return !currentSet.contains(entry.first); });
+}
+
+uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, bool isUp)
+{
+    // Use cached link speed to reduce sysfs I/O.
+    // Link speed rarely changes (only on cable replug or driver reload).
+    // Refresh conditions:
+    // 1. First access for this interface
+    // 2. Interface transitioned from down to up (may have new speed after reconnection)
+    // 3. TTL expired (periodic refresh every 60 seconds)
+
+    const auto now = std::chrono::steady_clock::now();
+
+    // Check cache under lock to determine if refresh is needed
+    {
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
+
+        auto it = m_InterfaceCache.find(ifaceName);
+        if (it != m_InterfaceCache.end())
+        {
+            auto& entry = it->second;
+            const bool stateTransition = (!entry.wasUp && isUp);
+            const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
+            const bool expired = (age >= Domain::Sampling::LINK_SPEED_CACHE_TTL_SECONDS);
+
+            // Return cached value if still valid
+            if (!stateTransition && !expired)
+            {
+                // Keep state tracking in sync even when we don't refresh link speed
+                entry.wasUp = isUp;
+                return entry.linkSpeedMbps;
+            }
+            // Fall through to refresh
+        }
+    }
+    // Lock released - perform potentially blocking sysfs I/O without holding mutex
+
+    const uint64_t newSpeed = readInterfaceLinkSpeedFromSysfs(ifaceName);
+
+    // Update cache with new value
+    // Use insert_or_assign to handle race conditions:
+    // - Another thread may have inserted the entry while we were reading
+    // - cleanupStaleInterfaceCacheEntries may have removed the entry
+    {
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
+        m_InterfaceCache.insert_or_assign(ifaceName,
+                                          InterfaceCacheEntry{
+                                              .linkSpeedMbps = newSpeed,
+                                              .wasUp = isUp,
+                                              .lastSpeedCheck = now,
+                                          });
+    }
+    return newSpeed;
+}
+
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName)
 {
     // Read link speed from /sys/class/net/<iface>/speed (in Mbps)
     // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces)
