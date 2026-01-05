@@ -3,7 +3,6 @@
 #include "Core/Layer.h"
 #include "UI/Theme.h"
 
-#include <string>
 #include <vector>
 
 namespace App

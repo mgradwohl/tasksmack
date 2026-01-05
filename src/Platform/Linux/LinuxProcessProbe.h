@@ -1,7 +1,13 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
+#include "Platform/PlatformConfig.h"
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "Platform/Linux/NetlinkSocketStats.h"
+#endif
+
+#include <memory>
 #include <mutex>
 
 namespace Platform
@@ -34,6 +40,12 @@ class LinuxProcessProbe : public IProcessProbe
     mutable bool m_IoCountersAvailable = false;   // Cached capability check (guarded by once_flag)
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    // Per-process network monitoring via Netlink INET_DIAG
+    std::unique_ptr<NetlinkSocketStats> m_SocketStats;
+    bool m_HasNetworkCounters = false;
+#endif
 
     /// Parse /proc/[pid]/stat for a single process
     [[nodiscard]] bool parseProcessStat(int32_t pid, ProcessCounters& counters) const;
@@ -69,6 +81,11 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Attribute system energy to processes based on CPU usage
     void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    /// Attribute network bytes to processes using Netlink socket stats
+    void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+#endif
 };
 
 } // namespace Platform

@@ -278,7 +278,10 @@ These features are out of scope for this epic but tracked for future work:
 - **Remote IP information** - Hostname, geolocation
 - **Connection filtering** - Filter by process, port, protocol
 
-### Per-Process Network (#293)
+### Per-Process Network (#293, #353) — IN PROGRESS
+
+**Status:** Implementation started (2026-01-04)  
+**Branch:** `feature/per-process-network`
 
 **Value:** Shows which processes are using network bandwidth. Available in:
 - Windows Task Manager (Network column)
@@ -292,9 +295,40 @@ These features are out of scope for this epic but tracked for future work:
 - Performance impact (scanning all processes/sockets is expensive)
 - Privilege requirements (some approaches need root/admin)
 
-**Recommended approach:** Create a spike issue to evaluate:
-- Linux: Socket inode matching, Netlink INET_DIAG, or eBPF
-- Windows: `GetPerTcpConnectionEStats` or ETW
+#### Implementation Approach (Linux): Netlink INET_DIAG
+
+After evaluating eBPF vs Netlink INET_DIAG, we chose **Netlink INET_DIAG** for:
+- No elevated privileges required (unlike eBPF which needs root/CAP_BPF)
+- No build toolchain changes (eBPF requires libbpf, clang for BPF bytecode)
+- Simpler implementation - kernel directly provides TCP_INFO with byte counters
+- Good accuracy for TCP sockets (most applications)
+
+| Approach | Privileges | Build Complexity | Accuracy | Decision |
+|----------|-----------|------------------|----------|----------|
+| eBPF | Root/CAP_BPF | High (libbpf, BPF compiler) | Excellent | ❌ Too complex |
+| Netlink INET_DIAG | None | None | Good (TCP only) | ✅ Chosen |
+| /proc/net/tcp parsing | None | None | Incomplete (no byte counters) | ❌ Missing data |
+
+**Implementation:**
+1. `NetlinkSocketStats` class - Query TCP/UDP sockets via INET_DIAG
+2. `buildInodeToPidMap()` - Map socket inodes to PIDs via `/proc/[pid]/fd/*`
+3. Integrate into `LinuxProcessProbe::enumerate()` - Aggregate per-PID
+
+**Files:**
+- `src/Platform/Linux/NetlinkSocketStats.h` - Header
+- `src/Platform/Linux/NetlinkSocketStats.cpp` - Implementation
+- `src/Platform/Linux/LinuxProcessProbe.cpp` - Integration
+
+**Limitations:**
+- UDP sockets may have limited byte counter support (kernel-dependent)
+- Unix domain sockets not tracked (not relevant for network monitoring)
+- Scanning `/proc/[pid]/fd/*` adds some overhead (mitigated by caching)
+
+#### Implementation Approach (Windows): Future Work
+
+Windows options:
+- `GetPerTcpConnectionEStats` - Per-connection TCP stats
+- ETW (Event Tracing for Windows) - Real-time kernel events
 
 **Note:** UI already exists and waits for probe data. Once probes populate `ProcessCounters::netSentBytes` and `netReceivedBytes`, the UI will automatically work.
 
@@ -320,7 +354,8 @@ These features are out of scope for this epic but tracked for future work:
 | Phase order | Foundation first (per-interface), then panel |
 | Interface filtering | TCP/IP network adapters only (no Bluetooth, NFC, etc.) |
 | System Overview changes | Keeps network section; Network Panel is additive |
-| Per-process network | Future enhancement, not part of this epic |
+| Per-process network (Linux) | Netlink INET_DIAG + inode-to-PID mapping (no privileges required) |
+| Per-process network (Windows) | Future work: GetPerTcpConnectionEStats or ETW |
 | Future enhancements scope | Keep tight v1 scope; future enhancements tracked separately |
 
 ---

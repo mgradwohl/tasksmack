@@ -5,7 +5,6 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <utility>
 
 namespace UI

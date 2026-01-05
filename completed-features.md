@@ -24,7 +24,7 @@ This file lists features that are already implemented in TaskSmack.
 | **Power Usage Column** | Task Manager | Process power consumption (infrastructure ready, platform implementations pending) |
 | **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
 | **Priority Adjustment** | Task Manager, htop | Change process nice value (-20 to 19) via slider in Process Details; Linux uses `setpriority()`, Windows uses `SetPriorityClass()` |
-| **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; infrastructure ready for probe implementation |
+| **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; Linux implementation uses Netlink INET_DIAG to query TCP/UDP socket byte counters (requires Linux 4.2+); Windows implementation pending |
 | **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
 | **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
 | **GPU Monitoring (Phase 1-7)** | Task Manager, btop++ | GPU infrastructure and UI complete; Platform layer with NVIDIA (NVML), Intel (DRM), AMD (ROCm) probes on Linux; Domain GPUModel with history and per-process GPU fields in ProcessSnapshot; UI surfaces include SystemMetricsPanel GPU section, ProcessesPanel GPU columns, and ProcessDetailsPanel GPU tab |

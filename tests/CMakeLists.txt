@@ -85,6 +85,7 @@ else()
         Platform/test_LinuxDiskProbe.cpp
         Platform/test_LinuxPathProvider.cpp
         Platform/test_LinuxPowerProbe.cpp
+        Platform/test_NetlinkSocketStats.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
@@ -98,6 +99,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
     )
     set(INTEGRATION_TEST_SOURCES
         Integration/test_CrossLayer.cpp
