@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
-#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
