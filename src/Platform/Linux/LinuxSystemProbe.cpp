@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 #include <unistd.h>
@@ -426,10 +427,11 @@ void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::
     // Remove cache entries for interfaces that are no longer present.
     // This prevents unbounded cache growth when interfaces come and go
     // (e.g., USB network adapters, VMs, containers, VPNs).
+    // Convert to unordered_set for O(1) lookup instead of O(n) linear search.
+    const std::unordered_set<std::string> currentSet(currentInterfaces.begin(), currentInterfaces.end());
+
     const std::scoped_lock lock(m_InterfaceCacheMutex);
-    std::erase_if(m_InterfaceCache,
-                  [&currentInterfaces](const auto& entry)
-                  { return std::ranges::find(currentInterfaces, entry.first) == currentInterfaces.end(); });
+    std::erase_if(m_InterfaceCache, [&currentSet](const auto& entry) { return !currentSet.contains(entry.first); });
 }
 
 uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, bool isUp)
@@ -452,15 +454,14 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
         const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
         const bool expired = (age >= LINK_SPEED_CACHE_TTL_SECONDS);
 
-        entry.wasUp = isUp; // Update state tracking
-
         // Return cached value if still valid
         if (!stateTransition && !expired)
         {
             return entry.linkSpeedMbps;
         }
 
-        // Refresh cache
+        // Refresh cache - update state tracking only on actual refresh
+        entry.wasUp = isUp;
         entry.linkSpeedMbps = readInterfaceLinkSpeedFromSysfs(ifaceName);
         entry.lastSpeedCheck = now;
         return entry.linkSpeedMbps;

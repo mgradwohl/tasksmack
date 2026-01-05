@@ -57,7 +57,7 @@ class LinuxSystemProbe : public ISystemProbe
     [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName);
 
     /// Remove cache entries for interfaces that no longer exist.
-    /// @param currentInterfaces Set of interface names seen in current enumeration
+    /// @param currentInterfaces Vector of interface names seen in current enumeration
     void cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces);
 
     long m_TicksPerSecond;
