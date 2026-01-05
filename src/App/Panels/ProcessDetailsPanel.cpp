@@ -2,7 +2,6 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
-#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
@@ -106,9 +105,9 @@ using detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 struct ProcessDetailsPanel::PrioritySliderContext
 {
     ImDrawList* drawList = nullptr;
-    ImVec2 cursorStart{};       // Screen position where badge area starts
-    ImVec2 sliderMin{};         // Top-left of slider bar (screen coords)
-    ImVec2 sliderMax{};         // Bottom-right of slider bar (screen coords)
+    ImVec2 cursorStart;         // Screen position where badge area starts
+    ImVec2 sliderMin;           // Top-left of slider bar (screen coords)
+    ImVec2 sliderMax;           // Bottom-right of slider bar (screen coords)
     float sliderLocalX = 0.0F;  // Slider X position in window-local coords (for cursor positioning)
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value

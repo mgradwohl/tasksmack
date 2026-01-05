@@ -3,7 +3,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <ranges>
 
 namespace Domain
 {

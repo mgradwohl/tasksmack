@@ -4,6 +4,8 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "NetlinkSocketStats.h"
+
 #include <spdlog/spdlog.h>
 
 #include <array>
@@ -130,6 +132,18 @@ LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
     {
         spdlog::debug("Power monitoring not available (RAPL not found)");
     }
+
+    // Initialize per-process network monitoring via Netlink INET_DIAG
+    m_SocketStats = std::make_unique<NetlinkSocketStats>();
+    m_HasNetworkCounters = m_SocketStats->isAvailable();
+    if (m_HasNetworkCounters)
+    {
+        spdlog::info("Per-process network monitoring available via Netlink INET_DIAG");
+    }
+    else
+    {
+        spdlog::debug("Per-process network monitoring not available");
+    }
 }
 
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
@@ -192,6 +206,12 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         attributeEnergyToProcesses(processes);
     }
 
+    // Attribute network bytes to processes if socket stats are available
+    if (m_HasNetworkCounters && m_SocketStats)
+    {
+        attributeNetworkToProcesses(processes);
+    }
+
     return processes;
 }
 
@@ -209,10 +229,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,         // From sched_getaffinity
-                               .hasNetworkCounters = false,    // Would need socket inode matching + eBPF/netlink
-                               .hasPowerUsage = m_HasPowerCap, // Available if RAPL is detected
-                               .hasStatus = true};             // From cgroup freezer state
+                               .hasCpuAffinity = true,                     // From sched_getaffinity
+                               .hasNetworkCounters = m_HasNetworkCounters, // From Netlink INET_DIAG
+                               .hasPowerUsage = m_HasPowerCap,             // Available if RAPL is detected
+                               .hasStatus = true};                         // From cgroup freezer state
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -730,6 +750,43 @@ void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>&
         const uint64_t processCpuTime = proc.userTime + proc.systemTime;
         const double cpuProportion = static_cast<double>(processCpuTime) / static_cast<double>(totalProcessCpuTime);
         proc.energyMicrojoules = static_cast<uint64_t>(static_cast<double>(systemEnergy) * cpuProportion);
+    }
+}
+
+void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const
+{
+    if (!m_SocketStats)
+    {
+        return;
+    }
+
+    // Query all TCP/UDP sockets with their byte counters
+    const std::vector<SocketStats> sockets = m_SocketStats->queryAllSockets();
+    if (sockets.empty())
+    {
+        return;
+    }
+
+    // Build inode-to-PID mapping by scanning /proc/[pid]/fd/*
+    const std::unordered_map<std::uint64_t, std::int32_t> inodeToPid = buildInodeToPidMap();
+    if (inodeToPid.empty())
+    {
+        return;
+    }
+
+    // Aggregate socket bytes by PID
+    const auto pidStats = aggregateByPid(sockets, inodeToPid);
+
+    // Apply network stats to processes
+    for (auto& proc : processes)
+    {
+        auto it = pidStats.find(proc.pid);
+        if (it != pidStats.end())
+        {
+            const auto& [received, sent] = it->second;
+            proc.netReceivedBytes = received;
+            proc.netSentBytes = sent;
+        }
     }
 }
 

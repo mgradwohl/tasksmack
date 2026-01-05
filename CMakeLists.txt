@@ -481,6 +481,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/NVMLGPUProbe.cpp
     src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/ROCmGPUProbe.cpp
+    src/Platform/Linux/NetlinkSocketStats.cpp
     src/Platform/Linux/Factory.cpp
 )
 
