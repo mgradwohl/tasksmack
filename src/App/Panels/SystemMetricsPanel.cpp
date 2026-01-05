@@ -339,6 +339,16 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
+        // Network tab - show if network counters are available
+        if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
+        {
+            if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network"))
+            {
+                renderNetworkSection();
+                ImGui::EndTabItem();
+            }
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -1098,191 +1108,6 @@ void SystemMetricsPanel::renderOverview()
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O (%zu samples)", aligned);
         renderHistoryWithNowBars(
             "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
-        ImGui::Spacing();
-    }
-
-    // System network history (from SystemModel - real system-wide network stats)
-    if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
-    {
-        const auto netSnap = m_Model->snapshot();
-        const auto& interfaces = netSnap.networkInterfaces;
-
-        // Build interface selector dropdown
-        std::vector<std::string> interfaceNames;
-        interfaceNames.emplace_back("Total (All Interfaces)");
-        for (const auto& iface : interfaces)
-        {
-            // Use display name if available, otherwise interface name
-            interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
-        }
-
-        const auto interfaceCount = interfaces.size();
-
-        // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-        // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-        if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
-        {
-            // If there are no interfaces, force "Total"; otherwise clamp to last interface.
-            m_SelectedNetworkInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
-        }
-
-        // Interface selector
-        ImGui::SetNextItemWidth(250.0F);
-        // Index 0 is "Total", indices 1+ are interfaces. m_SelectedNetworkInterface: -1 = Total, 0+ = interface index
-        // Safe: m_SelectedNetworkInterface is always >= -1, so m_SelectedNetworkInterface + 1 is always >= 0
-        const size_t comboIndex = (m_SelectedNetworkInterface < 0) ? 0 : static_cast<size_t>(m_SelectedNetworkInterface) + 1;
-        if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
-        {
-            for (size_t i = 0; i <= interfaceCount; ++i)
-            {
-                // i=0 means "Total" (m_SelectedNetworkInterface == -1), i=1+ means interface index 0+
-                const int selectionValue = static_cast<int>(i) - 1;
-                const bool isSelected = (m_SelectedNetworkInterface == selectionValue);
-                if (ImGui::Selectable(interfaceNames[i].c_str(), isSelected))
-                {
-                    m_SelectedNetworkInterface = selectionValue;
-                    // Reset smoothed values when changing interface
-                    m_SmoothedNetwork.initialized = false;
-                }
-                if (isSelected)
-                {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-
-        ImGui::SameLine();
-
-        // Show link speed for selected interface (if available and not "Total")
-        const bool hasValidSelection = m_SelectedNetworkInterface >= 0 && std::cmp_less(m_SelectedNetworkInterface, interfaceCount);
-        if (hasValidSelection)
-        {
-            const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
-            if (selectedIface.linkSpeedMbps > 0)
-            {
-                const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
-                ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
-            }
-            else
-            {
-                ImGui::TextColored(theme.scheme().textMuted, "Link: Unknown");
-            }
-            ImGui::SameLine();
-            ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
-                               selectedIface.isUp ? "[Up]" : "[Down]");
-        }
-
-        ImGui::Spacing();
-
-        // Get data based on selection
-        double targetSent = 0.0;
-        double targetRecv = 0.0;
-
-        if (m_SelectedNetworkInterface < 0)
-        {
-            // Total mode - use existing system-wide history
-            targetSent = netSnap.netTxBytesPerSec;
-            targetRecv = netSnap.netRxBytesPerSec;
-        }
-        else if (hasValidSelection)
-        {
-            // Specific interface - use its current rates
-            const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
-            targetSent = selectedIface.txBytesPerSec;
-            targetRecv = selectedIface.rxBytesPerSec;
-            // No per-interface history yet, but still show the graph with total data
-            // (TODO: Add per-interface history tracking for full feature)
-        }
-
-        const auto netTimestamps = m_Model->timestamps();
-        const auto netTxHist = m_Model->netTxHistory();
-        const auto netRxHist = m_Model->netRxHistory();
-        const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
-
-        // Always use default axis config even with no data
-        const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
-                                      : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-        std::vector<float> netTimes;
-        std::vector<float> sentData;
-        std::vector<float> recvData;
-
-        if (aligned > 0)
-        {
-            // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
-            netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
-            sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
-            recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
-        }
-
-        // Update smoothed network rates
-        updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
-
-        const double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
-                                        recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
-                                        m_SmoothedNetwork.sentBytesPerSec,
-                                        m_SmoothedNetwork.recvBytesPerSec,
-                                        1.0});
-        const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
-                             .label = "Network Sent",
-                             .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
-                             .color = theme.scheme().chartCpu};
-        const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
-                             .label = "Network Received",
-                             .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
-                             .color = theme.accentColor(2)};
-
-        // Determine plot title based on selection
-        std::string plotTitle = "Total";
-        if (m_SelectedNetworkInterface >= 0 && hasValidSelection)
-        {
-            plotTitle = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name;
-        }
-
-        auto plot = [&]()
-        {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##SystemNetHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
-            {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
-                const int count = UI::Numeric::checkedCount(aligned);
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(netTimes, mouse.x))
-                    {
-                        if (*idxVal < aligned)
-                        {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
-                            ImGui::TextUnformatted(ageText.c_str());
-                            ImGui::Separator();
-                            ImGui::TextColored(theme.scheme().chartCpu,
-                                               "Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.accentColor(2),
-                                               "Recv: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
-                            ImGui::EndTooltip();
-                        }
-                    }
-                }
-
-                ImPlot::EndPlot();
-            }
-        };
-
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network - %s (%zu samples)", plotTitle.c_str(), aligned);
-        renderHistoryWithNowBars(
-            "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
 }
@@ -2201,6 +2026,255 @@ void SystemMetricsPanel::updateSmoothedGPU(const std::string& gpuId, const Domai
     smoothed.memoryPercent = smoothTowards(smoothed.memoryPercent, snap.memoryUsedPercent, alpha);
     smoothed.temperatureC = smoothTowards(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha);
     smoothed.powerWatts = smoothTowards(smoothed.powerWatts, snap.powerDrawWatts, alpha);
+}
+
+void SystemMetricsPanel::renderNetworkSection()
+{
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    if (m_Model == nullptr || !m_Model->capabilities().hasNetworkCounters)
+    {
+        ImGui::TextUnformatted("Network monitoring not available on this platform.");
+        return;
+    }
+
+    const auto netSnap = m_Model->snapshot();
+    const auto& interfaces = netSnap.networkInterfaces;
+
+    // Build interface selector dropdown
+    std::vector<std::string> interfaceNames;
+    interfaceNames.emplace_back("Total (All Interfaces)");
+    for (const auto& iface : interfaces)
+    {
+        // Use display name if available, otherwise interface name
+        interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
+    }
+
+    const auto interfaceCount = interfaces.size();
+
+    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
+    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
+    if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
+    {
+        // If there are no interfaces, force "Total"; otherwise clamp to last interface.
+        m_SelectedNetworkInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
+    }
+
+    // Interface selector
+    ImGui::SetNextItemWidth(250.0F);
+    // Index 0 is "Total", indices 1+ are interfaces. m_SelectedNetworkInterface: -1 = Total, 0+ = interface index
+    // Safe: m_SelectedNetworkInterface is always >= -1, so m_SelectedNetworkInterface + 1 is always >= 0
+    const size_t comboIndex = (m_SelectedNetworkInterface < 0) ? 0 : static_cast<size_t>(m_SelectedNetworkInterface) + 1;
+    if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
+    {
+        for (size_t i = 0; i <= interfaceCount; ++i)
+        {
+            // i=0 means "Total" (m_SelectedNetworkInterface == -1), i=1+ means interface index 0+
+            const int selectionValue = static_cast<int>(i) - 1;
+            const bool isSelected = (m_SelectedNetworkInterface == selectionValue);
+            if (ImGui::Selectable(interfaceNames[i].c_str(), isSelected))
+            {
+                m_SelectedNetworkInterface = selectionValue;
+                // Reset smoothed values when changing interface
+                m_SmoothedNetwork.initialized = false;
+            }
+            if (isSelected)
+            {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::SameLine();
+
+    // Show link speed for selected interface (if available and not "Total")
+    const bool hasValidSelection = m_SelectedNetworkInterface >= 0 && std::cmp_less(m_SelectedNetworkInterface, interfaceCount);
+    if (hasValidSelection)
+    {
+        const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
+        if (selectedIface.linkSpeedMbps > 0)
+        {
+            const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
+            ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
+        }
+        else
+        {
+            ImGui::TextColored(theme.scheme().textMuted, "Link: Unknown");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
+                           selectedIface.isUp ? "[Up]" : "[Down]");
+    }
+
+    ImGui::Spacing();
+
+    // Get data based on selection
+    double targetSent = 0.0;
+    double targetRecv = 0.0;
+
+    if (m_SelectedNetworkInterface < 0)
+    {
+        // Total mode - use existing system-wide history
+        targetSent = netSnap.netTxBytesPerSec;
+        targetRecv = netSnap.netRxBytesPerSec;
+    }
+    else if (hasValidSelection)
+    {
+        // Specific interface - use its current rates
+        const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
+        targetSent = selectedIface.txBytesPerSec;
+        targetRecv = selectedIface.rxBytesPerSec;
+    }
+
+    const auto netTimestamps = m_Model->timestamps();
+    const auto netTxHist = m_Model->netTxHistory();
+    const auto netRxHist = m_Model->netRxHistory();
+    const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
+
+    // Always use default axis config even with no data
+    const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
+                                  : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+
+    std::vector<float> netTimes;
+    std::vector<float> sentData;
+    std::vector<float> recvData;
+
+    if (aligned > 0)
+    {
+        // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
+        netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
+        sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
+        recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
+    }
+
+    // Update smoothed network rates
+    updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
+
+    const double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
+                                    recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
+                                    m_SmoothedNetwork.sentBytesPerSec,
+                                    m_SmoothedNetwork.recvBytesPerSec,
+                                    1.0});
+    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
+                         .label = "Network Sent",
+                         .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
+                         .color = theme.scheme().chartCpu};
+    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
+                         .label = "Network Received",
+                         .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
+                         .color = theme.accentColor(2)};
+
+    // Determine plot title based on selection
+    std::string plotTitle = "Total";
+    if (m_SelectedNetworkInterface >= 0 && hasValidSelection)
+    {
+        plotTitle = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name;
+    }
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##SystemNetHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        {
+            UI::Widgets::setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
+
+            const int count = UI::Numeric::checkedCount(aligned);
+            plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
+            plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
+
+            if (ImPlot::IsPlotHovered())
+            {
+                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                if (const auto idxVal = hoveredIndexFromPlotX(netTimes, mouse.x))
+                {
+                    if (*idxVal < aligned)
+                    {
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
+                        ImGui::TextColored(theme.scheme().chartCpu,
+                                           "Sent: %s",
+                                           UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
+                        ImGui::TextColored(theme.accentColor(2),
+                                           "Recv: %s",
+                                           UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+
+            ImPlot::EndPlot();
+        }
+    };
+
+    ImGui::TextColored(
+        theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
+    constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
+    renderHistoryWithNowBars(
+        "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
+
+    // Interface status table
+    if (!interfaces.empty())
+    {
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
+        ImGui::Spacing();
+
+        constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
+        if (ImGui::BeginTable("##InterfaceTable", 5, tableFlags))
+        {
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.0F);
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 1.0F);
+            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
+            ImGui::TableSetupColumn("TX Rate", ImGuiTableColumnFlags_None, 1.5F);
+            ImGui::TableSetupColumn("RX Rate", ImGuiTableColumnFlags_None, 1.5F);
+            ImGui::TableHeadersRow();
+
+            for (const auto& iface : interfaces)
+            {
+                ImGui::TableNextRow();
+
+                // Name
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(iface.displayName.empty() ? iface.name.c_str() : iface.displayName.c_str());
+
+                // Status
+                ImGui::TableNextColumn();
+                ImGui::TextColored(iface.isUp ? theme.scheme().textSuccess : theme.scheme().textError, iface.isUp ? "Up" : "Down");
+
+                // Speed
+                ImGui::TableNextColumn();
+                if (iface.linkSpeedMbps > 0)
+                {
+                    const auto speedText = std::format("{} Mbps", iface.linkSpeedMbps);
+                    ImGui::TextUnformatted(speedText.c_str());
+                }
+                else
+                {
+                    ImGui::TextColored(theme.scheme().textMuted, "Unknown");
+                }
+
+                // TX Rate
+                ImGui::TableNextColumn();
+                ImGui::TextColored(theme.scheme().chartCpu, "%s", UI::Format::formatBytesPerSec(iface.txBytesPerSec).c_str());
+
+                // RX Rate
+                ImGui::TableNextColumn();
+                ImGui::TextColored(theme.accentColor(2), "%s", UI::Format::formatBytesPerSec(iface.rxBytesPerSec).c_str());
+            }
+
+            ImGui::EndTable();
+        }
+    }
 }
 
 } // namespace App
