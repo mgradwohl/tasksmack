@@ -9,6 +9,7 @@
 #include <charconv>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <system_error>
 
 #include <dirent.h>
@@ -59,6 +60,13 @@ struct InetDiagRequest
 /// Parse rtattr chain following inet_diag_msg to extract tcp_info byte counters
 void parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats& stats)
 {
+    // Defensive check: ensure msgLen is at least sizeof(inet_diag_msg) before subtraction
+    // to avoid underflow (e.g., from truncated/malformed netlink messages)
+    if (msgLen < sizeof(inet_diag_msg))
+    {
+        return;
+    }
+
     // Calculate where attributes start (after the inet_diag_msg)
     const auto* attrStart = reinterpret_cast<const std::uint8_t*>(diagMsg + 1);
     std::size_t attrLen = msgLen - sizeof(inet_diag_msg);
@@ -162,7 +170,8 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     }
 
     // Lock for thread-safe socket operations - multiple threads may call enumerate()
-    std::lock_guard<std::mutex> lock(m_SocketMutex);
+    // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - intentional: socket must be protected
+    const std::scoped_lock lock(m_SocketMutex);
 
     // Query TCP sockets (IPv4 and IPv6)
     querySockets(IPPROTO_TCP, results);
@@ -219,7 +228,6 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
         if (len == 0)
         {
             // Peer performed an orderly shutdown; no more data to read
-            done = true;
             break;
         }
 
@@ -281,7 +289,6 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
         if (len == 0)
         {
             // Peer performed an orderly shutdown; no more data to read
-            done = true;
             break;
         }
 
@@ -435,8 +442,26 @@ aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map
 
         const std::int32_t pid = it->second;
         auto& [received, sent] = pidStats[pid];
-        received += socket.bytesReceived;
-        sent += socket.bytesSent;
+
+        // Use saturating addition to prevent overflow on very high traffic sockets
+        // Note: UINT64_MAX is a reasonable sentinel for "counter saturated"
+        constexpr auto kMaxBytes = std::numeric_limits<std::uint64_t>::max();
+        if (socket.bytesReceived <= kMaxBytes - received)
+        {
+            received += socket.bytesReceived;
+        }
+        else
+        {
+            received = kMaxBytes; // Saturate on overflow
+        }
+        if (socket.bytesSent <= kMaxBytes - sent)
+        {
+            sent += socket.bytesSent;
+        }
+        else
+        {
+            sent = kMaxBytes; // Saturate on overflow
+        }
     }
 
     return pidStats;
