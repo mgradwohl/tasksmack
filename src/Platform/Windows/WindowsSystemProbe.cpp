@@ -407,7 +407,7 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // MIB_IFROW uses narrow strings for description (ANSI)
         // bDescr is a fixed-size char array, null-terminated
         ifaceCounters.name = std::string(reinterpret_cast<const char*>(row.bDescr), row.dwDescrLen);
-        // Remove any trailing null characters using C++20 std::erase
+        // Remove any trailing null characters using std::erase
         std::erase(ifaceCounters.name, '\0');
         ifaceCounters.displayName = ifaceCounters.name; // Use same name for display
         ifaceCounters.rxBytes = rxBytes;
