@@ -3,6 +3,13 @@
 #include <spdlog/spdlog.h>
 
 // clang-format off
+// Windows SDK version - required for GetIfTable2 and MIB_IF_TABLE2 (Vista+)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00 // NOLINT(cppcoreguidelines-macro-usage) - Windows platform requirement
+#endif
+#ifndef WINVER
+#define WINVER _WIN32_WINNT
+#endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -334,7 +341,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
         .hasCpuFreq = true,         // From registry ~MHz
-        .hasNetworkCounters = true, // Via GetIfTable
+        .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
     };
 }
 
@@ -346,38 +353,29 @@ long WindowsSystemProbe::ticksPerSecond() const
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
-    // Use GetIfTable to enumerate network interfaces and read byte counters.
-    // This is the older API that works across all Windows versions.
-    // First call with null buffer to get required size.
-    DWORD tableSize = 0;
-    if (GetIfTable(nullptr, &tableSize, FALSE) != ERROR_INSUFFICIENT_BUFFER)
+    // Use GetIfTable2 for 64-bit counters and proper Unicode interface names.
+    // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
+    // Available since Windows Vista/Server 2008.
+    MIB_IF_TABLE2* table = nullptr;
+    const DWORD status = GetIfTable2(&table);
+    if (status != NO_ERROR || table == nullptr)
     {
-        spdlog::warn("GetIfTable size query failed");
-        return;
-    }
-
-    // Allocate buffer for the interface table
-    std::vector<std::byte> buffer(tableSize);
-    auto* table = reinterpret_cast<MIB_IFTABLE*>(buffer.data());
-
-    if (GetIfTable(table, &tableSize, FALSE) != NO_ERROR)
-    {
-        spdlog::warn("GetIfTable failed");
+        spdlog::warn("GetIfTable2 failed: {}", status);
         return;
     }
 
     uint64_t totalRxBytes = 0;
     uint64_t totalTxBytes = 0;
 
-    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    for (ULONG i = 0; i < table->NumEntries; ++i)
     {
-        const MIB_IFROW& row = table->table[i];
+        const MIB_IF_ROW2& row = table->Table[i];
 
         // Filter interfaces:
         // - Skip loopback (internal traffic)
         // - Skip non-network interface types (Bluetooth, etc.)
         // - Include Ethernet, Wi-Fi, and virtual adapters (VPN, Docker, etc.)
-        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK)
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
         {
             continue;
         }
@@ -388,36 +386,52 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // IF_TYPE_TUNNEL (131) - VPN tunnels
         // IF_TYPE_PPP (23) - PPP connections
         // IF_TYPE_PROP_VIRTUAL (53) - Virtual adapters (Hyper-V, Docker, etc.)
-        const bool isNetworkInterface = (row.dwType == IF_TYPE_ETHERNET_CSMACD || row.dwType == IF_TYPE_IEEE80211 ||
-                                         row.dwType == IF_TYPE_TUNNEL || row.dwType == IF_TYPE_PPP || row.dwType == IF_TYPE_PROP_VIRTUAL);
+        const bool isNetworkInterface = ((row.Type == IF_TYPE_ETHERNET_CSMACD) || (row.Type == IF_TYPE_IEEE80211) ||
+                                         (row.Type == IF_TYPE_TUNNEL) || (row.Type == IF_TYPE_PPP) || (row.Type == IF_TYPE_PROP_VIRTUAL));
 
         if (!isNetworkInterface)
         {
             continue;
         }
 
-        const uint64_t rxBytes = row.dwInOctets;
-        const uint64_t txBytes = row.dwOutOctets;
+        // 64-bit byte counters - no more 32-bit overflow issues
+        const uint64_t rxBytes = row.InOctets;
+        const uint64_t txBytes = row.OutOctets;
 
         totalRxBytes += rxBytes;
         totalTxBytes += txBytes;
 
         // Store per-interface data
         SystemCounters::InterfaceCounters ifaceCounters;
-        // MIB_IFROW uses narrow strings for description (ANSI)
-        // bDescr is a fixed-size char array, null-terminated
-        ifaceCounters.name = std::string(reinterpret_cast<const char*>(row.bDescr), row.dwDescrLen);
-        // Remove any trailing null characters using std::erase
-        std::erase(ifaceCounters.name, '\0');
-        ifaceCounters.displayName = ifaceCounters.name; // Use same name for display
+
+        // MIB_IF_ROW2 provides proper Unicode strings:
+        // - Alias: friendly name (e.g., "Wi-Fi", "Ethernet")
+        // - Description: full adapter description (e.g., "Intel(R) Wi-Fi 6 AX201 160MHz")
+        // Use Alias for name (shorter, user-friendly) and Description for display
+        ifaceCounters.name = WinString::wideToUtf8(row.Alias);
+        ifaceCounters.displayName = WinString::wideToUtf8(row.Description);
+
+        // Fall back to alias if description is empty
+        if (ifaceCounters.displayName.empty())
+        {
+            ifaceCounters.displayName = ifaceCounters.name;
+        }
+
         ifaceCounters.rxBytes = rxBytes;
         ifaceCounters.txBytes = txBytes;
-        // dwOperStatus: MIB_IF_OPER_STATUS enum - IF_OPER_STATUS_OPERATIONAL (1) means up
-        ifaceCounters.isUp = (row.dwOperStatus == IF_OPER_STATUS_OPERATIONAL);
-        // dwSpeed is in bits per second, convert to Mbps
-        ifaceCounters.linkSpeedMbps = row.dwSpeed / 1'000'000ULL;
+
+        // IF_OPER_STATUS enum - IfOperStatusUp (1) means interface is operational
+        ifaceCounters.isUp = (row.OperStatus == IfOperStatusUp);
+
+        // 64-bit link speeds in bits/sec - convert to Mbps
+        // Use transmit speed (receive speed may differ on asymmetric links)
+        ifaceCounters.linkSpeedMbps = row.TransmitLinkSpeed / 1'000'000ULL;
+
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
     }
+
+    // Free the table allocated by GetIfTable2
+    FreeMibTable(table);
 
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
