@@ -4,9 +4,6 @@
 
 #include "LinuxProcessProbe.h"
 
-// The TASKSMACK_HAS_NETLINK_SOCKET_STATS macro is defined in LinuxProcessProbe.h
-// based on header availability. This pattern keeps the conditional compilation
-// logic co-located with the header where the NetlinkSocketStats member is declared.
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
 #endif

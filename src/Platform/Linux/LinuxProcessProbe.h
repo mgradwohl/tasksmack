@@ -1,15 +1,10 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
+#include "Platform/PlatformConfig.h"
 
-// Conditionally include NetlinkSocketStats only when headers are available
-#if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
-// NOLINTNEXTLINE(cppcoreguidelines-macro-usage) - required for #if conditional compilation
-#define TASKSMACK_HAS_NETLINK_SOCKET_STATS 1
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
-#else
-// NOLINTNEXTLINE(cppcoreguidelines-macro-usage) - required for #if conditional compilation
-#define TASKSMACK_HAS_NETLINK_SOCKET_STATS 0
 #endif
 
 #include <memory>

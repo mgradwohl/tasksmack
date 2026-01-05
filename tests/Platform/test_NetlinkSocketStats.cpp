@@ -56,8 +56,8 @@ TEST(NetlinkSocketStatsTest, QueryAllSocketsReturnsSocketsWhenAvailable)
     NetlinkSocketStats stats;
     if (stats.isAvailable())
     {
-        // Create a TCP connection to generate at least one socket
-        // The test process itself should have sockets (stdin/stdout may be sockets in some cases)
+        // Query existing system sockets - most systems will have at least some
+        // (e.g., systemd services, dbus, the test process itself may have sockets)
         auto sockets = stats.queryAllSockets();
         // We expect at least some sockets on a typical system
         // But we can't guarantee any specific number

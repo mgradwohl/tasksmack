@@ -243,8 +243,10 @@ NetlinkSocketStats::NetlinkSocketStats()
     if (bind(m_Socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
     {
         spdlog::debug("Failed to bind netlink socket: {}", safeStrerror(errno));
-        close(m_Socket);
+        // Invalidate m_Socket before close() to prevent leaks if close() fails
+        const int oldSocket = m_Socket;
         m_Socket = -1;
+        close(oldSocket);
         return;
     }
 
