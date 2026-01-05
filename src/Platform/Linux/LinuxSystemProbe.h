@@ -36,17 +36,21 @@ class LinuxSystemProbe : public ISystemProbe
     void readNetworkCounters(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
 
-    /// Read interface link speed from sysfs (returns 0 if unavailable).
+    /// Get interface link speed (returns 0 if unavailable).
     /// Uses cache to reduce sysfs I/O - link speed rarely changes.
     /// @param ifaceName Interface name (e.g., "eth0", "wlan0")
     /// @param isUp Current operational state (for detecting down→up transitions)
-    [[nodiscard]] uint64_t readInterfaceLinkSpeed(const std::string& ifaceName, bool isUp);
+    [[nodiscard]] uint64_t getInterfaceLinkSpeed(const std::string& ifaceName, bool isUp);
 
     /// Read interface operational state from sysfs (up/down/unknown).
     [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
 
     /// Read link speed directly from sysfs (uncached).
     [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName);
+
+    /// Remove cache entries for interfaces that no longer exist.
+    /// @param currentInterfaces Set of interface names seen in current enumeration
+    void cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces);
 
     long m_TicksPerSecond;
     std::size_t m_NumCores;
@@ -55,12 +59,11 @@ class LinuxSystemProbe : public ISystemProbe
     std::string m_Hostname;
     std::string m_CpuModel;
 
-    /// Cached network interface info to reduce sysfs reads.
-    /// Link speed rarely changes (only on cable replug or driver reload).
-    /// We refresh the cache:
-    /// - On first access for an interface
-    /// - When interface transitions from down to up
-    /// - Every LINK_SPEED_CACHE_TTL_SECONDS
+    // Optimization cache for network interface properties.
+    // NOTE: This is NOT semantic state - the probe contract remains stateless (raw counters).
+    // This is analogous to m_Hostname and m_CpuModel above: caching values that rarely change
+    // (link speed only changes on cable replug or driver reload) to reduce sysfs I/O overhead.
+    // The cached values don't affect correctness, only performance.
     struct InterfaceCacheEntry
     {
         uint64_t linkSpeedMbps = 0;

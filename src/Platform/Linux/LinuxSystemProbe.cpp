@@ -6,12 +6,15 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include <unistd.h>
 
@@ -399,16 +402,36 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(iface);
-            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface, ifaceCounters.isUp);
+            ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(iface, ifaceCounters.isUp);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
     }
 
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
+
+    // Clean up cache entries for interfaces that no longer exist
+    // (e.g., USB network adapters unplugged, VMs/containers destroyed)
+    std::vector<std::string> currentInterfaces;
+    currentInterfaces.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        currentInterfaces.push_back(iface.name);
+    }
+    cleanupStaleInterfaceCacheEntries(currentInterfaces);
 }
 
-uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName, bool isUp)
+void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces)
+{
+    // Remove cache entries for interfaces that are no longer present.
+    // This prevents unbounded cache growth when interfaces come and go
+    // (e.g., USB network adapters, VMs, containers, VPNs).
+    std::erase_if(m_InterfaceCache,
+                  [&currentInterfaces](const auto& entry)
+                  { return std::ranges::find(currentInterfaces, entry.first) == currentInterfaces.end(); });
+}
+
+uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, bool isUp)
 {
     // Use cached link speed to reduce sysfs I/O.
     // Link speed rarely changes (only on cable replug or driver reload).
