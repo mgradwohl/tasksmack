@@ -399,7 +399,7 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
             ifaceCounters.isUp = readInterfaceOperState(iface);
-            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface);
+            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface, ifaceCounters.isUp);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
     }
@@ -408,7 +408,50 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     counters.netTxBytes = totalTxBytes;
 }
 
-uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName)
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName, bool isUp)
+{
+    // Use cached link speed to reduce sysfs I/O.
+    // Link speed rarely changes (only on cable replug or driver reload).
+    // Refresh conditions:
+    // 1. First access for this interface
+    // 2. Interface transitioned from down to up (may have new speed after reconnection)
+    // 3. TTL expired (periodic refresh every 60 seconds)
+
+    const auto now = std::chrono::steady_clock::now();
+
+    auto it = m_InterfaceCache.find(ifaceName);
+    if (it != m_InterfaceCache.end())
+    {
+        auto& entry = it->second;
+        const bool stateTransition = (!entry.wasUp && isUp);
+        const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
+        const bool expired = (age >= LINK_SPEED_CACHE_TTL_SECONDS);
+
+        entry.wasUp = isUp; // Update state tracking
+
+        // Return cached value if still valid
+        if (!stateTransition && !expired)
+        {
+            return entry.linkSpeedMbps;
+        }
+
+        // Refresh cache
+        entry.linkSpeedMbps = readInterfaceLinkSpeedFromSysfs(ifaceName);
+        entry.lastSpeedCheck = now;
+        return entry.linkSpeedMbps;
+    }
+
+    // First access - create cache entry
+    const uint64_t speed = readInterfaceLinkSpeedFromSysfs(ifaceName);
+    m_InterfaceCache[ifaceName] = InterfaceCacheEntry{
+        .linkSpeedMbps = speed,
+        .wasUp = isUp,
+        .lastSpeedCheck = now,
+    };
+    return speed;
+}
+
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName)
 {
     // Read link speed from /sys/class/net/<iface>/speed (in Mbps)
     // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces)
