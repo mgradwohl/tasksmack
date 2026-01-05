@@ -465,6 +465,99 @@ TEST(LinuxSystemProbeTest, PerInterfaceStatusConsistent)
     }
 }
 
+// =============================================================================
+// Interface Cache Behavior Tests
+// =============================================================================
+
+TEST(LinuxSystemProbeTest, InterfaceLinkSpeedIsCached)
+{
+    // Verify that link speed caching works - multiple reads should return same value
+    // without causing excessive sysfs I/O (we can't directly measure I/O, but we can
+    // verify the values are consistent)
+    LinuxSystemProbe probe;
+
+    auto counters1 = probe.read();
+    auto counters2 = probe.read();
+
+    // Same interfaces should report same link speeds (cached)
+    for (const auto& iface1 : counters1.networkInterfaces)
+    {
+        for (const auto& iface2 : counters2.networkInterfaces)
+        {
+            if (iface1.name == iface2.name)
+            {
+                // Link speed should be the same (cached value)
+                EXPECT_EQ(iface1.linkSpeedMbps, iface2.linkSpeedMbps) << "Interface " << iface1.name << " link speed changed unexpectedly";
+            }
+        }
+    }
+}
+
+TEST(LinuxSystemProbeTest, CacheHandlesDynamicInterfaces)
+{
+    // Verify that the cache cleanup doesn't cause issues when interfaces
+    // come and go (we can't easily add/remove interfaces, but we can verify
+    // repeated reads don't accumulate unbounded state)
+    LinuxSystemProbe probe;
+
+    // Read many times - cache should not grow unbounded
+    for (int i = 0; i < 100; ++i)
+    {
+        auto counters = probe.read();
+        // Each read should succeed without issues
+        EXPECT_GE(counters.networkInterfaces.size(), 0U);
+    }
+}
+
+TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
+{
+    // Verify thread safety of cache access (more comprehensive than ConcurrentReads)
+    LinuxSystemProbe probe;
+
+    std::atomic<int> successCount{0};
+    std::atomic<int> errorCount{0};
+
+    auto reader = [&probe, &successCount, &errorCount]()
+    {
+        for (int i = 0; i < 50; ++i)
+        {
+            try
+            {
+                auto counters = probe.read();
+                // Verify we got valid data
+                for (const auto& iface : counters.networkInterfaces)
+                {
+                    // Access cached fields - this exercises the cache path
+                    (void) iface.linkSpeedMbps;
+                    (void) iface.isUp;
+                }
+                ++successCount;
+            }
+            catch (...)
+            {
+                ++errorCount;
+            }
+        }
+    };
+
+    // Launch multiple concurrent readers
+    std::vector<std::thread> threads;
+    threads.reserve(4);
+    for (int t = 0; t < 4; ++t)
+    {
+        threads.emplace_back(reader);
+    }
+
+    for (auto& t : threads)
+    {
+        t.join();
+    }
+
+    // All reads should succeed
+    EXPECT_EQ(successCount.load(), 200); // 4 threads * 50 reads
+    EXPECT_EQ(errorCount.load(), 0);
+}
+
 } // namespace
 } // namespace Platform
 

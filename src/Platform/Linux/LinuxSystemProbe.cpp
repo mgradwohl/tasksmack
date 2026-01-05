@@ -444,39 +444,65 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     // 3. TTL expired (periodic refresh every 60 seconds)
 
     const auto now = std::chrono::steady_clock::now();
-    const std::scoped_lock lock(m_InterfaceCacheMutex);
 
-    auto it = m_InterfaceCache.find(ifaceName);
-    if (it != m_InterfaceCache.end())
+    // Check cache under lock to determine if refresh is needed
+    bool isNewEntry = false;
     {
-        auto& entry = it->second;
-        const bool stateTransition = (!entry.wasUp && isUp);
-        const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
-        const bool expired = (age >= LINK_SPEED_CACHE_TTL_SECONDS);
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
 
-        // Return cached value if still valid
-        if (!stateTransition && !expired)
+        auto it = m_InterfaceCache.find(ifaceName);
+        if (it != m_InterfaceCache.end())
         {
-            // Keep state tracking in sync even when we don't refresh link speed
-            entry.wasUp = isUp;
-            return entry.linkSpeedMbps;
+            auto& entry = it->second;
+            const bool stateTransition = (!entry.wasUp && isUp);
+            const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
+            const bool expired = (age >= LINK_SPEED_CACHE_TTL_SECONDS);
+
+            // Return cached value if still valid
+            if (!stateTransition && !expired)
+            {
+                // Keep state tracking in sync even when we don't refresh link speed
+                entry.wasUp = isUp;
+                return entry.linkSpeedMbps;
+            }
+            // Fall through to refresh
         }
-
-        // Refresh cache - update state tracking only on actual refresh
-        entry.wasUp = isUp;
-        entry.linkSpeedMbps = readInterfaceLinkSpeedFromSysfs(ifaceName);
-        entry.lastSpeedCheck = now;
-        return entry.linkSpeedMbps;
+        else
+        {
+            isNewEntry = true;
+        }
     }
+    // Lock released - perform potentially blocking sysfs I/O without holding mutex
 
-    // First access - create cache entry
-    const uint64_t speed = readInterfaceLinkSpeedFromSysfs(ifaceName);
-    m_InterfaceCache[ifaceName] = InterfaceCacheEntry{
-        .linkSpeedMbps = speed,
-        .wasUp = isUp,
-        .lastSpeedCheck = now,
-    };
-    return speed;
+    const uint64_t newSpeed = readInterfaceLinkSpeedFromSysfs(ifaceName);
+
+    // Update cache with new value
+    {
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
+
+        if (isNewEntry)
+        {
+            // First access - create cache entry
+            m_InterfaceCache[ifaceName] = InterfaceCacheEntry{
+                .linkSpeedMbps = newSpeed,
+                .wasUp = isUp,
+                .lastSpeedCheck = now,
+            };
+        }
+        else
+        {
+            // Refresh existing entry
+            auto it = m_InterfaceCache.find(ifaceName);
+            if (it != m_InterfaceCache.end())
+            {
+                auto& entry = it->second;
+                entry.wasUp = isUp;
+                entry.linkSpeedMbps = newSpeed;
+                entry.lastSpeedCheck = now;
+            }
+        }
+    }
+    return newSpeed;
 }
 
 uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName)
