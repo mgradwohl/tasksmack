@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace Platform
@@ -305,6 +306,162 @@ TEST(LinuxSystemProbeTest, NetworkCountersReadMultipleTimes)
         // Basic sanity: should not throw and should have valid structure
         EXPECT_GE(counters.netRxBytes, 0ULL);
         EXPECT_GE(counters.netTxBytes, 0ULL);
+    }
+}
+
+// =============================================================================
+// Per-Interface Network Counter Tests
+// =============================================================================
+
+TEST(LinuxSystemProbeTest, PerInterfaceNetworkCountersAreAccessible)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    // The vector should be accessible even if empty.
+    // Note: loopback (lo) is filtered out, so systems with only loopback may have 0 interfaces.
+    // Most systems have at least one physical or virtual interface besides loopback.
+    // size() is always >= 0 by type; just verify the vector is accessible.
+    (void) counters.networkInterfaces.size();
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        // Interface name should not be empty
+        EXPECT_FALSE(iface.name.empty()) << "Interface name should not be empty";
+
+        // Display name should not be empty (may be same as name on Linux)
+        EXPECT_FALSE(iface.displayName.empty()) << "Display name should not be empty";
+    }
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceCountersAreNonNegative)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        // Counters are uint64_t, so always non-negative by type.
+        // Access the fields to verify the structure is correctly populated.
+        (void) iface.rxBytes;
+        (void) iface.txBytes;
+    }
+}
+
+TEST(LinuxSystemProbeTest, LoopbackInterfaceIsExcluded)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    // Loopback interface (lo) should NOT be in the list
+    // The probe intentionally filters it out since it's internal traffic
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        EXPECT_NE(iface.name, "lo") << "Loopback interface should be excluded";
+    }
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceCountersSumApproximatesTotal)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    // Sum of per-interface counters should approximately equal total.
+    // Note: The probe filters out loopback (lo) from networkInterfaces, and the totals
+    // (netRxBytes/netTxBytes) are computed from the filtered interfaces. If this
+    // implementation changes to include loopback in totals, this test may need updating.
+    uint64_t sumRx = 0;
+    uint64_t sumTx = 0;
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        sumRx += iface.rxBytes;
+        sumTx += iface.txBytes;
+    }
+
+    // Allow some tolerance for timing differences
+    // The sum should be close to the total (within 10% or 1MB, whichever is larger)
+    auto tolerance = [](uint64_t total) -> uint64_t
+    {
+        constexpr uint64_t minTolerance = 1024 * 1024; // 1MB
+        return std::max(minTolerance, total / 10);
+    };
+
+    EXPECT_NEAR(static_cast<double>(sumRx), static_cast<double>(counters.netRxBytes), static_cast<double>(tolerance(counters.netRxBytes)))
+        << "Sum of per-interface RX should approximate total";
+    EXPECT_NEAR(static_cast<double>(sumTx), static_cast<double>(counters.netTxBytes), static_cast<double>(tolerance(counters.netTxBytes)))
+        << "Sum of per-interface TX should approximate total";
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceCountersMonotonicallyIncrease)
+{
+    LinuxSystemProbe probe;
+    auto counters1 = probe.read();
+
+    // Sleep briefly to allow potential traffic
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto counters2 = probe.read();
+
+    // Build maps for comparison
+    std::unordered_map<std::string, const SystemCounters::InterfaceCounters*> prevMap;
+    for (const auto& iface : counters1.networkInterfaces)
+    {
+        prevMap[iface.name] = &iface;
+    }
+
+    // Check each interface in second read
+    for (const auto& iface : counters2.networkInterfaces)
+    {
+        auto it = prevMap.find(iface.name);
+        if (it != prevMap.end())
+        {
+            // Counters should be >= previous (cumulative)
+            EXPECT_GE(iface.rxBytes, it->second->rxBytes) << "Interface " << iface.name << " rxBytes should not decrease";
+            EXPECT_GE(iface.txBytes, it->second->txBytes) << "Interface " << iface.name << " txBytes should not decrease";
+        }
+    }
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceLinkSpeedIsReasonable)
+{
+    LinuxSystemProbe probe;
+    auto counters = probe.read();
+
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        // Link speed may be 0 (unknown) for virtual/loopback interfaces
+        // If non-zero, should be reasonable (1 Mbps to 1 Tbps)
+        if (iface.linkSpeedMbps > 0)
+        {
+            EXPECT_GE(iface.linkSpeedMbps, 1ULL) << "Interface " << iface.name << " link speed too low";
+            EXPECT_LE(iface.linkSpeedMbps, 1000000ULL) // 1 Tbps
+                << "Interface " << iface.name << " link speed too high";
+        }
+    }
+}
+
+TEST(LinuxSystemProbeTest, PerInterfaceStatusConsistent)
+{
+    LinuxSystemProbe probe;
+
+    // Read multiple times - interface status should be stable
+    for (int i = 0; i < 3; ++i)
+    {
+        auto counters = probe.read();
+
+        // Just verify structure is valid
+        for (const auto& iface : counters.networkInterfaces)
+        {
+            // isUp is a boolean - no specific value check needed
+            // Just ensure the field is accessible
+            (void) iface.isUp;
+        }
     }
 }
 

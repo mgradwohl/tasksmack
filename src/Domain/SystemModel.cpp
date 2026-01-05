@@ -336,6 +336,38 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.loadAvg15 = counters.loadAvg15;
     snap.cpuFreqMHz = counters.cpuFreqMHz;
 
+    // Per-interface network - always populate metadata, compute rates only with previous data
+    const double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        SystemSnapshot::InterfaceSnapshot ifaceSnap;
+        ifaceSnap.name = iface.name;
+        ifaceSnap.displayName = iface.displayName;
+        ifaceSnap.isUp = iface.isUp;
+        ifaceSnap.linkSpeedMbps = iface.linkSpeedMbps;
+
+        // Compute rates only if we have previous data and positive time delta
+        if (m_HasPrevious && timeDelta > 0.0)
+        {
+            const auto* prevIface = findPreviousInterface(iface.name);
+            if (prevIface != nullptr)
+            {
+                if (iface.rxBytes >= prevIface->rxBytes)
+                {
+                    const uint64_t rxDelta = iface.rxBytes - prevIface->rxBytes;
+                    ifaceSnap.rxBytesPerSec = Numeric::toDouble(rxDelta) / timeDelta;
+                }
+                if (iface.txBytes >= prevIface->txBytes)
+                {
+                    const uint64_t txDelta = iface.txBytes - prevIface->txBytes;
+                    ifaceSnap.txBytesPerSec = Numeric::toDouble(txDelta) / timeDelta;
+                }
+            }
+        }
+
+        snap.networkInterfaces.push_back(std::move(ifaceSnap));
+    }
+
     // CPU usage (requires previous sample for delta)
     if (m_HasPrevious)
     {
@@ -358,8 +390,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             snap.cpuPerCore.push_back(coreUsage);
         }
 
-        // Network rates (bytes per second)
-        const double timeDelta = nowSeconds - m_PrevTimestamp;
+        // Total network rates (bytes per second)
         if (timeDelta > 0.0)
         {
             // Only compute if counters increased (handle overflow/restart)
@@ -486,6 +517,12 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     status.model = counters.model;
 
     return status;
+}
+
+const Platform::SystemCounters::InterfaceCounters* SystemModel::findPreviousInterface(const std::string& name) const
+{
+    auto it = std::ranges::find_if(m_PrevCounters.networkInterfaces, [&name](const auto& iface) { return iface.name == name; });
+    return (it != m_PrevCounters.networkInterfaces.end()) ? &(*it) : nullptr;
 }
 
 } // namespace Domain

@@ -391,11 +391,63 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         {
             totalRxBytes += rxBytes;
             totalTxBytes += txBytes;
+
+            // Store per-interface data
+            SystemCounters::InterfaceCounters ifaceCounters;
+            ifaceCounters.name = iface;
+            ifaceCounters.displayName = iface; // Linux: use system name as display name
+            ifaceCounters.rxBytes = rxBytes;
+            ifaceCounters.txBytes = txBytes;
+            ifaceCounters.isUp = readInterfaceOperState(iface);
+            ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface);
+            counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
     }
 
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
+}
+
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName)
+{
+    // Read link speed from /sys/class/net/<iface>/speed (in Mbps)
+    // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces)
+    const std::string speedPath = "/sys/class/net/" + ifaceName + "/speed";
+    std::ifstream speedFile(speedPath);
+    if (!speedFile.is_open())
+    {
+        return 0;
+    }
+
+    int64_t speedMbps = 0;
+    speedFile >> speedMbps;
+
+    // -1 means speed is unknown/unavailable
+    if (speedFile.fail() || speedMbps < 0)
+    {
+        return 0;
+    }
+
+    return static_cast<uint64_t>(speedMbps);
+}
+
+bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
+{
+    // Read operational state from /sys/class/net/<iface>/operstate
+    // Returns true if "up", false otherwise (down, unknown, etc.)
+    const std::string operstatePath = "/sys/class/net/" + ifaceName + "/operstate";
+    std::ifstream operstateFile(operstatePath);
+    if (!operstateFile.is_open())
+    {
+        return false;
+    }
+
+    std::string state;
+    operstateFile >> state;
+
+    // "up" means interface is operational
+    // Other values: "down", "unknown", "lowerlayerdown", "notpresent", "dormant", "testing"
+    return (state == "up");
 }
 
 } // namespace Platform

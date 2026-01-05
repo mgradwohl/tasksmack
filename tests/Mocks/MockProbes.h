@@ -450,13 +450,28 @@ inline Platform::MemoryCounters makeMemoryAtUsage(double usagePercent, uint64_t 
 // System Counter Helpers
 // =============================================================================
 
+/// Create an InterfaceCounters struct for testing.
+inline Platform::SystemCounters::InterfaceCounters
+makeInterfaceCounters(const std::string& name, uint64_t rxBytes = 0, uint64_t txBytes = 0, bool isUp = true, uint64_t linkSpeedMbps = 1000)
+{
+    Platform::SystemCounters::InterfaceCounters iface;
+    iface.name = name;
+    iface.displayName = name;
+    iface.rxBytes = rxBytes;
+    iface.txBytes = txBytes;
+    iface.isUp = isUp;
+    iface.linkSpeedMbps = linkSpeedMbps;
+    return iface;
+}
+
 /// Create a complete SystemCounters struct.
 inline Platform::SystemCounters makeSystemCounters(Platform::CpuCounters cpu,
                                                    Platform::MemoryCounters memory,
                                                    uint64_t uptime = 0,
                                                    std::vector<Platform::CpuCounters> perCore = {},
                                                    uint64_t netRxBytes = 0,
-                                                   uint64_t netTxBytes = 0)
+                                                   uint64_t netTxBytes = 0,
+                                                   std::vector<Platform::SystemCounters::InterfaceCounters> networkInterfaces = {})
 {
     Platform::SystemCounters s;
     s.cpuTotal = cpu;
@@ -465,6 +480,7 @@ inline Platform::SystemCounters makeSystemCounters(Platform::CpuCounters cpu,
     s.cpuPerCore = std::move(perCore);
     s.netRxBytes = netRxBytes;
     s.netTxBytes = netTxBytes;
+    s.networkInterfaces = std::move(networkInterfaces);
     return s;
 }
 

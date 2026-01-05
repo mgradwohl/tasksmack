@@ -22,6 +22,7 @@
 
 // Use shared mock from TestMocks namespace
 using TestMocks::makeCpuCounters;
+using TestMocks::makeInterfaceCounters;
 using TestMocks::makeMemoryCounters;
 using TestMocks::makeSystemCounters;
 using TestMocks::MockSystemProbe;
@@ -889,4 +890,250 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
             EXPECT_GE(ts, latestTime - 10.0);
         }
     }
+}
+// ==========================================================================
+// Per-Interface Network Tests
+// ==========================================================================
+
+TEST(SystemModelTest, PerInterfaceNetworkRatesZeroOnFirstSample)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Create counters with two network interfaces
+    auto iface1 = makeInterfaceCounters("eth0", 1000, 500, true, 1000);
+    auto iface2 = makeInterfaceCounters("wlan0", 2000, 1000, true, 100);
+
+    auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                       makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                       0,
+                                       {},
+                                       3000,
+                                       1500,
+                                       {iface1, iface2});
+    rawProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters, 1.0);
+
+    auto snap = model.snapshot();
+    // Should have two interfaces
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+
+    // First sample - rates should be zero (no previous data)
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 0.0);
+
+    // Interface metadata should be present
+    EXPECT_EQ(snap.networkInterfaces[0].name, "eth0");
+    EXPECT_TRUE(snap.networkInterfaces[0].isUp);
+    EXPECT_EQ(snap.networkInterfaces[0].linkSpeedMbps, 1000U);
+    EXPECT_EQ(snap.networkInterfaces[1].name, "wlan0");
+    EXPECT_TRUE(snap.networkInterfaces[1].isUp);
+    EXPECT_EQ(snap.networkInterfaces[1].linkSpeedMbps, 100U);
+}
+
+TEST(SystemModelTest, PerInterfaceNetworkRatesComputedFromDeltas)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample
+    auto iface1_t1 = makeInterfaceCounters("eth0", 1000, 500);
+    auto iface2_t1 = makeInterfaceCounters("wlan0", 2000, 1000);
+
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        3000,
+                                        1500,
+                                        {iface1_t1, iface2_t1});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample 1 second later with increased counters
+    auto iface1_t2 = makeInterfaceCounters("eth0", 2000, 1500);  // +1000 rx, +1000 tx
+    auto iface2_t2 = makeInterfaceCounters("wlan0", 2500, 1200); // +500 rx, +200 tx
+
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        4500,
+                                        2700,
+                                        {iface1_t2, iface2_t2});
+    model.updateFromCounters(counters2, 2.0); // 1 second later
+
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+
+    // eth0: (2000-1000) / 1.0 = 1000 rx/s, (1500-500) / 1.0 = 1000 tx/s
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 1000.0);
+
+    // wlan0: (2500-2000) / 1.0 = 500 rx/s, (1200-1000) / 1.0 = 200 tx/s
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 500.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 200.0);
+}
+
+TEST(SystemModelTest, PerInterfaceNetworkRatesHandleNewInterface)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample with one interface
+    auto iface1 = makeInterfaceCounters("eth0", 1000, 500);
+
+    auto counters1 = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 500, {iface1});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample adds a new interface (e.g., VPN connected)
+    auto iface1_t2 = makeInterfaceCounters("eth0", 2000, 1000);
+    auto iface_new = makeInterfaceCounters("tun0", 500, 250); // New interface
+
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        2500,
+                                        1250,
+                                        {iface1_t2, iface_new});
+    model.updateFromCounters(counters2, 2.0);
+
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 2U);
+
+    // eth0 should have calculated rates
+    EXPECT_EQ(snap.networkInterfaces[0].name, "eth0");
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 1000.0);
+
+    // tun0 is new, so rates should be zero (no previous data for this interface)
+    EXPECT_EQ(snap.networkInterfaces[1].name, "tun0");
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].rxBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[1].txBytesPerSec, 0.0);
+}
+
+TEST(SystemModelTest, PerInterfaceNetworkRatesHandleInterfaceRemoval)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample with two interfaces
+    auto iface1 = makeInterfaceCounters("eth0", 1000, 500);
+    auto iface2 = makeInterfaceCounters("wlan0", 2000, 1000);
+
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        3000,
+                                        1500,
+                                        {iface1, iface2});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample - wlan0 is gone (e.g., Wi-Fi disabled)
+    auto iface1_t2 = makeInterfaceCounters("eth0", 2000, 1000);
+
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700),
+                                        makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                        0,
+                                        {},
+                                        2000,
+                                        1000,
+                                        {iface1_t2});
+    model.updateFromCounters(counters2, 2.0);
+
+    auto snap = model.snapshot();
+    // Only eth0 should be in the snapshot
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_EQ(snap.networkInterfaces[0].name, "eth0");
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 1000.0);
+}
+
+TEST(SystemModelTest, PerInterfaceNetworkRatesWithVariableTimeDelta)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto iface1 = makeInterfaceCounters("eth0", 1000, 500);
+
+    auto counters1 = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 500, {iface1});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample 0.5 seconds later
+    auto iface1_t2 = makeInterfaceCounters("eth0", 1500, 750);
+
+    auto counters2 = makeSystemCounters(
+        makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1500, 750, {iface1_t2});
+    model.updateFromCounters(counters2, 1.5); // 0.5 seconds later
+
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+
+    // (1500-1000) / 0.5 = 1000 rx/s, (750-500) / 0.5 = 500 tx/s
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 1000.0);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].txBytesPerSec, 500.0);
+}
+
+TEST(SystemModelTest, PerInterfaceMetadataPreserved)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    Platform::SystemCounters::InterfaceCounters iface;
+    iface.name = "enp0s31f6";
+    iface.displayName = "Intel Ethernet I219-V";
+    iface.rxBytes = 1000;
+    iface.txBytes = 500;
+    iface.isUp = true;
+    iface.linkSpeedMbps = 2500;
+
+    auto counters = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 1000, 500, {iface});
+    rawProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters, 1.0);
+
+    auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+
+    // Verify all metadata is preserved in snapshot
+    EXPECT_EQ(snap.networkInterfaces[0].name, "enp0s31f6");
+    EXPECT_EQ(snap.networkInterfaces[0].displayName, "Intel Ethernet I219-V");
+    EXPECT_TRUE(snap.networkInterfaces[0].isUp);
+    EXPECT_EQ(snap.networkInterfaces[0].linkSpeedMbps, 2500U);
+}
+
+TEST(SystemModelTest, PerInterfaceNetworkEmptyWhenNoInterfaces)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // No interfaces
+    auto counters = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 0, 0, {});
+    rawProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters, 1.0);
+
+    auto snap = model.snapshot();
+    EXPECT_TRUE(snap.networkInterfaces.empty());
 }

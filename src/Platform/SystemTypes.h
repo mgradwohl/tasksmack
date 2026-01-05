@@ -71,6 +71,18 @@ struct SystemCounters
     uint64_t netRxBytes = 0; // Total bytes received
     uint64_t netTxBytes = 0; // Total bytes transmitted
 
+    // Per-interface network counters
+    struct InterfaceCounters
+    {
+        std::string name;           // System name: "eth0", "Ethernet", etc.
+        std::string displayName;    // Friendly name for UI (may be same as name)
+        uint64_t rxBytes = 0;       // Cumulative bytes received
+        uint64_t txBytes = 0;       // Cumulative bytes transmitted
+        bool isUp = false;          // Interface operational status
+        uint64_t linkSpeedMbps = 0; // Link speed in Mbps (0 if unknown)
+    };
+    std::vector<InterfaceCounters> networkInterfaces;
+
     // Static system info (populated once)
     std::string hostname;
     std::string cpuModel;

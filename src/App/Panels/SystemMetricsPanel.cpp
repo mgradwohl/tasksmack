@@ -1104,6 +1104,97 @@ void SystemMetricsPanel::renderOverview()
     // System network history (from SystemModel - real system-wide network stats)
     if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
     {
+        const auto netSnap = m_Model->snapshot();
+        const auto& interfaces = netSnap.networkInterfaces;
+
+        // Build interface selector dropdown
+        std::vector<std::string> interfaceNames;
+        interfaceNames.emplace_back("Total (All Interfaces)");
+        for (const auto& iface : interfaces)
+        {
+            // Use display name if available, otherwise interface name
+            interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
+        }
+
+        const auto interfaceCount = interfaces.size();
+
+        // Clamp selected interface to current range so indexing into interfaceNames is always safe.
+        // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
+        if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
+        {
+            // If there are no interfaces, force "Total"; otherwise clamp to last interface.
+            m_SelectedNetworkInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
+        }
+
+        // Interface selector
+        ImGui::SetNextItemWidth(250.0F);
+        // Index 0 is "Total", indices 1+ are interfaces. m_SelectedNetworkInterface: -1 = Total, 0+ = interface index
+        // Safe: m_SelectedNetworkInterface is always >= -1, so m_SelectedNetworkInterface + 1 is always >= 0
+        const size_t comboIndex = (m_SelectedNetworkInterface < 0) ? 0 : static_cast<size_t>(m_SelectedNetworkInterface) + 1;
+        if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
+        {
+            for (size_t i = 0; i <= interfaceCount; ++i)
+            {
+                // i=0 means "Total" (m_SelectedNetworkInterface == -1), i=1+ means interface index 0+
+                const int selectionValue = static_cast<int>(i) - 1;
+                const bool isSelected = (m_SelectedNetworkInterface == selectionValue);
+                if (ImGui::Selectable(interfaceNames[i].c_str(), isSelected))
+                {
+                    m_SelectedNetworkInterface = selectionValue;
+                    // Reset smoothed values when changing interface
+                    m_SmoothedNetwork.initialized = false;
+                }
+                if (isSelected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::SameLine();
+
+        // Show link speed for selected interface (if available and not "Total")
+        const bool hasValidSelection = m_SelectedNetworkInterface >= 0 && std::cmp_less(m_SelectedNetworkInterface, interfaceCount);
+        if (hasValidSelection)
+        {
+            const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
+            if (selectedIface.linkSpeedMbps > 0)
+            {
+                const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
+                ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
+            }
+            else
+            {
+                ImGui::TextColored(theme.scheme().textMuted, "Link: Unknown");
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
+                               selectedIface.isUp ? "[Up]" : "[Down]");
+        }
+
+        ImGui::Spacing();
+
+        // Get data based on selection
+        double targetSent = 0.0;
+        double targetRecv = 0.0;
+
+        if (m_SelectedNetworkInterface < 0)
+        {
+            // Total mode - use existing system-wide history
+            targetSent = netSnap.netTxBytesPerSec;
+            targetRecv = netSnap.netRxBytesPerSec;
+        }
+        else if (hasValidSelection)
+        {
+            // Specific interface - use its current rates
+            const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
+            targetSent = selectedIface.txBytesPerSec;
+            targetRecv = selectedIface.rxBytesPerSec;
+            // No per-interface history yet, but still show the graph with total data
+            // (TODO: Add per-interface history tracking for full feature)
+        }
+
         const auto netTimestamps = m_Model->timestamps();
         const auto netTxHist = m_Model->netTxHistory();
         const auto netRxHist = m_Model->netRxHistory();
@@ -1123,12 +1214,10 @@ void SystemMetricsPanel::renderOverview()
             netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
             sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
             recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
-
-            // Smooth network rates for NowBars
-            const double targetSent = sentData.empty() ? 0.0 : static_cast<double>(sentData.back());
-            const double targetRecv = recvData.empty() ? 0.0 : static_cast<double>(recvData.back());
-            updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
         }
+
+        // Update smoothed network rates
+        updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
 
         const double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
                                         recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
@@ -1143,6 +1232,13 @@ void SystemMetricsPanel::renderOverview()
                              .label = "Network Received",
                              .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
                              .color = theme.accentColor(2)};
+
+        // Determine plot title based on selection
+        std::string plotTitle = "Total";
+        if (m_SelectedNetworkInterface >= 0 && hasValidSelection)
+        {
+            plotTitle = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name;
+        }
 
         auto plot = [&]()
         {
@@ -1184,7 +1280,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network (%zu samples)", aligned);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network - %s (%zu samples)", plotTitle.c_str(), aligned);
         renderHistoryWithNowBars(
             "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();

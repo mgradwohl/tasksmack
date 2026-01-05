@@ -32,6 +32,7 @@ class WindowsSystemProbe : public ISystemProbe
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
     static void readCpuFreq(SystemCounters& counters);
+    static void readNetworkCounters(SystemCounters& counters);
 
     std::size_t m_NumCores{0};
 
