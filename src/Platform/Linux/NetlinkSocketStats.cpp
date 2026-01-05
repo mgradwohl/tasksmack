@@ -161,6 +161,9 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
         return results;
     }
 
+    // Lock for thread-safe socket operations - multiple threads may call enumerate()
+    std::lock_guard<std::mutex> lock(m_SocketMutex);
+
     // Query TCP sockets (IPv4 and IPv6)
     querySockets(IPPROTO_TCP, results);
 
@@ -211,6 +214,12 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
                 continue;
             }
             spdlog::debug("Failed to receive inet_diag response: {}", safeStrerror(errno));
+            break;
+        }
+        if (len == 0)
+        {
+            // Peer performed an orderly shutdown; no more data to read
+            done = true;
             break;
         }
 
@@ -266,6 +275,13 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
             {
                 continue;
             }
+            spdlog::debug("Failed to receive inet_diag IPv6 response: {}", safeStrerror(errno));
+            break;
+        }
+        if (len == 0)
+        {
+            // Peer performed an orderly shutdown; no more data to read
+            done = true;
             break;
         }
 
@@ -282,6 +298,11 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
 
             if (nlh->nlmsg_type == NLMSG_ERROR)
             {
+                const auto* err = static_cast<nlmsgerr*>(NLMSG_DATA(nlh));
+                if (err->error != 0)
+                {
+                    spdlog::debug("Netlink IPv6 error: {}", safeStrerror(-err->error));
+                }
                 done = true;
                 break;
             }

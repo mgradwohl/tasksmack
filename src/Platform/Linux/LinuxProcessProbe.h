@@ -16,11 +16,6 @@
 namespace Platform
 {
 
-#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-// Forward declare when header is available
-class NetlinkSocketStats;
-#endif
-
 /// Linux implementation of IProcessProbe.
 /// Reads from /proc filesystem.
 class LinuxProcessProbe : public IProcessProbe

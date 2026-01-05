@@ -4,6 +4,7 @@
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -42,8 +43,9 @@ class NetlinkSocketStats
     }
 
   private:
-    int m_Socket = -1;        // Netlink socket file descriptor
-    bool m_Available = false; // Whether INET_DIAG is functional
+    int m_Socket = -1;                // Netlink socket file descriptor
+    bool m_Available = false;         // Whether INET_DIAG is functional
+    mutable std::mutex m_SocketMutex; // Protects socket operations for thread safety
 
     /// Query sockets for a specific protocol (IPPROTO_TCP or IPPROTO_UDP)
     void querySockets(int protocol, std::vector<SocketStats>& results);
