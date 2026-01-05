@@ -431,8 +431,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)
         // Windows uses 0 or ULONG64_MAX to indicate unknown speed
-        constexpr uint64_t UNKNOWN_SPEED_MAX = std::numeric_limits<uint64_t>::max();
-        if (row.TransmitLinkSpeed == 0 || row.TransmitLinkSpeed == UNKNOWN_SPEED_MAX)
+        constexpr uint64_t WINDOWS_UNKNOWN_LINK_SPEED = std::numeric_limits<uint64_t>::max();
+        if (row.TransmitLinkSpeed == 0 || row.TransmitLinkSpeed == WINDOWS_UNKNOWN_LINK_SPEED)
         {
             ifaceCounters.linkSpeedMbps = 0;
         }
