@@ -2119,10 +2119,6 @@ void SystemMetricsPanel::renderNetworkSection()
         ImGui::SameLine();
         ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
                            selectedIface.isUp ? "[Up]" : "[Down]");
-
-        // Note: Per-interface history is not yet implemented. Graph shows total traffic.
-        // Current rates (Now Bar) reflect the selected interface. See #295 for per-interface history.
-        ImGui::TextColored(theme.scheme().textMuted, "(Graph shows total traffic; current rates show selected interface)");
     }
 
     ImGui::Spacing();
@@ -2150,6 +2146,12 @@ void SystemMetricsPanel::renderNetworkSection()
     const auto netRxHist = m_Model->netRxHistory();
     const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
 
+    // Get per-interface history if an interface is selected
+    const bool showingInterface = m_SelectedNetworkInterface >= 0 && hasValidSelection;
+    const std::string ifaceName = showingInterface ? interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name : "";
+    const auto ifaceTxHist = showingInterface ? m_Model->netTxHistoryForInterface(ifaceName) : std::vector<float>{};
+    const auto ifaceRxHist = showingInterface ? m_Model->netRxHistoryForInterface(ifaceName) : std::vector<float>{};
+
     // Always use default axis config even with no data
     const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
                                   : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
@@ -2157,6 +2159,8 @@ void SystemMetricsPanel::renderNetworkSection()
     std::vector<float> netTimes;
     std::vector<float> sentData;
     std::vector<float> recvData;
+    std::vector<float> ifaceSentData;
+    std::vector<float> ifaceRecvData;
 
     if (aligned > 0)
     {
@@ -2164,22 +2168,47 @@ void SystemMetricsPanel::renderNetworkSection()
         netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
         sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
         recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
+
+        // Per-interface history (if available and same length as total)
+        if (showingInterface && ifaceTxHist.size() >= aligned)
+        {
+            ifaceSentData.assign(ifaceTxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceTxHist.end());
+        }
+        if (showingInterface && ifaceRxHist.size() >= aligned)
+        {
+            ifaceRecvData.assign(ifaceRxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceRxHist.end());
+        }
     }
 
     // Update smoothed network rates
     updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
 
-    const double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
-                                    recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
-                                    m_SmoothedNetwork.sentBytesPerSec,
-                                    m_SmoothedNetwork.recvBytesPerSec,
-                                    1.0});
+    // Calculate max across all data for consistent Y axis
+    double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
+                              recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
+                              m_SmoothedNetwork.sentBytesPerSec,
+                              m_SmoothedNetwork.recvBytesPerSec,
+                              1.0});
+    if (!ifaceSentData.empty())
+    {
+        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceSentData)));
+    }
+    if (!ifaceRecvData.empty())
+    {
+        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceRecvData)));
+    }
+
+    // Determine labels based on selection
+    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name : "Network";
+    const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
+    const std::string recvBarLabel = showingInterface ? std::format("{} Recv", ifaceDisplayName) : "Network Received";
+
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
-                         .label = "Network Sent",
+                         .label = sentBarLabel,
                          .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
                          .color = theme.scheme().chartCpu};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
-                         .label = "Network Received",
+                         .label = recvBarLabel,
                          .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
                          .color = theme.accentColor(2)};
 
@@ -2189,6 +2218,10 @@ void SystemMetricsPanel::renderNetworkSection()
     {
         plotTitle = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name;
     }
+
+    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
+    const auto ifaceSentColor = ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.7F);
+    const auto ifaceRecvColor = ImVec4(theme.accentColor(2).x, theme.accentColor(2).y, theme.accentColor(2).z, 0.7F);
 
     auto plot = [&]()
     {
@@ -2201,8 +2234,26 @@ void SystemMetricsPanel::renderNetworkSection()
             ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
             const int count = UI::Numeric::checkedCount(aligned);
-            plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
-            plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
+
+            // When an interface is selected, show both total (muted) and interface (bright)
+            if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+            {
+                // Total lines (muted, in background)
+                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
+                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
+
+                // Interface-specific lines (bright, in foreground)
+                const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
+                const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
+                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartCpu);
+                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.accentColor(2));
+            }
+            else
+            {
+                // Just total
+                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
+                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
+            }
 
             if (ImPlot::IsPlotHovered())
             {
@@ -2215,12 +2266,34 @@ void SystemMetricsPanel::renderNetworkSection()
                         const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::Separator();
-                        ImGui::TextColored(theme.scheme().chartCpu,
-                                           "Sent: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                        ImGui::TextColored(theme.accentColor(2),
-                                           "Recv: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
+                        if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+                        {
+                            // Show both total and interface values
+                            ImGui::TextColored(theme.scheme().textMuted, "Total:");
+                            ImGui::TextColored(ifaceSentColor,
+                                               "  Sent: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
+                            ImGui::TextColored(ifaceRecvColor,
+                                               "  Recv: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
+                            ImGui::Spacing();
+                            ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
+                            ImGui::TextColored(theme.scheme().chartCpu,
+                                               "  Sent: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
+                            ImGui::TextColored(theme.accentColor(2),
+                                               "  Recv: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
+                        }
+                        else
+                        {
+                            ImGui::TextColored(theme.scheme().chartCpu,
+                                               "Sent: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
+                            ImGui::TextColored(theme.accentColor(2),
+                                               "Recv: %s",
+                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
+                        }
                         ImGui::EndTooltip();
                     }
                 }

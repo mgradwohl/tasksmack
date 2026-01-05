@@ -67,6 +67,16 @@ void SystemModel::trimHistory(double nowSeconds)
     trimSamples(m_NetRxHistory);
     trimSamples(m_NetTxHistory);
 
+    // Per-interface network history
+    for (auto& [name, hist] : m_PerInterfaceRxHistory)
+    {
+        trimSamples(hist);
+    }
+    for (auto& [name, hist] : m_PerInterfaceTxHistory)
+    {
+        trimSamples(hist);
+    }
+
     for (auto& coreHist : m_PerCoreHistory)
     {
         trimSamples(coreHist);
@@ -247,6 +257,28 @@ std::vector<float> SystemModel::netTxHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return std::vector<float>(m_NetTxHistory.begin(), m_NetTxHistory.end());
+}
+
+std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& interfaceName) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    const auto it = m_PerInterfaceRxHistory.find(interfaceName);
+    if (it != m_PerInterfaceRxHistory.end())
+    {
+        return std::vector<float>(it->second.begin(), it->second.end());
+    }
+    return {};
+}
+
+std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& interfaceName) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    const auto it = m_PerInterfaceTxHistory.find(interfaceName);
+    if (it != m_PerInterfaceTxHistory.end())
+    {
+        return std::vector<float>(it->second.begin(), it->second.end());
+    }
+    return {};
 }
 
 std::vector<float> SystemModel::memoryCachedHistory() const
@@ -430,6 +462,14 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Network history (bytes per second)
         m_NetRxHistory.push_back(static_cast<float>(snap.netRxBytesPerSec));
         m_NetTxHistory.push_back(static_cast<float>(snap.netTxBytesPerSec));
+
+        // Per-interface network history
+        for (const auto& ifaceSnap : snap.networkInterfaces)
+        {
+            m_PerInterfaceRxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            m_PerInterfaceTxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.txBytesPerSec));
+        }
+
         m_Timestamps.push_back(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)

@@ -287,10 +287,6 @@ void NetworkPanel::renderInterfaceSelector()
         ImGui::SameLine();
         ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
                            selectedIface.isUp ? "[Up]" : "[Down]");
-
-        // Note: Per-interface history tracking is not yet implemented.
-        // Graph shows total traffic; current rates reflect selected interface.
-        ImGui::TextColored(theme.scheme().textMuted, "(Graph shows total traffic; current rates show selected interface)");
     }
 }
 
@@ -307,6 +303,12 @@ void NetworkPanel::renderThroughputGraph()
     const auto rxHist = m_SystemModel->netRxHistory();
     const size_t aligned = std::min({timestamps.size(), txHist.size(), rxHist.size()});
 
+    // Get per-interface history if an interface is selected
+    const bool showingInterface = m_SelectedInterface >= 0 && std::cmp_less(m_SelectedInterface, interfaceCount);
+    const std::string ifaceName = showingInterface ? interfaces[static_cast<size_t>(m_SelectedInterface)].name : "";
+    const auto ifaceTxHist = showingInterface ? m_SystemModel->netTxHistoryForInterface(ifaceName) : std::vector<float>{};
+    const auto ifaceRxHist = showingInterface ? m_SystemModel->netRxHistoryForInterface(ifaceName) : std::vector<float>{};
+
     // Build time axis
     const double nowSeconds =
         timestamps.empty() ? std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() : timestamps.back();
@@ -317,38 +319,66 @@ void NetworkPanel::renderThroughputGraph()
     std::vector<float> timesVec;
     std::vector<float> txData;
     std::vector<float> rxData;
+    std::vector<float> ifaceTxData;
+    std::vector<float> ifaceRxData;
 
     if (aligned > 0)
     {
         timesVec = buildTimeAxis(timestamps, aligned, nowSeconds);
         txData.assign(txHist.end() - static_cast<std::ptrdiff_t>(aligned), txHist.end());
         rxData.assign(rxHist.end() - static_cast<std::ptrdiff_t>(aligned), rxHist.end());
+
+        // Per-interface history (if available and same length as total)
+        if (showingInterface && ifaceTxHist.size() >= aligned)
+        {
+            ifaceTxData.assign(ifaceTxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceTxHist.end());
+        }
+        if (showingInterface && ifaceRxHist.size() >= aligned)
+        {
+            ifaceRxData.assign(ifaceRxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceRxHist.end());
+        }
     }
 
-    // Calculate max for Y axis
-    const double netMax = std::max({txData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(txData)),
-                                    rxData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(rxData)),
-                                    m_SmoothedValues.txBytesPerSec,
-                                    m_SmoothedValues.rxBytesPerSec,
-                                    1.0});
+    // Calculate max for Y axis (include interface data if available)
+    double netMax = std::max({txData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(txData)),
+                              rxData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(rxData)),
+                              m_SmoothedValues.txBytesPerSec,
+                              m_SmoothedValues.rxBytesPerSec,
+                              1.0});
+    if (!ifaceTxData.empty())
+    {
+        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceTxData)));
+    }
+    if (!ifaceRxData.empty())
+    {
+        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceRxData)));
+    }
+
+    // Determine labels based on selection
+    const std::string txBarLabel = showingInterface ? std::format("{} Sent", ifaceName) : "Sent";
+    const std::string rxBarLabel = showingInterface ? std::format("{} Recv", ifaceName) : "Received";
 
     // Create now bars
     const NowBar txBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedValues.txBytesPerSec),
-                       .label = "Sent",
+                       .label = txBarLabel,
                        .value01 = std::clamp(m_SmoothedValues.txBytesPerSec / netMax, 0.0, 1.0),
                        .color = theme.scheme().chartCpu};
 
     const NowBar rxBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedValues.rxBytesPerSec),
-                       .label = "Received",
+                       .label = rxBarLabel,
                        .value01 = std::clamp(m_SmoothedValues.rxBytesPerSec / netMax, 0.0, 1.0),
                        .color = theme.accentColor(2)};
 
     // Determine plot title
     std::string plotTitle = "Network Throughput";
-    if (m_SelectedInterface >= 0 && std::cmp_less(m_SelectedInterface, interfaceCount))
+    if (showingInterface)
     {
-        plotTitle = std::format("Throughput: {}", interfaces[static_cast<size_t>(m_SelectedInterface)].name);
+        plotTitle = std::format("Throughput: {}", ifaceName);
     }
+
+    // Colors for total lines when interface selected (muted)
+    const auto totalTxColor = ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.5F);
+    const auto totalRxColor = ImVec4(theme.accentColor(2).x, theme.accentColor(2).y, theme.accentColor(2).z, 0.5F);
 
     // Render plot with now bars
     auto plot = [&]()
@@ -365,19 +395,51 @@ void NetworkPanel::renderThroughputGraph()
             {
                 const auto count = UI::Numeric::narrowOr<int>(aligned, 0);
 
-                // Plot TX (sent)
-                ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                plotLineWithFill("Sent",
-                                 timesVec.data(),
-                                 txData.data(),
-                                 count,
-                                 theme.scheme().chartCpu,
-                                 ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.3F));
+                if (showingInterface && !ifaceTxData.empty() && !ifaceRxData.empty())
+                {
+                    // Show both total (muted) and interface (bright) lines
+                    ImPlot::SetNextLineStyle(totalTxColor, 1.5F);
+                    plotLineWithFill("Sent (Total)", timesVec.data(), txData.data(), count, totalTxColor);
 
-                // Plot RX (received)
-                const auto rxColor = theme.accentColor(2);
-                ImPlot::SetNextLineStyle(rxColor, 2.0F);
-                plotLineWithFill("Received", timesVec.data(), rxData.data(), count, rxColor, ImVec4(rxColor.x, rxColor.y, rxColor.z, 0.3F));
+                    ImPlot::SetNextLineStyle(totalRxColor, 1.5F);
+                    plotLineWithFill("Recv (Total)", timesVec.data(), rxData.data(), count, totalRxColor);
+
+                    // Interface-specific lines (bright)
+                    const auto ifaceTxLabel = std::format("{} Sent", ifaceName);
+                    const auto ifaceRxLabel = std::format("{} Recv", ifaceName);
+                    ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
+                    plotLineWithFill(ifaceTxLabel.c_str(),
+                                     timesVec.data(),
+                                     ifaceTxData.data(),
+                                     count,
+                                     theme.scheme().chartCpu,
+                                     ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.3F));
+
+                    const auto rxColor = theme.accentColor(2);
+                    ImPlot::SetNextLineStyle(rxColor, 2.0F);
+                    plotLineWithFill(ifaceRxLabel.c_str(),
+                                     timesVec.data(),
+                                     ifaceRxData.data(),
+                                     count,
+                                     rxColor,
+                                     ImVec4(rxColor.x, rxColor.y, rxColor.z, 0.3F));
+                }
+                else
+                {
+                    // Just show total
+                    ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
+                    plotLineWithFill("Sent",
+                                     timesVec.data(),
+                                     txData.data(),
+                                     count,
+                                     theme.scheme().chartCpu,
+                                     ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.3F));
+
+                    const auto rxColor = theme.accentColor(2);
+                    ImPlot::SetNextLineStyle(rxColor, 2.0F);
+                    plotLineWithFill(
+                        "Received", timesVec.data(), rxData.data(), count, rxColor, ImVec4(rxColor.x, rxColor.y, rxColor.z, 0.3F));
+                }
             }
 
             ImPlot::EndPlot();
