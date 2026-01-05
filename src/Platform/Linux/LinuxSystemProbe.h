@@ -33,6 +33,12 @@ class LinuxSystemProbe : public ISystemProbe
     static void readUptime(SystemCounters& counters);
     static void readLoadAvg(SystemCounters& counters);
     static void readCpuFreq(SystemCounters& counters);
+
+    /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
+    /// Unlike the other read* helpers, this method is non-static because it
+    /// uses m_InterfaceCache to cache per-interface link speed and state in
+    /// order to avoid repeated sysfs reads. The other helpers are stateless
+    /// and remain static.
     void readNetworkCounters(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
 
