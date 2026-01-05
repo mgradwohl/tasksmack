@@ -3,13 +3,7 @@
 #include <spdlog/spdlog.h>
 
 // clang-format off
-// Windows SDK version - required for GetIfTable2 and MIB_IF_TABLE2 (Vista+)
-#ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0A00 // NOLINT(cppcoreguidelines-macro-usage) - Windows platform requirement
-#endif
-#ifndef WINVER
-#define WINVER _WIN32_WINNT
-#endif
+// Windows headers - _WIN32_WINNT is set via CMake compile definitions
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
