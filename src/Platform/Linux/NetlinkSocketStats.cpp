@@ -59,7 +59,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
         }
     }
 
-    return "Unknown error " + std::to_string(errnum);
+    return std::format("Unknown error {}", errnum);
 }
 
 // Request structure for inet_diag with extensions

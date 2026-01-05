@@ -16,13 +16,12 @@ namespace
 
 // ========== NetlinkSocketStats Tests ==========
 
-TEST(NetlinkSocketStatsTest, IsAvailableReturnsBool)
+TEST(NetlinkSocketStatsTest, IsAvailableDoesNotThrow)
 {
     NetlinkSocketStats stats;
-    // Verify isAvailable() returns a proper boolean value
-    // (availability depends on system capabilities, but it should always be a valid bool)
-    const bool available = stats.isAvailable();
-    EXPECT_TRUE(available || !available); // Always true for a valid bool
+    // Verify isAvailable() doesn't throw an exception
+    // (availability depends on system capabilities, but method should be noexcept)
+    EXPECT_NO_THROW([[maybe_unused]] auto available = stats.isAvailable());
 }
 
 TEST(NetlinkSocketStatsTest, IsAvailableReturnsConsistentValue)
