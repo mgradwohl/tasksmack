@@ -1118,6 +1118,14 @@ void SystemMetricsPanel::renderOverview()
 
         const auto interfaceCount = interfaces.size();
 
+        // Clamp selected interface to current range so indexing into interfaceNames is always safe.
+        // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
+        if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
+        {
+            // If there are no interfaces, force "Total"; otherwise clamp to last interface.
+            m_SelectedNetworkInterface = (interfaceCount == 0) ? -1 : static_cast<int>(interfaceCount) - 1;
+        }
+
         // Interface selector
         ImGui::SetNextItemWidth(250.0F);
         // Index 0 is "Total", indices 1+ are interfaces. m_SelectedNetworkInterface: -1 = Total, 0+ = interface index

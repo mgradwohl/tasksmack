@@ -318,10 +318,11 @@ TEST(LinuxSystemProbeTest, PerInterfaceNetworkCountersAreAccessible)
     LinuxSystemProbe probe;
     auto counters = probe.read();
 
-    // The vector should be accessible even if empty
-    // Note: loopback (lo) is filtered out, so systems with only loopback may have 0 interfaces
-    // Most systems have at least one physical or virtual interface besides loopback
-    EXPECT_GE(counters.networkInterfaces.size(), 0ULL);
+    // The vector should be accessible even if empty.
+    // Note: loopback (lo) is filtered out, so systems with only loopback may have 0 interfaces.
+    // Most systems have at least one physical or virtual interface besides loopback.
+    // size() is always >= 0 by type; just verify the vector is accessible.
+    (void) counters.networkInterfaces.size();
 }
 
 TEST(LinuxSystemProbeTest, PerInterfaceCountersHaveValidNames)
@@ -346,9 +347,10 @@ TEST(LinuxSystemProbeTest, PerInterfaceCountersAreNonNegative)
 
     for (const auto& iface : counters.networkInterfaces)
     {
-        // Counters should be non-negative (0 is valid for idle interfaces)
-        EXPECT_GE(iface.rxBytes, 0ULL) << "Interface " << iface.name << " rxBytes invalid";
-        EXPECT_GE(iface.txBytes, 0ULL) << "Interface " << iface.name << " txBytes invalid";
+        // Counters are uint64_t, so always non-negative by type.
+        // Access the fields to verify the structure is correctly populated.
+        (void) iface.rxBytes;
+        (void) iface.txBytes;
     }
 }
 
@@ -370,8 +372,10 @@ TEST(LinuxSystemProbeTest, PerInterfaceCountersSumApproximatesTotal)
     LinuxSystemProbe probe;
     auto counters = probe.read();
 
-    // Sum of per-interface counters should approximately equal total
-    // (may not be exact due to timing and internal aggregation)
+    // Sum of per-interface counters should approximately equal total.
+    // Note: The probe filters out loopback (lo) from networkInterfaces, and the totals
+    // (netRxBytes/netTxBytes) are computed from the filtered interfaces. If this
+    // implementation changes to include loopback in totals, this test may need updating.
     uint64_t sumRx = 0;
     uint64_t sumTx = 0;
     for (const auto& iface : counters.networkInterfaces)

@@ -37,6 +37,9 @@ class LinuxSystemProbe : public ISystemProbe
     /// Read interface link speed from sysfs (returns 0 if unavailable).
     [[nodiscard]] static uint64_t readInterfaceLinkSpeed(const std::string& ifaceName);
 
+    /// Read interface operational state from sysfs (up/down/unknown).
+    [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
+
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 

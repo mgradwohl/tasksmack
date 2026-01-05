@@ -100,10 +100,10 @@ TEST(SystemProbeContractTest, PerInterfaceCountersHaveValidStructure)
         EXPECT_FALSE(iface.name.empty()) << "Interface name should not be empty";
         EXPECT_FALSE(iface.displayName.empty()) << "Display name should not be empty";
 
-        // Counters are cumulative, so should be non-negative (always true for uint64_t)
-        // This test mainly verifies the structure is accessible
-        EXPECT_GE(iface.rxBytes, 0ULL);
-        EXPECT_GE(iface.txBytes, 0ULL);
+        // Counters are cumulative uint64_t values, so always non-negative by type.
+        // Access the fields to verify the structure is correctly populated.
+        (void) iface.rxBytes;
+        (void) iface.txBytes;
 
         // Link speed 0 is valid (unknown), but if non-zero should be reasonable
         if (iface.linkSpeedMbps > 0)

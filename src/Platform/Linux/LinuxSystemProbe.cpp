@@ -398,7 +398,7 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.displayName = iface; // Linux: use system name as display name
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
-            ifaceCounters.isUp = (rxBytes > 0 || txBytes > 0); // Heuristic: has traffic = up
+            ifaceCounters.isUp = readInterfaceOperState(iface);
             ifaceCounters.linkSpeedMbps = readInterfaceLinkSpeed(iface);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
@@ -429,6 +429,25 @@ uint64_t LinuxSystemProbe::readInterfaceLinkSpeed(const std::string& ifaceName)
     }
 
     return static_cast<uint64_t>(speedMbps);
+}
+
+bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
+{
+    // Read operational state from /sys/class/net/<iface>/operstate
+    // Returns true if "up", false otherwise (down, unknown, etc.)
+    const std::string operstatePath = "/sys/class/net/" + ifaceName + "/operstate";
+    std::ifstream operstateFile(operstatePath);
+    if (!operstateFile.is_open())
+    {
+        return false;
+    }
+
+    std::string state;
+    operstateFile >> state;
+
+    // "up" means interface is operational
+    // Other values: "down", "unknown", "lowerlayerdown", "notpresent", "dormant", "testing"
+    return (state == "up");
 }
 
 } // namespace Platform
