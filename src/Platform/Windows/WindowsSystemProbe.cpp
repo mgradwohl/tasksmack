@@ -388,8 +388,9 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // IF_TYPE_TUNNEL (131) - VPN tunnels
         // IF_TYPE_PPP (23) - PPP connections
         // IF_TYPE_PROP_VIRTUAL (53) - Virtual adapters (Hyper-V, Docker, etc.)
-        const bool isNetworkInterface = (row.dwType == IF_TYPE_ETHERNET_CSMACD || row.dwType == IF_TYPE_IEEE80211 ||
-                                         row.dwType == IF_TYPE_TUNNEL || row.dwType == IF_TYPE_PPP || row.dwType == IF_TYPE_PROP_VIRTUAL);
+        const bool isNetworkInterface =
+            ((row.dwType == IF_TYPE_ETHERNET_CSMACD) || (row.dwType == IF_TYPE_IEEE80211) || (row.dwType == IF_TYPE_TUNNEL) ||
+             (row.dwType == IF_TYPE_PPP) || (row.dwType == IF_TYPE_PROP_VIRTUAL));
 
         if (!isNetworkInterface)
         {

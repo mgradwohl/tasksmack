@@ -422,7 +422,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             snap.cpuPerCore.push_back(coreUsage);
         }
 
-        // Total network rates (bytes per second)
+        // Compute total network rates (aggregate of all interfaces, bytes per second)
         if (timeDelta > 0.0)
         {
             // Only compute if counters increased (handle overflow/restart)

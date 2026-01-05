@@ -2060,13 +2060,10 @@ void SystemMetricsPanel::renderNetworkSection()
         // Guard against potential overflow when converting from size_t to int.
         // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
         constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if (interfaceCount == 0)
+        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
         {
+            // Fall back to "Total" mode when no interfaces or index would overflow int.
             m_SelectedNetworkInterface = -1;
-        }
-        else if (interfaceCount > maxIntIndex)
-        {
-            m_SelectedNetworkInterface = std::numeric_limits<int>::max();
         }
         else
         {
