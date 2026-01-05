@@ -1,13 +1,25 @@
 #pragma once
 
 #include "Platform/IProcessProbe.h"
+
+// Conditionally include NetlinkSocketStats only when headers are available
+#if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
+#define TASKSMACK_HAS_NETLINK_SOCKET_STATS 1
 #include "Platform/Linux/NetlinkSocketStats.h"
+#else
+#define TASKSMACK_HAS_NETLINK_SOCKET_STATS 0
+#endif
 
 #include <memory>
 #include <mutex>
 
 namespace Platform
 {
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+// Forward declare when header is available
+class NetlinkSocketStats;
+#endif
 
 /// Linux implementation of IProcessProbe.
 /// Reads from /proc filesystem.
@@ -37,9 +49,11 @@ class LinuxProcessProbe : public IProcessProbe
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Per-process network monitoring via Netlink INET_DIAG
     std::unique_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
+#endif
 
     /// Parse /proc/[pid]/stat for a single process
     [[nodiscard]] bool parseProcessStat(int32_t pid, ProcessCounters& counters) const;
@@ -76,8 +90,10 @@ class LinuxProcessProbe : public IProcessProbe
     /// Attribute system energy to processes based on CPU usage
     void attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const;
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Attribute network bytes to processes using Netlink socket stats
     void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+#endif
 };
 
 } // namespace Platform

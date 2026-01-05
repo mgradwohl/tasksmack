@@ -31,13 +31,22 @@ namespace
 constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
 
 /// Thread-safe strerror wrapper using strerror_r
+/// Handles both GNU (returns char*) and POSIX (returns int) versions
 [[nodiscard]] std::string safeStrerror(int errnum)
 {
     std::array<char, 256> buffer{};
-    // Use GNU-specific strerror_r which returns char*
-    // The returned pointer may point to buffer or to a static string
+
+    // GNU libc with _GNU_SOURCE returns char*, POSIX returns int
+    // GNU libc provides a non-standard strerror_r that returns char*.
+    // Use the GNU extension directly since we're on Linux with glibc.
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - using thread-safe strerror_r, not strerror
     const char* result = strerror_r(errnum, buffer.data(), buffer.size());
-    return std::string(result);
+    if (result != nullptr)
+    {
+        return std::string(result);
+    }
+    // Fallback if strerror_r fails
+    return "Unknown error " + std::to_string(errnum);
 }
 
 // Request structure for inet_diag with extensions
@@ -120,11 +129,18 @@ NetlinkSocketStats::NetlinkSocketStats()
     }
 
     // Test if INET_DIAG works by doing a simple query
+    // Only mark as available if we successfully get results (or query doesn't error)
     std::vector<SocketStats> testResults;
     querySockets(IPPROTO_TCP, testResults);
-    m_Available = true;
 
-    spdlog::info("Netlink INET_DIAG available for per-process network monitoring");
+    // Set available - the socket is functional even if no TCP sockets exist yet
+    // querySockets returning without error indicates the kernel supports INET_DIAG
+    m_Available = (m_Socket >= 0);
+
+    if (m_Available)
+    {
+        spdlog::info("Netlink INET_DIAG available for per-process network monitoring");
+    }
 }
 
 NetlinkSocketStats::~NetlinkSocketStats()

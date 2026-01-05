@@ -4,7 +4,10 @@
 
 #include "LinuxProcessProbe.h"
 
+// Include NetlinkSocketStats only when its headers are available
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
+#endif
 
 #include <spdlog/spdlog.h>
 
@@ -133,6 +136,7 @@ LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
         spdlog::debug("Power monitoring not available (RAPL not found)");
     }
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Initialize per-process network monitoring via Netlink INET_DIAG
     m_SocketStats = std::make_unique<NetlinkSocketStats>();
     m_HasNetworkCounters = m_SocketStats->isAvailable();
@@ -144,6 +148,7 @@ LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
     {
         spdlog::debug("Per-process network monitoring not available");
     }
+#endif
 }
 
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
@@ -206,11 +211,13 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         attributeEnergyToProcesses(processes);
     }
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Attribute network bytes to processes if socket stats are available
     if (m_HasNetworkCounters && m_SocketStats)
     {
         attributeNetworkToProcesses(processes);
     }
+#endif
 
     return processes;
 }
@@ -219,6 +226,12 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
     std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    const bool hasNetworkCounters = m_HasNetworkCounters;
+#else
+    const bool hasNetworkCounters = false;
+#endif
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
                                .hasThreadCount = true,
@@ -229,10 +242,10 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,                     // From sched_getaffinity
-                               .hasNetworkCounters = m_HasNetworkCounters, // From Netlink INET_DIAG
-                               .hasPowerUsage = m_HasPowerCap,             // Available if RAPL is detected
-                               .hasStatus = true};                         // From cgroup freezer state
+                               .hasCpuAffinity = true,                   // From sched_getaffinity
+                               .hasNetworkCounters = hasNetworkCounters, // From Netlink INET_DIAG (if available)
+                               .hasPowerUsage = m_HasPowerCap,           // Available if RAPL is detected
+                               .hasStatus = true};                       // From cgroup freezer state
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const
@@ -753,6 +766,7 @@ void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>&
     }
 }
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const
 {
     if (!m_SocketStats)
@@ -768,6 +782,9 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     }
 
     // Build inode-to-PID mapping by scanning /proc/[pid]/fd/*
+    // TODO: Consider caching this mapping with a TTL to reduce /proc scanning overhead
+    //       on systems with many processes. Current approach scans on each enumerate()
+    //       call (~1Hz) which may add latency on systems with thousands of processes.
     const std::unordered_map<std::uint64_t, std::int32_t> inodeToPid = buildInodeToPidMap();
     if (inodeToPid.empty())
     {
@@ -789,6 +806,7 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         }
     }
 }
+#endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 
 } // namespace Platform
 

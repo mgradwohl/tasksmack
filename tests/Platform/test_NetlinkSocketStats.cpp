@@ -47,8 +47,8 @@ TEST(NetlinkSocketStatsTest, QueryAllSocketsDoesNotCrash)
     NetlinkSocketStats stats;
     // Should not crash regardless of availability
     auto sockets = stats.queryAllSockets();
-    // Result may be empty or contain sockets
-    EXPECT_GE(sockets.size(), 0UL);
+    // Result may be empty or contain sockets; reaching here without a crash is success
+    SUCCEED() << "QueryAllSockets completed with " << sockets.size() << " sockets";
 }
 
 TEST(NetlinkSocketStatsTest, QueryAllSocketsReturnsSocketsWhenAvailable)
@@ -91,8 +91,8 @@ TEST(BuildInodeToPidMapTest, ReturnsNonEmptyMapOnRunningSystem)
 {
     auto inodeToPid = buildInodeToPidMap();
     // A running system should have at least some sockets
-    // The test process itself might have open sockets
-    EXPECT_GE(inodeToPid.size(), 0UL);
+    // The test process itself might have open sockets; reaching here is success
+    SUCCEED() << "buildInodeToPidMap completed with " << inodeToPid.size() << " mappings";
 }
 
 TEST(BuildInodeToPidMapTest, MapsSocketsToValidPids)
