@@ -28,6 +28,12 @@ This file lists features that are already implemented in TaskSmack.
 | **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
 | **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
 | **GPU Monitoring (Phase 1-7)** | Task Manager, btop++ | GPU infrastructure and UI complete; Platform layer with NVIDIA (NVML), Intel (DRM), AMD (ROCm) probes on Linux; Domain GPUModel with history and per-process GPU fields in ProcessSnapshot; UI surfaces include SystemMetricsPanel GPU section, ProcessesPanel GPU columns, and ProcessDetailsPanel GPU tab |
+| **Network Monitoring** | btop++, Task Manager | Complete network monitoring implementation with system-wide and per-process tracking |
+| **System-Wide Network Stats** | btop++ | Total RX/TX bytes and rates in System Overview; Linux via `/proc/net/dev`, Windows via `GetIfTable`/`GetIfTable2` |
+| **Per-Interface Network Breakdown** | btop++ | Interface selector dropdown showing individual interface throughput, status, and link speed |
+| **Network Panel** | btop++ | Dedicated panel with per-interface throughput graphs, current rates with auto-scaling units (B/s to GB/s), cumulative transfer totals, interface status and link speed |
+| **Per-Process Network Tracking** | Task Manager | Network sent/received rates per process; Linux via Netlink INET_DIAG socket stats, Windows via `GetPerTcpConnectionEStats` |
+| **Linux Interface Caching** | — | Link speed cached with 60s TTL to reduce sysfs I/O; thread-safe implementation |
 
 ## Developer Tooling / Infrastructure
 
