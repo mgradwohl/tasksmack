@@ -4,6 +4,8 @@
 
 #include "LinuxSystemProbe.h"
 
+#include "Domain/SamplingConfig.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -446,7 +448,6 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     const auto now = std::chrono::steady_clock::now();
 
     // Check cache under lock to determine if refresh is needed
-    bool isNewEntry = false;
     {
         const std::scoped_lock lock(m_InterfaceCacheMutex);
 
@@ -456,7 +457,7 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
             auto& entry = it->second;
             const bool stateTransition = (!entry.wasUp && isUp);
             const auto age = std::chrono::duration_cast<std::chrono::seconds>(now - entry.lastSpeedCheck).count();
-            const bool expired = (age >= LINK_SPEED_CACHE_TTL_SECONDS);
+            const bool expired = (age >= Domain::Sampling::LINK_SPEED_CACHE_TTL_SECONDS);
 
             // Return cached value if still valid
             if (!stateTransition && !expired)
@@ -467,40 +468,23 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
             }
             // Fall through to refresh
         }
-        else
-        {
-            isNewEntry = true;
-        }
     }
     // Lock released - perform potentially blocking sysfs I/O without holding mutex
 
     const uint64_t newSpeed = readInterfaceLinkSpeedFromSysfs(ifaceName);
 
     // Update cache with new value
+    // Use insert_or_assign to handle race conditions:
+    // - Another thread may have inserted the entry while we were reading
+    // - cleanupStaleInterfaceCacheEntries may have removed the entry
     {
         const std::scoped_lock lock(m_InterfaceCacheMutex);
-
-        if (isNewEntry)
-        {
-            // First access - create cache entry
-            m_InterfaceCache[ifaceName] = InterfaceCacheEntry{
-                .linkSpeedMbps = newSpeed,
-                .wasUp = isUp,
-                .lastSpeedCheck = now,
-            };
-        }
-        else
-        {
-            // Refresh existing entry
-            auto it = m_InterfaceCache.find(ifaceName);
-            if (it != m_InterfaceCache.end())
-            {
-                auto& entry = it->second;
-                entry.wasUp = isUp;
-                entry.linkSpeedMbps = newSpeed;
-                entry.lastSpeedCheck = now;
-            }
-        }
+        m_InterfaceCache.insert_or_assign(ifaceName,
+                                          InterfaceCacheEntry{
+                                              .linkSpeedMbps = newSpeed,
+                                              .wasUp = isUp,
+                                              .lastSpeedCheck = now,
+                                          });
     }
     return newSpeed;
 }

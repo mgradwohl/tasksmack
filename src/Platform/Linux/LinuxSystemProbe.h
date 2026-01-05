@@ -82,8 +82,6 @@ class LinuxSystemProbe : public ISystemProbe
     };
     std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
-
-    static constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 };
 
 } // namespace Platform

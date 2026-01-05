@@ -471,9 +471,10 @@ TEST(LinuxSystemProbeTest, PerInterfaceStatusConsistent)
 
 TEST(LinuxSystemProbeTest, InterfaceLinkSpeedIsCached)
 {
-    // Verify that link speed caching works - multiple reads should return same value
-    // without causing excessive sysfs I/O (we can't directly measure I/O, but we can
-    // verify the values are consistent)
+    // Integration test: verify link speed values are stable across reads.
+    // Note: This doesn't prove caching is working (values would be stable anyway),
+    // but it does verify the caching code path doesn't corrupt data.
+    // True cache behavior verification would require mocking sysfs access.
     LinuxSystemProbe probe;
 
     auto counters1 = probe.read();
@@ -495,9 +496,10 @@ TEST(LinuxSystemProbeTest, InterfaceLinkSpeedIsCached)
 
 TEST(LinuxSystemProbeTest, CacheHandlesDynamicInterfaces)
 {
-    // Verify that the cache cleanup doesn't cause issues when interfaces
-    // come and go (we can't easily add/remove interfaces, but we can verify
-    // repeated reads don't accumulate unbounded state)
+    // Integration test: verify repeated reads don't crash or leak.
+    // Note: This doesn't directly verify cache cleanup occurs, but ensures
+    // the cleanup code path doesn't cause issues. True cleanup verification
+    // would require injecting/removing interfaces or mocking.
     LinuxSystemProbe probe;
 
     // Read many times - cache should not grow unbounded
