@@ -457,6 +457,8 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
         // Return cached value if still valid
         if (!stateTransition && !expired)
         {
+            // Keep state tracking in sync even when we don't refresh link speed
+            entry.wasUp = isUp;
             return entry.linkSpeedMbps;
         }
 

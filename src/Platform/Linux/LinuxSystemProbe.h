@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace Platform
 {
@@ -79,7 +80,7 @@ class LinuxSystemProbe : public ISystemProbe
         bool wasUp = false; // Track state transitions
         std::chrono::steady_clock::time_point lastSpeedCheck{};
     };
-    mutable std::mutex m_InterfaceCacheMutex;
+    std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
 
     static constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
