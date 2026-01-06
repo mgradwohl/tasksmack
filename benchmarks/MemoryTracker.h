@@ -176,6 +176,12 @@ class AllocationCounter
         return counter;
     }
 
+    // Singleton: prevent copying/moving
+    AllocationCounter(const AllocationCounter&) = delete;
+    AllocationCounter& operator=(const AllocationCounter&) = delete;
+    AllocationCounter(AllocationCounter&&) = delete;
+    AllocationCounter& operator=(AllocationCounter&&) = delete;
+
     void recordAllocation(std::size_t bytes)
     {
         m_AllocationCount.fetch_add(1, std::memory_order_relaxed);
