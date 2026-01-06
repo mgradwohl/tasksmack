@@ -339,10 +339,10 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
-        // Network tab - show if network counters are available
+        // Network and I/O tab - show if network counters are available
         if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
         {
-            if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network"))
+            if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
             {
                 renderNetworkSection();
                 ImGui::EndTabItem();
@@ -1022,94 +1022,102 @@ void SystemMetricsPanel::renderOverview()
             "ThreadsFaultsHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
+}
 
-    // System I/O history
-    if (m_StorageModel)
+void SystemMetricsPanel::renderDiskIOSection()
+{
+    if (!m_StorageModel)
     {
-        const auto ioTimestamps = m_StorageModel->historyTimestamps();
-        const auto ioReadHist = m_StorageModel->totalReadHistory();
-        const auto ioWriteHist = m_StorageModel->totalWriteHistory();
-        const size_t aligned = std::min({ioTimestamps.size(), ioReadHist.size(), ioWriteHist.size()});
+        return;
+    }
 
-        // Always use default axis config even with no data
-        const auto axis = aligned > 0 ? makeTimeAxisConfig(ioTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
-                                      : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-        std::vector<float> ioTimes;
-        std::vector<float> readData;
-        std::vector<float> writeData;
+    const auto ioTimestamps = m_StorageModel->historyTimestamps();
+    const auto ioReadHist = m_StorageModel->totalReadHistory();
+    const auto ioWriteHist = m_StorageModel->totalWriteHistory();
+    const size_t aligned = std::min({ioTimestamps.size(), ioReadHist.size(), ioWriteHist.size()});
 
-        if (aligned > 0)
+    // Always use default axis config even with no data
+    const auto axis = aligned > 0 ? makeTimeAxisConfig(ioTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
+                                  : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+
+    std::vector<float> ioTimes;
+    std::vector<float> readData;
+    std::vector<float> writeData;
+
+    if (aligned > 0)
+    {
+        ioTimes = buildTimeAxis(ioTimestamps, aligned, nowSeconds);
+        readData.assign(ioReadHist.end() - static_cast<std::ptrdiff_t>(aligned), ioReadHist.end());
+        writeData.assign(ioWriteHist.end() - static_cast<std::ptrdiff_t>(aligned), ioWriteHist.end());
+
+        // Update smoothed values
+        const double targetRead = static_cast<double>(readData.back());
+        const double targetWrite = static_cast<double>(writeData.back());
+        updateSmoothedSystemIO(targetRead, targetWrite, m_LastDeltaSeconds);
+    }
+
+    const double ioMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
+                                   writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
+                                   m_SmoothedSystemIO.readBytesPerSec,
+                                   m_SmoothedSystemIO.writeBytesPerSec,
+                                   1.0});
+    const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
+                         .label = "Disk Read",
+                         .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
+                         .color = theme.scheme().chartCpu};
+    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
+                          .label = "Disk Write",
+                          .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
+                          .color = theme.scheme().chartIo};
+
+    auto plot = [&]()
+    {
+        const UI::Widgets::PlotFontGuard fontGuard;
+        if (ImPlot::BeginPlot("##SystemIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
-            ioTimes = buildTimeAxis(ioTimestamps, aligned, nowSeconds);
-            readData.assign(ioReadHist.end() - static_cast<std::ptrdiff_t>(aligned), ioReadHist.end());
-            writeData.assign(ioWriteHist.end() - static_cast<std::ptrdiff_t>(aligned), ioWriteHist.end());
+            UI::Widgets::setupLegendDefault();
+            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
+            ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
-            // Update smoothed values
-            const double targetRead = static_cast<double>(readData.back());
-            const double targetWrite = static_cast<double>(writeData.back());
-            updateSmoothedSystemIO(targetRead, targetWrite, m_LastDeltaSeconds);
-        }
+            const int count = UI::Numeric::checkedCount(aligned);
+            plotLineWithFill("Read", ioTimes.data(), readData.data(), count, theme.scheme().chartCpu);
+            plotLineWithFill("Write", ioTimes.data(), writeData.data(), count, theme.scheme().chartIo);
 
-        const double ioMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
-                                       writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
-                                       m_SmoothedSystemIO.readBytesPerSec,
-                                       m_SmoothedSystemIO.writeBytesPerSec,
-                                       1.0});
-        const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
-                             .label = "Disk Read",
-                             .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
-                             .color = theme.scheme().chartCpu};
-        const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
-                              .label = "Disk Write",
-                              .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
-                              .color = theme.scheme().chartIo};
-
-        auto plot = [&]()
-        {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##SystemIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+            if (ImPlot::IsPlotHovered())
             {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
-                const int count = UI::Numeric::checkedCount(aligned);
-                plotLineWithFill("Read", ioTimes.data(), readData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Write", ioTimes.data(), writeData.data(), count, theme.scheme().chartIo);
-
-                if (ImPlot::IsPlotHovered())
+                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                if (const auto idxVal = hoveredIndexFromPlotX(ioTimes, mouse.x))
                 {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(ioTimes, mouse.x))
+                    if (*idxVal < aligned)
                     {
-                        if (*idxVal < aligned)
-                        {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(static_cast<double>(ioTimes[*idxVal]));
-                            ImGui::TextUnformatted(ageText.c_str());
-                            ImGui::Separator();
-                            ImGui::TextColored(theme.scheme().chartCpu,
-                                               "Read: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.scheme().chartIo,
-                                               "Write: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal])).c_str());
-                            ImGui::EndTooltip();
-                        }
+                        ImGui::BeginTooltip();
+                        const auto ageText = formatAgeSeconds(static_cast<double>(ioTimes[*idxVal]));
+                        ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
+                        ImGui::TextColored(theme.scheme().chartCpu,
+                                           "Read: %s",
+                                           UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal])).c_str());
+                        ImGui::TextColored(theme.scheme().chartIo,
+                                           "Write: %s",
+                                           UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal])).c_str());
+                        ImGui::EndTooltip();
                     }
                 }
-
-                ImPlot::EndPlot();
             }
-        };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  I/O (%zu samples)", aligned);
-        renderHistoryWithNowBars(
-            "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
-        ImGui::Spacing();
-    }
+            ImPlot::EndPlot();
+        }
+    };
+
+    constexpr size_t DISKIO_NOW_BAR_COLUMNS = 2; // Read, Write
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O (%zu samples)", aligned);
+    renderHistoryWithNowBars(
+        "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, DISKIO_NOW_BAR_COLUMNS);
+    ImGui::Spacing();
 }
 
 void SystemMetricsPanel::renderCpuSection()
@@ -2030,6 +2038,11 @@ void SystemMetricsPanel::updateSmoothedGPU(const std::string& gpuId, const Domai
 
 void SystemMetricsPanel::renderNetworkSection()
 {
+    // Render Disk I/O section at the top of Network and I/O tab
+    renderDiskIOSection();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
@@ -2307,7 +2320,7 @@ void SystemMetricsPanel::renderNetworkSection()
         "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 
-    // Interface status table
+    // Interface status table with sortable columns
     if (!interfaces.empty())
     {
         ImGui::Separator();
@@ -2315,18 +2328,81 @@ void SystemMetricsPanel::renderNetworkSection()
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
         ImGui::Spacing();
 
-        constexpr ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+        constexpr ImGuiTableFlags tableFlags =
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Sortable;
 
         if (ImGui::BeginTable("##InterfaceTable", 5, tableFlags))
         {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, 2.0F);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort, 2.0F);
             ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 1.0F);
             ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
             ImGui::TableSetupColumn("TX Rate", ImGuiTableColumnFlags_None, 1.5F);
             ImGui::TableSetupColumn("RX Rate", ImGuiTableColumnFlags_None, 1.5F);
             ImGui::TableHeadersRow();
 
-            for (const auto& iface : interfaces)
+            // Sort interfaces if needed
+            using InterfaceSnapshot = Domain::SystemSnapshot::InterfaceSnapshot;
+            std::vector<InterfaceSnapshot> sortedInterfaces(interfaces.begin(), interfaces.end());
+
+            if (const auto* sortSpecs = ImGui::TableGetSortSpecs(); sortSpecs != nullptr && sortSpecs->SpecsCount > 0)
+            {
+                const auto& spec = sortSpecs->Specs[0];
+                const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+
+                std::ranges::sort(sortedInterfaces,
+                                  [&spec, ascending](const InterfaceSnapshot& lhs, const InterfaceSnapshot& rhs)
+                                  {
+                                      int result = 0;
+                                      switch (spec.ColumnIndex)
+                                      {
+                                      case 0: // Name
+                                      {
+                                          const auto& lhsName = lhs.displayName.empty() ? lhs.name : lhs.displayName;
+                                          const auto& rhsName = rhs.displayName.empty() ? rhs.name : rhs.displayName;
+                                          result = lhsName.compare(rhsName);
+                                          break;
+                                      }
+                                      case 1: // Status
+                                          result = static_cast<int>(lhs.isUp) - static_cast<int>(rhs.isUp);
+                                          break;
+                                      case 2: // Speed
+                                          if (lhs.linkSpeedMbps < rhs.linkSpeedMbps)
+                                          {
+                                              result = -1;
+                                          }
+                                          else if (lhs.linkSpeedMbps > rhs.linkSpeedMbps)
+                                          {
+                                              result = 1;
+                                          }
+                                          break;
+                                      case 3: // TX Rate
+                                          if (lhs.txBytesPerSec < rhs.txBytesPerSec)
+                                          {
+                                              result = -1;
+                                          }
+                                          else if (lhs.txBytesPerSec > rhs.txBytesPerSec)
+                                          {
+                                              result = 1;
+                                          }
+                                          break;
+                                      case 4: // RX Rate
+                                          if (lhs.rxBytesPerSec < rhs.rxBytesPerSec)
+                                          {
+                                              result = -1;
+                                          }
+                                          else if (lhs.rxBytesPerSec > rhs.rxBytesPerSec)
+                                          {
+                                              result = 1;
+                                          }
+                                          break;
+                                      default:
+                                          break;
+                                      }
+                                      return ascending ? (result < 0) : (result > 0);
+                                  });
+            }
+
+            for (const auto& iface : sortedInterfaces)
             {
                 ImGui::TableNextRow();
 

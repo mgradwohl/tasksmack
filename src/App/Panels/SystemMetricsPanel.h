@@ -72,6 +72,7 @@ class SystemMetricsPanel : public Panel
     void renderPerCoreSection();
     void renderGpuSection();
     void renderNetworkSection();
+    void renderDiskIOSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
