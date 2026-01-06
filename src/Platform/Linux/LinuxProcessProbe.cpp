@@ -198,10 +198,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         countProcessFds(pid, counters);
 
         // Only attempt I/O counters if we know they're readable
-        // Use std::call_once for thread-safe lazy initialization, store with release ordering
+        // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
         std::call_once(m_IoCountersCheckFlag,
-                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
-        if (m_IoCountersAvailable.load(std::memory_order_acquire))
+                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed); });
+        if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pid, counters);
         }
@@ -355,7 +355,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
 
         // Overflow protection: ensure addition won't wrap
-        if (m_BootTimeEpoch <= (maxEpoch - secondsSinceBoot))
+        if (secondsSinceBoot <= (maxEpoch - m_BootTimeEpoch))
         {
             counters.startTimeEpoch = m_BootTimeEpoch + secondsSinceBoot;
         }

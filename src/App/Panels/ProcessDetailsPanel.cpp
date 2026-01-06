@@ -886,7 +886,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcResources", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        if (ImPlot::BeginPlot("##ProcThreadsFaults", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
             ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);

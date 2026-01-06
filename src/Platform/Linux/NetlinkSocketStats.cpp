@@ -53,7 +53,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
     else if constexpr (std::is_same_v<decltype(result), int>)
     {
         // POSIX/XSI variant: returns int, string is in buffer
-        // NOLINTNEXTLINE(modernize-use-nullptr) - result is int, not pointer
+        // NOLINTNEXTLINE(modernize-use-nullptr) - POSIX variant: result is int, not pointer
         if (result == 0)
         {
             return std::string(buffer.data());
@@ -172,7 +172,7 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
 
     while (!done)
     {
-        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - no mutex in this function
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - not called from within critical sections
         const ssize_t len = recv(socket, buffer.data(), buffer.size(), 0);
         if (len < 0)
         {

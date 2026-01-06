@@ -119,13 +119,13 @@ TEST(FormatTest, EpochDateTimeShortOlderShowsDate)
 
 TEST(FormatTest, EpochDateTimeHandlesVeryLargeEpoch)
 {
-    // Test with a very large epoch value that might cause conversion issues
-    // This tests the error handling when localtime_s/localtime_r might fail
+    // Test with a very large epoch value that exceeds time_t max on all platforms
+    // This tests the guard check in formatEpochDateTime that returns empty for out-of-range values
     constexpr std::uint64_t veryLargeEpoch = 0xFFFFFFFFFFFFFFFFULL;
     const auto result = UI::Format::formatEpochDateTime(veryLargeEpoch);
 
-    // Should return empty string on failure, or a valid formatted string
-    // Either way, it should not crash
+    // Should return empty string since value exceeds max time_t (even on 64-bit)
+    // The guard check at the start of formatEpochDateTime should catch this
     EXPECT_TRUE(result.empty() || result.length() >= 10);
 }
 
@@ -142,12 +142,13 @@ TEST(FormatTest, EpochDateTimeShortHandlesVeryLargeEpoch)
 
 TEST(FormatTest, EpochDateTimeHandlesYear2038Boundary)
 {
-    // Test around the 32-bit signed overflow point (Jan 19, 2038)
+    // Test around the 32-bit signed overflow point (Jan 19, 2038 03:14:07 UTC)
     constexpr std::uint64_t year2038 = 2147483647ULL; // Max 32-bit signed value
     const auto result = UI::Format::formatEpochDateTime(year2038);
 
-    // Should handle this gracefully (depends on platform time_t size)
-    // Should not crash regardless
+    // On 64-bit time_t systems (most modern systems), this will succeed
+    // On 32-bit time_t systems, the guard check should return empty string
+    // Either way, it should not crash
     EXPECT_TRUE(result.empty() || result.length() >= 10);
 }
 

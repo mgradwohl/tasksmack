@@ -162,7 +162,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // === Scheduling ===
         // Priority (human-readable label derived from nice value)
         // Note: configKey remains "nice" for backward compatibility with user config files
-        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Process priority (High, Above Normal, Normal, Below Normal, Idle)"},
+        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority (High, Above Normal, Normal, Below Normal, Idle)"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
