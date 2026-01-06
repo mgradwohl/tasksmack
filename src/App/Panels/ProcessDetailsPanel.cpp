@@ -563,14 +563,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
-    // Format priority with human-readable label and platform-specific detail
-#ifdef _WIN32
-    // Windows: Show priority class name with nice value for reference
+    // Format priority with human-readable label and nice value
     const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
-#else
-    // Linux: Show human-readable label with nice value
-    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
-#endif
 
     renderInfoTable(
         "BasicInfoRightTable",

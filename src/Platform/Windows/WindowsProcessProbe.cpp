@@ -498,6 +498,11 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
         counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(handleCount, std::int32_t{0});
     }
+    else
+    {
+        const auto errorCode = ::GetLastError();
+        spdlog::debug("WindowsProcessProbe: GetProcessHandleCount failed (error code: {})", errorCode);
+    }
 
     // Get CPU affinity mask
     DWORD_PTR processAffinityMask = 0;

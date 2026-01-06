@@ -122,6 +122,14 @@ template<typename T, typename Formatter>
         return {};
     }
 
+    // Guard against overflow when converting to time_t (which may be 32-bit on some platforms)
+    constexpr auto maxTimeT = static_cast<std::uint64_t>(std::numeric_limits<std::time_t>::max());
+    if (epochSeconds > maxTimeT)
+    {
+        // Out of range for this platform's time_t; cannot represent this epoch time
+        return {};
+    }
+
     // Convert epoch to local time using thread-safe localtime_r on POSIX or localtime_s on Windows
     const std::time_t epochTime = static_cast<std::time_t>(epochSeconds);
     std::tm localTm{};
@@ -157,6 +165,14 @@ template<typename T, typename Formatter>
 {
     if (epochSeconds == 0)
     {
+        return "-";
+    }
+
+    // Guard against overflow when converting to time_t (which may be 32-bit on some platforms)
+    constexpr auto maxTimeT = static_cast<std::uint64_t>(std::numeric_limits<std::time_t>::max());
+    if (epochSeconds > maxTimeT)
+    {
+        // Out of range for this platform's time_t; cannot represent this epoch time
         return "-";
     }
 
@@ -201,7 +217,9 @@ template<typename T, typename Formatter>
 
     // Older: show "MMM DD HH:MM" (e.g., "Jan 15 14:23")
     constexpr std::array<const char*, 12> months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    const char* monthName = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? months[static_cast<std::size_t>(localTm.tm_mon)] : "???";
+    // tm_mon is guaranteed to be in range [0,11] by localtime_r/localtime_s for valid inputs,
+    // but we check upper bound defensively for corrupted data
+    const char* monthName = (localTm.tm_mon < 12) ? months[static_cast<std::size_t>(localTm.tm_mon)] : "???";
 
     return std::format("{} {:2d} {:02d}:{:02d}", monthName, localTm.tm_mday, localTm.tm_hour, localTm.tm_min);
 }

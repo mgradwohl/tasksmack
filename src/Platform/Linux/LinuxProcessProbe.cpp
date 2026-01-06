@@ -359,8 +359,8 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         }
         else
         {
-            // Clamp to maximum representable value rather than overflowing
-            counters.startTimeEpoch = maxEpoch;
+            // On overflow, mark start time as unknown (0 is treated as invalid/unknown elsewhere)
+            counters.startTimeEpoch = 0;
         }
     }
 
@@ -563,9 +563,10 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
             ++count;
         }
     }
-    catch (const std::exception&)
+    catch (const std::exception& ex)
     {
         // In exceptional situations (e.g., out-of-memory), fall back to leaving handleCount unchanged
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
         return;
     }
 
