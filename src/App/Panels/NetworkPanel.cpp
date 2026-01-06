@@ -37,7 +37,6 @@ using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::setupLegendDefault;
@@ -157,7 +156,7 @@ void NetworkPanel::setSamplingInterval(std::chrono::milliseconds interval)
 
 void NetworkPanel::render(bool* open)
 {
-    if (!m_IsVisible)
+    if (!isVisible())
     {
         return;
     }
@@ -173,7 +172,7 @@ void NetworkPanel::render(bool* open)
 
     if (open != nullptr && !(*open))
     {
-        m_IsVisible = false;
+        setVisible(false);
     }
 }
 

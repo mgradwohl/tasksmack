@@ -230,9 +230,9 @@ template<typename T, typename Formatter>
     constexpr std::array<const char*, 12> months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     // tm_mon is guaranteed to be in range [0,11] by localtime_r/localtime_s for valid inputs,
     // but we check both bounds defensively and use .at() for automatic bounds checking
-    const char* monthName = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? months.at(static_cast<std::size_t>(localTm.tm_mon)) : "???";
+    const std::size_t monthIdx = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? static_cast<std::size_t>(localTm.tm_mon) : 0;
 
-    return std::format("{} {:2d} {:02d}:{:02d}", monthName, localTm.tm_mday, localTm.tm_hour, localTm.tm_min);
+    return std::format("{} {:2d} {:02d}:{:02d}", months.at(monthIdx), localTm.tm_mday, localTm.tm_hour, localTm.tm_min);
 }
 
 struct ByteUnit
