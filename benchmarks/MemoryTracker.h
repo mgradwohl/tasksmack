@@ -10,7 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <fstream>
-#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -61,7 +61,18 @@ struct MemoryStats
                 if (pos != std::string::npos)
                 {
                     // Value is in kB, convert to bytes
-                    target = static_cast<std::uint64_t>(std::stoull(line.substr(pos))) * 1024;
+                    try
+                    {
+                        target = static_cast<std::uint64_t>(std::stoull(line.substr(pos))) * 1024;
+                    }
+                    catch (const std::invalid_argument&)
+                    {
+                        // Leave target unchanged on parse error
+                    }
+                    catch (const std::out_of_range&)
+                    {
+                        // Leave target unchanged on overflow
+                    }
                 }
             }
         };
