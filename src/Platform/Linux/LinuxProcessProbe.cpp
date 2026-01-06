@@ -198,9 +198,10 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         countProcessFds(pid, counters);
 
         // Only attempt I/O counters if we know they're readable
-        // Use std::call_once for thread-safe lazy initialization
-        std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
-        if (m_IoCountersAvailable)
+        // Use std::call_once for thread-safe lazy initialization, store with release ordering
+        std::call_once(m_IoCountersCheckFlag,
+                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
+        if (m_IoCountersAvailable.load(std::memory_order_acquire))
         {
             parseProcessIo(pid, counters);
         }
@@ -552,28 +553,24 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
     // Note: May fail due to permissions (needs same user or root).
 
     const std::filesystem::path fdPath = std::filesystem::path("/proc") / std::to_string(pid) / "fd";
-    std::error_code errorCode;
 
     int32_t count = 0;
     try
     {
-        for (const auto& entry : std::filesystem::directory_iterator(fdPath, errorCode))
+        // Don't use error_code variant because errors during iteration
+        // (not just construction) won't be captured in it. Rely on exceptions.
+        for (const auto& entry : std::filesystem::directory_iterator(fdPath))
         {
             (void) entry; // We just count entries
             ++count;
         }
+        // Only set if we successfully enumerated the directory
+        counters.handleCount = count;
     }
     catch (const std::exception& ex)
     {
-        // In exceptional situations (e.g., out-of-memory), fall back to leaving handleCount unchanged
+        // Permission errors and other exceptional situations - leave handleCount at 0
         spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
-        return;
-    }
-
-    // Only set if we successfully read the directory
-    if (!errorCode)
-    {
-        counters.handleCount = count;
     }
 }
 

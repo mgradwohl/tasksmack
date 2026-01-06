@@ -204,10 +204,21 @@ template<typename T, typename Formatter>
         return std::format("{:02d}:{:02d}:{:02d}", localTm.tm_hour, localTm.tm_min, localTm.tm_sec);
     }
 
-    // Check if yesterday (same year, day of year differs by 1, or year boundary)
-    const bool isYesterday =
-        (localTm.tm_year == nowTm.tm_year && nowTm.tm_yday - localTm.tm_yday == 1) ||
-        (localTm.tm_year == nowTm.tm_year - 1 && localTm.tm_mon == 11 && localTm.tm_mday == 31 && nowTm.tm_mon == 0 && nowTm.tm_mday == 1);
+    // Check if yesterday using calendar-day comparison, including year boundaries
+    bool isYesterday = false;
+    if (localTm.tm_year == nowTm.tm_year)
+    {
+        // Same year: day-of-year must differ by exactly 1
+        isYesterday = (nowTm.tm_yday - localTm.tm_yday == 1);
+    }
+    else if (localTm.tm_year + 1 == nowTm.tm_year)
+    {
+        // Previous year: local date must be the last day of its year, and today must be the first day
+        const int year = localTm.tm_year + 1900;
+        const bool isLeapYear = ((year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0)));
+        const int daysInYear = isLeapYear ? 366 : 365;
+        isYesterday = (localTm.tm_yday == (daysInYear - 1) && nowTm.tm_yday == 0);
+    }
 
     if (isYesterday)
     {
@@ -218,8 +229,8 @@ template<typename T, typename Formatter>
     // Older: show "MMM DD HH:MM" (e.g., "Jan 15 14:23")
     constexpr std::array<const char*, 12> months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     // tm_mon is guaranteed to be in range [0,11] by localtime_r/localtime_s for valid inputs,
-    // but we check upper bound defensively for corrupted data
-    const char* monthName = (localTm.tm_mon < 12) ? months[static_cast<std::size_t>(localTm.tm_mon)] : "???";
+    // but we check both bounds defensively for corrupted data
+    const char* monthName = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? months[static_cast<std::size_t>(localTm.tm_mon)] : "???";
 
     return std::format("{} {:2d} {:02d}:{:02d}", monthName, localTm.tm_mday, localTm.tm_hour, localTm.tm_min);
 }

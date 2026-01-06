@@ -7,6 +7,7 @@
 #include "Platform/Linux/NetlinkSocketStats.h"
 #endif
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -36,9 +37,9 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
-    uint64_t m_BootTimeEpoch = 0;                 // System boot time (Unix epoch seconds)
-    mutable std::once_flag m_IoCountersCheckFlag; // Thread-safe one-time initialization
-    mutable bool m_IoCountersAvailable = false;   // Cached capability check (guarded by once_flag)
+    uint64_t m_BootTimeEpoch = 0;                           // System boot time (Unix epoch seconds)
+    mutable std::once_flag m_IoCountersCheckFlag;           // Thread-safe one-time initialization
+    mutable std::atomic<bool> m_IoCountersAvailable{false}; // Cached capability check (atomic for thread-safe read)
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
 

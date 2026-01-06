@@ -913,7 +913,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             // Display human-readable priority label (High, Above Normal, Normal, Below Normal, Idle)
             const std::string text{Domain::Priority::getPriorityLabel(proc.nice)};
-            ImGui::TextUnformatted(text.c_str());
+            renderRightAlignedText(text);
             break;
         }
 

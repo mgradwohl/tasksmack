@@ -142,6 +142,15 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     EXPECT_GE(it->systemTime, 0ULL);
     EXPECT_GT(it->startTimeTicks, 0ULL);
     EXPECT_GE(it->threadCount, 1); // At least one thread (main)
+
+    // Verify handle count (file descriptors) is populated for our own process
+    // We can read our own /proc/[pid]/fd directory
+    EXPECT_GT(it->handleCount, 0);
+
+    // Verify start time epoch is populated and reasonable
+    // Should be a recent timestamp (within last year at minimum)
+    constexpr std::uint64_t jan2020 = 1577836800; // 2020-01-01 00:00:00 UTC
+    EXPECT_GT(it->startTimeEpoch, jan2020) << "Start time epoch should be a reasonable recent timestamp";
 }
 
 TEST(LinuxProcessProbeTest, EnumerateFindsInitProcess)

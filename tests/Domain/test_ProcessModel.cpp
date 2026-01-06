@@ -1225,3 +1225,75 @@ TEST(ProcessModelTest, NewProcessWithSamePidGetsZeroIoRates)
     EXPECT_DOUBLE_EQ(snaps[0].ioReadBytesPerSec, 0.0); // No valid previous data
     EXPECT_DOUBLE_EQ(snaps[0].ioWriteBytesPerSec, 0.0);
 }
+
+// =============================================================================
+// Handle Count Pass-Through Tests
+// =============================================================================
+
+TEST(ProcessModelTest, HandleCountIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "handles_test", 'R', 1000, 500);
+    counter.handleCount = 42;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].handleCount, 42);
+}
+
+TEST(ProcessModelTest, HandleCountZeroIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "no_handles", 'R', 1000, 500);
+    counter.handleCount = 0;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].handleCount, 0);
+}
+
+// =============================================================================
+// Start Time Epoch Pass-Through Tests
+// =============================================================================
+
+TEST(ProcessModelTest, StartTimeEpochIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "epoch_test", 'R', 1000, 500);
+    counter.startTimeEpoch = 1704067200; // 2024-01-01 00:00:00 UTC
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].startTimeEpoch, 1704067200);
+}
+
+TEST(ProcessModelTest, StartTimeEpochZeroIsPassedThrough)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "no_epoch", 'R', 1000, 500);
+    counter.startTimeEpoch = 0; // Unknown/unavailable
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].startTimeEpoch, 0);
+}
