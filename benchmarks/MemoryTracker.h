@@ -50,7 +50,8 @@ struct MemoryStats
 
     std::string line;
 
-    // Lambda to parse /proc/self/status values - defined outside loop for clarity
+    // Lambda to parse /proc/self/status values - defined once outside the loop to avoid
+    // recreating the callable each iteration and to keep the hot loop body minimal
     auto parseValue = [](std::string_view line, std::string_view prefix, std::uint64_t& target)
     {
         if (line.starts_with(prefix))
@@ -66,11 +67,15 @@ struct MemoryStats
                 }
                 catch (const std::invalid_argument&)
                 {
-                    // Leave target unchanged on parse error
+                    // Leave target unchanged on parse error.
+                    // In the benchmark context, /proc/self/status is treated as a best-effort
+                    // data source; malformed lines should not cause benchmarks to throw.
                 }
                 catch (const std::out_of_range&)
                 {
-                    // Leave target unchanged on overflow
+                    // Leave target unchanged on overflow.
+                    // Extremely large values from /proc/self/status are ignored so that
+                    // benchmarks can proceed; the rest of the stats remain usable.
                 }
             }
         }
@@ -137,9 +142,9 @@ inline void reportMemoryCounters(benchmark::State& state)
     if (stats.valid())
     {
         // Report in MiB for readability (values already converted from kB to bytes, then to MiB)
-        state.counters["rss_mb"] = benchmark::Counter(static_cast<double>(stats.vmRSS) / (1024.0 * 1024.0));
-        state.counters["heap_mb"] = benchmark::Counter(static_cast<double>(stats.vmData) / (1024.0 * 1024.0));
-        state.counters["peak_rss_mb"] = benchmark::Counter(static_cast<double>(stats.vmHWM) / (1024.0 * 1024.0));
+        state.counters["rss_mb"] = benchmark::Counter((static_cast<double>(stats.vmRSS)) / (1024.0 * 1024.0));
+        state.counters["heap_mb"] = benchmark::Counter((static_cast<double>(stats.vmData)) / (1024.0 * 1024.0));
+        state.counters["peak_rss_mb"] = benchmark::Counter((static_cast<double>(stats.vmHWM)) / (1024.0 * 1024.0));
     }
 }
 

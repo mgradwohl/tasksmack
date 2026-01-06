@@ -100,6 +100,7 @@ static void BM_ProcessModel_FindByPid(benchmark::State& state)
         return;
     }
 
+    // Intentionally use integer division to select the middle snapshot PID for lookup benchmarking
     const auto targetPid = snapshots[snapshots.size() / 2].pid;
 
     for (auto _ : state)

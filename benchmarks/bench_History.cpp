@@ -199,7 +199,7 @@ static void BM_History_MemoryFootprint(benchmark::State& state)
     auto endStats = BenchmarkUtils::readMemoryStats();
 
     // Report expected vs actual memory
-    constexpr size_t expectedBytes = sizeof(LargeValue) * 300 + sizeof(Domain::History<LargeValue, 300>);
+    constexpr size_t expectedBytes = ((sizeof(LargeValue) * 300) + sizeof(Domain::History<LargeValue, 300>));
     state.counters["expected_bytes"] = benchmark::Counter(static_cast<double>(expectedBytes));
 
     if (startStats.valid() && endStats.valid())

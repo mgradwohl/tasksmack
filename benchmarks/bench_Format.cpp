@@ -153,16 +153,16 @@ BENCHMARK(BM_Format_FormatOrDash_WithZero);
 static void BM_Format_FullProcessRow(benchmark::State& state)
 {
     // Simulate typical process values
-    const int32_t pid = 12345;
+    const std::int64_t pid = 12345;
     const double cpuPercent = 25.3;
     const double memPercent = 12.7;
-    const uint64_t rssBytes = 1024ULL * 1024 * 512;    // 512MB
-    const uint64_t virtBytes = 1024ULL * 1024 * 2048;  // 2GB
-    const uint64_t sharedBytes = 1024ULL * 1024 * 128; // 128MB
-    const uint64_t cpuTimeSeconds = 3661;              // 1h 1m 1s
-    const int32_t threadCount = 24;
-    const double ioReadRate = 1024.0 * 1024 * 50;  // 50MB/s
-    const double ioWriteRate = 1024.0 * 1024 * 10; // 10MB/s
+    const uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512MB
+    const uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2GB
+    const uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128MB
+    const uint64_t cpuTimeSeconds = 3661;                  // 1h 1m 1s
+    const std::int32_t threadCount = 24;
+    const double ioReadRate = ((1024.0 * 1024) * 50);  // 50MB/s
+    const double ioWriteRate = ((1024.0 * 1024) * 10); // 10MB/s
 
     for (auto _ : state)
     {
@@ -203,7 +203,7 @@ static void BM_Format_ProcessTable(benchmark::State& state)
     // Pre-generate random values
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> cpuDist(0.0, 100.0);
-    std::uniform_int_distribution<uint64_t> memDist(1024 * 1024, 1024ULL * 1024 * 1024 * 16);
+    std::uniform_int_distribution<uint64_t> memDist((1024 * 1024), (((1024ULL * 1024) * 1024) * 16));
 
     std::vector<double> cpuValues(processCount);
     std::vector<uint64_t> memValues(processCount);
