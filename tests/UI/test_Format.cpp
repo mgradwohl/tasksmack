@@ -162,3 +162,435 @@ TEST(FormatTest, EpochDateTimeHandlesDistantFuture)
     // Should not crash regardless
     EXPECT_TRUE(result.empty() || result.length() >= 10);
 }
+
+// =============================================================================
+// Numeric Conversion Tests
+// =============================================================================
+
+TEST(FormatTest, ToIntSaturatedClampsToIntMax)
+{
+    // Values beyond int max should clamp
+    const long largeValue = static_cast<long>(std::numeric_limits<int>::max()) + 1000L;
+    EXPECT_EQ(UI::Format::toIntSaturated(largeValue), std::numeric_limits<int>::max());
+}
+
+TEST(FormatTest, ToIntSaturatedPreservesNormalValues)
+{
+    EXPECT_EQ(UI::Format::toIntSaturated(42L), 42);
+    EXPECT_EQ(UI::Format::toIntSaturated(-42L), -42);
+    EXPECT_EQ(UI::Format::toIntSaturated(0L), 0);
+    EXPECT_EQ(UI::Format::toIntSaturated(100L), 100);
+}
+
+TEST(FormatTest, PercentToIntClampsTo0To100)
+{
+    EXPECT_EQ(UI::Format::percentToInt(-10.0), 0);
+    EXPECT_EQ(UI::Format::percentToInt(0.0), 0);
+    EXPECT_EQ(UI::Format::percentToInt(50.5), 51); // Rounds to nearest
+    EXPECT_EQ(UI::Format::percentToInt(100.0), 100);
+}
+
+// =============================================================================
+// Percentage Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, PercentCompactFormatsCorrectly)
+{
+    // Just test that the function produces reasonable output
+    const auto result = UI::Format::percentCompact(50.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find('%') != std::string::npos);
+}
+
+TEST(FormatTest, PercentCompactHandlesZero)
+{
+    const auto result = UI::Format::percentCompact(0.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find('%') != std::string::npos);
+}
+
+TEST(FormatTest, PercentCompactHandles100)
+{
+    const auto result = UI::Format::percentCompact(100.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find('%') != std::string::npos);
+}
+
+TEST(FormatTest, PercentOneDecimalLocalizedFormatsCorrectly)
+{
+    // Just test that the function produces reasonable output
+    const auto result = UI::Format::percentOneDecimalLocalized(50.5);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find('%') != std::string::npos);
+}
+
+// =============================================================================
+// ID and Integer Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatIdFormatsCorrectly)
+{
+    // Just test that formatId produces reasonable output for various IDs
+    const auto result = UI::Format::formatId(12345);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatIdHandlesZero)
+{
+    const auto result = UI::Format::formatId(0);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatIntLocalizedFormatsCorrectly)
+{
+    const auto result = UI::Format::formatIntLocalized(12345);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatUIntLocalizedFormatsCorrectly)
+{
+    const auto result = UI::Format::formatUIntLocalized(12345U);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatDoubleLocalizedFormatsCorrectly)
+{
+    const auto result = UI::Format::formatDoubleLocalized(123.456, 2);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatDoubleLocalizedHandlesZeroDecimals)
+{
+    const auto result = UI::Format::formatDoubleLocalized(123.456, 0);
+    EXPECT_FALSE(result.empty());
+}
+
+// =============================================================================
+// Count and Label Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatCountWithLabelFormatsCorrectly)
+{
+    const auto result = UI::Format::formatCountWithLabel(5, "processes");
+    EXPECT_TRUE(result.find("processes") != std::string::npos);
+}
+
+TEST(FormatTest, FormatCountWithLabelZero)
+{
+    const auto result = UI::Format::formatCountWithLabel(0, "items");
+    EXPECT_TRUE(result.find("items") != std::string::npos);
+}
+
+TEST(FormatTest, FormatCountWithLabelLargeNumber)
+{
+    const auto result = UI::Format::formatCountWithLabel(1000, "items");
+    EXPECT_TRUE(result.find("items") != std::string::npos);
+}
+
+// =============================================================================
+// Format Or Dash Tests
+// =============================================================================
+
+TEST(FormatTest, FormatOrDashReturnsFormattedValue)
+{
+    // formatOrDash requires a formatter function
+    const auto result = UI::Format::formatOrDash(100, [](int v) { return std::format("{}", v); });
+    EXPECT_EQ(result, "100");
+}
+
+TEST(FormatTest, FormatOrDashReturnsForZeroOrNegative)
+{
+    const auto resultZero = UI::Format::formatOrDash(0, [](int v) { return std::format("{}", v); });
+    EXPECT_EQ(resultZero, "-");
+
+    const auto resultNeg = UI::Format::formatOrDash(-5, [](int v) { return std::format("{}", v); });
+    EXPECT_EQ(resultNeg, "-");
+}
+
+// =============================================================================
+// Uptime Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatHoursMinutesFormatsCorrectly)
+{
+    const auto result = UI::Format::formatHoursMinutes(1, 30); // 1 hour 30 minutes
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("1h") != std::string::npos);
+    EXPECT_TRUE(result.find("30m") != std::string::npos);
+}
+
+TEST(FormatTest, FormatHoursMinutesHandlesZero)
+{
+    const auto result = UI::Format::formatHoursMinutes(0, 0);
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatUptimeShortFormatsCorrectly)
+{
+    // 2 days, 5 hours, 30 minutes in seconds
+    const std::uint64_t seconds = (2ULL * 24ULL * 60ULL * 60ULL) + (5ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
+    const auto result = UI::Format::formatUptimeShort(seconds);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("Up:") != std::string::npos);
+}
+
+TEST(FormatTest, FormatUptimeShortHandlesSmallValues)
+{
+    const auto result = UI::Format::formatUptimeShort(300); // 5 minutes
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, FormatUptimeShortHandlesZero)
+{
+    const auto result = UI::Format::formatUptimeShort(0);
+    EXPECT_TRUE(result.empty());
+}
+
+// =============================================================================
+// Byte Unit Selection Tests
+// =============================================================================
+
+TEST(FormatTest, ChooseByteUnitSelectsBytes)
+{
+    const auto unit = UI::Format::chooseByteUnit(500.0);
+    EXPECT_EQ(std::string(unit.suffix), "B");
+}
+
+TEST(FormatTest, ChooseByteUnitSelectsKilobytes)
+{
+    const auto unit = UI::Format::chooseByteUnit(2048.0);
+    EXPECT_EQ(std::string(unit.suffix), "KB");
+}
+
+TEST(FormatTest, ChooseByteUnitSelectsMegabytes)
+{
+    const auto unit = UI::Format::chooseByteUnit(2.0 * 1024.0 * 1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "MB");
+}
+
+TEST(FormatTest, ChooseByteUnitSelectsGigabytes)
+{
+    const auto unit = UI::Format::chooseByteUnit(2.0 * 1024.0 * 1024.0 * 1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "GB");
+}
+
+TEST(FormatTest, UnitForTotalBytesWorks)
+{
+    const auto unit = UI::Format::unitForTotalBytes(1024ULL * 1024ULL);
+    EXPECT_EQ(std::string(unit.suffix), "MB");
+}
+
+TEST(FormatTest, UnitForBytesPerSecondWorks)
+{
+    const auto unit = UI::Format::unitForBytesPerSecond(1024.0 * 1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "MB");
+}
+
+// =============================================================================
+// Byte Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatBytesFormatsCorrectly)
+{
+    const auto result = UI::Format::formatBytes(1536.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("KB") != std::string::npos);
+}
+
+TEST(FormatTest, FormatBytesWithUnitFormatsCorrectly)
+{
+    const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0);
+    const auto result = UI::Format::formatBytesWithUnit(1024.0 * 1024.0, unit);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("MB") != std::string::npos);
+}
+
+TEST(FormatTest, FormatBytesPerSecFormatsCorrectly)
+{
+    const auto result = UI::Format::formatBytesPerSec(1024.0 * 1024.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("MB") != std::string::npos);
+    EXPECT_TRUE(result.find("/s") != std::string::npos);
+}
+
+TEST(FormatTest, FormatBytesPerSecWithUnitFormatsCorrectly)
+{
+    const auto unit = UI::Format::chooseByteUnit(1024.0);
+    const auto result = UI::Format::formatBytesPerSecWithUnit(1024.0, unit);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("KB") != std::string::npos);
+    EXPECT_TRUE(result.find("/s") != std::string::npos);
+}
+
+// =============================================================================
+// Aligned Numeric Parts Tests
+// =============================================================================
+
+TEST(FormatTest, SplitBytesForAlignmentProducesParts)
+{
+    const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0);
+    const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0, unit);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.unitPart.empty());
+}
+
+TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
+{
+    const auto unit = UI::Format::chooseByteUnit(1024.0);
+    const auto parts = UI::Format::splitBytesPerSecForAlignment(1024.0, unit);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.unitPart.empty());
+    EXPECT_TRUE(parts.unitPart.find("/s") != std::string::npos);
+}
+
+TEST(FormatTest, SplitPercentForAlignmentProducesParts)
+{
+    const auto parts = UI::Format::splitPercentForAlignment(75.5);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.unitPart.empty());
+    EXPECT_TRUE(parts.unitPart.find('%') != std::string::npos);
+}
+
+TEST(FormatTest, SplitPercentForAlignmentHandlesZeroDecimals)
+{
+    const auto parts = UI::Format::splitPercentForAlignment(75.0, 0);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_TRUE(parts.decimalPart.empty());
+    EXPECT_TRUE(parts.unitPart.find('%') != std::string::npos);
+}
+
+// =============================================================================
+// Power Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, SplitPowerForAlignmentHandlesZero)
+{
+    const auto parts = UI::Format::splitPowerForAlignment(0.0);
+
+    EXPECT_EQ(parts.wholePart, "0.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_TRUE(parts.unitPart.find("W") != std::string::npos);
+}
+
+TEST(FormatTest, SplitPowerForAlignmentHandlesWatts)
+{
+    const auto parts = UI::Format::splitPowerForAlignment(5.5);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_FALSE(parts.decimalPart.empty());
+    EXPECT_TRUE(parts.unitPart.find("W") != std::string::npos);
+}
+
+TEST(FormatTest, SplitPowerForAlignmentHandlesMilliwatts)
+{
+    const auto parts = UI::Format::splitPowerForAlignment(0.005);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    EXPECT_TRUE(parts.unitPart.find("mW") != std::string::npos);
+}
+
+TEST(FormatTest, SplitPowerForAlignmentHandlesMicrowatts)
+{
+    const auto parts = UI::Format::splitPowerForAlignment(0.0005);
+
+    EXPECT_FALSE(parts.wholePart.empty());
+    // Note: µW uses UTF-8 encoding
+    EXPECT_TRUE(parts.unitPart.find("W") != std::string::npos);
+}
+
+TEST(FormatTest, FormatPowerCompactHandlesZero)
+{
+    const auto result = UI::Format::formatPowerCompact(0.0);
+    EXPECT_EQ(result, "-");
+}
+
+TEST(FormatTest, FormatPowerCompactHandlesNegative)
+{
+    const auto result = UI::Format::formatPowerCompact(-5.0);
+    EXPECT_EQ(result, "-");
+}
+
+TEST(FormatTest, FormatPowerCompactHandlesWatts)
+{
+    const auto result = UI::Format::formatPowerCompact(15.5);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("W") != std::string::npos);
+}
+
+TEST(FormatTest, FormatPowerCompactHandlesMilliwatts)
+{
+    const auto result = UI::Format::formatPowerCompact(0.015);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("mW") != std::string::npos);
+}
+
+// =============================================================================
+// Count Per Second Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatCountPerSecondSmallValue)
+{
+    const auto result = UI::Format::formatCountPerSecond(500.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("/s") != std::string::npos);
+}
+
+TEST(FormatTest, FormatCountPerSecondThousands)
+{
+    const auto result = UI::Format::formatCountPerSecond(5000.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("K/s") != std::string::npos);
+}
+
+TEST(FormatTest, FormatCountPerSecondMillions)
+{
+    const auto result = UI::Format::formatCountPerSecond(5000000.0);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.find("M/s") != std::string::npos);
+}
+
+// =============================================================================
+// Bytes Used/Total/Percent Compact Tests
+// =============================================================================
+
+TEST(FormatTest, BytesUsedTotalPercentCompactFormatsCorrectly)
+{
+    const auto result = UI::Format::bytesUsedTotalPercentCompact(512ULL * 1024ULL * 1024ULL, 1024ULL * 1024ULL * 1024ULL, 50.0);
+
+    EXPECT_FALSE(result.empty());
+    // Should contain "/" separator and percentage
+    EXPECT_TRUE(result.find('/') != std::string::npos);
+    EXPECT_TRUE(result.find('%') != std::string::npos);
+}
+
+// =============================================================================
+// CPU Time Compact Formatting Tests
+// =============================================================================
+
+TEST(FormatTest, FormatCpuTimeCompactFormatsSeconds)
+{
+    const auto result = UI::Format::formatCpuTimeCompact(45.0);
+    EXPECT_EQ(result, "0:45");
+}
+
+TEST(FormatTest, FormatCpuTimeCompactFormatsMinutes)
+{
+    const auto result = UI::Format::formatCpuTimeCompact(125.0); // 2:05
+    EXPECT_EQ(result, "2:05");
+}
+
+TEST(FormatTest, FormatCpuTimeCompactFormatsHours)
+{
+    const auto result = UI::Format::formatCpuTimeCompact(3725.0); // 1:02:05
+    EXPECT_EQ(result, "1:02:05");
+}
+
+TEST(FormatTest, FormatCpuTimeCompactHandlesZero)
+{
+    const auto result = UI::Format::formatCpuTimeCompact(0.0);
+    EXPECT_EQ(result, "0:00");
+}

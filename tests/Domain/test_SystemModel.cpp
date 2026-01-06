@@ -1137,3 +1137,148 @@ TEST(SystemModelTest, PerInterfaceNetworkEmptyWhenNoInterfaces)
     auto snap = model.snapshot();
     EXPECT_TRUE(snap.networkInterfaces.empty());
 }
+
+// =============================================================================
+// Additional History Accessor Tests
+// =============================================================================
+
+TEST(SystemModelTest, CpuIowaitHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8000, 500), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // Second sample with iowait delta
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 1000, 16000, 1000), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    auto iowaitHistory = model.cpuIowaitHistory();
+    EXPECT_FALSE(iowaitHistory.empty());
+}
+
+TEST(SystemModelTest, CpuIdleHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // First sample
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8000), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // Second sample
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 1000, 16000), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    auto idleHistory = model.cpuIdleHistory();
+    EXPECT_FALSE(idleHistory.empty());
+}
+
+TEST(SystemModelTest, MemoryCachedHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Memory with cached bytes
+    auto mem = makeMemoryCounters(1024ULL * 1024 * 1024, // total
+                                  512ULL * 1024 * 1024,  // available
+                                  256ULL * 1024 * 1024,  // free
+                                  128ULL * 1024 * 1024,  // cached
+                                  64ULL * 1024 * 1024);  // buffers
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500), mem));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    model.refresh(); // Need two samples for history
+
+    auto cachedHistory = model.memoryCachedHistory();
+    EXPECT_FALSE(cachedHistory.empty());
+}
+
+TEST(SystemModelTest, PerInterfaceRxHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto iface = makeInterfaceCounters("eth0", 1000, 500);
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024, 512), 0, {}, 1000, 500, {iface});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample
+    auto iface2 = makeInterfaceCounters("eth0", 2000, 1000);
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024, 512), 0, {}, 2000, 1000, {iface2});
+    model.updateFromCounters(counters2, 2.0);
+
+    // Query per-interface history
+    auto eth0RxHistory = model.netRxHistoryForInterface("eth0");
+    EXPECT_FALSE(eth0RxHistory.empty());
+
+    // Non-existent interface should return empty
+    auto fakeHistory = model.netRxHistoryForInterface("nonexistent");
+    EXPECT_TRUE(fakeHistory.empty());
+}
+
+TEST(SystemModelTest, PerInterfaceTxHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    auto iface = makeInterfaceCounters("eth0", 1000, 500);
+    auto counters1 = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024, 512), 0, {}, 1000, 500, {iface});
+    rawProbe->setCounters(counters1);
+
+    Domain::SystemModel model(std::move(probe));
+    model.updateFromCounters(counters1, 1.0);
+
+    // Second sample
+    auto iface2 = makeInterfaceCounters("eth0", 2000, 1500);
+    auto counters2 = makeSystemCounters(makeCpuCounters(200, 0, 100, 1700), makeMemoryCounters(1024, 512), 0, {}, 2000, 1500, {iface2});
+    model.updateFromCounters(counters2, 2.0);
+
+    // Query per-interface TX history
+    auto eth0TxHistory = model.netTxHistoryForInterface("eth0");
+    EXPECT_FALSE(eth0TxHistory.empty());
+}
+
+TEST(SystemModelTest, PowerHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Setup basic counters
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    model.refresh();
+
+    // Power history should exist (even if values are 0)
+    auto powerHist = model.powerHistory();
+    EXPECT_FALSE(powerHist.empty());
+}
+
+TEST(SystemModelTest, BatteryChargeHistoryTracked)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Setup basic counters
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    model.refresh();
+
+    // Battery charge history should exist
+    auto chargeHist = model.batteryChargeHistory();
+    EXPECT_FALSE(chargeHist.empty());
+}
