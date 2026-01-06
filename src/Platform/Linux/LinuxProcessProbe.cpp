@@ -234,7 +234,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
-    std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
+    std::call_once(m_IoCountersCheckFlag,
+                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
@@ -242,7 +243,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
+    return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
                                .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd
                                .hasUserSystemTime = true,

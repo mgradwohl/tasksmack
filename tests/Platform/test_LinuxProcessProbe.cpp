@@ -148,9 +148,9 @@ TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)
     EXPECT_GT(it->handleCount, 0);
 
     // Verify start time epoch is populated and reasonable
-    // Should be a recent timestamp (within last year at minimum)
+    // Should not be before 2020-01-01 (guard against obviously invalid timestamps)
     constexpr std::uint64_t jan2020 = 1577836800; // 2020-01-01 00:00:00 UTC
-    EXPECT_GT(it->startTimeEpoch, jan2020) << "Start time epoch should be a reasonable recent timestamp";
+    EXPECT_GT(it->startTimeEpoch, jan2020) << "Start time epoch should be a reasonable modern timestamp";
 }
 
 TEST(LinuxProcessProbeTest, EnumerateFindsInitProcess)
