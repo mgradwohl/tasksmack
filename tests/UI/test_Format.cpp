@@ -170,9 +170,16 @@ TEST(FormatTest, EpochDateTimeHandlesDistantFuture)
 TEST(FormatTest, ToIntSaturatedClampsToIntMax)
 {
     // Values beyond int max should clamp
-    // Use long long to avoid overflow on Windows where long is 32-bit
-    const long long largeValue = static_cast<long long>(std::numeric_limits<int>::max()) + 1000LL;
+    // Note: On Windows, long is 32-bit (same as int), so we can only test overflow
+    // on platforms where long is larger than int (e.g., Linux where long is 64-bit)
+#if LONG_MAX > INT_MAX
+    // 64-bit long: can test overflow beyond INT_MAX
+    const long largeValue = static_cast<long>(std::numeric_limits<int>::max()) + 1000L;
     EXPECT_EQ(UI::Format::toIntSaturated(largeValue), std::numeric_limits<int>::max());
+#else
+    // 32-bit long (Windows): test with INT_MAX itself since we can't exceed it
+    EXPECT_EQ(UI::Format::toIntSaturated(static_cast<long>(std::numeric_limits<int>::max())), std::numeric_limits<int>::max());
+#endif
 }
 
 TEST(FormatTest, ToIntSaturatedPreservesNormalValues)
@@ -183,7 +190,7 @@ TEST(FormatTest, ToIntSaturatedPreservesNormalValues)
     EXPECT_EQ(UI::Format::toIntSaturated(100L), 100);
 }
 
-TEST(FormatTest, PercentToIntClampsTo0To100)
+TEST(FormatTest, PercentToIntClampsNegativeToZero)
 {
     EXPECT_EQ(UI::Format::percentToInt(-10.0), 0);
     EXPECT_EQ(UI::Format::percentToInt(0.0), 0);
