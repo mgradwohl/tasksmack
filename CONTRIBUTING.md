@@ -375,7 +375,10 @@ By default, benchmarks output to console. You can also:
 
 # Compare against baseline
 ./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > current.json
-# Use benchmark_compare.py from google/benchmark for comparison
+# Use compare.py from google/benchmark tools:
+# pip install google-benchmark
+# python -m google_benchmark.compare baseline.json current.json
+# Or download: https://github.com/google/benchmark/blob/main/tools/compare.py
 ```
 
 ### Available Benchmarks

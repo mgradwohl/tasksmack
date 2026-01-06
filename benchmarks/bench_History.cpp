@@ -167,8 +167,6 @@ static void BM_History_PushVariableSize(benchmark::State& state)
         value += 0.1;
         benchmark::DoNotOptimize(history.size());
     }
-
-    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_History_PushVariableSize)->Range(60, 3600)->Unit(benchmark::kNanosecond);
 

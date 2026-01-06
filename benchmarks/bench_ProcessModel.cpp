@@ -176,6 +176,7 @@ static void BM_ProcessModel_RefreshRate(benchmark::State& state)
         benchmark::DoNotOptimize(model.processCount());
     }
 
+    // Calculate rate in Hz (0ms delay is clamped to 1ms to avoid division by zero)
     state.counters["rate_hz"] = benchmark::Counter(1000.0 / static_cast<double>(std::max(delayMilliseconds, 1L)));
 }
 // Test 0ms (as fast as possible), 100ms (10Hz), 500ms (2Hz), 1000ms (1Hz)

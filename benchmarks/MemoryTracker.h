@@ -49,40 +49,42 @@ struct MemoryStats
     }
 
     std::string line;
+
+    // Lambda to parse /proc/self/status values - defined outside loop for clarity
+    auto parseValue = [](std::string_view line, std::string_view prefix, std::uint64_t& target)
+    {
+        if (line.starts_with(prefix))
+        {
+            // Skip prefix and whitespace
+            auto pos = line.find_first_of("0123456789", prefix.size());
+            if (pos != std::string::npos)
+            {
+                // Value is in kB, convert to bytes
+                try
+                {
+                    target = static_cast<std::uint64_t>(std::stoull(std::string(line.substr(pos)))) * 1024;
+                }
+                catch (const std::invalid_argument&)
+                {
+                    // Leave target unchanged on parse error
+                }
+                catch (const std::out_of_range&)
+                {
+                    // Leave target unchanged on overflow
+                }
+            }
+        }
+    };
+
     while (std::getline(status, line))
     {
         // Parse lines like "VmRSS:     12345 kB"
-        auto parseValue = [&line](std::string_view prefix, std::uint64_t& target)
-        {
-            if (line.starts_with(prefix))
-            {
-                // Skip prefix and whitespace
-                auto pos = line.find_first_of("0123456789", prefix.size());
-                if (pos != std::string::npos)
-                {
-                    // Value is in kB, convert to bytes
-                    try
-                    {
-                        target = static_cast<std::uint64_t>(std::stoull(line.substr(pos))) * 1024;
-                    }
-                    catch (const std::invalid_argument&)
-                    {
-                        // Leave target unchanged on parse error
-                    }
-                    catch (const std::out_of_range&)
-                    {
-                        // Leave target unchanged on overflow
-                    }
-                }
-            }
-        };
-
-        parseValue("VmPeak:", stats.vmPeak);
-        parseValue("VmSize:", stats.vmSize);
-        parseValue("VmRSS:", stats.vmRSS);
-        parseValue("VmHWM:", stats.vmHWM);
-        parseValue("VmData:", stats.vmData);
-        parseValue("VmStk:", stats.vmStk);
+        parseValue(line, "VmPeak:", stats.vmPeak);
+        parseValue(line, "VmSize:", stats.vmSize);
+        parseValue(line, "VmRSS:", stats.vmRSS);
+        parseValue(line, "VmHWM:", stats.vmHWM);
+        parseValue(line, "VmData:", stats.vmData);
+        parseValue(line, "VmStk:", stats.vmStk);
     }
 #endif
 
