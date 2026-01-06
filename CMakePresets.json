@@ -173,7 +173,7 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         },
@@ -266,7 +266,7 @@
             "binaryDir": "${sourceDir}/build/win-benchmark",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         }

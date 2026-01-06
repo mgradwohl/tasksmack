@@ -123,13 +123,10 @@ inline void reportMemoryCounters(benchmark::State& state)
     auto stats = readMemoryStats();
     if (stats.valid())
     {
-        // Report in MB for readability
-        state.counters["rss_mb"] = benchmark::Counter(
-            static_cast<double>(stats.vmRSS) / (1024.0 * 1024.0), benchmark::Counter::kDefaults, benchmark::Counter::kIs1024);
-        state.counters["heap_mb"] = benchmark::Counter(
-            static_cast<double>(stats.vmData) / (1024.0 * 1024.0), benchmark::Counter::kDefaults, benchmark::Counter::kIs1024);
-        state.counters["peak_rss_mb"] = benchmark::Counter(
-            static_cast<double>(stats.vmHWM) / (1024.0 * 1024.0), benchmark::Counter::kDefaults, benchmark::Counter::kIs1024);
+        // Report in MiB for readability (values already converted from kB to bytes, then to MiB)
+        state.counters["rss_mb"] = benchmark::Counter(static_cast<double>(stats.vmRSS) / (1024.0 * 1024.0));
+        state.counters["heap_mb"] = benchmark::Counter(static_cast<double>(stats.vmData) / (1024.0 * 1024.0));
+        state.counters["peak_rss_mb"] = benchmark::Counter(static_cast<double>(stats.vmHWM) / (1024.0 * 1024.0));
     }
 }
 

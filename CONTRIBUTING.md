@@ -408,7 +408,7 @@ Benchmarks include memory tracking to catch allocation regressions. Memory count
 - `rss_delta_kb` - RSS change during benchmark
 - `bytes_per_iter` - Memory growth per iteration (should be ~0 for stable code)
 
-Memory tracking uses `/proc/self/status` on Linux for zero-overhead measurement.
+On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement; these memory counters are currently only available on Linux builds.
 
 ## Performance Profiling
 

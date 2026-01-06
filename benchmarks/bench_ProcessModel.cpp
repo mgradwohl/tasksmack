@@ -9,7 +9,9 @@
 #include "Platform/Factory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
+#include <thread>
 
 #include <benchmark/benchmark.h>
 
@@ -33,7 +35,7 @@ static void BM_ProcessProbe_Enumerate(benchmark::State& state)
 
     // Report process count for context
     auto finalEnumerate = probe->enumerate();
-    state.counters["processes"] = benchmark::Counter(static_cast<double>(finalEnumerate.size()), benchmark::Counter::kAvgThreads);
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(finalEnumerate.size()));
 
     // Report memory usage
     BenchmarkUtils::reportMemoryCounters(state);
@@ -58,7 +60,7 @@ static void BM_ProcessModel_Refresh(benchmark::State& state)
         benchmark::DoNotOptimize(model.processCount());
     }
 
-    state.counters["processes"] = benchmark::Counter(static_cast<double>(model.processCount()), benchmark::Counter::kAvgThreads);
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(model.processCount()));
 
     // Report memory - this is key for detecting allocation bloat
     BenchmarkUtils::reportMemoryCounters(state);
@@ -157,7 +159,7 @@ static void BM_ProcessModel_RefreshRate(benchmark::State& state)
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
-    const auto delayMs = state.range(0);
+    const auto delayMilliseconds = state.range(0);
 
     for (auto _ : state)
     {
@@ -165,20 +167,15 @@ static void BM_ProcessModel_RefreshRate(benchmark::State& state)
         model.refresh();
 
         // Add artificial delay to simulate real-world sampling
-        if (delayMs > 0)
+        if (delayMilliseconds > 0)
         {
-            auto pauseStart = std::chrono::high_resolution_clock::now();
-            while (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - pauseStart).count() <
-                   delayMs)
-            {
-                // Spin wait
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMilliseconds));
         }
 
         benchmark::DoNotOptimize(model.processCount());
     }
 
-    state.counters["rate_hz"] = benchmark::Counter(1000.0 / static_cast<double>(std::max(delayMs, 1L)));
+    state.counters["rate_hz"] = benchmark::Counter(1000.0 / static_cast<double>(std::max(delayMilliseconds, 1L)));
 }
 // Test 0ms (as fast as possible), 100ms (10Hz), 500ms (2Hz), 1000ms (1Hz)
 BENCHMARK(BM_ProcessModel_RefreshRate)->Arg(0)->Arg(100)->Arg(500)->Arg(1000)->Unit(benchmark::kMillisecond);
