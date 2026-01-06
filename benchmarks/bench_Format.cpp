@@ -18,7 +18,7 @@ namespace
 static void BM_Format_FormatBytes(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, 1ULL << 40); // Up to 1TB
+    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 40)); // Up to 1TB
 
     for (auto _ : state)
     {
@@ -93,7 +93,7 @@ BENCHMARK(BM_Format_FormatIntLocalized);
 static void BM_Format_SplitBytesForAlignment(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, 1ULL << 40);
+    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 40));
 
     for (auto _ : state)
     {
@@ -111,7 +111,7 @@ BENCHMARK(BM_Format_SplitBytesForAlignment);
 static void BM_Format_ChooseByteUnit(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, 1ULL << 50);
+    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 50));
 
     for (auto _ : state)
     {
@@ -126,7 +126,7 @@ BENCHMARK(BM_Format_ChooseByteUnit);
 static void BM_Format_FormatOrDash_WithValue(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(1, 1ULL << 30);
+    std::uniform_int_distribution<uint64_t> dist(1, (1ULL << 30));
 
     for (auto _ : state)
     {

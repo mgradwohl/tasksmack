@@ -137,17 +137,18 @@ static void BM_ProcessModel_MemoryGrowth(benchmark::State& state)
 
     if (startStats.valid() && endStats.valid())
     {
-        auto rssGrowth = static_cast<std::int64_t>(endStats.vmRSS) - static_cast<std::int64_t>(startStats.vmRSS);
-        auto heapGrowth = static_cast<std::int64_t>(endStats.vmData) - static_cast<std::int64_t>(startStats.vmData);
+        auto rssGrowth = (static_cast<std::int64_t>(endStats.vmRSS) - static_cast<std::int64_t>(startStats.vmRSS));
+        auto heapGrowth = (static_cast<std::int64_t>(endStats.vmData) - static_cast<std::int64_t>(startStats.vmData));
 
-        state.counters["rss_growth_kb"] = benchmark::Counter(static_cast<double>(rssGrowth) / 1024.0);
-        state.counters["heap_growth_kb"] = benchmark::Counter(static_cast<double>(heapGrowth) / 1024.0);
-        state.counters["final_rss_mb"] = benchmark::Counter(static_cast<double>(endStats.vmRSS) / (1024.0 * 1024.0));
+        state.counters["rss_growth_kb"] = benchmark::Counter((static_cast<double>(rssGrowth)) / 1024.0);
+        state.counters["heap_growth_kb"] = benchmark::Counter((static_cast<double>(heapGrowth)) / 1024.0);
+        state.counters["final_rss_mb"] = benchmark::Counter((static_cast<double>(endStats.vmRSS)) / (1024.0 * 1024.0));
 
         // Per-iteration memory (should be ~0 for stable implementation)
         if (state.iterations() > 0)
         {
-            state.counters["bytes_per_iter"] = benchmark::Counter(static_cast<double>(rssGrowth) / static_cast<double>(state.iterations()));
+            state.counters["bytes_per_iter"] =
+                benchmark::Counter((static_cast<double>(rssGrowth)) / (static_cast<double>(state.iterations())));
         }
     }
 }
@@ -178,7 +179,7 @@ static void BM_ProcessModel_RefreshRate(benchmark::State& state)
     }
 
     // Calculate rate in Hz (0ms delay is clamped to 1ms to avoid division by zero)
-    state.counters["rate_hz"] = benchmark::Counter(1000.0 / static_cast<double>(std::max(delayMilliseconds, 1L)));
+    state.counters["rate_hz"] = benchmark::Counter(1000.0 / (static_cast<double>(std::max(delayMilliseconds, 1L))));
 }
 // Test 0ms (as fast as possible), 100ms (10Hz), 500ms (2Hz), 1000ms (1Hz)
 BENCHMARK(BM_ProcessModel_RefreshRate)->Arg(0)->Arg(100)->Arg(500)->Arg(1000)->Unit(benchmark::kMillisecond);

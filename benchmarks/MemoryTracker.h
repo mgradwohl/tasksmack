@@ -8,11 +8,12 @@
 #pragma once
 
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <fstream>
-#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include <benchmark/benchmark.h>
 
@@ -61,22 +62,17 @@ struct MemoryStats
             if (pos != std::string::npos)
             {
                 // Value is in kB, convert to bytes
-                try
+                // Use std::from_chars for efficiency - works directly with string_view
+                std::uint64_t value = 0;
+                auto sub = line.substr(pos);
+                auto [ptr, ec] = std::from_chars(sub.data(), sub.data() + sub.size(), value);
+                if (ec == std::errc{})
                 {
-                    target = static_cast<std::uint64_t>(std::stoull(std::string(line.substr(pos)))) * 1024;
+                    target = value * 1024;
                 }
-                catch (const std::invalid_argument&)
-                {
-                    // Leave target unchanged on parse error.
-                    // In the benchmark context, /proc/self/status is treated as a best-effort
-                    // data source; malformed lines should not cause benchmarks to throw.
-                }
-                catch (const std::out_of_range&)
-                {
-                    // Leave target unchanged on overflow.
-                    // Extremely large values from /proc/self/status are ignored so that
-                    // benchmarks can proceed; the rest of the stats remain usable.
-                }
+                // On parse error (ec != errc{}), leave target unchanged.
+                // /proc/self/status is a best-effort data source; malformed lines
+                // should not affect benchmark results.
             }
         }
     };
@@ -156,8 +152,8 @@ inline void reportMemoryDelta(benchmark::State& state, const MemoryDeltaTracker&
     auto peakDelta = tracker.peakRssDelta();
 
     // Report in KB for finer granularity on deltas
-    state.counters["rss_delta_kb"] = benchmark::Counter(static_cast<double>(rssDelta) / 1024.0, benchmark::Counter::kDefaults);
-    state.counters["peak_delta_kb"] = benchmark::Counter(static_cast<double>(peakDelta) / 1024.0, benchmark::Counter::kDefaults);
+    state.counters["rss_delta_kb"] = benchmark::Counter((static_cast<double>(rssDelta)) / 1024.0, benchmark::Counter::kDefaults);
+    state.counters["peak_delta_kb"] = benchmark::Counter((static_cast<double>(peakDelta)) / 1024.0, benchmark::Counter::kDefaults);
 }
 
 // =============================================================================
