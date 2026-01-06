@@ -271,8 +271,6 @@ void ProcessDetailsPanel::renderContent()
             renderPowerUsage(m_CachedSnapshot);
             ImGui::Separator();
             renderThreadAndFaultHistory(m_CachedSnapshot);
-            ImGui::Separator();
-            renderIoStats(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
@@ -282,14 +280,19 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // Network tab - show if process has network data
+        // Network and I/O tab - show if process has network or I/O data
         {
             const bool hasNetworkData = (m_CachedSnapshot.netSentBytesPerSec > 0.0 || m_CachedSnapshot.netReceivedBytesPerSec > 0.0 ||
                                          !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
-            if (hasNetworkData)
+            const bool hasIoData = (m_CachedSnapshot.ioReadBytesPerSec > 0.0 || m_CachedSnapshot.ioWriteBytesPerSec > 0.0 ||
+                                    !m_IoReadHistory.empty() || !m_IoWriteHistory.empty());
+            if (hasNetworkData || hasIoData)
             {
-                if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network"))
+                if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
                 {
+                    // Render I/O stats first (at the top)
+                    renderIoStats(m_CachedSnapshot);
+                    ImGui::Separator();
                     renderNetworkStats(m_CachedSnapshot);
                     ImGui::EndTabItem();
                 }
