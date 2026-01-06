@@ -62,8 +62,12 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Parse CPU affinity mask for a process using sched_getaffinity
     static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
+
     /// Parse /proc/[pid]/io for I/O counters (requires permissions)
     static void parseProcessIo(int32_t pid, ProcessCounters& counters);
+
+    /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
+    static void countProcessFds(int32_t pid, ProcessCounters& counters);
 
     /// Check if we can read I/O counters (checks own process)
     [[nodiscard]] static bool checkIoCountersAvailability();

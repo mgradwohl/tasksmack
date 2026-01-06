@@ -573,6 +573,8 @@ void ProcessesPanel::renderContent()
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::Handles:
+                                              return compare(procA.handleCount, procB.handleCount);
                                           case ProcessColumn::PageFaults:
                                               return compare(procA.pageFaults, procB.pageFaults);
                                           case ProcessColumn::Affinity:
@@ -917,6 +919,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const std::string text =
                 UI::Format::formatOrDash(proc.threadCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            renderRightAlignedText(text);
+            break;
+        }
+
+        case ProcessColumn::Handles:
+        {
+            const std::string text =
+                UI::Format::formatOrDash(proc.handleCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
             renderRightAlignedText(text);
             break;
         }

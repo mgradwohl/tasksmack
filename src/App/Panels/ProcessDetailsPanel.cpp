@@ -178,6 +178,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
             m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
             m_ThreadHistory.push_back(UI::Numeric::toDouble(snapshot->threadCount));
+            m_HandleHistory.push_back(UI::Numeric::toDouble(snapshot->handleCount));
             m_PageFaultHistory.push_back(snapshot->pageFaultsPerSec);
             m_IoReadHistory.push_back(snapshot->ioReadBytesPerSec);
             m_IoWriteHistory.push_back(snapshot->ioWriteBytesPerSec);
@@ -327,6 +328,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_SharedHistory.clear();
         m_VirtualHistory.clear();
         m_ThreadHistory.clear();
+        m_HandleHistory.clear();
         m_PageFaultHistory.clear();
         m_IoReadHistory.clear();
         m_IoWriteHistory.clear();
@@ -364,6 +366,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetCpuUser = UI::Numeric::clampPercent(snapshot.cpuUserPercent);
     const double targetCpuSystem = UI::Numeric::clampPercent(snapshot.cpuSystemPercent);
     const double targetThreads = UI::Numeric::toDouble(snapshot.threadCount);
+    const double targetHandles = UI::Numeric::toDouble(snapshot.handleCount);
     const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
     const double targetIoRead = std::max(0.0, snapshot.ioReadBytesPerSec);
     const double targetIoWrite = std::max(0.0, snapshot.ioWriteBytesPerSec);
@@ -381,6 +384,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
         m_SmoothedUsage.cpuUserPercent = targetCpuUser;
         m_SmoothedUsage.cpuSystemPercent = targetCpuSystem;
         m_SmoothedUsage.threadCount = targetThreads;
+        m_SmoothedUsage.handleCount = targetHandles;
         m_SmoothedUsage.pageFaultsPerSec = targetFaults;
         m_SmoothedUsage.ioReadBytesPerSec = targetIoRead;
         m_SmoothedUsage.ioWriteBytesPerSec = targetIoWrite;
@@ -400,6 +404,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.cpuUserPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha));
     m_SmoothedUsage.cpuSystemPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha));
     m_SmoothedUsage.threadCount = std::max(0.0, smoothTowards(m_SmoothedUsage.threadCount, targetThreads, alpha));
+    m_SmoothedUsage.handleCount = std::max(0.0, smoothTowards(m_SmoothedUsage.handleCount, targetHandles, alpha));
     m_SmoothedUsage.pageFaultsPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha));
     m_SmoothedUsage.ioReadBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioReadBytesPerSec, targetIoRead, alpha));
     m_SmoothedUsage.ioWriteBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioWriteBytesPerSec, targetIoWrite, alpha));
@@ -422,16 +427,16 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const auto computeLabelColumnWidth = []() -> float
     {
         constexpr std::array<const char*, 10> labels = {
-            "PID",
-            "Parent",
             "Name",
-            "Status",
+            "PID",
+            "Parent PID",
             "User",
+            "Started",
+            "Status",
             "Threads",
-            "Nice",
+            "Handles",
             "CPU Time",
-            "Page Faults",
-            "Affinity",
+            "Nice",
         };
 
         float maxTextWidth = 0.0F;
@@ -519,20 +524,23 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    auto formatPageFaults = [&]() -> std::string
-    {
-        return UI::Format::formatOrDash(proc.pageFaults, [](auto value) { return UI::Format::formatIntLocalized(value); });
-    };
-
     auto formatCountLocale = [](std::int64_t value) -> std::string
     {
         return UI::Format::formatOrDash(value, [](auto v) { return UI::Format::formatIntLocalized(v); });
     };
 
+#ifdef _WIN32
+    constexpr const char* handleLabel = "Handles";
+#else
+    constexpr const char* handleLabel = "FDs";
+#endif
+
     const auto [statusText, statusColor] = renderStatusValue();
     const std::string userText = proc.user.empty() ? "-" : proc.user;
-    const std::string affinityText = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
+    const std::string startedText =
+        (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
 
+    // Identity section: Who is this process?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
@@ -540,26 +548,27 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
                     {
                         {"Name", {proc.name, theme.scheme().textPrimary}},
                         {"PID", {std::to_string(proc.pid), theme.scheme().textPrimary}},
-                        {"Parent", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
-                        {"Status", {statusText, statusColor}},
+                        {"Parent PID", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
                         {"User", {userText, theme.scheme().textPrimary}},
+                        {"Started", {startedText, theme.scheme().textMuted}},
                     });
     ImGui::EndChild();
     ImGui::EndGroup();
 
     ImGui::SameLine();
 
+    // Runtime section: What is this process doing?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable(
         "BasicInfoRightTable",
         {
+            {"Status", {statusText, statusColor}},
             {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
-            {"Nice", {std::to_string(proc.nice), theme.scheme().textPrimary}},
+            {handleLabel, {proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-"), theme.scheme().textPrimary}},
             {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
-            {"Page Faults", {formatPageFaults(), theme.scheme().textPrimary}},
-            {"Affinity", {affinityText, theme.scheme().textPrimary}},
+            {"Nice", {std::to_string(proc.nice), theme.scheme().textPrimary}},
         });
     ImGui::EndChild();
     ImGui::EndGroup();
@@ -821,13 +830,13 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
 void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Domain::ProcessSnapshot& proc)
 {
-    if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_PageFaultHistory.empty()))
+    if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_HandleHistory.empty() && m_PageFaultHistory.empty()))
     {
         return;
     }
 
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_PageFaultHistory.size()});
+    const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_HandleHistory.size(), m_PageFaultHistory.size()});
     if (alignedCount == 0)
     {
         return;
@@ -837,6 +846,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
 
     const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
     std::vector<double> threadData = tailVector(m_ThreadHistory, alignedCount);
+    std::vector<double> handleData = tailVector(m_HandleHistory, alignedCount);
     std::vector<double> faultData = tailVector(m_PageFaultHistory, alignedCount);
 
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
@@ -844,12 +854,24 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
 
     // Use smoothed values for NowBars
     const double threadMax = seriesMax(threadData, m_SmoothedUsage.threadCount);
+    const double handleMax = seriesMax(handleData, m_SmoothedUsage.handleCount);
     const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
 
     const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
                             .label = "Threads",
                             .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
                             .color = theme.scheme().chartCpu};
+
+#ifdef _WIN32
+    constexpr const char* handleLabel = "Handles";
+#else
+    constexpr const char* handleLabel = "FDs";
+#endif
+
+    const NowBar handlesBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
+                            .label = handleLabel,
+                            .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedUsage.handleCount / handleMax, 0.0, 1.0) : 0.0,
+                            .color = theme.scheme().chartMemory};
 
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
                            .label = "Page Faults",
@@ -859,7 +881,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcThreadsFaults", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        if (ImPlot::BeginPlot("##ProcResources", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
         {
             setupLegendDefault();
             ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
@@ -869,6 +891,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
             const int plotCount = UI::Numeric::checkedCount(alignedCount);
             plotLineWithFill(
                 "Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+
+            plotLineWithFill(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
 
             plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
 
@@ -886,6 +910,10 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
                         ImGui::TextColored(theme.scheme().chartCpu,
                                            "Threads: %s",
                                            UI::Format::formatIntLocalized(std::llround(threadData[*idxVal])).c_str());
+                        ImGui::TextColored(theme.scheme().chartMemory,
+                                           "%s: %s",
+                                           handleLabel,
+                                           UI::Format::formatIntLocalized(std::llround(handleData[*idxVal])).c_str());
                         ImGui::TextColored(
                             theme.accentColor(3), "Page Faults: %s", UI::Format::formatCountPerSecond(faultData[*idxVal]).c_str());
                         ImGui::EndTooltip();
@@ -897,9 +925,9 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Threads & Page Faults (%zu samples)", alignedCount);
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
     renderHistoryWithNowBars(
-        "ProcessThreadFaultHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+        "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
     ImGui::Spacing();
 }
 
@@ -1452,6 +1480,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     trimDeque(m_SharedHistory);
     trimDeque(m_VirtualHistory);
     trimDeque(m_ThreadHistory);
+    trimDeque(m_HandleHistory);
     trimDeque(m_PageFaultHistory);
     trimDeque(m_IoReadHistory);
     trimDeque(m_IoWriteHistory);
@@ -1479,6 +1508,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     updateMin(m_SharedHistory.size());
     updateMin(m_VirtualHistory.size());
     updateMin(m_ThreadHistory.size());
+    updateMin(m_HandleHistory.size());
     updateMin(m_PageFaultHistory.size());
     updateMin(m_IoReadHistory.size());
     updateMin(m_IoWriteHistory.size());
@@ -1506,6 +1536,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
         trimToMin(m_SharedHistory);
         trimToMin(m_VirtualHistory);
         trimToMin(m_ThreadHistory);
+        trimToMin(m_HandleHistory);
         trimToMin(m_PageFaultHistory);
         trimToMin(m_IoReadHistory);
         trimToMin(m_IoWriteHistory);

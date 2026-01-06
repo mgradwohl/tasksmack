@@ -310,6 +310,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.sharedBytes = current.sharedBytes;
     snapshot.threadCount = current.threadCount;
+    snapshot.handleCount = current.handleCount;
     snapshot.nice = current.nice;
     snapshot.pageFaults = current.pageFaultCount;
     snapshot.cpuAffinityMask = current.cpuAffinityMask;

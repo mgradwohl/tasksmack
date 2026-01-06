@@ -492,6 +492,13 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.writeBytes = ioCounters.WriteTransferCount;
     }
 
+    // Get handle count
+    DWORD handleCount = 0;
+    if (GetProcessHandleCount(hProcess, &handleCount) != 0)
+    {
+        counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(handleCount, std::int32_t{0});
+    }
+
     // Get CPU affinity mask
     DWORD_PTR processAffinityMask = 0;
     DWORD_PTR systemAffinityMask = 0;
@@ -522,6 +529,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
         .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true, // From GetProcessAffinityMask
+        .hasHandleCount = true, // From GetProcessHandleCount
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,

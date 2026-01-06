@@ -194,6 +194,9 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         // CPU affinity is always safe to query; failures zero the mask
         parseProcessAffinity(pid, counters);
 
+        // Count open file descriptors (may fail for some processes due to permissions)
+        countProcessFds(pid, counters);
+
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization
         std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
@@ -240,6 +243,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
                                .hasThreadCount = true,
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
                                .hasUser = true,       // From /proc/[pid]/status Uid field
@@ -526,6 +530,29 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
                 counters.writeBytes = writeBytes;
             }
         }
+    }
+}
+
+void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
+{
+    // Count entries in /proc/[pid]/fd directory.
+    // Each entry is a symlink to an open file descriptor.
+    // Note: May fail due to permissions (needs same user or root).
+
+    const std::filesystem::path fdPath = std::filesystem::path("/proc") / std::to_string(pid) / "fd";
+    std::error_code errorCode;
+
+    int32_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(fdPath, errorCode))
+    {
+        (void) entry; // We just count entries
+        ++count;
+    }
+
+    // Only set if we successfully read the directory
+    if (!errorCode)
+    {
+        counters.handleCount = count;
     }
 }
 
