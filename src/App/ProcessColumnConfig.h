@@ -30,7 +30,7 @@ enum class ProcessColumn : std::uint8_t
     Shared,
     PeakResident,
     // Scheduling - how is it scheduled?
-    Nice,
+    Priority,
     Affinity,
     Threads,
     Handles,
@@ -75,7 +75,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::Shared,
             ProcessColumn::PeakResident,
             // Scheduling
-            ProcessColumn::Nice,
+            ProcessColumn::Priority,
             ProcessColumn::Affinity,
             ProcessColumn::Threads,
             ProcessColumn::Handles,
@@ -160,8 +160,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="PEAK", .menuName="Peak Resident", .configKey="peak_resident", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum)"},
 
         // === Scheduling ===
-        // Nice
-        {.name="NI", .menuName="Nice", .configKey="nice", .defaultWidth=35.0F, .defaultVisible=false, .canHide=true, .description="Nice value (priority, -20 to 19)"},
+        // Priority (human-readable label derived from nice value)
+        {.name="Priority", .menuName="Priority", .configKey="priority", .defaultWidth=85.0F, .defaultVisible=true, .canHide=true, .description="Process priority (High, Above Normal, Normal, Below Normal, Idle)"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads

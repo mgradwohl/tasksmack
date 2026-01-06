@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <string>
 #include <utility>
@@ -436,7 +437,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Threads",
             "Handles",
             "CPU Time",
-            "Nice",
+            "Priority",
         };
 
         float maxTextWidth = 0.0F;
@@ -561,6 +562,16 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
+
+    // Format priority with human-readable label and platform-specific detail
+#ifdef _WIN32
+    // Windows: Show priority class name with nice value for reference
+    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
+#else
+    // Linux: Show human-readable label with nice value
+    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
+#endif
+
     renderInfoTable(
         "BasicInfoRightTable",
         {
@@ -568,7 +579,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
             {handleLabel, {proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-"), theme.scheme().textPrimary}},
             {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
-            {"Nice", {std::to_string(proc.nice), theme.scheme().textPrimary}},
+            {"Priority", {priorityText, theme.scheme().textPrimary}},
         });
     ImGui::EndChild();
     ImGui::EndGroup();

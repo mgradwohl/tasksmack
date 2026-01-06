@@ -114,7 +114,7 @@ template<typename T, typename Formatter>
 
 /// Format Unix epoch timestamp to human-readable local date/time.
 /// Returns "YYYY-MM-DD HH:MM:SS" format in local timezone.
-/// Returns empty string if epochSeconds is 0.
+/// Returns empty string if epochSeconds is 0 or conversion fails.
 [[nodiscard]] inline auto formatEpochDateTime(std::uint64_t epochSeconds) -> std::string
 {
     if (epochSeconds == 0)
@@ -127,9 +127,17 @@ template<typename T, typename Formatter>
     std::tm localTm{};
 
 #ifdef _WIN32
-    localtime_s(&localTm, &epochTime);
+    // localtime_s returns non-zero errno_t on failure
+    if (localtime_s(&localTm, &epochTime) != 0)
+    {
+        return {};
+    }
 #else
-    localtime_r(&epochTime, &localTm);
+    // localtime_r returns nullptr on failure
+    if (localtime_r(&epochTime, &localTm) == nullptr)
+    {
+        return {};
+    }
 #endif
 
     // Format: YYYY-MM-DD HH:MM:SS
@@ -144,7 +152,7 @@ template<typename T, typename Formatter>
 
 /// Format Unix epoch timestamp to a shorter format for table display.
 /// Shows "HH:MM:SS" if today, "Yesterday HH:MM" if yesterday, else "MMM DD HH:MM".
-/// Returns "-" if epochSeconds is 0.
+/// Returns "-" if epochSeconds is 0 or conversion fails.
 [[nodiscard]] inline auto formatEpochDateTimeShort(std::uint64_t epochSeconds) -> std::string
 {
     if (epochSeconds == 0)
@@ -160,11 +168,15 @@ template<typename T, typename Formatter>
     std::tm nowTm{};
 
 #ifdef _WIN32
-    localtime_s(&localTm, &epochTime);
-    localtime_s(&nowTm, &nowTime);
+    if (localtime_s(&localTm, &epochTime) != 0 || localtime_s(&nowTm, &nowTime) != 0)
+    {
+        return "-";
+    }
 #else
-    localtime_r(&epochTime, &localTm);
-    localtime_r(&nowTime, &nowTm);
+    if (localtime_r(&epochTime, &localTm) == nullptr || localtime_r(&nowTime, &nowTm) == nullptr)
+    {
+        return "-";
+    }
 #endif
 
     // Check if same day

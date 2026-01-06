@@ -112,3 +112,52 @@ TEST(FormatTest, EpochDateTimeShortOlderShowsDate)
     // Format is "MMM DD HH:MM" which is ~12 chars
     EXPECT_GE(result.length(), 11U);
 }
+
+// =============================================================================
+// Date/Time Formatting Edge Case Tests
+// =============================================================================
+
+TEST(FormatTest, EpochDateTimeHandlesVeryLargeEpoch)
+{
+    // Test with a very large epoch value that might cause conversion issues
+    // This tests the error handling when localtime_s/localtime_r might fail
+    constexpr std::uint64_t veryLargeEpoch = 0xFFFFFFFFFFFFFFFFULL;
+    const auto result = UI::Format::formatEpochDateTime(veryLargeEpoch);
+
+    // Should return empty string on failure, or a valid formatted string
+    // Either way, it should not crash
+    EXPECT_TRUE(result.empty() || result.length() >= 10);
+}
+
+TEST(FormatTest, EpochDateTimeShortHandlesVeryLargeEpoch)
+{
+    // Test with a very large epoch value
+    constexpr std::uint64_t veryLargeEpoch = 0xFFFFFFFFFFFFFFFFULL;
+    const auto result = UI::Format::formatEpochDateTimeShort(veryLargeEpoch);
+
+    // Should return "-" on failure, or a valid formatted string
+    // Either way, it should not crash
+    EXPECT_FALSE(result.empty());
+}
+
+TEST(FormatTest, EpochDateTimeHandlesYear2038Boundary)
+{
+    // Test around the 32-bit signed overflow point (Jan 19, 2038)
+    constexpr std::uint64_t year2038 = 2147483647ULL; // Max 32-bit signed value
+    const auto result = UI::Format::formatEpochDateTime(year2038);
+
+    // Should handle this gracefully (depends on platform time_t size)
+    // Should not crash regardless
+    EXPECT_TRUE(result.empty() || result.length() >= 10);
+}
+
+TEST(FormatTest, EpochDateTimeHandlesDistantFuture)
+{
+    // Test with a date far in the future (year 3000 approximately)
+    constexpr std::uint64_t year3000 = 32503680000ULL;
+    const auto result = UI::Format::formatEpochDateTime(year3000);
+
+    // Should handle this gracefully
+    // Should not crash regardless
+    EXPECT_TRUE(result.empty() || result.length() >= 10);
+}

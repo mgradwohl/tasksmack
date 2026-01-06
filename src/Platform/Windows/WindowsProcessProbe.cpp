@@ -521,6 +521,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     return ProcessCapabilities{
         .hasIoCounters = true,
         .hasThreadCount = true,
+        .hasHandleCount = true, // From GetProcessHandleCount
         .hasUserSystemTime = true,
         .hasStartTime = true,
         .hasUser = true,        // From OpenProcessToken + LookupAccountSid
@@ -529,7 +530,6 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
         .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
         .hasCpuAffinity = true, // From GetProcessAffinityMask
-        .hasHandleCount = true, // From GetProcessHandleCount
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,

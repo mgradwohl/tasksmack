@@ -349,7 +349,19 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
     if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
     {
-        counters.startTimeEpoch = m_BootTimeEpoch + (starttime / static_cast<uint64_t>(m_TicksPerSecond));
+        const auto secondsSinceBoot = starttime / static_cast<uint64_t>(m_TicksPerSecond);
+        constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
+
+        // Overflow protection: ensure addition won't wrap
+        if (m_BootTimeEpoch <= (maxEpoch - secondsSinceBoot))
+        {
+            counters.startTimeEpoch = m_BootTimeEpoch + secondsSinceBoot;
+        }
+        else
+        {
+            // Clamp to maximum representable value rather than overflowing
+            counters.startTimeEpoch = maxEpoch;
+        }
     }
 
     counters.virtualBytes = vsize;
@@ -543,10 +555,18 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
     std::error_code errorCode;
 
     int32_t count = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(fdPath, errorCode))
+    try
     {
-        (void) entry; // We just count entries
-        ++count;
+        for (const auto& entry : std::filesystem::directory_iterator(fdPath, errorCode))
+        {
+            (void) entry; // We just count entries
+            ++count;
+        }
+    }
+    catch (const std::exception&)
+    {
+        // In exceptional situations (e.g., out-of-memory), fall back to leaving handleCount unchanged
+        return;
     }
 
     // Only set if we successfully read the directory
