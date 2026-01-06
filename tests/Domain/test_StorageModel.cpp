@@ -266,12 +266,9 @@ TEST(StorageModelTest, HistoryTimestampsReturnsTimestamps)
     EXPECT_GT(timestamps[1], timestamps[0]);
 }
 
-TEST(StorageModelTest, CapabilitiesReturnDefaultWhenProbeIsNull)
+TEST(StorageModelTest, CapabilitiesReflectProbeConfiguration)
 {
-    // Create model with probe, then move probe out to test null case
-    // Actually, we can't easily test null probe case with current API
-    // since probe is moved in constructor. Test that capabilities() works
-    // with a valid probe that reports specific caps
+    // Test that capabilities() correctly reports what the probe supports
     auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
     mockProbe->setCapabilities({.hasDiskStats = false, .hasReadWriteBytes = true, .hasIoTime = false});
 

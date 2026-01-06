@@ -306,7 +306,7 @@ TEST(FormatTest, FormatOrDashReturnsFormattedValue)
     EXPECT_EQ(result, "100");
 }
 
-TEST(FormatTest, FormatOrDashReturnsForZeroOrNegative)
+TEST(FormatTest, FormatOrDashReturnsDashForZeroOrNegative)
 {
     const auto resultZero = UI::Format::formatOrDash(0, [](int v) { return std::format("{}", v); });
     EXPECT_EQ(resultZero, "-");
