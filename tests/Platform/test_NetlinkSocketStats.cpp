@@ -367,8 +367,8 @@ TEST(NetlinkSocketStatsCacheTest, CacheInvalidationAfterTTLExpiry)
     // First query
     auto result1 = stats.queryAllSockets();
 
-    // Wait for cache to expire
-    std::this_thread::sleep_for(60ms);
+    // Wait for cache to expire (generous 2x margin to avoid flakiness on loaded systems)
+    std::this_thread::sleep_for(100ms);
 
     // This should be a fresh query (cache miss)
     auto result2 = stats.queryAllSockets();

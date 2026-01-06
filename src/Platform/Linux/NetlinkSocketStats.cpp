@@ -338,10 +338,7 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSocketsUncached()
     querySockets(IPPROTO_TCP, results);
     querySockets(IPPROTO_UDP, results);
 
-    // Also update the cache since we did a fresh query
-    m_CachedResults = results;
-    m_LastQueryTime = std::chrono::steady_clock::now();
-
+    // Intentionally NOT updating cache - this is a true bypass for benchmarks/testing
     return results;
 }
 
