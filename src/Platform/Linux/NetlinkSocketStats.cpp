@@ -39,7 +39,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
     std::array<char, 256> buffer{};
 
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - using thread-safe strerror_r, not strerror
-    auto result = strerror_r(errnum, buffer.data(), buffer.size());
+    auto* result = strerror_r(errnum, buffer.data(), buffer.size());
 
     // Handle both GNU (returns char*) and POSIX (returns int) variants
     if constexpr (std::is_same_v<decltype(result), char*>)
@@ -53,6 +53,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
     else if constexpr (std::is_same_v<decltype(result), int>)
     {
         // POSIX/XSI variant: returns int, string is in buffer
+        // NOLINTNEXTLINE(modernize-use-nullptr) - POSIX variant: result is int, not pointer
         if (result == 0)
         {
             return std::string(buffer.data());
@@ -171,6 +172,7 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
 
     while (!done)
     {
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - not called from within critical sections
         const ssize_t len = recv(socket, buffer.data(), buffer.size(), 0);
         if (len < 0)
         {
@@ -316,8 +318,8 @@ void NetlinkSocketStats::querySockets(int protocol, std::vector<SocketStats>& re
     req.req.idiag_states = static_cast<std::uint32_t>(-1); // All states
 
     // Request INET_DIAG_INFO extension to get tcp_info with byte counters
-    // This is a bitmask: (1 << ((INET_DIAG_INFO) - 1))
-    req.req.idiag_ext = (1U << ((INET_DIAG_INFO) -1));
+    // This is a bitmask: (1 << (INET_DIAG_INFO - 1))
+    req.req.idiag_ext = 1U << (INET_DIAG_INFO - 1);
 
     // Query both IPv4 and IPv6 sockets using the extracted helper
     querySocketsForFamily(m_Socket, AF_INET, req, results);
@@ -368,7 +370,7 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
         std::array<char, 256> linkTarget{};
 
         // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: single DIR* per thread
-        while (struct dirent* entry = readdir(fdDir))
+        while (const struct dirent* entry = readdir(fdDir))
         {
             // Skip . and ..
             if (entry->d_name[0] == '.')
@@ -435,7 +437,7 @@ aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map
         // Note: UINT64_MAX is a reasonable sentinel for "counter saturated"
         // Check: if received > (MAX - bytesReceived) then adding would overflow
         constexpr auto kMaxBytes = std::numeric_limits<std::uint64_t>::max();
-        if (received > ((kMaxBytes) -socket.bytesReceived))
+        if (received > kMaxBytes - socket.bytesReceived)
         {
             received = kMaxBytes; // Saturate on overflow
         }
@@ -443,7 +445,7 @@ aggregateByPid(const std::vector<SocketStats>& sockets, const std::unordered_map
         {
             received += socket.bytesReceived;
         }
-        if (sent > ((kMaxBytes) -socket.bytesSent))
+        if (sent > kMaxBytes - socket.bytesSent)
         {
             sent = kMaxBytes; // Saturate on overflow
         }

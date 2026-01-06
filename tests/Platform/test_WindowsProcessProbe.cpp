@@ -118,6 +118,14 @@ TEST(WindowsProcessProbeTest, EnumerateFindsOurOwnProcess)
 
     const std::string validStates = "RZ?";
     EXPECT_NE(validStates.find(it->state), std::string::npos);
+
+    // Verify handle count is populated for our own process
+    EXPECT_GT(it->handleCount, 0) << "Our process should have at least one handle";
+
+    // Verify start time epoch is populated and reasonable
+    // Should not be before 2020-01-01 (guard against obviously invalid timestamps)
+    constexpr std::uint64_t jan2020 = 1577836800; // 2020-01-01 00:00:00 UTC
+    EXPECT_GT(it->startTimeEpoch, jan2020) << "Start time epoch should be a reasonable modern timestamp";
 }
 
 // =============================================================================

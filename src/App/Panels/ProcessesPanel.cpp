@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
@@ -559,6 +560,8 @@ void ProcessesPanel::renderContent()
                                               return compare(procA.sharedBytes, procB.sharedBytes);
                                           case ProcessColumn::CpuTime:
                                               return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
+                                          case ProcessColumn::StartTime:
+                                              return compare(procA.startTimeEpoch, procB.startTimeEpoch);
                                           case ProcessColumn::State:
                                               return compare(procA.displayState, procB.displayState);
                                           case ProcessColumn::Status:
@@ -567,10 +570,12 @@ void ProcessesPanel::renderContent()
                                               return compare(procA.name, procB.name);
                                           case ProcessColumn::PPID:
                                               return compare(procA.parentPid, procB.parentPid);
-                                          case ProcessColumn::Nice:
+                                          case ProcessColumn::Priority:
                                               return compare(procA.nice, procB.nice);
                                           case ProcessColumn::Threads:
                                               return compare(procA.threadCount, procB.threadCount);
+                                          case ProcessColumn::Handles:
+                                              return compare(procA.handleCount, procB.handleCount);
                                           case ProcessColumn::PageFaults:
                                               return compare(procA.pageFaults, procB.pageFaults);
                                           case ProcessColumn::Affinity:
@@ -829,6 +834,13 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
         }
 
+        case ProcessColumn::StartTime:
+        {
+            const std::string text = UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch);
+            renderRightAlignedText(text);
+            break;
+        }
+
         case ProcessColumn::State:
         {
             const char stateChar = proc.displayState.empty() ? '?' : proc.displayState[0];
@@ -897,9 +909,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
         }
 
-        case ProcessColumn::Nice:
+        case ProcessColumn::Priority:
         {
-            const std::string text = UI::Format::formatId(proc.nice);
+            // Display human-readable priority label (High, Above Normal, Normal, Below Normal, Idle)
+            const std::string text{Domain::Priority::getPriorityLabel(proc.nice)};
             renderRightAlignedText(text);
             break;
         }
@@ -908,6 +921,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const std::string text =
                 UI::Format::formatOrDash(proc.threadCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            renderRightAlignedText(text);
+            break;
+        }
+
+        case ProcessColumn::Handles:
+        {
+            const std::string text =
+                UI::Format::formatOrDash(proc.handleCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
             renderRightAlignedText(text);
             break;
         }

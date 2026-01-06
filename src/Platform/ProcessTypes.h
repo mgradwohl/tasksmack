@@ -19,7 +19,8 @@ struct ProcessCounters
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
 
-    std::uint64_t startTimeTicks = 0; // For PID reuse detection
+    std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
+    std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
 
     // CPU time (cumulative ticks/jiffies)
     std::uint64_t userTime = 0;
@@ -35,6 +36,7 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
+    std::int32_t handleCount = 0;      // Open handles (Windows) or file descriptors (Linux)
     std::uint64_t pageFaultCount = 0;  // Total page faults (minor + major on Linux)
     std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
 
@@ -54,6 +56,7 @@ struct ProcessCapabilities
 {
     bool hasIoCounters = false;
     bool hasThreadCount = false;
+    bool hasHandleCount = false; // Whether handle/FD count is available
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
     bool hasUser = false;            // Whether process owner/user is available

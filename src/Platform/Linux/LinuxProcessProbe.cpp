@@ -116,12 +116,18 @@ std::mutex& getUsernameCacheMutex()
 
 } // namespace
 
-LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL))
+LinuxProcessProbe::LinuxProcessProbe()
+    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)), m_BootTimeEpoch(readBootTime())
 {
     if (m_TicksPerSecond <= 0)
     {
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
+    }
+
+    if (m_BootTimeEpoch == 0)
+    {
+        spdlog::warn("Failed to read boot time from /proc/stat");
     }
 
     // Detect and initialize power monitoring if available
@@ -188,10 +194,14 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         // CPU affinity is always safe to query; failures zero the mask
         parseProcessAffinity(pid, counters);
 
+        // Count open file descriptors (may fail for some processes due to permissions)
+        countProcessFds(pid, counters);
+
         // Only attempt I/O counters if we know they're readable
-        // Use std::call_once for thread-safe lazy initialization
-        std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
-        if (m_IoCountersAvailable)
+        // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
+        std::call_once(m_IoCountersCheckFlag,
+                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed); });
+        if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pid, counters);
         }
@@ -224,7 +234,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
-    std::call_once(m_IoCountersCheckFlag, [this]() { m_IoCountersAvailable = checkIoCountersAvailability(); });
+    std::call_once(m_IoCountersCheckFlag,
+                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
@@ -232,8 +243,9 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable,
+    return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
                                .hasUser = true,       // From /proc/[pid]/status Uid field
@@ -334,6 +346,26 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.systemTime = stime;
     counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
     counters.startTimeTicks = starttime;
+
+    // Convert start time from jiffies since boot to Unix epoch seconds
+    // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
+    if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
+    {
+        const auto secondsSinceBoot = starttime / static_cast<uint64_t>(m_TicksPerSecond);
+        constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
+
+        // Overflow protection: ensure addition won't wrap
+        if (secondsSinceBoot <= (maxEpoch - m_BootTimeEpoch))
+        {
+            counters.startTimeEpoch = m_BootTimeEpoch + secondsSinceBoot;
+        }
+        else
+        {
+            // On overflow, mark start time as unknown (0 is treated as invalid/unknown elsewhere)
+            counters.startTimeEpoch = 0;
+        }
+    }
+
     counters.virtualBytes = vsize;
     counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
     counters.nice = clampToI32(nice);
@@ -515,6 +547,34 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
     }
 }
 
+void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
+{
+    // Count entries in /proc/[pid]/fd directory.
+    // Each entry is a symlink to an open file descriptor.
+    // Note: May fail due to permissions (needs same user or root).
+
+    const std::filesystem::path fdPath = std::filesystem::path("/proc") / std::to_string(pid) / "fd";
+
+    int32_t count = 0;
+    try
+    {
+        // Don't use error_code variant because errors during iteration
+        // (not just construction) won't be captured in it. Rely on exceptions.
+        for (const auto& entry : std::filesystem::directory_iterator(fdPath))
+        {
+            (void) entry; // We just count entries
+            ++count;
+        }
+        // Only set if we successfully enumerated the directory
+        counters.handleCount = count;
+    }
+    catch (const std::exception& ex)
+    {
+        // Permission errors and other exceptional situations - leave handleCount at 0
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
+    }
+}
+
 bool LinuxProcessProbe::checkIoCountersAvailability()
 {
     // Check if we can read /proc/self/io to determine I/O counter availability.
@@ -616,6 +676,38 @@ uint64_t LinuxProcessProbe::readTotalCpuTime()
 
     // Total CPU time = all fields combined
     return user + nice + system + idle + iowait + irq + softirq + steal;
+}
+
+uint64_t LinuxProcessProbe::readBootTime()
+{
+    // Format: /proc/stat contains a line: btime <epoch_seconds>
+    // btime is the time the system booted in seconds since Unix epoch
+
+    std::ifstream statFile("/proc/stat");
+    if (!statFile.is_open())
+    {
+        spdlog::warn("Failed to open /proc/stat for boot time");
+        return 0;
+    }
+
+    std::string line;
+    while (std::getline(statFile, line))
+    {
+        if (line.starts_with("btime "))
+        {
+            uint64_t bootTime = 0;
+            const char* begin = line.data() + 6; // Skip "btime "
+            const char* const end = line.data() + line.size();
+            auto result = std::from_chars(begin, end, bootTime);
+            if (result.ec == std::errc{})
+            {
+                return bootTime;
+            }
+            break;
+        }
+    }
+
+    return 0;
 }
 
 uint64_t LinuxProcessProbe::systemTotalMemory() const

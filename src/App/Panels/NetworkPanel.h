@@ -42,18 +42,6 @@ class NetworkPanel : public Panel
     /// Render content only (for embedding).
     void renderContent();
 
-    /// Get current visibility state.
-    [[nodiscard]] bool isVisible() const
-    {
-        return m_IsVisible;
-    }
-
-    /// Set visibility state.
-    void setVisible(bool visible)
-    {
-        m_IsVisible = visible;
-    }
-
   private:
     /// Render the interface selector dropdown.
     void renderInterfaceSelector();
@@ -99,9 +87,6 @@ class NetworkPanel : public Panel
     };
     SmoothedValues m_SmoothedValues;
     static constexpr float SMOOTHING_FACTOR = 0.3F;
-
-    // Visibility
-    bool m_IsVisible = true;
 };
 
 } // namespace App

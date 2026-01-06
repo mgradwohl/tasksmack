@@ -17,6 +17,7 @@ struct ProcessSnapshot
     std::int32_t parentPid = 0;
     std::int32_t nice = 0;        // Nice value
     std::int32_t threadCount = 0; // Optional (0 if not supported)
+    std::int32_t handleCount = 0; // Handle count (Windows) / FD count (Linux)
 
     double cpuPercent = 0.0;     // Computed from deltas
     double memoryPercent = 0.0;  // RSS as % of total system memory
@@ -24,7 +25,8 @@ struct ProcessSnapshot
 
     std::uint64_t memoryBytes = 0; // RSS
     std::uint64_t virtualBytes = 0;
-    std::uint64_t uniqueKey = 0; // Stable identity across samples (hash(pid, startTime))
+    std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
+    std::uint64_t uniqueKey = 0;      // Stable identity across samples (hash(pid, startTime))
 
     // Less frequently accessed metrics
     double cpuUserPercent = 0.0;         // Computed from deltas (user mode)

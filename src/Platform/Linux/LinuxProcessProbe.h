@@ -7,6 +7,7 @@
 #include "Platform/Linux/NetlinkSocketStats.h"
 #endif
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -36,8 +37,9 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
-    mutable std::once_flag m_IoCountersCheckFlag; // Thread-safe one-time initialization
-    mutable bool m_IoCountersAvailable = false;   // Cached capability check (guarded by once_flag)
+    uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
+    mutable std::once_flag m_IoCountersCheckFlag;            // Thread-safe one-time initialization
+    mutable std::atomic<bool> m_IoCountersAvailable = false; // Cached capability check (atomic for thread-safe read)
     bool m_HasPowerCap = false;
     std::string m_PowerCapPath;
 
@@ -61,8 +63,12 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Parse CPU affinity mask for a process using sched_getaffinity
     static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
+
     /// Parse /proc/[pid]/io for I/O counters (requires permissions)
     static void parseProcessIo(int32_t pid, ProcessCounters& counters);
+
+    /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
+    static void countProcessFds(int32_t pid, ProcessCounters& counters);
 
     /// Check if we can read I/O counters (checks own process)
     [[nodiscard]] static bool checkIoCountersAvailability();
@@ -72,6 +78,9 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] static uint64_t readTotalCpuTime();
+
+    /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
+    [[nodiscard]] static uint64_t readBootTime();
 
     /// Check if RAPL powercap is available and find the path
     [[nodiscard]] bool detectPowerCap();

@@ -84,6 +84,7 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_SharedHistory;    // Shared memory percent (best effort)
     std::deque<double> m_VirtualHistory;   // Virtual memory percent (best effort)
     std::deque<double> m_ThreadHistory;    // Thread count history
+    std::deque<double> m_HandleHistory;    // Handle/FD count history
     std::deque<double> m_PageFaultHistory; // Page faults per second history
     std::deque<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
     std::deque<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
@@ -123,6 +124,7 @@ class ProcessDetailsPanel : public Panel
         double residentBytes = 0.0;
         double virtualBytes = 0.0;
         double threadCount = 0.0;
+        double handleCount = 0.0;
         double pageFaultsPerSec = 0.0;
         double ioReadBytesPerSec = 0.0;
         double ioWriteBytesPerSec = 0.0;

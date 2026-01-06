@@ -30,10 +30,13 @@ TEST(ProcessColumnConfigTest, AllColumnsArraySizeMatchesCount)
 TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
 {
     // Test known columns (indices based on ProcessColumn enum definition)
+    // Order: Identity (PID, Name, User, PPID), State (State, Status), Resources, Scheduling, Time, I/O, Network, Power, GPU, Command
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
-    EXPECT_EQ(toIndex(ProcessColumn::User), 1);
-    EXPECT_EQ(toIndex(ProcessColumn::Status), 10);
-    EXPECT_EQ(toIndex(ProcessColumn::Name), 11);
+    EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
+    EXPECT_EQ(toIndex(ProcessColumn::User), 2);
+    EXPECT_EQ(toIndex(ProcessColumn::Status), 5);
+    EXPECT_EQ(toIndex(ProcessColumn::CpuTime), 16);
+    EXPECT_EQ(toIndex(ProcessColumn::StartTime), 17);
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)

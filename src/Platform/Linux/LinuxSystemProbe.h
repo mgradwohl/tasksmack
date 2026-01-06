@@ -78,7 +78,7 @@ class LinuxSystemProbe : public ISystemProbe
     {
         uint64_t linkSpeedMbps = 0;
         bool wasUp = false; // Track state transitions
-        std::chrono::steady_clock::time_point lastSpeedCheck{};
+        std::chrono::steady_clock::time_point lastSpeedCheck;
     };
     std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
