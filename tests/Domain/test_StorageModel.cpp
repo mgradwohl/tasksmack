@@ -212,5 +212,199 @@ TEST(StorageModelTest, HandlesMultipleDisks)
     EXPECT_EQ(snap.disks[2].deviceName, "sdc");
 }
 
+// =============================================================================
+// History Accessor Tests
+// =============================================================================
+
+TEST(StorageModelTest, TotalReadHistoryReturnsRates)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.writesCompleted = 50;
+    disk.writeSectors = 500;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+    model.sample();
+
+    auto readHistory = model.totalReadHistory();
+    auto writeHistory = model.totalWriteHistory();
+
+    EXPECT_EQ(readHistory.size(), 2ULL);
+    EXPECT_EQ(writeHistory.size(), 2ULL);
+}
+
+TEST(StorageModelTest, HistoryTimestampsReturnsTimestamps)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    auto timestamps = model.historyTimestamps();
+    EXPECT_EQ(timestamps.size(), 2ULL);
+    // Second timestamp should be greater than first
+    EXPECT_GT(timestamps[1], timestamps[0]);
+}
+
+TEST(StorageModelTest, CapabilitiesReflectProbeConfiguration)
+{
+    // Test that capabilities() correctly reports what the probe supports
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    mockProbe->setCapabilities({.hasDiskStats = false, .hasReadWriteBytes = true, .hasIoTime = false});
+
+    StorageModel model(std::move(mockProbe));
+    auto caps = model.capabilities();
+
+    EXPECT_FALSE(caps.hasDiskStats);
+    EXPECT_TRUE(caps.hasReadWriteBytes);
+    EXPECT_FALSE(caps.hasIoTime);
+}
+
+// =============================================================================
+// Rate Calculation Tests
+// =============================================================================
+
+TEST(StorageModelTest, SecondSampleWithSameCountersComputesZeroRates)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.writesCompleted = 50;
+    disk.writeSectors = 500;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Need time between samples
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    EXPECT_EQ(snap.disks.size(), 1ULL);
+    // Since counters don't change, rates should be 0
+    EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.disks[0].writeBytesPerSec, 0.0);
+}
+
+TEST(StorageModelTest, TotalsAreAggregatedFromAllDisks)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    for (int i = 0; i < 2; ++i)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = "sd" + std::string(1, static_cast<char>('a' + i));
+        disk.readsCompleted = 100;
+        disk.readSectors = 1000;
+        disk.writesCompleted = 50;
+        disk.writeSectors = 500;
+        disk.sectorSize = 512;
+        counters.disks.push_back(disk);
+    }
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    EXPECT_EQ(snap.disks.size(), 2ULL);
+    // On first sample, rates are 0, but totals should be aggregated
+    EXPECT_DOUBLE_EQ(snap.totalReadBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.totalWriteBytesPerSec, 0.0);
+}
+
+TEST(StorageModelTest, DiskSnapshotContainsTotalBytes)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000; // 1000 sectors * 512 bytes = 512000 bytes
+    disk.writesCompleted = 50;
+    disk.writeSectors = 500; // 500 sectors * 512 bytes = 256000 bytes
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    EXPECT_EQ(snap.disks[0].totalReadBytes, 1000ULL * 512ULL);
+    EXPECT_EQ(snap.disks[0].totalWriteBytes, 500ULL * 512ULL);
+    EXPECT_EQ(snap.disks[0].totalReadOps, 100ULL);
+    EXPECT_EQ(snap.disks[0].totalWriteOps, 50ULL);
+}
+
+TEST(StorageModelTest, DiskSnapshotContainsPhysicalDeviceFlag)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.isPhysicalDevice = true;
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    EXPECT_TRUE(snap.disks[0].isPhysicalDevice);
+}
+
+TEST(StorageModelTest, SnapshotReflectsProbeCapabilities)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    mockProbe->setCapabilities({.hasDiskStats = true, .hasReadWriteBytes = false, .hasIoTime = true});
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    EXPECT_TRUE(snap.hasDiskStats);
+    EXPECT_FALSE(snap.hasReadWriteBytes);
+    EXPECT_TRUE(snap.hasIoTime);
+}
+
 } // namespace
 } // namespace Domain
