@@ -347,6 +347,136 @@ cmake --build --preset tsan
 ctest --preset tsan
 ```
 
+## Benchmarks
+
+TaskSmack includes a benchmark suite using [Google Benchmark](https://github.com/google/benchmark) for tracking performance regressions and identifying hot paths.
+
+### Running Benchmarks
+
+```bash
+# Linux
+cmake --preset benchmark
+cmake --build --preset benchmark
+./build/benchmark/bin/TaskSmackBenchmarks
+
+# Windows
+cmake --preset win-benchmark
+cmake --build --preset win-benchmark
+.\build\win-benchmark\bin\TaskSmackBenchmarks.exe
+```
+
+### Benchmark Output
+
+By default, benchmarks output to console. You can also:
+
+```bash
+# JSON output for comparison
+./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > baseline.json
+
+# Compare against baseline
+./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > current.json
+# Use benchmark_compare.py from google/benchmark for comparison
+```
+
+### Available Benchmarks
+
+| Benchmark | Description |
+|-----------|-------------|
+| `BM_History_*` | Ring buffer operations (push, access, copyTo) |
+| `BM_History_MemoryFootprint` | Memory usage tracking for history buffers |
+| `BM_ProcessModel_*` | Process enumeration and snapshot computation |
+| `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
+| `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_Format_*` | UI formatting functions |
+
+### Memory Tracking
+
+Benchmarks include memory tracking to catch allocation regressions. Memory counters are reported alongside timing:
+
+```bash
+# Run with tabular counters to see memory metrics
+./build/benchmark/bin/TaskSmackBenchmarks --benchmark_counters_tabular=true
+
+# Filter to memory-focused benchmarks
+./build/benchmark/bin/TaskSmackBenchmarks --benchmark_filter=Memory
+```
+
+**Memory counters reported:**
+- `rss_mb` - Resident Set Size (physical memory) at end of benchmark
+- `heap_mb` - Heap (data segment) size
+- `peak_rss_mb` - High water mark for RSS
+- `rss_delta_kb` - RSS change during benchmark
+- `bytes_per_iter` - Memory growth per iteration (should be ~0 for stable code)
+
+Memory tracking uses `/proc/self/status` on Linux for zero-overhead measurement.
+
+## Performance Profiling
+
+The `profile` and `win-profile` presets are optimized for profiling with frame pointers preserved.
+
+### Linux (perf)
+
+```bash
+# Build with profiling preset
+cmake --preset profile
+cmake --build --preset profile
+
+# Run with perf record
+perf record -g ./build/profile/bin/TaskSmack
+
+# Analyze
+perf report -g
+
+# Generate flamegraph (requires flamegraph.pl)
+perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
+```
+
+### Linux (perf stat for quick metrics)
+
+```bash
+# Quick performance counters
+perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
+```
+
+### macOS (Instruments)
+
+```bash
+# Build with profile preset
+cmake --preset profile
+cmake --build --preset profile
+
+# Open in Instruments
+open -a Instruments ./build/profile/bin/TaskSmack
+
+# Or use command line
+xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/TaskSmack
+```
+
+### Windows (ETW/VTune)
+
+```powershell
+# Build with profiling preset
+cmake --preset win-profile
+cmake --build --preset win-profile
+
+# Use Windows Performance Analyzer (WPA) or Intel VTune
+# For VTune:
+vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
+```
+
+### Compile-Time Profiling (-ftime-trace)
+
+To identify slow headers and compilation bottlenecks:
+
+```bash
+# Add -ftime-trace to your build
+cmake --preset debug -DCMAKE_CXX_FLAGS="-ftime-trace"
+cmake --build --preset debug
+
+# Each .cpp generates a .json trace file
+# Open in Chrome's chrome://tracing or Perfetto
+```
+
 ## Packaging (CPack)
 
 Create distributable archives/installers with CPack:

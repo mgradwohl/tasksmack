@@ -156,6 +156,28 @@
             }
         },
         {
+            "name": "profile",
+            "displayName": "Profile",
+            "description": "Release build optimized for profiling with perf/Instruments (frame pointers preserved)",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "benchmark",
+            "displayName": "Benchmark",
+            "description": "Release build for running benchmarks",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
             "name": "win-debug",
             "displayName": "Windows Debug",
             "description": "Debug build for Windows",
@@ -223,6 +245,30 @@
                 "TASKSMACK_ENABLE_COVERAGE": "ON",
                 "TASKSMACK_ENABLE_PCH": "OFF"
             }
+        },
+        {
+            "name": "win-profile",
+            "displayName": "Windows Profile",
+            "description": "Release build optimized for profiling with ETW/VTune (frame pointers preserved)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-profile",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "win-benchmark",
+            "displayName": "Windows Benchmark",
+            "description": "Release build for running benchmarks",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-benchmark",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -267,6 +313,16 @@
             "configurePreset": "tsan"
         },
         {
+            "name": "profile",
+            "displayName": "Profile",
+            "configurePreset": "profile"
+        },
+        {
+            "name": "benchmark",
+            "displayName": "Benchmark",
+            "configurePreset": "benchmark"
+        },
+        {
             "name": "win-debug",
             "displayName": "Windows Debug",
             "configurePreset": "win-debug"
@@ -295,6 +351,16 @@
             "name": "win-coverage",
             "displayName": "Windows Coverage",
             "configurePreset": "win-coverage"
+        },
+        {
+            "name": "win-profile",
+            "displayName": "Windows Profile",
+            "configurePreset": "win-profile"
+        },
+        {
+            "name": "win-benchmark",
+            "displayName": "Windows Benchmark",
+            "configurePreset": "win-benchmark"
         }
     ],
     "testPresets": [

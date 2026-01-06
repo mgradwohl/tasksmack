@@ -33,6 +33,7 @@ option(TASKSMACK_ENABLE_IPO "Enable interprocedural optimization" ON)
 option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
 option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(TASKSMACK_BUILD_TESTS "Build tests" ON)
+option(TASKSMACK_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
@@ -806,6 +807,10 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
 if(TASKSMACK_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(TASKSMACK_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
 endif()
 
 # CPack configuration for packaging
