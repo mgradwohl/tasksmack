@@ -19,7 +19,8 @@ struct ProcessCounters
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
 
-    std::uint64_t startTimeTicks = 0; // For PID reuse detection
+    std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
+    std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
 
     // CPU time (cumulative ticks/jiffies)
     std::uint64_t userTime = 0;

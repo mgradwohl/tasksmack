@@ -559,6 +559,8 @@ void ProcessesPanel::renderContent()
                                               return compare(procA.sharedBytes, procB.sharedBytes);
                                           case ProcessColumn::CpuTime:
                                               return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
+                                          case ProcessColumn::StartTime:
+                                              return compare(procA.startTimeEpoch, procB.startTimeEpoch);
                                           case ProcessColumn::State:
                                               return compare(procA.displayState, procB.displayState);
                                           case ProcessColumn::Status:
@@ -825,6 +827,13 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::CpuTime:
         {
             const std::string text = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
+            renderRightAlignedText(text);
+            break;
+        }
+
+        case ProcessColumn::StartTime:
+        {
+            const std::string text = UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch);
             renderRightAlignedText(text);
             break;
         }

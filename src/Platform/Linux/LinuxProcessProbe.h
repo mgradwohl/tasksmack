@@ -36,6 +36,7 @@ class LinuxProcessProbe : public IProcessProbe
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;
+    uint64_t m_BootTimeEpoch = 0;                 // System boot time (Unix epoch seconds)
     mutable std::once_flag m_IoCountersCheckFlag; // Thread-safe one-time initialization
     mutable bool m_IoCountersAvailable = false;   // Cached capability check (guarded by once_flag)
     bool m_HasPowerCap = false;
@@ -72,6 +73,9 @@ class LinuxProcessProbe : public IProcessProbe
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] static uint64_t readTotalCpuTime();
+
+    /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
+    [[nodiscard]] static uint64_t readBootTime();
 
     /// Check if RAPL powercap is available and find the path
     [[nodiscard]] bool detectPowerCap();

@@ -116,12 +116,18 @@ std::mutex& getUsernameCacheMutex()
 
 } // namespace
 
-LinuxProcessProbe::LinuxProcessProbe() : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL))
+LinuxProcessProbe::LinuxProcessProbe()
+    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)), m_BootTimeEpoch(readBootTime())
 {
     if (m_TicksPerSecond <= 0)
     {
         m_TicksPerSecond = 100; // Common default
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
+    }
+
+    if (m_BootTimeEpoch == 0)
+    {
+        spdlog::warn("Failed to read boot time from /proc/stat");
     }
 
     // Detect and initialize power monitoring if available
@@ -334,6 +340,14 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     counters.systemTime = stime;
     counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
     counters.startTimeTicks = starttime;
+
+    // Convert start time from jiffies since boot to Unix epoch seconds
+    // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
+    if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
+    {
+        counters.startTimeEpoch = m_BootTimeEpoch + (starttime / static_cast<uint64_t>(m_TicksPerSecond));
+    }
+
     counters.virtualBytes = vsize;
     counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
     counters.nice = clampToI32(nice);
@@ -616,6 +630,38 @@ uint64_t LinuxProcessProbe::readTotalCpuTime()
 
     // Total CPU time = all fields combined
     return user + nice + system + idle + iowait + irq + softirq + steal;
+}
+
+uint64_t LinuxProcessProbe::readBootTime()
+{
+    // Format: /proc/stat contains a line: btime <epoch_seconds>
+    // btime is the time the system booted in seconds since Unix epoch
+
+    std::ifstream statFile("/proc/stat");
+    if (!statFile.is_open())
+    {
+        spdlog::warn("Failed to open /proc/stat for boot time");
+        return 0;
+    }
+
+    std::string line;
+    while (std::getline(statFile, line))
+    {
+        if (line.starts_with("btime "))
+        {
+            uint64_t bootTime = 0;
+            const char* begin = line.data() + 6; // Skip "btime "
+            const char* const end = line.data() + line.size();
+            auto result = std::from_chars(begin, end, bootTime);
+            if (result.ec == std::errc{})
+            {
+                return bootTime;
+            }
+            break;
+        }
+    }
+
+    return 0;
 }
 
 uint64_t LinuxProcessProbe::systemTotalMemory() const

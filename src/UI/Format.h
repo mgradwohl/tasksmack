@@ -1,9 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <concepts>
 #include <cstdint>
+#include <ctime>
 #include <format>
 #include <functional>
 #include <limits>
@@ -107,6 +110,88 @@ template<typename T, typename Formatter>
     }
 
     return std::format("Up: {}m", minutes);
+}
+
+/// Format Unix epoch timestamp to human-readable local date/time.
+/// Returns "YYYY-MM-DD HH:MM:SS" format in local timezone.
+/// Returns empty string if epochSeconds is 0.
+[[nodiscard]] inline auto formatEpochDateTime(std::uint64_t epochSeconds) -> std::string
+{
+    if (epochSeconds == 0)
+    {
+        return {};
+    }
+
+    // Convert epoch to local time using thread-safe localtime_r on POSIX or localtime_s on Windows
+    const std::time_t epochTime = static_cast<std::time_t>(epochSeconds);
+    std::tm localTm{};
+
+#ifdef _WIN32
+    localtime_s(&localTm, &epochTime);
+#else
+    localtime_r(&epochTime, &localTm);
+#endif
+
+    // Format: YYYY-MM-DD HH:MM:SS
+    return std::format("{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}",
+                       localTm.tm_year + 1900,
+                       localTm.tm_mon + 1,
+                       localTm.tm_mday,
+                       localTm.tm_hour,
+                       localTm.tm_min,
+                       localTm.tm_sec);
+}
+
+/// Format Unix epoch timestamp to a shorter format for table display.
+/// Shows "HH:MM:SS" if today, "Yesterday HH:MM" if yesterday, else "MMM DD HH:MM".
+/// Returns "-" if epochSeconds is 0.
+[[nodiscard]] inline auto formatEpochDateTimeShort(std::uint64_t epochSeconds) -> std::string
+{
+    if (epochSeconds == 0)
+    {
+        return "-";
+    }
+
+    // Get current time and process start time in local timezone
+    const std::time_t epochTime = static_cast<std::time_t>(epochSeconds);
+    const std::time_t nowTime = std::time(nullptr);
+
+    std::tm localTm{};
+    std::tm nowTm{};
+
+#ifdef _WIN32
+    localtime_s(&localTm, &epochTime);
+    localtime_s(&nowTm, &nowTime);
+#else
+    localtime_r(&epochTime, &localTm);
+    localtime_r(&nowTime, &nowTm);
+#endif
+
+    // Check if same day
+    const bool isToday = (localTm.tm_year == nowTm.tm_year && localTm.tm_yday == nowTm.tm_yday);
+
+    if (isToday)
+    {
+        // Today: show "HH:MM:SS"
+        return std::format("{:02d}:{:02d}:{:02d}", localTm.tm_hour, localTm.tm_min, localTm.tm_sec);
+    }
+
+    // Check if yesterday (same year, day of year differs by 1, or year boundary)
+    const bool isYesterday =
+        (localTm.tm_year == nowTm.tm_year && nowTm.tm_yday - localTm.tm_yday == 1) ||
+        (localTm.tm_year == nowTm.tm_year - 1 && localTm.tm_mon == 11 && localTm.tm_mday == 31 && nowTm.tm_mon == 0 && nowTm.tm_mday == 1);
+
+    if (isYesterday)
+    {
+        // Yesterday: show "Yesterday HH:MM"
+        return std::format("Yesterday {:02d}:{:02d}", localTm.tm_hour, localTm.tm_min);
+    }
+
+    // Older: show "MMM DD HH:MM" (e.g., "Jan 15 14:23")
+    constexpr std::array<const char*, 12> months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const char* monthName = (localTm.tm_mon >= 0 && localTm.tm_mon < 12) ? months[static_cast<std::size_t>(localTm.tm_mon)] : "???";
+
+    return std::format("{} {:2d} {:02d}:{:02d}", monthName, localTm.tm_mday, localTm.tm_hour, localTm.tm_min);
 }
 
 struct ByteUnit

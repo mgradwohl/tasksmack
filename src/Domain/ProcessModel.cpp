@@ -313,6 +313,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.nice = current.nice;
     snapshot.pageFaults = current.pageFaultCount;
     snapshot.cpuAffinityMask = current.cpuAffinityMask;
+    snapshot.startTimeEpoch = current.startTimeEpoch;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
 
     if (systemTotalMemory > 0)

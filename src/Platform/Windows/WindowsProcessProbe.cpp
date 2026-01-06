@@ -53,6 +53,28 @@ namespace
     return uli.QuadPart;
 }
 
+/// Convert FILETIME to Unix epoch seconds
+/// Windows FILETIME is 100-nanosecond intervals since January 1, 1601 UTC
+/// Unix epoch is seconds since January 1, 1970 UTC
+/// The difference is 11644473600 seconds (369 years)
+[[nodiscard]] uint64_t filetimeToUnixEpoch(const FILETIME& ft)
+{
+    constexpr uint64_t WINDOWS_TICKS_PER_SECOND = 10'000'000;
+    constexpr uint64_t WINDOWS_EPOCH_TO_UNIX_EPOCH = 11644473600ULL;
+
+    ULARGE_INTEGER uli{};
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+
+    // Convert 100-nanosecond intervals to seconds and adjust for epoch difference
+    uint64_t windowsSeconds = uli.QuadPart / WINDOWS_TICKS_PER_SECOND;
+    if (windowsSeconds < WINDOWS_EPOCH_TO_UNIX_EPOCH)
+    {
+        return 0; // Invalid time (before Unix epoch)
+    }
+    return windowsSeconds - WINDOWS_EPOCH_TO_UNIX_EPOCH;
+}
+
 /// Map Windows process state to single character
 [[nodiscard]] char getProcessState(HANDLE hProcess)
 {
@@ -427,6 +449,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.userTime = filetimeToTicks(ftUser);
         counters.systemTime = filetimeToTicks(ftKernel);
         counters.startTimeTicks = filetimeToTicks(ftCreation);
+        counters.startTimeEpoch = filetimeToUnixEpoch(ftCreation);
     }
 
     // Get memory info
