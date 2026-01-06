@@ -214,8 +214,8 @@ template<typename T, typename Formatter>
     else if (localTm.tm_year + 1 == nowTm.tm_year)
     {
         // Previous year: local date must be the last day of its year, and today must be the first day
-        const int year = localTm.tm_year + 1900;
-        const bool isLeapYear = ((year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0)));
+        const int localYear = localTm.tm_year + 1900;
+        const bool isLeapYear = ((localYear % 4 == 0) && ((localYear % 100 != 0) || (localYear % 400 == 0)));
         const int daysInYear = isLeapYear ? 366 : 365;
         isYesterday = (localTm.tm_yday == (daysInYear - 1) && nowTm.tm_yday == 0);
     }
