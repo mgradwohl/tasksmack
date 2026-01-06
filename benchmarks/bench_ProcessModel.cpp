@@ -107,7 +107,8 @@ static void BM_ProcessModel_FindByPid(benchmark::State& state)
         // Linear search through snapshots using std::ranges
         const auto currentSnapshots = model.snapshots();
         auto it = std::ranges::find_if(currentSnapshots, [targetPid](const auto& snap) { return snap.pid == targetPid; });
-        const Domain::ProcessSnapshot* found = (it != currentSnapshots.end()) ? &(*it) : nullptr;
+        // Use boolean instead of pointer to avoid dangling reference to temporary vector
+        const bool found = (it != currentSnapshots.end());
         benchmark::DoNotOptimize(found);
     }
 }
