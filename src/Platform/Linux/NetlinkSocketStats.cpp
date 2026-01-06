@@ -225,7 +225,11 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
 
 } // namespace
 
-NetlinkSocketStats::NetlinkSocketStats()
+NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
+{
+}
+
+NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_CacheTtl(cacheTtl)
 {
     // Create netlink socket for SOCK_DIAG
     // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) - conditional initialization
@@ -264,7 +268,7 @@ NetlinkSocketStats::NetlinkSocketStats()
 
     if (m_Available)
     {
-        spdlog::info("Netlink INET_DIAG available for per-process network monitoring");
+        spdlog::info("Netlink INET_DIAG available for per-process network monitoring (cache TTL: {}ms)", m_CacheTtl.count());
     }
 }
 
@@ -282,26 +286,70 @@ NetlinkSocketStats::~NetlinkSocketStats() noexcept
 
 std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
 {
-    std::vector<SocketStats> results;
-    results.reserve(256); // Reasonable initial capacity
-
     if (!m_Available || m_Socket < 0)
     {
-        return results;
+        return {};
     }
 
-    // Lock for thread-safe socket operations - multiple threads may call enumerate()
+    // Lock for thread-safe cache and socket operations
     // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - intentional: socket must be protected
     const std::scoped_lock lock(m_SocketMutex);
 
+    // Check if cache is still valid
+    const auto now = std::chrono::steady_clock::now();
+    const auto cacheAge = (now - m_LastQueryTime);
+
+    if ((m_CacheTtl.count() > 0) && !m_CachedResults.empty() && (cacheAge < m_CacheTtl))
+    {
+        // Cache hit - return cached results
+        return m_CachedResults;
+    }
+
+    // Cache miss or expired - query the kernel
+    m_CachedResults.clear();
+    m_CachedResults.reserve(256); // Reasonable initial capacity
+
     // Query TCP sockets (IPv4 and IPv6)
-    querySockets(IPPROTO_TCP, results);
+    querySockets(IPPROTO_TCP, m_CachedResults);
 
     // Query UDP sockets (IPv4 and IPv6)
     // Note: UDP may have limited byte counter support
+    querySockets(IPPROTO_UDP, m_CachedResults);
+
+    m_LastQueryTime = now;
+
+    return m_CachedResults;
+}
+
+std::vector<SocketStats> NetlinkSocketStats::queryAllSocketsUncached()
+{
+    if (!m_Available || m_Socket < 0)
+    {
+        return {};
+    }
+
+    // Lock for thread-safe socket operations
+    // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - intentional: socket must be protected
+    const std::scoped_lock lock(m_SocketMutex);
+
+    std::vector<SocketStats> results;
+    results.reserve(256);
+
+    querySockets(IPPROTO_TCP, results);
     querySockets(IPPROTO_UDP, results);
 
+    // Also update the cache since we did a fresh query
+    m_CachedResults = results;
+    m_LastQueryTime = std::chrono::steady_clock::now();
+
     return results;
+}
+
+void NetlinkSocketStats::invalidateCache() noexcept
+{
+    const std::scoped_lock lock(m_SocketMutex);
+    m_CachedResults.clear();
+    m_LastQueryTime = {};
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const) - modifies socket state via send/recv

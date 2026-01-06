@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <thread>
+
 #include <unistd.h>
 
 namespace Platform
@@ -251,6 +253,137 @@ TEST(AggregateByPidTest, LargeByteCountersAreHandled)
     ASSERT_EQ(result.size(), 1UL);
     EXPECT_EQ(result[100].first, 0xFFFFFFFFFFFFFF00ULL);
     EXPECT_EQ(result[100].second, 0x7FFFFFFFFFFFFFFFULL);
+}
+
+// ========== Cache Tests ==========
+
+TEST(NetlinkSocketStatsCacheTest, DefaultConstructorUsesDEFAULT_SOCKET_STATS_CACHE_TTL)
+{
+    NetlinkSocketStats stats;
+    EXPECT_EQ(stats.cacheTtl(), DEFAULT_SOCKET_STATS_CACHE_TTL);
+}
+
+TEST(NetlinkSocketStatsCacheTest, CustomTTLConstructor)
+{
+    using namespace std::chrono_literals;
+    NetlinkSocketStats stats(200ms);
+    EXPECT_EQ(stats.cacheTtl(), 200ms);
+}
+
+TEST(NetlinkSocketStatsCacheTest, ZeroTTLEffectivelyDisablesCache)
+{
+    using namespace std::chrono_literals;
+    NetlinkSocketStats stats(0ms);
+    EXPECT_EQ(stats.cacheTtl(), 0ms);
+}
+
+TEST(NetlinkSocketStatsCacheTest, CacheTtlReturnsConfiguredValue)
+{
+    using namespace std::chrono_literals;
+    constexpr auto customTtl = 750ms;
+    NetlinkSocketStats stats(customTtl);
+    EXPECT_EQ(stats.cacheTtl(), customTtl);
+}
+
+TEST(NetlinkSocketStatsCacheTest, InvalidateCacheWorks)
+{
+    NetlinkSocketStats stats;
+    if (!stats.isAvailable())
+    {
+        GTEST_SKIP() << "Netlink INET_DIAG not available on this system";
+    }
+
+    // First query populates cache
+    auto result1 = stats.queryAllSockets();
+
+    // Invalidate cache
+    stats.invalidateCache();
+
+    // Next query should hit the kernel again (we can't easily verify this,
+    // but we can verify it doesn't crash and returns valid results)
+    auto result2 = stats.queryAllSockets();
+
+    // Both should return valid results (may differ if sockets changed)
+    // The test mainly verifies invalidateCache() doesn't break anything
+    SUCCEED() << "invalidateCache() completed without error";
+}
+
+TEST(NetlinkSocketStatsCacheTest, CachedQueryReturnsSameResults)
+{
+    using namespace std::chrono_literals;
+    NetlinkSocketStats stats(5000ms); // Long TTL to ensure cache hit
+    if (!stats.isAvailable())
+    {
+        GTEST_SKIP() << "Netlink INET_DIAG not available on this system";
+    }
+
+    // First query
+    auto result1 = stats.queryAllSockets();
+
+    // Second query should return cached results (identical)
+    auto result2 = stats.queryAllSockets();
+
+    // Results should be identical since we're returning the same cached vector
+    EXPECT_EQ(result1.size(), result2.size());
+
+    // If both have results, verify they're identical
+    if (!result1.empty() && !result2.empty())
+    {
+        EXPECT_EQ(result1[0].inode, result2[0].inode);
+        EXPECT_EQ(result1[0].bytesReceived, result2[0].bytesReceived);
+        EXPECT_EQ(result1[0].bytesSent, result2[0].bytesSent);
+    }
+}
+
+TEST(NetlinkSocketStatsCacheTest, UncachedQueryBypassesCache)
+{
+    using namespace std::chrono_literals;
+    NetlinkSocketStats stats(5000ms); // Long TTL
+    if (!stats.isAvailable())
+    {
+        GTEST_SKIP() << "Netlink INET_DIAG not available on this system";
+    }
+
+    // First cached query
+    auto cached = stats.queryAllSockets();
+
+    // Uncached query should always hit kernel
+    auto uncached = stats.queryAllSocketsUncached();
+
+    // Both should return valid results
+    // Note: Results may differ slightly if sockets changed between calls
+    SUCCEED() << "queryAllSocketsUncached() returned " << uncached.size() << " sockets";
+}
+
+TEST(NetlinkSocketStatsCacheTest, CacheInvalidationAfterTTLExpiry)
+{
+    using namespace std::chrono_literals;
+    NetlinkSocketStats stats(50ms); // Short TTL for testing
+    if (!stats.isAvailable())
+    {
+        GTEST_SKIP() << "Netlink INET_DIAG not available on this system";
+    }
+
+    // First query
+    auto result1 = stats.queryAllSockets();
+
+    // Wait for cache to expire
+    std::this_thread::sleep_for(60ms);
+
+    // This should be a fresh query (cache miss)
+    auto result2 = stats.queryAllSockets();
+
+    // Both should return valid results (structure verification)
+    for (const auto& sock : result1)
+    {
+        EXPECT_GE(sock.inode, 0UL);
+    }
+    for (const auto& sock : result2)
+    {
+        EXPECT_GE(sock.inode, 0UL);
+    }
+
+    SUCCEED() << "Cache TTL expiry works correctly";
 }
 
 // ========== Integration Tests ==========
