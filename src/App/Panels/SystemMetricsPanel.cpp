@@ -395,10 +395,36 @@ void SystemMetricsPanel::renderOverview()
     const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
     const float rightBlockWidth = uptimeWidth + processWidth + spacer;
 
-    // CPU model with core count and frequency
+    // Calculate total GPU VRAM across all GPUs (for discrete GPUs with dedicated memory)
+    std::uint64_t totalVramBytes = 0;
+    if (m_GPUModel)
+    {
+        const auto gpuSnapshots = m_GPUModel->snapshots();
+        for (const auto& gpuSnap : gpuSnapshots)
+        {
+            totalVramBytes += gpuSnap.memoryTotalBytes;
+        }
+    }
+
+    // Format RAM and VRAM info to append to CPU line
+    std::string memoryStr;
+    if (totalVramBytes > 0)
+    {
+        memoryStr = std::format(", {} RAM, {} VRAM",
+                                UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
+                                UI::Format::formatBytes(static_cast<double>(totalVramBytes)));
+    }
+    else
+    {
+        memoryStr = std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+    }
+
+    // CPU model with core count, frequency, RAM, and VRAM
     ImGui::TextUnformatted(snap.cpuModel.c_str());
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(coreInfo.c_str());
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(memoryStr.c_str());
 
     // Right-align uptime
     if (rightBlockWidth > 0.0F)
@@ -1418,7 +1444,15 @@ void SystemMetricsPanel::renderGpuSection()
         }
 
         // GPU header with collapsible section
-        const std::string headerLabel = std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuName, isIntegrated ? "Integrated" : "Discrete");
+        // Discrete: show VRAM amount after name, label as "Discrete"
+        // Integrated: no VRAM amount (shares system RAM), label as "Shared Memory"
+        std::string vramInfo;
+        if (!isIntegrated && snap.memoryTotalBytes > 0)
+        {
+            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+        }
+        const std::string headerLabel =
+            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
 
         ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);

@@ -41,8 +41,8 @@ class NetlinkSocketStats
     NetlinkSocketStats();
 
     /// Construct with custom cache TTL
-    /// @param cache_ttl Time-to-live for cached results. Use 0ms to disable caching.
-    explicit NetlinkSocketStats(std::chrono::milliseconds cache_ttl);
+    /// @param cacheTtl Time-to-live for cached results. Use 0ms to disable caching.
+    explicit NetlinkSocketStats(std::chrono::milliseconds cacheTtl);
 
     ~NetlinkSocketStats() noexcept;
 
@@ -82,9 +82,9 @@ class NetlinkSocketStats
     mutable std::mutex m_SocketMutex; // Protects socket operations and cache state for thread safety
 
     // Cache state
-    std::chrono::milliseconds m_CacheTtl;                    // Cache time-to-live
-    std::chrono::steady_clock::time_point m_LastQueryTime{}; // When cache was last populated
-    std::vector<SocketStats> m_CachedResults;                // Cached socket stats
+    std::chrono::milliseconds m_CacheTtl;                  // Cache time-to-live
+    std::chrono::steady_clock::time_point m_LastQueryTime; // When cache was last populated
+    std::vector<SocketStats> m_CachedResults;              // Cached socket stats
 
     /// Query sockets for a specific protocol (IPPROTO_TCP or IPPROTO_UDP)
     void querySockets(int protocol, std::vector<SocketStats>& results);
