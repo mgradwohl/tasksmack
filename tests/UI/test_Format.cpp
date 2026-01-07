@@ -618,7 +618,7 @@ class FormatLocaleTest : public ::testing::Test
             const std::locale userLocale("");
             std::locale::global(userLocale);
         }
-        catch (const std::exception& e)
+        catch (const std::exception&)
         {
             // If user's locale fails, try common locales with grouping
             const char* fallbackLocales[] = {"en_US.UTF-8", "en_GB.UTF-8", "C.UTF-8", nullptr};
