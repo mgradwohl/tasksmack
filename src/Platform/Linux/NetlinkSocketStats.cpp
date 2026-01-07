@@ -295,7 +295,9 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - intentional: socket must be protected
     const std::scoped_lock lock(m_SocketMutex);
 
-    // Check if cache is still valid
+    // Check if cache is still valid.
+    // Note: Timestamp is intentionally captured AFTER acquiring the lock to ensure
+    // consistent cache behavior under concurrent access.
     const auto now = std::chrono::steady_clock::now();
     const auto cacheAge = (now - m_LastQueryTime);
 
