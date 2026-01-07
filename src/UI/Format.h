@@ -406,6 +406,12 @@ struct AlignedBytesParts
     // Then insert thousand separators
     std::array<char, 24> digitBuf{}; // Enough for int64_t
     auto [endPtr, ec] = std::to_chars(digitBuf.data(), digitBuf.data() + digitBuf.size(), wholeValue);
+    if (ec != std::errc{})
+    {
+        // Fallback: return a safe default if conversion fails (should never happen)
+        digitBuf[0] = '0';
+        endPtr = digitBuf.data() + 1;
+    }
     assert(ec == std::errc{} && "std::to_chars failed unexpectedly");
     const std::size_t numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
 
@@ -437,6 +443,8 @@ struct AlignedBytesParts
     }
 
     // Add decimal point (unit.decimals is always 1 for byte units)
+    // Verify buffer bounds before final writes (defense-in-depth)
+    assert(pos < AlignedBytesParts::BUFFER_SIZE - 2 && "Buffer overflow in splitBytesForAlignmentFast");
     if (unit.decimals > 0)
     {
         parts.buffer[pos++] = '.';
@@ -453,16 +461,18 @@ struct AlignedBytesParts
     static constexpr std::string_view unitMB = " MB";
     static constexpr std::string_view unitGB = " GB";
 
-    // Match unit suffix to our static strings
-    if (unit.suffix[0] == 'G')
+    // Match unit suffix to our static strings using full comparison
+    // This ensures correct handling of all byte units (B, KB, MB, GB)
+    const std::string_view suffix{unit.suffix};
+    if (suffix == "GB")
     {
         parts.unitPart = unitGB;
     }
-    else if (unit.suffix[0] == 'M')
+    else if (suffix == "MB")
     {
         parts.unitPart = unitMB;
     }
-    else if (unit.suffix[0] == 'K')
+    else if (suffix == "KB")
     {
         parts.unitPart = unitKB;
     }

@@ -9,7 +9,6 @@
 #include <gtest/gtest.h>
 
 #include <clocale>
-#include <iostream>
 #include <locale>
 #include <random>
 #include <vector>
@@ -663,8 +662,8 @@ namespace
 {
 
 /// Helper to compare AlignedNumericParts (slow) with AlignedBytesParts (fast)
-/// Returns true if they produce equivalent output
-auto compareBytesAlignment(double bytes, const UI::Format::ByteUnit& unit) -> bool
+/// Returns AssertionResult with detailed mismatch info on failure
+auto compareBytesAlignment(double bytes, const UI::Format::ByteUnit& unit) -> ::testing::AssertionResult
 {
     const auto slow = UI::Format::splitBytesForAlignment(bytes, unit);
     const auto fast = UI::Format::splitBytesForAlignmentFast(bytes, unit);
@@ -681,14 +680,14 @@ auto compareBytesAlignment(double bytes, const UI::Format::ByteUnit& unit) -> bo
 
     if (!wholeMatch || !decimalMatch || !unitMatch)
     {
-        // Print debug info on mismatch
-        std::cerr << "Mismatch for bytes=" << bytes << " unit=" << unit.suffix << "\n";
-        std::cerr << "  slow.wholePart='" << slow.wholePart << "' vs fast.wholePart()='" << fast.wholePart() << "'\n";
-        std::cerr << "  slow.decimalPart='" << slow.decimalPart << "' vs fast.decimalDigit='" << fast.decimalDigit << "'\n";
-        std::cerr << "  slow.unitPart='" << slow.unitPart << "' vs fast.unitPart='" << fast.unitPart << "'\n";
-        return false;
+        return ::testing::AssertionFailure() << "Mismatch for bytes=" << bytes << " unit=" << unit.suffix << "\n"
+                                             << "  slow.wholePart='" << slow.wholePart << "' vs fast.wholePart()='" << fast.wholePart()
+                                             << "'\n"
+                                             << "  slow.decimalPart='" << slow.decimalPart << "' vs fast.decimalDigit='"
+                                             << fast.decimalDigit << "'\n"
+                                             << "  slow.unitPart='" << slow.unitPart << "' vs fast.unitPart='" << fast.unitPart << "'";
     }
-    return true;
+    return ::testing::AssertionSuccess();
 }
 
 } // namespace
