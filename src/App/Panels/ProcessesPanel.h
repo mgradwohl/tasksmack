@@ -6,8 +6,6 @@
 #include "Domain/ProcessSnapshot.h"
 
 #include <array>
-
-struct ImFont; // Forward declaration for TextSizeCache
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +14,8 @@ struct ImFont; // Forward declaration for TextSizeCache
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+struct ImFont; // Forward declaration for TextSizeCache
 
 namespace App
 {
@@ -115,10 +115,11 @@ class ProcessesPanel : public Panel
         std::array<float, processColumnCount()> columnHeaderWidths{};
 
         // Unit string widths for decimal-aligned rendering
-        float unitPercentWidth = 0.0F;     // "W" placeholder
-        float unitBytesWidth = 0.0F;       // " WW" placeholder
-        float unitBytesPerSecWidth = 0.0F; // " WW/W" placeholder
-        float unitPowerWidth = 0.0F;       // " WW" placeholder
+        // (W used as representative wide character for consistent width measurement)
+        float unitPercentWidth = 0.0F;     // "%"
+        float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
+        float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.
+        float unitPowerWidth = 0.0F;       // " W", " mW", etc.
         float singleDigitWidth = 0.0F;     // "0" for decimal part
 
         // Static label widths

@@ -458,17 +458,36 @@ TEST(FormatTest, SplitPercentForAlignmentProducesParts)
     const auto parts = UI::Format::splitPercentForAlignment(75.5);
 
     EXPECT_FALSE(parts.wholePart.empty());
-    EXPECT_FALSE(parts.unitPart.empty());
-    EXPECT_TRUE(parts.unitPart.contains('%'));
+    EXPECT_EQ(parts.wholePart, "75.");
+    EXPECT_EQ(parts.decimalDigit, '5');
+    EXPECT_EQ(parts.unitPart, "%");
 }
 
-TEST(FormatTest, SplitPercentForAlignmentHandlesZeroDecimals)
+TEST(FormatTest, SplitPercentForAlignmentHandlesRounding)
 {
-    const auto parts = UI::Format::splitPercentForAlignment(75.0, 0);
+    // Test rounding: 75.95 should round to 76.0
+    const auto parts = UI::Format::splitPercentForAlignment(75.95);
 
-    EXPECT_FALSE(parts.wholePart.empty());
-    EXPECT_TRUE(parts.decimalPart.empty());
-    EXPECT_TRUE(parts.unitPart.contains('%'));
+    EXPECT_EQ(parts.wholePart, "76.");
+    EXPECT_EQ(parts.decimalDigit, '0');
+    EXPECT_EQ(parts.unitPart, "%");
+}
+
+TEST(FormatTest, SplitPercentForAlignmentHandlesBoundaries)
+{
+    // Test 0%
+    const auto zero = UI::Format::splitPercentForAlignment(0.0);
+    EXPECT_EQ(zero.wholePart, "0.");
+    EXPECT_EQ(zero.decimalDigit, '0');
+
+    // Test 100%
+    const auto hundred = UI::Format::splitPercentForAlignment(100.0);
+    EXPECT_EQ(hundred.wholePart, "100.");
+    EXPECT_EQ(hundred.decimalDigit, '0');
+
+    // Test clamping above 100
+    const auto over = UI::Format::splitPercentForAlignment(150.0);
+    EXPECT_EQ(over.wholePart, "100.");
 }
 
 // =============================================================================

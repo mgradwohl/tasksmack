@@ -151,6 +151,38 @@ void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts, float ca
     }
 }
 
+/// Optimized overload for AlignedPercentParts (zero-allocation percent rendering)
+/// Uses string_view for whole part and single char for decimal digit.
+void renderDecimalAligned(const UI::Format::AlignedPercentParts& parts, float cachedUnitWidth, float cachedDecimalWidth)
+{
+    const float cellStartX = ImGui::GetCursorPosX();
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float cellEndX = cellStartX + availWidth;
+
+    // Calculate region boundaries (working right to left)
+    const float unitRegionStart = cellEndX - cachedUnitWidth;
+    const float decimalRegionStart = unitRegionStart - cachedDecimalWidth;
+
+    // Calculate whole part positioning (this must be computed per-value)
+    const float wholeWidth = ImGui::CalcTextSize(parts.wholePart.data(), parts.wholePart.data() + parts.wholePart.size()).x;
+    const float wholeStartX = decimalRegionStart - wholeWidth;
+
+    // Render whole part (right-aligned, ending at decimal region)
+    ImGui::SetCursorPosX(std::max(cellStartX, wholeStartX));
+    ImGui::TextUnformatted(parts.wholePart.data(), parts.wholePart.data() + parts.wholePart.size());
+
+    // Render decimal digit (single char, fixed position)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(decimalRegionStart);
+    const char decimalStr[2] = {parts.decimalDigit, '\0'};
+    ImGui::TextUnformatted(decimalStr);
+
+    // Render unit part (fixed "%" - constexpr string_view)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(unitRegionStart);
+    ImGui::TextUnformatted(parts.unitPart.data(), parts.unitPart.data() + parts.unitPart.size());
+}
+
 } // namespace
 
 // ============================================================================
@@ -159,7 +191,8 @@ void renderDecimalAligned(const UI::Format::AlignedNumericParts& parts, float ca
 
 bool ProcessesPanel::TextSizeCache::isValid() const noexcept
 {
-    return fontPtr == ImGui::GetFont();
+    // Cache invalid if not yet populated or if font has changed
+    return fontPtr != nullptr && fontPtr == ImGui::GetFont();
 }
 
 void ProcessesPanel::TextSizeCache::populate()
@@ -846,14 +879,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::CpuPercent:
         {
             const auto parts = UI::Format::splitPercentForAlignment(proc.cpuPercent);
-            renderDecimalAligned(parts, unitPercentW, singleDigitW, true);
+            renderDecimalAligned(parts, unitPercentW, singleDigitW);
             break;
         }
 
         case ProcessColumn::MemPercent:
         {
             const auto parts = UI::Format::splitPercentForAlignment(proc.memoryPercent);
-            renderDecimalAligned(parts, unitPercentW, singleDigitW, true);
+            renderDecimalAligned(parts, unitPercentW, singleDigitW);
             break;
         }
 
@@ -1093,7 +1126,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.gpuUtilPercent > 0.0)
             {
                 const auto parts = UI::Format::splitPercentForAlignment(proc.gpuUtilPercent);
-                renderDecimalAligned(parts, unitPercentW, singleDigitW, true);
+                renderDecimalAligned(parts, unitPercentW, singleDigitW);
             }
             else
             {

@@ -308,6 +308,18 @@ struct AlignedNumericParts
     std::string unitPart;    ///< Unit suffix like " MB" or "%" (fixed width, left-aligned)
 };
 
+/// Zero-allocation version of AlignedNumericParts for high-frequency percent rendering.
+/// Uses a fixed internal buffer and returns string_views into it.
+/// Buffer is sized for percentages 0-100 with one decimal: max "100." = 4 chars + null.
+struct AlignedPercentParts
+{
+    static constexpr std::size_t BUFFER_SIZE = 8;     // "100." + margin
+    std::array<char, BUFFER_SIZE> buffer{};           // Internal storage
+    std::string_view wholePart;                       // View into buffer: "XX." or "X."
+    char decimalDigit = '0';                          // Single char: '0'-'9'
+    static constexpr std::string_view unitPart = "%"; // Always "%" for percentages
+};
+
 /// Split a byte value into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitBytesForAlignment(double bytes, ByteUnit unit) -> AlignedNumericParts
 {
@@ -352,36 +364,53 @@ struct AlignedNumericParts
 }
 
 /// Split a percentage value (0-100) into parts for decimal-aligned rendering
-[[nodiscard]] inline auto splitPercentForAlignment(double percent, int decimals = 1) -> AlignedNumericParts
+/// Zero-allocation fast path for percentages in the 0-100 range (typical CPU%, MEM%)
+[[nodiscard]] inline auto splitPercentForAlignment(double percent, [[maybe_unused]] int decimals = 1) -> AlignedPercentParts
 {
-    auto wholeValue = static_cast<std::int64_t>(percent);
+    // Clamp to valid percentage range
+    percent = std::clamp(percent, 0.0, 100.0);
 
-    AlignedNumericParts parts;
+    auto wholeValue = static_cast<int>(percent);
 
-    if (decimals > 0)
+    // Extract fractional part and round to 1 decimal place
+    const double fractional = percent - static_cast<double>(wholeValue);
+    auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+
+    // Handle rounding overflow (e.g., 99.95 -> fractional rounds to 10)
+    if (fractionalDigit >= 10)
     {
-        // Extract fractional part and round to 1 decimal place
-        const double fractional = std::abs(percent - static_cast<double>(wholeValue));
-        auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+        fractionalDigit = 0;
+        wholeValue++;
+    }
 
-        // Handle rounding overflow (e.g., 0.95 -> 10 -> carry to whole part)
-        if (fractionalDigit >= 10)
-        {
-            fractionalDigit = 0;
-            wholeValue += (percent >= 0) ? 1 : -1;
-        }
+    AlignedPercentParts parts;
 
-        // Whole part includes decimal point
-        parts.wholePart = std::format("{:L}.", wholeValue);
-        // Single digit for fractional part
-        parts.decimalPart = std::format("{}", fractionalDigit);
+    // Format whole part directly into buffer (no locale, no allocation)
+    // Max value is 100, so at most 3 digits + decimal point + null = 5 chars
+    char* ptr = parts.buffer.data();
+
+    if (wholeValue >= 100)
+    {
+        *ptr++ = '1';
+        *ptr++ = '0';
+        *ptr++ = '0';
+    }
+    else if (wholeValue >= 10)
+    {
+        *ptr++ = static_cast<char>('0' + (wholeValue / 10));
+        *ptr++ = static_cast<char>('0' + (wholeValue % 10));
     }
     else
     {
-        parts.wholePart = std::format("{:L}", wholeValue);
+        *ptr++ = static_cast<char>('0' + wholeValue);
     }
+    *ptr++ = '.'; // Decimal point
+    *ptr = '\0';  // Null terminate
 
-    parts.unitPart = "%";
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    parts.wholePart = std::string_view(parts.buffer.data(), static_cast<std::size_t>(ptr - parts.buffer.data()));
+    parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
+
     return parts;
 }
 
