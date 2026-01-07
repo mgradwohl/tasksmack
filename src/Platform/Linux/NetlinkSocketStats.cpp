@@ -299,9 +299,9 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     const auto now = std::chrono::steady_clock::now();
     const auto cacheAge = (now - m_LastQueryTime);
 
-    if ((m_CacheTtl.count() > 0) && !m_CachedResults.empty() && (cacheAge < m_CacheTtl))
+    if ((m_CacheTtl.count() > 0) && (m_LastQueryTime != std::chrono::steady_clock::time_point{}) && (cacheAge < m_CacheTtl))
     {
-        // Cache hit - return cached results
+        // Cache hit - return cached results (may be empty if system has no sockets)
         return m_CachedResults;
     }
 

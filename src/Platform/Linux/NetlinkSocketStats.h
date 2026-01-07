@@ -75,7 +75,7 @@ class NetlinkSocketStats
   private:
     int m_Socket = -1;                // Netlink socket file descriptor
     bool m_Available = false;         // Whether INET_DIAG is functional
-    mutable std::mutex m_SocketMutex; // Protects socket operations for thread safety
+    mutable std::mutex m_SocketMutex; // Protects socket operations and cache state for thread safety
 
     // Cache state
     std::chrono::milliseconds m_CacheTtl;                    // Cache time-to-live
