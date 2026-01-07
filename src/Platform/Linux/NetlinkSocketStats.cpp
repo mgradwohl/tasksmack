@@ -316,13 +316,17 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     // Note: UDP may have limited byte counter support
     querySockets(IPPROTO_UDP, m_CachedResults);
 
-    // Only update cache state if caching is enabled (TTL > 0)
-    // Skip cache updates when TTL is zero to avoid storing data that won't be used
+    // Update timestamp immediately after kernel query to minimize race window.
+    // Only update cache state if caching is enabled (TTL > 0).
+    // Skip cache updates when TTL is zero to avoid storing data that won't be used.
     if (m_CacheTtl.count() > 0)
     {
         m_LastQueryTime = now;
     }
 
+    // Note: Returns a copy of the cached vector. For typical socket counts (<1000),
+    // the copy cost is negligible (~microseconds). If this becomes a bottleneck,
+    // consider returning a shared_ptr or restructuring to return by const reference.
     return m_CachedResults;
 }
 

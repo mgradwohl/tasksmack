@@ -6,10 +6,10 @@
 
 #include "UI/Format.h"
 
+#include <benchmark/benchmark.h>
+
 #include <random>
 #include <vector>
-
-#include <benchmark/benchmark.h>
 
 namespace
 {

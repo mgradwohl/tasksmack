@@ -299,8 +299,10 @@ TEST(NetlinkSocketStatsCacheTest, InvalidateCacheWorks)
     // Invalidate cache
     stats.invalidateCache();
 
-    // Next query should hit the kernel again (we can't easily verify this,
-    // but we can verify it doesn't crash and returns valid results)
+    // Next query should hit the kernel again. Direct verification would require
+    // mocking kernel calls, but cache behavior is thoroughly tested by
+    // CachedQueryReturnsSameResults, CacheInvalidationAfterTTLExpiry, and
+    // EmptyResultsAreCached tests. Here we verify invalidateCache() doesn't break.
     auto result2 = stats.queryAllSockets();
 
     // Both should return valid results (may differ if sockets changed)

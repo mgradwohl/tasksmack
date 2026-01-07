@@ -7,9 +7,9 @@
 #include "Domain/History.h"
 #include "MemoryTracker.h"
 
-#include <random>
-
 #include <benchmark/benchmark.h>
+
+#include <random>
 
 namespace
 {
