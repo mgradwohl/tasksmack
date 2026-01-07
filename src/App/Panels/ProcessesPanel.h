@@ -142,10 +142,10 @@ class ProcessesPanel : public Panel
         }
     };
 
-    mutable TextSizeCache m_TextSizeCache;
+    TextSizeCache m_TextSizeCache;
 
     /// Ensure text size cache is populated for current font
-    void ensureTextSizeCacheValid() const;
+    void ensureTextSizeCacheValid();
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;

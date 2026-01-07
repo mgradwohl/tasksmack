@@ -27,6 +27,10 @@ namespace UI::Format
 /// Get the locale's thousand separator character, cached per-thread for performance.
 /// Uses the default C++ locale (which respects LC_* environment variables when imbued).
 /// Returns '\0' if the locale has no thousand separator (C locale has empty grouping).
+///
+/// @note The separator is cached on first access per thread and will NOT update if the
+///       global locale changes at runtime. This is acceptable since TaskSmack sets the
+///       locale once at startup and does not change it afterwards.
 [[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
 {
     // thread_local for thread safety, lazy-init via lambda for efficiency
@@ -418,8 +422,10 @@ struct AlignedBytesParts
     // Get locale separator ('\0' means no separators, e.g., C locale)
     const char sep = getLocaleThousandSep();
 
-    // Max buffer usage: 20 digits + 6 separators + 1 decimal + 1 null = 28 < BUFFER_SIZE(32)
-    // Runtime clamp provides defense-in-depth for release builds where assert is compiled out
+    // Max buffer usage (by design): at most 20 digits + 6 separators + 1 decimal + 1 null = 28 < BUFFER_SIZE(32)
+    // Invariant: numDigits must never exceed 20; if it does, that indicates a logic bug upstream.
+    // The assert enforces this invariant in debug builds, while the runtime clamp provides
+    // defense-in-depth in release builds (where asserts are disabled) to prevent buffer overflow.
     assert(numDigits <= 20 && "Unexpected number of digits in byte value");
     const std::size_t safeNumDigits = std::min(numDigits, std::size_t{20});
 

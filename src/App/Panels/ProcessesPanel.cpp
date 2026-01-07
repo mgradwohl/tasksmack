@@ -253,7 +253,7 @@ void ProcessesPanel::TextSizeCache::populate()
     listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
 }
 
-void ProcessesPanel::ensureTextSizeCacheValid() const
+void ProcessesPanel::ensureTextSizeCacheValid()
 {
     if (!m_TextSizeCache.isValid())
     {
