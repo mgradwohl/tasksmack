@@ -5,6 +5,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+struct ImFont; // Forward declaration for TextSizeCache
 
 namespace App
 {
@@ -103,6 +106,46 @@ class ProcessesPanel : public Panel
 
     // Cached tree structure (rebuilt on refresh timer in onUpdate)
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
+
+    /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
+    /// Invalidated when font changes (detected by comparing ImFont pointer).
+    struct TextSizeCache
+    {
+        // Column header widths (indexed by ProcessColumn enum)
+        std::array<float, processColumnCount()> columnHeaderWidths{};
+
+        // Unit string widths for decimal-aligned rendering
+        // (measured from actual rendered unit strings for accurate alignment)
+        float unitPercentWidth = 0.0F;     // "%"
+        float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
+        float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.
+        float unitPowerWidth = 0.0F;       // " W", " mW", etc.
+        float singleDigitWidth = 0.0F;     // "0" for decimal part
+
+        // Static label widths
+        float treeViewLabelWidth = 0.0F;
+        float listViewLabelWidth = 0.0F;
+
+        // Font pointer used when cache was populated (for invalidation)
+        const ImFont* fontPtr = nullptr;
+
+        /// Check if cache is valid for current font
+        [[nodiscard]] bool isValid() const noexcept;
+
+        /// Populate cache with current font measurements
+        void populate();
+
+        /// Get column header width (returns 0 if cache invalid)
+        [[nodiscard]] float getHeaderWidth(ProcessColumn col) const noexcept
+        {
+            return columnHeaderWidths[toIndex(col)];
+        }
+    };
+
+    TextSizeCache m_TextSizeCache;
+
+    /// Ensure text size cache is populated for current font
+    void ensureTextSizeCacheValid();
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
