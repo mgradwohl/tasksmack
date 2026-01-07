@@ -105,30 +105,11 @@ static void BM_NetlinkSocketStats_FullPipeline(benchmark::State& state)
 }
 BENCHMARK(BM_NetlinkSocketStats_FullPipeline)->Unit(benchmark::kMillisecond);
 
-// Benchmark with different cache TTL values to find optimal balance
-static void BM_NetlinkSocketStats_CacheTTL(benchmark::State& state)
-{
-    const auto ttlMs = std::chrono::milliseconds(state.range(0));
-    Platform::NetlinkSocketStats stats(ttlMs);
-
-    if (!stats.isAvailable())
-    {
-        state.SkipWithError("Netlink INET_DIAG not available");
-        return;
-    }
-
-    // Simulate refresh pattern (query, wait, query, wait, ...)
-    // The benchmark framework handles timing, we just do the work
-    for (auto _ : state)
-    {
-        auto sockets = stats.queryAllSockets();
-        benchmark::DoNotOptimize(sockets.data());
-    }
-
-    state.counters["ttl_ms"] = benchmark::Counter(static_cast<double>(ttlMs.count()));
-}
-// Test different TTL values: 0 (no cache), 100ms, 250ms, 500ms (default), 1000ms
-BENCHMARK(BM_NetlinkSocketStats_CacheTTL)->Arg(0)->Arg(100)->Arg(250)->Arg(500)->Arg(1000);
+// Note: A benchmark comparing different cache TTL values was considered but not included
+// because Google Benchmark's tight iteration loop doesn't produce meaningful time-based
+// cache behavior differences - after the first query, all subsequent queries hit the cache
+// regardless of TTL value (100ms, 250ms, etc.). Use BM_QueryCached vs BM_QueryUncached
+// to measure cache hit vs miss performance instead.
 
 } // namespace
 

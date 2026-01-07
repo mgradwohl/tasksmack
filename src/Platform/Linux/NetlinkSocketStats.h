@@ -3,8 +3,6 @@
 // Only compile on Linux with required headers
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
-#include "Domain/SamplingConfig.h"
-
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -14,8 +12,9 @@
 namespace Platform
 {
 
-/// Default TTL for socket stats cache (from SamplingConfig.h)
-inline constexpr auto DEFAULT_SOCKET_STATS_CACHE_TTL = std::chrono::milliseconds(Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS);
+/// Default TTL for socket stats cache (500ms balances freshness vs. CPU cost)
+/// Network stats don't need to be as fresh as CPU/memory metrics.
+inline constexpr auto DEFAULT_SOCKET_STATS_CACHE_TTL = std::chrono::milliseconds(500);
 
 /// Per-socket network statistics from Netlink INET_DIAG
 struct SocketStats

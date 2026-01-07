@@ -23,11 +23,6 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 // Link speed rarely changes (only on cable replug or driver reload)
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 
-// Cache TTL for socket stats (milliseconds)
-// Network stats don't need to be as fresh as CPU/memory metrics.
-// 500ms balances freshness vs. CPU cost (~10% of refresh cycle without caching).
-inline constexpr int64_t SOCKET_STATS_CACHE_TTL_MS = 500;
-
 template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value)
 {
     return std::clamp(value, static_cast<T>(REFRESH_INTERVAL_MIN_MS), static_cast<T>(REFRESH_INTERVAL_MAX_MS));
