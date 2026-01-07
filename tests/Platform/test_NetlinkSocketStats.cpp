@@ -255,7 +255,7 @@ TEST(AggregateByPidTest, LargeByteCountersAreHandled)
     EXPECT_EQ(result[100].second, 0x7FFFFFFFFFFFFFFFULL);
 }
 
-// ========== Cache Tests ==========
+// ----- Cache Tests -----
 
 TEST(NetlinkSocketStatsCacheTest, DefaultConstructorUsesDEFAULT_SOCKET_STATS_CACHE_TTL)
 {
@@ -306,8 +306,7 @@ TEST(NetlinkSocketStatsCacheTest, InvalidateCacheWorks)
     auto result2 = stats.queryAllSockets();
 
     // Both should return valid results (may differ if sockets changed)
-    // The test mainly verifies invalidateCache() doesn't break anything
-    SUCCEED() << "invalidateCache() completed without error";
+    // The test passes implicitly if no exception is thrown
 }
 
 TEST(NetlinkSocketStatsCacheTest, CachedQueryReturnsSameResults)
@@ -352,9 +351,8 @@ TEST(NetlinkSocketStatsCacheTest, UncachedQueryBypassesCache)
     // Uncached query should always hit kernel
     auto uncached = stats.queryAllSocketsUncached();
 
-    // Both should return valid results
-    // Note: Results may differ slightly if sockets changed between calls
-    SUCCEED() << "queryAllSocketsUncached() returned " << uncached.size() << " sockets";
+    // Both should return valid results (may differ slightly if sockets changed)
+    // Test passes implicitly if no exception is thrown
 }
 
 TEST(NetlinkSocketStatsCacheTest, CacheInvalidationAfterTTLExpiry)
@@ -384,8 +382,6 @@ TEST(NetlinkSocketStatsCacheTest, CacheInvalidationAfterTTLExpiry)
     {
         EXPECT_GE(sock.inode, 0UL);
     }
-
-    SUCCEED() << "Cache TTL expiry works correctly";
 }
 
 TEST(NetlinkSocketStatsCacheTest, EmptyResultsAreCached)
@@ -412,8 +408,6 @@ TEST(NetlinkSocketStatsCacheTest, EmptyResultsAreCached)
 
     // Third query should be a cache hit (same as result2)
     EXPECT_EQ(result2.size(), result3.size());
-
-    SUCCEED() << "Cache handles results correctly (including potential empty results)";
 }
 
 // ========== Integration Tests ==========

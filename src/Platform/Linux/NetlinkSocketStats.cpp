@@ -299,7 +299,7 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     // Note: Timestamp is intentionally captured AFTER acquiring the lock to ensure
     // consistent cache behavior under concurrent access.
     const auto now = std::chrono::steady_clock::now();
-    const auto cacheAge = (now - m_LastQueryTime);
+    const auto cacheAge = now - m_LastQueryTime;
 
     if ((m_CacheTtl.count() > 0) && (m_LastQueryTime != std::chrono::steady_clock::time_point{}) && (cacheAge < m_CacheTtl))
     {
