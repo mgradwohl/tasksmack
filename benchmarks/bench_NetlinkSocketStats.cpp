@@ -8,9 +8,9 @@
 
 #include "Platform/Linux/NetlinkSocketStats.h"
 
-#include <chrono>
-
 #include <benchmark/benchmark.h>
+
+#include <chrono>
 
 namespace
 {
