@@ -3,7 +3,6 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -38,8 +37,8 @@ class DXGIGPUProbe : public IGPUProbe
     bool initialize();
     void cleanup();
 
-    [[nodiscard]] std::string wcharToUtf8(const wchar_t* wstr) const;
-    [[nodiscard]] bool isIntegratedGPU(IDXGIAdapter1* adapter) const;
+    [[nodiscard]] static std::string wcharToUtf8(const wchar_t* wstr);
+    [[nodiscard]] static bool isIntegratedGPU(IDXGIAdapter1* adapter);
 
     IDXGIFactory1* m_Factory{nullptr};
     bool m_Initialized{false};

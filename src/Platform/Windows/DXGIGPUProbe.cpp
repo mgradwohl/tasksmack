@@ -18,7 +18,6 @@
 #pragma clang diagnostic pop
 // clang-format on
 
-#include <array>
 #include <cstring>
 #include <format>
 
@@ -85,7 +84,7 @@ void DXGIGPUProbe::cleanup()
     }
 }
 
-std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr) const
+std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr)
 {
     if (wstr == nullptr || wstr[0] == L'\0')
     {
@@ -105,7 +104,7 @@ std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr) const
     return result;
 }
 
-bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter) const
+bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
 {
     if (adapter == nullptr)
     {

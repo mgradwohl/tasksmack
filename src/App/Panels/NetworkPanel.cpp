@@ -56,12 +56,15 @@ using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 constexpr int NOW_BAR_COLUMNS = 2;
 constexpr float INTERFACE_COMBO_WIDTH = 250.0F;
 
+// Type alias for interface snapshots from SystemSnapshot
+using InterfaceSnapshot = Domain::SystemSnapshot::InterfaceSnapshot;
+
 /// Returns indices into the interfaces vector, sorted for useful display:
 /// 1. Up interfaces first
 /// 2. Interfaces with activity (TX+RX > 0) first
 /// 3. Higher link speed first
 /// 4. Alphabetically by display name
-[[nodiscard]] std::vector<std::size_t> getSortedInterfaceIndices(const std::vector<Domain::NetworkInterfaceSnapshot>& interfaces)
+[[nodiscard]] std::vector<std::size_t> getSortedInterfaceIndices(const std::vector<InterfaceSnapshot>& interfaces)
 {
     std::vector<std::size_t> indices(interfaces.size());
     std::iota(indices.begin(), indices.end(), 0);
@@ -108,7 +111,7 @@ constexpr float INTERFACE_COMBO_WIDTH = 250.0F;
 }
 
 /// Check if an interface is likely a virtual/loopback interface that users rarely care about
-[[nodiscard]] bool isVirtualInterface(const Domain::NetworkInterfaceSnapshot& iface)
+[[nodiscard]] bool isVirtualInterface(const InterfaceSnapshot& iface)
 {
     const auto& name = iface.name;
 
@@ -183,7 +186,7 @@ constexpr float INTERFACE_COMBO_WIDTH = 250.0F;
 }
 
 /// Check if an interface is Bluetooth (usually not useful for throughput monitoring)
-[[nodiscard]] bool isBluetoothInterface(const Domain::NetworkInterfaceSnapshot& iface)
+[[nodiscard]] bool isBluetoothInterface(const InterfaceSnapshot& iface)
 {
     const auto& name = iface.name;
     const auto& displayName = iface.displayName;
@@ -739,7 +742,7 @@ void NetworkPanel::renderInterfaceStatus()
             // Type icon column
             ImGui::TableNextColumn();
             const char* typeIcon = ICON_FA_NETWORK_WIRED; // Default: wired/ethernet
-            ImVec4 iconColor = theme.scheme().text;
+            ImVec4 iconColor = theme.scheme().textPrimary;
 
             // Determine interface type by name pattern
             const auto& name = iface.name;
@@ -798,7 +801,7 @@ void NetworkPanel::renderInterfaceStatus()
                 }
                 else
                 {
-                    ImGui::Text("%lu Mbps", iface.linkSpeedMbps);
+                    ImGui::Text("%llu Mbps", iface.linkSpeedMbps);
                 }
             }
             else

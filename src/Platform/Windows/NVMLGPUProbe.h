@@ -4,7 +4,6 @@
 #include "Platform/IGPUProbe.h"
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -49,7 +48,7 @@ class NVMLGPUProbe : public IGPUProbe
     bool initializeNVML();
     void shutdownNVML();
 
-    [[nodiscard]] std::string getNVMLErrorString(nvmlReturn_t result) const;
+    [[nodiscard]] static std::string getNVMLErrorString(nvmlReturn_t result);
 
     // NVML function pointers (dynamically loaded)
     struct NVMLFunctions

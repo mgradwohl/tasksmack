@@ -13,7 +13,6 @@
 // clang-format on
 
 #include <array>
-#include <cstring>
 #include <format>
 
 namespace Platform
@@ -183,7 +182,7 @@ void NVMLGPUProbe::shutdownNVML()
     m_Initialized = false;
 }
 
-std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result) const
+std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
 {
     switch (result)
     {
