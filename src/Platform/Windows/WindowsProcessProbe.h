@@ -56,10 +56,13 @@ class WindowsProcessProbe : public IProcessProbe
     bool m_HasNetworkCounters = false;
     mutable uint64_t m_SyntheticEnergy = 0;
 
+    // EStats function signatures
     using GetPerTcpConnectionEStatsFn =
         DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+    using SetPerTcpConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
 
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
+    SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
 
     /// Get detailed info for a single process
     [[nodiscard]] static bool getProcessDetails(uint32_t pid, ProcessCounters& counters);

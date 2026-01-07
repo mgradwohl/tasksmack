@@ -195,14 +195,14 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                gpus.push_back(std::move(info));
-
                 spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - Driver: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
                               info.driverVersion,
                               info.isIntegrated);
+
+                gpus.push_back(std::move(info));
             }
         }
 

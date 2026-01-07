@@ -1,6 +1,6 @@
 #include "ThemeLoader.h"
 
-#include "UI/Numeric.h"
+#include "UI/Format.h"
 
 #include <spdlog/spdlog.h>
 
@@ -72,10 +72,10 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     }
 
     constexpr float INV_MAX_COMPONENT = 1.0F / 255.0F;
-    return ImVec4(UI::Numeric::toFloatNarrow(r) * INV_MAX_COMPONENT,
-                  UI::Numeric::toFloatNarrow(g) * INV_MAX_COMPONENT,
-                  UI::Numeric::toFloatNarrow(b) * INV_MAX_COMPONENT,
-                  UI::Numeric::toFloatNarrow(a) * INV_MAX_COMPONENT);
+    return ImVec4(UI::Format::toFloatNarrow(r) * INV_MAX_COMPONENT,
+                  UI::Format::toFloatNarrow(g) * INV_MAX_COMPONENT,
+                  UI::Format::toFloatNarrow(b) * INV_MAX_COMPONENT,
+                  UI::Format::toFloatNarrow(a) * INV_MAX_COMPONENT);
 }
 
 namespace

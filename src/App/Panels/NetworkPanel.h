@@ -1,3 +1,7 @@
+// =============================================================================
+// DEPRECATED: See NetworkPanel.cpp for details.
+// =============================================================================
+
 #pragma once
 
 #include "App/Panel.h"
@@ -56,7 +60,7 @@ class NetworkPanel : public Panel
     void renderCumulativeTotals() const;
 
     /// Render interface status information.
-    void renderInterfaceStatus() const;
+    void renderInterfaceStatus();
 
     // Data model
     std::unique_ptr<Domain::SystemModel> m_SystemModel;
@@ -70,6 +74,10 @@ class NetworkPanel : public Panel
 
     // Selected interface (-1 = All/Total)
     int m_SelectedInterface = -1;
+
+    // Interface filtering options
+    bool m_ShowAllInterfaces = false; // When false, hide virtual/bluetooth interfaces
+    bool m_ShowDownInterfaces = true; // Whether to show interfaces that are down
 
     // Cumulative totals (tracked since panel attached)
     uint64_t m_CumulativeRxBytes = 0;

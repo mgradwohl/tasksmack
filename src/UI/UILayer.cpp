@@ -20,7 +20,6 @@
 #include <implot.h>
 
 #include <array>
-#include <cstdlib>
 #include <filesystem>
 
 namespace

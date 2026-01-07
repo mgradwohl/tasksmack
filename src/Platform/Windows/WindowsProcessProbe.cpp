@@ -27,7 +27,6 @@
 #include "WinString.h"
 #include "WindowsProcAddress.h"
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -680,25 +679,26 @@ bool WindowsProcessProbe::detectNetworkCounters()
     }
 
     m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");
+    m_SetPerTcpConnectionEStats = Windows::getProcAddress<SetPerTcpConnectionEStatsFn>(iphlp, "SetPerTcpConnectionEStats");
 
-    if (m_GetPerTcpConnectionEStats == nullptr)
+    if (m_GetPerTcpConnectionEStats == nullptr || m_SetPerTcpConnectionEStats == nullptr)
     {
         return false;
     }
 
-    // EStats requires elevated privileges on some systems; attempt a no-op call to detect access issues.
-    // Use a minimal row to probe support and ignore failure codes other than access denied/not supported.
-    if (m_GetPerTcpConnectionEStats != nullptr)
+    // TCP EStats requires elevated privileges to enable data collection.
+    // Test with a dummy row to detect if we have sufficient privileges.
+    MIB_TCPROW dummy{};
+    TCP_ESTATS_DATA_RW_v0 rw{};
+    rw.EnableCollection = TRUE;
+    const DWORD status = m_SetPerTcpConnectionEStats(&dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
+
+    // Access denied or not supported means we can't use EStats
+    // ERROR_NOT_FOUND is expected for the dummy row and is OK
+    if (status == ERROR_ACCESS_DENIED || status == ERROR_NOT_SUPPORTED)
     {
-        MIB_TCPROW dummy{};
-        TCP_ESTATS_DATA_RW_v0 rw{};
-        rw.EnableCollection = TRUE;
-        const DWORD status = m_GetPerTcpConnectionEStats(
-            &dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), nullptr, 0, 0, nullptr, 0, 0);
-        if (status == ERROR_ACCESS_DENIED || status == ERROR_NOT_SUPPORTED)
-        {
-            return false;
-        }
+        spdlog::debug("Per-process network counters not available (EStats requires administrator privileges)");
+        return false;
     }
 
     return true;
@@ -740,9 +740,26 @@ void WindowsProcessProbe::collectTcp4ByteCounts(std::unordered_map<uint32_t, std
     }
 
     const auto* table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(buffer.data());
+
+    std::size_t enabledCount = 0;
+    std::size_t readSuccessCount = 0;
+    std::size_t hasDataCount = 0;
+    std::size_t garbageCount = 0;
+    std::size_t skippedStateCount = 0;
+
     for (DWORD i = 0; i < table->dwNumEntries; ++i)
     {
         const MIB_TCPROW_OWNER_PID& ownerRow = table->table[i];
+
+        // Only process ESTABLISHED connections (state 5) - these are actively transferring data
+        // Skip LISTEN, TIME_WAIT, CLOSE_WAIT, etc. as they don't have meaningful byte counters
+        constexpr DWORD MIB_TCP_STATE_ESTAB = 5;
+        if (ownerRow.dwState != MIB_TCP_STATE_ESTAB)
+        {
+            ++skippedStateCount;
+            continue;
+        }
+
         MIB_TCPROW ownerRowBase{};
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - Windows API requires union access
         ownerRowBase.dwState = ownerRow.dwState;
@@ -751,11 +768,20 @@ void WindowsProcessProbe::collectTcp4ByteCounts(std::unordered_map<uint32_t, std
         ownerRowBase.dwRemoteAddr = ownerRow.dwRemoteAddr;
         ownerRowBase.dwRemotePort = ownerRow.dwRemotePort;
 
-        TCP_ESTATS_DATA_RW_v0 rw{};
-        rw.EnableCollection = TRUE;
-        (void) m_GetPerTcpConnectionEStats(
-            &ownerRowBase, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), nullptr, 0, 0, nullptr, 0, 0);
+        // Try to enable EStats collection (requires admin, may fail)
+        if (m_SetPerTcpConnectionEStats != nullptr)
+        {
+            TCP_ESTATS_DATA_RW_v0 rw{};
+            rw.EnableCollection = TRUE;
+            const DWORD enableStatus =
+                m_SetPerTcpConnectionEStats(&ownerRowBase, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
+            if (enableStatus == NO_ERROR)
+            {
+                ++enabledCount;
+            }
+        }
 
+        // Read the stats (may work even if enable failed, if another process enabled it)
         TCP_ESTATS_DATA_ROD_v0 rod{};
         const DWORD estats = m_GetPerTcpConnectionEStats(
             &ownerRowBase, TcpConnectionEstatsData, nullptr, 0, 0, nullptr, 0, 0, reinterpret_cast<PUCHAR>(&rod), 0, sizeof(rod));
@@ -765,9 +791,37 @@ void WindowsProcessProbe::collectTcp4ByteCounts(std::unordered_map<uint32_t, std
             continue;
         }
 
+        ++readSuccessCount;
+
+        // Sanity check: reject garbage values (> 1 TB is clearly wrong for a single connection)
+        constexpr std::uint64_t MAX_SANE_BYTES = 1'000'000'000'000ULL; // 1 TB
+        if (rod.DataBytesOut > MAX_SANE_BYTES || rod.DataBytesIn > MAX_SANE_BYTES)
+        {
+            ++garbageCount;
+            continue; // Skip this connection - data is garbage/uninitialized
+        }
+
+        if (rod.DataBytesOut > 0 || rod.DataBytesIn > 0)
+        {
+            ++hasDataCount;
+        }
+
         auto& agg = perPid[ownerRow.dwOwningPid];
         agg.first += rod.DataBytesOut;
         agg.second += rod.DataBytesIn;
+    }
+
+    // Log diagnostics periodically (once per ~60 samples)
+    static std::size_t sampleCount = 0;
+    if (++sampleCount % 60 == 1)
+    {
+        spdlog::debug("TCP EStats: {} total, {} established, {} enabled, {} read OK, {} have data, {} garbage",
+                      table->dwNumEntries,
+                      table->dwNumEntries - skippedStateCount,
+                      enabledCount,
+                      readSuccessCount,
+                      hasDataCount,
+                      garbageCount);
     }
 }
 

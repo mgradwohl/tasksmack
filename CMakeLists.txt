@@ -463,6 +463,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
+    src/App/Panels/NetworkSection.cpp
+    src/App/Panels/GpuSection.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp

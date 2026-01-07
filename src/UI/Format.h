@@ -1,12 +1,14 @@
 #pragma once
 
+#include "Domain/Numeric.h"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <format>
@@ -771,6 +773,41 @@ struct AlignedBytesParts
     }
 
     return std::format("{:.2Lf} µW", static_cast<long double>(watts) * 1'000'000.0L);
+}
+
+// ============================================================================
+// UI Numeric Utilities (for ImGui/ImPlot interop)
+// ============================================================================
+
+/// Clamp a percentage value to [0, 100]
+[[nodiscard]] constexpr auto clampPercent(double percent) noexcept -> double
+{
+    return std::clamp(percent, 0.0, 100.0);
+}
+
+/// Clamp a percentage to [0, 100] and convert to [0, 1] range for ImGui
+[[nodiscard]] constexpr auto percent01(double percent) noexcept -> double
+{
+    return clampPercent(percent) / 100.0;
+}
+
+/// Safe narrowing conversion for ImPlot series counts (size_t → int)
+[[nodiscard]] constexpr auto checkedCount(std::size_t value) noexcept -> int
+{
+    return Domain::Numeric::narrowOr<int>(value, std::numeric_limits<int>::max());
+}
+
+/// Narrowing conversion to float for ImGui/ImPlot APIs that require float
+[[nodiscard]] constexpr auto toFloatNarrow(double value) noexcept -> float
+{
+    return static_cast<float>(value);
+}
+
+/// Narrowing conversion to float for integral types
+template<std::integral T>
+[[nodiscard]] constexpr auto toFloatNarrow(T value) noexcept -> float
+{
+    return static_cast<float>(value);
 }
 
 } // namespace UI::Format

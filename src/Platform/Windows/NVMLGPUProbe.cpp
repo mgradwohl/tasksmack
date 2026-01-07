@@ -295,9 +295,9 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
         info.deviceIndex = i;
 
-        gpus.push_back(std::move(info));
-
         spdlog::debug("NVMLGPUProbe: Enumerated NVIDIA GPU {}: {}", i, info.name);
+
+        gpus.push_back(std::move(info));
     }
 
     spdlog::info("NVMLGPUProbe: Enumerated {} NVIDIA GPU(s)", gpus.size());
