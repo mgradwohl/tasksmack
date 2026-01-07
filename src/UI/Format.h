@@ -25,7 +25,7 @@ namespace UI::Format
 
 /// Get the locale's thousand separator character, cached per-thread for performance.
 /// Uses the default C++ locale (which respects LC_* environment variables when imbued).
-/// Falls back to ',' if locale query fails.
+/// Returns '\0' if the locale has no thousand separator (C locale has empty grouping).
 [[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
 {
     // thread_local for thread safety, lazy-init via lambda for efficiency
@@ -37,11 +37,17 @@ namespace UI::Format
             // Use std::locale() (the global C++ locale) rather than std::locale("")
             // which can crash on some libc++ configurations
             const auto& facet = std::use_facet<std::numpunct<char>>(std::locale());
+            // Check if grouping is enabled - if empty, no separators should be inserted
+            // This is how std::format("{:L}", ...) determines whether to use separators
+            if (facet.grouping().empty())
+            {
+                return '\0'; // No grouping in this locale
+            }
             return facet.thousands_sep();
         }
         catch (...)
         {
-            return ','; // Fallback for C locale or errors
+            return '\0'; // Fallback: no separator on error
         }
     }();
     return cachedSep;
@@ -406,10 +412,10 @@ struct AlignedBytesParts
     auto [endPtr, ec] = std::to_chars(digitBuf.data(), digitBuf.data() + digitBuf.size(), wholeValue);
     const std::size_t numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
 
-    // Get locale separator
+    // Get locale separator ('\0' means no separators, e.g., C locale)
     const char sep = getLocaleThousandSep();
 
-    // Insert digits with thousand separators
+    // Insert digits with thousand separators (if separator is enabled)
     // For numDigits=6 (e.g., 123456), separators go after positions 0 and 3 (before digits 3 and 6)
     // Pattern: 123,456 - separator after every 3 digits from the right
     // firstGroupSize: number of digits before first separator (1-3)
@@ -417,9 +423,11 @@ struct AlignedBytesParts
 
     for (std::size_t i = 0; i < numDigits; ++i)
     {
-        // Add separator before this digit if we're past the first group and at a group boundary
-        // Use >= to ensure we're past the first group (avoids unsigned subtraction underflow)
-        if (i >= firstGroupSize && (i - firstGroupSize) % 3 == 0)
+        // Add separator before this digit if:
+        // 1. sep != '\0' (locale has grouping enabled)
+        // 2. We're past the first group
+        // 3. We're at a group boundary
+        if (sep != '\0' && i >= firstGroupSize && (i - firstGroupSize) % 3 == 0)
         {
             parts.buffer[pos++] = sep;
         }
