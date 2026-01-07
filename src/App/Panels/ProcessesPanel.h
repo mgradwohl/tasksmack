@@ -115,7 +115,7 @@ class ProcessesPanel : public Panel
         std::array<float, processColumnCount()> columnHeaderWidths{};
 
         // Unit string widths for decimal-aligned rendering
-        // (W used as representative wide character for consistent width measurement)
+        // (measured from actual rendered unit strings for accurate alignment)
         float unitPercentWidth = 0.0F;     // "%"
         float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
         float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.

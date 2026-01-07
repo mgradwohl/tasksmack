@@ -419,9 +419,11 @@ struct AlignedBytesParts
     const std::size_t firstGroupSize = ((numDigits - 1) % 3) + 1;
 
     // Max buffer usage: 20 digits + 6 separators + 1 decimal + 1 null = 28 < BUFFER_SIZE(32)
+    // Runtime clamp provides defense-in-depth for release builds where assert is compiled out
     assert(numDigits <= 20 && "Unexpected number of digits in byte value");
+    const std::size_t safeNumDigits = std::min(numDigits, std::size_t{20});
 
-    for (std::size_t i = 0; i < numDigits; ++i)
+    for (std::size_t i = 0; i < safeNumDigits; ++i)
     {
         // Add separator before this digit if:
         // 1. sep != '\0' (locale has grouping enabled)

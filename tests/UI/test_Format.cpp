@@ -763,7 +763,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
         }
     }
 
-    // Tested testCount edge case combinations
+    // Tested all edge case and unit combinations
 }
 
 TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
@@ -855,7 +855,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
         EXPECT_TRUE(compareBytesAlignment(memoryBytes, unit)) << "Realistic workload failed for " << memoryBytes;
     }
 
-    // Tested testCount realistic memory values
+    // Tested realistic memory values with random sampling
 }
 
 TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
