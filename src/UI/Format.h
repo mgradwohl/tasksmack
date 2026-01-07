@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <concepts>
@@ -10,12 +11,41 @@
 #include <format>
 #include <functional>
 #include <limits>
+#include <locale>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace UI::Format
 {
+
+// ============================================================================
+// Locale caching for thousand separator
+// ============================================================================
+
+/// Get the locale's thousand separator character, cached per-thread for performance.
+/// Uses the default C++ locale (which respects LC_* environment variables when imbued).
+/// Falls back to ',' if locale query fails.
+[[nodiscard]] inline auto getLocaleThousandSep() noexcept -> char
+{
+    // thread_local for thread safety, lazy-init via lambda for efficiency
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,misc-const-correctness)
+    thread_local char cachedSep = []
+    {
+        try
+        {
+            // Use std::locale() (the global C++ locale) rather than std::locale("")
+            // which can crash on some libc++ configurations
+            const auto& facet = std::use_facet<std::numpunct<char>>(std::locale());
+            return facet.thousands_sep();
+        }
+        catch (...)
+        {
+            return ','; // Fallback for C locale or errors
+        }
+    }();
+    return cachedSep;
+}
 
 [[nodiscard]] inline auto toIntSaturated(long value) -> int
 {
@@ -313,12 +343,126 @@ struct AlignedNumericParts
 /// Buffer is sized for percentages 0-100 with one decimal: max "100." = 4 chars + null.
 struct AlignedPercentParts
 {
-    static constexpr std::size_t BUFFER_SIZE = 8;     // "100." + margin
+    static constexpr std::size_t BUFFER_SIZE = 8;                                     // "100." + margin
+    static constexpr std::size_t REQUIRED_SIZE = std::string_view{"100."}.size() + 1; // "100." + null terminator
+    static_assert(BUFFER_SIZE >= REQUIRED_SIZE, "AlignedPercentParts::BUFFER_SIZE is too small for worst-case percent value");
     std::array<char, BUFFER_SIZE> buffer{};           // Internal storage
     std::string_view wholePart;                       // View into buffer: "XX." or "X."
     char decimalDigit = '0';                          // Single char: '0'-'9'
     static constexpr std::string_view unitPart = "%"; // Always "%" for percentages
 };
+
+/// Zero-allocation version of AlignedNumericParts for byte value rendering.
+/// Uses a fixed internal buffer and returns string_views into it.
+/// Buffer sized for: sign + 20 digits + 6 separators + decimal point + null = 29 chars
+struct AlignedBytesParts
+{
+    static constexpr std::size_t BUFFER_SIZE = 32; // Enough for any int64_t with separators
+    std::array<char, BUFFER_SIZE> buffer{};        // Internal storage for whole part
+    std::size_t wholePartLen = 0;                  // Length of whole part in buffer
+    char decimalDigit = '0';                       // Single char: '0'-'9'
+    std::string_view unitPart;                     // " KB", " MB", etc. (from ByteUnit::suffix)
+
+    /// Get the whole part as a string_view into the buffer
+    [[nodiscard]] constexpr auto wholePart() const noexcept -> std::string_view
+    {
+        return {buffer.data(), wholePartLen};
+    }
+};
+
+/// Zero-allocation fast path for splitting byte values for decimal-aligned rendering.
+/// This function produces equivalent output to splitBytesForAlignment but avoids
+/// std::format overhead and heap allocations. Use for high-frequency rendering.
+[[nodiscard]] inline auto splitBytesForAlignmentFast(double bytes, ByteUnit unit) -> AlignedBytesParts
+{
+    const double value = bytes / unit.scale;
+    auto wholeValue = static_cast<std::int64_t>(value);
+    const bool isNegative = (wholeValue < 0);
+
+    // Extract fractional part and round to 1 decimal place
+    const double fractional = std::abs(value - static_cast<double>(wholeValue));
+    auto fractionalDigit = static_cast<int>(std::round(fractional * 10.0));
+
+    // Handle rounding overflow (e.g., 0.95 -> 10 -> carry to whole part)
+    if (fractionalDigit >= 10)
+    {
+        fractionalDigit = 0;
+        wholeValue += (value >= 0) ? 1 : -1;
+    }
+
+    AlignedBytesParts parts;
+    std::size_t pos = 0;
+
+    // Handle negative sign
+    if (isNegative)
+    {
+        parts.buffer[pos++] = '-';
+        wholeValue = -wholeValue; // Work with positive value for digit extraction
+    }
+
+    // Convert integer to string using std::to_chars (fast, no allocation)
+    // Then insert thousand separators
+    std::array<char, 24> digitBuf{}; // Enough for int64_t
+    auto [endPtr, ec] = std::to_chars(digitBuf.data(), digitBuf.data() + digitBuf.size(), wholeValue);
+    const std::size_t numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
+
+    // Get locale separator
+    const char sep = getLocaleThousandSep();
+
+    // Insert digits with thousand separators
+    // For numDigits=6 (e.g., 123456), separators go after positions 0 and 3 (before digits 3 and 6)
+    // Pattern: 123,456 - separator after every 3 digits from the right
+    // firstGroupSize: number of digits before first separator (1-3)
+    const std::size_t firstGroupSize = ((numDigits - 1) % 3) + 1;
+
+    for (std::size_t i = 0; i < numDigits; ++i)
+    {
+        // Add separator before this digit if we're past the first group and at a group boundary
+        // Use >= to ensure we're past the first group (avoids unsigned subtraction underflow)
+        if (i >= firstGroupSize && (i - firstGroupSize) % 3 == 0)
+        {
+            parts.buffer[pos++] = sep;
+        }
+        parts.buffer[pos++] = digitBuf[i];
+    }
+
+    // Add decimal point (unit.decimals is always 1 for byte units)
+    if (unit.decimals > 0)
+    {
+        parts.buffer[pos++] = '.';
+    }
+    parts.buffer[pos] = '\0';
+
+    parts.wholePartLen = pos;
+    parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
+
+    // Unit part: " B", " KB", " MB", " GB" - we need to prepend space
+    // Store as string_view pointing to static string
+    static constexpr std::string_view unitB = " B";
+    static constexpr std::string_view unitKB = " KB";
+    static constexpr std::string_view unitMB = " MB";
+    static constexpr std::string_view unitGB = " GB";
+
+    // Match unit suffix to our static strings
+    if (unit.suffix[0] == 'G')
+    {
+        parts.unitPart = unitGB;
+    }
+    else if (unit.suffix[0] == 'M')
+    {
+        parts.unitPart = unitMB;
+    }
+    else if (unit.suffix[0] == 'K')
+    {
+        parts.unitPart = unitKB;
+    }
+    else
+    {
+        parts.unitPart = unitB;
+    }
+
+    return parts;
+}
 
 /// Split a byte value into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitBytesForAlignment(double bytes, ByteUnit unit) -> AlignedNumericParts
@@ -365,7 +509,7 @@ struct AlignedPercentParts
 
 /// Split a percentage value (0-100) into parts for decimal-aligned rendering
 /// Zero-allocation fast path for percentages in the 0-100 range (typical CPU%, MEM%)
-[[nodiscard]] inline auto splitPercentForAlignment(double percent, [[maybe_unused]] int decimals = 1) -> AlignedPercentParts
+[[nodiscard]] inline auto splitPercentForAlignment(double percent) -> AlignedPercentParts
 {
     // Clamp to valid percentage range
     percent = std::clamp(percent, 0.0, 100.0);
@@ -383,32 +527,35 @@ struct AlignedPercentParts
         wholeValue++;
     }
 
+    // Defensive clamp: ensure wholeValue remains within valid percentage bounds [0, 100]
+    wholeValue = std::clamp(wholeValue, 0, 100);
+
     AlignedPercentParts parts;
 
     // Format whole part directly into buffer (no locale, no allocation)
     // Max value is 100, so at most 3 digits + decimal point + null = 5 chars
-    char* ptr = parts.buffer.data();
+    // Use index counter instead of pointer arithmetic for safety
+    std::size_t pos = 0;
 
     if (wholeValue >= 100)
     {
-        *ptr++ = '1';
-        *ptr++ = '0';
-        *ptr++ = '0';
+        parts.buffer[pos++] = '1';
+        parts.buffer[pos++] = '0';
+        parts.buffer[pos++] = '0';
     }
     else if (wholeValue >= 10)
     {
-        *ptr++ = static_cast<char>('0' + (wholeValue / 10));
-        *ptr++ = static_cast<char>('0' + (wholeValue % 10));
+        parts.buffer[pos++] = static_cast<char>('0' + (wholeValue / 10));
+        parts.buffer[pos++] = static_cast<char>('0' + (wholeValue % 10));
     }
     else
     {
-        *ptr++ = static_cast<char>('0' + wholeValue);
+        parts.buffer[pos++] = static_cast<char>('0' + wholeValue);
     }
-    *ptr++ = '.'; // Decimal point
-    *ptr = '\0';  // Null terminate
+    parts.buffer[pos++] = '.'; // Decimal point
+    parts.buffer[pos] = '\0';  // Null terminate
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    parts.wholePart = std::string_view(parts.buffer.data(), static_cast<std::size_t>(ptr - parts.buffer.data()));
+    parts.wholePart = std::string_view(parts.buffer.data(), pos);
     parts.decimalDigit = static_cast<char>('0' + fractionalDigit);
 
     return parts;

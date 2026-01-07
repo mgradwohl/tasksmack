@@ -42,7 +42,7 @@ constexpr int MAX_TREE_DEPTH = 1000; // Maximum tree depth to detect cycles or m
 // Column-specific unit widths (based on longest unit that can appear)
 // Unit widths measured by longest unit string that column can display
 // using "W" as a wide character placeholder.
-constexpr std::string_view UNIT_PERCENT = "W";           // CPU %, MEM %
+constexpr std::string_view UNIT_PERCENT = "%";           // CPU %, MEM % (actual rendered unit)
 constexpr std::string_view UNIT_BYTES = " WW";           // VIRT, RES, PEAK, SHR (longest: " GB")
 constexpr std::string_view UNIT_BYTES_PER_SEC = " WW/W"; // I/O, Net (longest: " GB/s")
 constexpr std::string_view UNIT_POWER = " WW";           // Power (mW is wider than µW in most fonts)
@@ -177,7 +177,41 @@ void renderDecimalAligned(const UI::Format::AlignedPercentParts& parts, float ca
     const char decimalStr[2] = {parts.decimalDigit, '\0'};
     ImGui::TextUnformatted(decimalStr);
 
-    // Render unit part (fixed "%" - constexpr string_view)
+    // Render unit part (fixed "%" - static constexpr string_view)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(unitRegionStart);
+    constexpr auto unitPart = UI::Format::AlignedPercentParts::unitPart;
+    ImGui::TextUnformatted(unitPart.data(), unitPart.data() + unitPart.size());
+}
+
+/// Optimized overload for AlignedBytesParts (zero-allocation byte value rendering)
+/// Uses internal buffer for whole part and single char for decimal digit.
+void renderDecimalAligned(const UI::Format::AlignedBytesParts& parts, float cachedUnitWidth, float cachedDecimalWidth)
+{
+    const float cellStartX = ImGui::GetCursorPosX();
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float cellEndX = cellStartX + availWidth;
+
+    // Calculate region boundaries (working right to left)
+    const float unitRegionStart = cellEndX - cachedUnitWidth;
+    const float decimalRegionStart = unitRegionStart - cachedDecimalWidth;
+
+    // Calculate whole part positioning using wholePart() accessor
+    const std::string_view wholePart = parts.wholePart();
+    const float wholeWidth = ImGui::CalcTextSize(wholePart.data(), wholePart.data() + wholePart.size()).x;
+    const float wholeStartX = decimalRegionStart - wholeWidth;
+
+    // Render whole part (right-aligned, ending at decimal region)
+    ImGui::SetCursorPosX(std::max(cellStartX, wholeStartX));
+    ImGui::TextUnformatted(wholePart.data(), wholePart.data() + wholePart.size());
+
+    // Render decimal digit (single char, fixed position)
+    ImGui::SameLine(0.0F, 0.0F);
+    ImGui::SetCursorPosX(decimalRegionStart);
+    const char decimalStr[2] = {parts.decimalDigit, '\0'};
+    ImGui::TextUnformatted(decimalStr);
+
+    // Render unit part (string_view to " KB", " MB", " GB", etc.)
     ImGui::SameLine(0.0F, 0.0F);
     ImGui::SetCursorPosX(unitRegionStart);
     ImGui::TextUnformatted(parts.unitPart.data(), parts.unitPart.data() + parts.unitPart.size());
@@ -893,32 +927,32 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Virtual:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.virtualBytes);
-            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.virtualBytes), unit);
-            renderDecimalAligned(parts, unitBytesW, singleDigitW, true);
+            const auto parts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(proc.virtualBytes), unit);
+            renderDecimalAligned(parts, unitBytesW, singleDigitW);
             break;
         }
 
         case ProcessColumn::Resident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.memoryBytes);
-            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.memoryBytes), unit);
-            renderDecimalAligned(parts, unitBytesW, singleDigitW, true);
+            const auto parts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(proc.memoryBytes), unit);
+            renderDecimalAligned(parts, unitBytesW, singleDigitW);
             break;
         }
 
         case ProcessColumn::PeakResident:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.peakMemoryBytes);
-            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.peakMemoryBytes), unit);
-            renderDecimalAligned(parts, unitBytesW, singleDigitW, true);
+            const auto parts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(proc.peakMemoryBytes), unit);
+            renderDecimalAligned(parts, unitBytesW, singleDigitW);
             break;
         }
 
         case ProcessColumn::Shared:
         {
             const auto unit = UI::Format::unitForTotalBytes(proc.sharedBytes);
-            const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.sharedBytes), unit);
-            renderDecimalAligned(parts, unitBytesW, singleDigitW, true);
+            const auto parts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(proc.sharedBytes), unit);
+            renderDecimalAligned(parts, unitBytesW, singleDigitW);
             break;
         }
 
@@ -1140,8 +1174,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.gpuMemoryBytes > 0)
             {
                 const auto unit = UI::Format::unitForTotalBytes(proc.gpuMemoryBytes);
-                const auto parts = UI::Format::splitBytesForAlignment(static_cast<double>(proc.gpuMemoryBytes), unit);
-                renderDecimalAligned(parts, unitBytesW, singleDigitW, true);
+                const auto parts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(proc.gpuMemoryBytes), unit);
+                renderDecimalAligned(parts, unitBytesW, singleDigitW);
             }
             else
             {

@@ -8,6 +8,12 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
+#include <iostream>
+#include <locale>
+#include <random>
+#include <vector>
+
 // =============================================================================
 // CPU Affinity Mask Formatting Tests
 // =============================================================================
@@ -443,6 +449,430 @@ TEST(FormatTest, SplitBytesForAlignmentProducesParts)
     EXPECT_FALSE(parts.unitPart.empty());
 }
 
+// ========== Comprehensive splitBytesForAlignment Tests ==========
+
+TEST(FormatTest, SplitBytesForAlignmentZeroBytes)
+{
+    const auto unit = UI::Format::ByteUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(0.0, unit);
+
+    EXPECT_EQ(parts.wholePart, "0.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " B");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentSmallBytes)
+{
+    const auto unit = UI::Format::ByteUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(512.0, unit);
+
+    EXPECT_EQ(parts.wholePart, "512.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " B");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentKilobytes)
+{
+    const double bytes = 1536.0; // 1.5 KB
+    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
+
+    EXPECT_EQ(parts.wholePart, "1.");
+    EXPECT_EQ(parts.decimalPart, "5");
+    EXPECT_EQ(parts.unitPart, " KB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentMegabytes)
+{
+    const double bytes = 1024.0 * 1024.0 * 2.3; // 2.3 MB
+    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
+
+    EXPECT_EQ(parts.wholePart, "2.");
+    EXPECT_EQ(parts.decimalPart, "3");
+    EXPECT_EQ(parts.unitPart, " MB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentGigabytes)
+{
+    const double bytes = 1024.0 * 1024.0 * 1024.0 * 8.7; // 8.7 GB
+    const auto unit = UI::Format::ByteUnit{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
+
+    EXPECT_EQ(parts.wholePart, "8.");
+    EXPECT_EQ(parts.decimalPart, "7");
+    EXPECT_EQ(parts.unitPart, " GB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentRoundingOverflow)
+{
+    // 1023.95 bytes should round to 1024.0, which displays as "1,024."
+    const auto unit = UI::Format::ByteUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(1023.95, unit);
+
+    // When fractional rounds to 10, we carry to whole part
+    EXPECT_EQ(parts.decimalPart, "0");
+    // Whole part should be 1024 (with locale-dependent thousand separator)
+    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains("024"));
+    EXPECT_TRUE(parts.wholePart.ends_with("."));
+}
+
+TEST(FormatTest, SplitBytesForAlignmentThousandRange)
+{
+    // Test 1000-1023 range which requires thousand separator
+    const auto unit = UI::Format::ByteUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(1000.0, unit);
+
+    // Should contain "1" and "000" with a separator in between
+    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains("000"));
+    EXPECT_TRUE(parts.wholePart.ends_with("."));
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " B");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentThousandRangeKB)
+{
+    // 1023 KB = 1,047,552 bytes
+    const double bytes = 1023.0 * 1024.0;
+    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
+
+    // Should be "1,023." or similar with locale separator
+    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains("023"));
+    EXPECT_TRUE(parts.wholePart.ends_with("."));
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " KB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentSingleDigit)
+{
+    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 5.0, unit);
+
+    EXPECT_EQ(parts.wholePart, "5.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " MB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentDoubleDigit)
+{
+    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 42.0, unit);
+
+    EXPECT_EQ(parts.wholePart, "42.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " MB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentTripleDigit)
+{
+    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 512.0, unit);
+
+    EXPECT_EQ(parts.wholePart, "512.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " MB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentFractionalRounding)
+{
+    // Test various fractional values and their rounding
+    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+
+    // 1.14 KB -> rounds to 1.1
+    auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1.14, unit);
+    EXPECT_EQ(parts.wholePart, "1.");
+    EXPECT_EQ(parts.decimalPart, "1");
+
+    // 1.16 KB -> rounds to 1.2
+    parts = UI::Format::splitBytesForAlignment(1024.0 * 1.16, unit);
+    EXPECT_EQ(parts.wholePart, "1.");
+    EXPECT_EQ(parts.decimalPart, "2");
+
+    // 1.99 KB -> rounds to 2.0
+    parts = UI::Format::splitBytesForAlignment(1024.0 * 1.99, unit);
+    EXPECT_EQ(parts.wholePart, "2.");
+    EXPECT_EQ(parts.decimalPart, "0");
+}
+
+// =============================================================================
+// splitBytesForAlignmentFast vs splitBytesForAlignment comparison tests
+// =============================================================================
+
+/// Test fixture that sets up the user's locale (like the app does)
+/// This ensures std::format("{:L}", ...) uses thousand separators
+class FormatLocaleTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        // Save original locale
+        m_OriginalLocale = std::locale();
+
+        // Set up locale like main.cpp does
+        try
+        {
+            const std::locale userLocale("");
+            std::locale::global(userLocale);
+        }
+        catch (const std::exception& e)
+        {
+            // If user's locale fails, try common locales with grouping
+            const char* fallbackLocales[] = {"en_US.UTF-8", "en_GB.UTF-8", "C.UTF-8", nullptr};
+            bool localeSet = false;
+            for (const char** loc = fallbackLocales; *loc != nullptr; ++loc)
+            {
+                try
+                {
+                    std::locale::global(std::locale(*loc));
+                    localeSet = true;
+                    break;
+                }
+                catch (...)
+                {
+                    // Try next
+                }
+            }
+            if (!localeSet)
+            {
+                GTEST_SKIP() << "No locale with thousand separators available";
+            }
+        }
+
+        // Also set C locale for consistency
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        setlocale(LC_ALL, "");
+    }
+
+    void TearDown() override
+    {
+        // Restore original locale
+        std::locale::global(m_OriginalLocale);
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        setlocale(LC_ALL, "C");
+    }
+
+  private:
+    std::locale m_OriginalLocale;
+};
+
+namespace
+{
+
+/// Helper to compare AlignedNumericParts (slow) with AlignedBytesParts (fast)
+/// Returns true if they produce equivalent output
+auto compareBytesAlignment(double bytes, const UI::Format::ByteUnit& unit) -> bool
+{
+    const auto slow = UI::Format::splitBytesForAlignment(bytes, unit);
+    const auto fast = UI::Format::splitBytesForAlignmentFast(bytes, unit);
+
+    // Compare whole part (string vs string_view)
+    const bool wholeMatch = (slow.wholePart == fast.wholePart());
+
+    // Compare decimal part (string "X" vs char 'X')
+    const bool decimalMatch = (slow.decimalPart.size() == 1 && slow.decimalPart[0] == fast.decimalDigit);
+
+    // Compare unit part - fast version uses static strings with leading space
+    // slow version uses " X" format, fast uses static " B", " KB", etc.
+    const bool unitMatch = (slow.unitPart == fast.unitPart);
+
+    if (!wholeMatch || !decimalMatch || !unitMatch)
+    {
+        // Print debug info on mismatch
+        std::cerr << "Mismatch for bytes=" << bytes << " unit=" << unit.suffix << "\n";
+        std::cerr << "  slow.wholePart='" << slow.wholePart << "' vs fast.wholePart()='" << fast.wholePart() << "'\n";
+        std::cerr << "  slow.decimalPart='" << slow.decimalPart << "' vs fast.decimalDigit='" << fast.decimalDigit << "'\n";
+        std::cerr << "  slow.unitPart='" << slow.unitPart << "' vs fast.unitPart='" << fast.unitPart << "'\n";
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
+{
+    // Test explicit edge cases
+    const std::vector<double> edgeCases = {
+        // Zero and small values
+        0.0,
+        0.1,
+        0.5,
+        0.9,
+        0.95,
+        0.99,
+        1.0,
+
+        // Single digit range
+        5.0,
+        9.0,
+        9.5,
+        9.9,
+        9.95,
+
+        // Double digit range
+        10.0,
+        42.0,
+        99.0,
+        99.5,
+        99.9,
+        99.95,
+
+        // Triple digit range
+        100.0,
+        512.0,
+        999.0,
+        999.5,
+        999.9,
+        999.95,
+
+        // Thousand range (requires separator)
+        1000.0,
+        1000.5,
+        1023.0,
+        1023.5,
+        1023.9,
+        1023.95,
+        1024.0,
+
+        // Larger values (rare after unit scaling but possible)
+        2000.0,
+        5000.0,
+        9999.0,
+        10000.0,
+
+        // Negative values (should be treated as 0)
+        -1.0,
+        -100.0,
+        -1000.0,
+    };
+
+    // Test with each unit type
+    const std::vector<UI::Format::ByteUnit> units = {
+        {.suffix = "B", .scale = 1.0, .decimals = 1},
+        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+    };
+
+    int testCount = 0;
+    for (const auto& unit : units)
+    {
+        for (double rawValue : edgeCases)
+        {
+            // Test the raw value as if it were already in the target unit
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Failed for rawValue=" << rawValue << " unit=" << unit.suffix;
+            testCount++;
+        }
+    }
+
+    std::cout << "Tested " << testCount << " edge case combinations\n";
+}
+
+TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
+{
+    // Use a fixed seed for reproducibility
+    std::mt19937 rng(42);
+
+    // Different distributions for different ranges
+    std::uniform_real_distribution<double> smallDist(0.0, 10.0);
+    std::uniform_real_distribution<double> mediumDist(10.0, 1000.0);
+    std::uniform_real_distribution<double> largeDist(1000.0, 10000.0);
+    std::uniform_real_distribution<double> veryLargeDist(10000.0, 1000000.0);
+    std::uniform_real_distribution<double> fractionalDist(0.0, 1.0);
+
+    const std::vector<UI::Format::ByteUnit> units = {
+        {.suffix = "B", .scale = 1.0, .decimals = 1},
+        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+    };
+
+    int testCount = 0;
+    constexpr int samplesPerRange = 100;
+
+    for (const auto& unit : units)
+    {
+        // Small values (0-10)
+        for (int i = 0; i < samplesPerRange; ++i)
+        {
+            const double rawValue = smallDist(rng);
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Small range failed for " << rawValue;
+            testCount++;
+        }
+
+        // Medium values (10-1000)
+        for (int i = 0; i < samplesPerRange; ++i)
+        {
+            const double rawValue = mediumDist(rng);
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Medium range failed for " << rawValue;
+            testCount++;
+        }
+
+        // Large values (1000-10000) - thousand separator range
+        for (int i = 0; i < samplesPerRange; ++i)
+        {
+            const double rawValue = largeDist(rng);
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Large range failed for " << rawValue;
+            testCount++;
+        }
+
+        // Very large values (10000-1000000) - unusual but possible
+        for (int i = 0; i < samplesPerRange / 10; ++i)
+        {
+            const double rawValue = veryLargeDist(rng);
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Very large range failed for " << rawValue;
+            testCount++;
+        }
+
+        // Values near rounding boundaries (X.X5)
+        for (int i = 0; i < samplesPerRange; ++i)
+        {
+            const int whole = static_cast<int>(mediumDist(rng));
+            const double frac = static_cast<int>(fractionalDist(rng) * 10) / 10.0 + 0.05; // X.X5
+            const double rawValue = whole + frac;
+            const double bytes = rawValue * unit.scale;
+            EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Boundary failed for " << rawValue;
+            testCount++;
+        }
+    }
+
+    std::cout << "Tested " << testCount << " random value combinations\n";
+}
+
+TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
+{
+    // Simulate realistic process memory values
+    std::mt19937 rng(123);
+
+    // Process memory typically ranges from a few KB to several GB
+    std::uniform_int_distribution<std::uint64_t> memDist(1024, 16ULL * 1024 * 1024 * 1024);
+
+    int testCount = 0;
+    constexpr int numProcesses = 500;
+
+    for (int i = 0; i < numProcesses; ++i)
+    {
+        const auto memoryBytes = static_cast<double>(memDist(rng));
+
+        // Use the real unit selection function
+        const auto unit = UI::Format::chooseByteUnit(memoryBytes);
+
+        EXPECT_TRUE(compareBytesAlignment(memoryBytes, unit)) << "Realistic workload failed for " << memoryBytes;
+        testCount++;
+    }
+
+    std::cout << "Tested " << testCount << " realistic memory values\n";
+}
+
 TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
 {
     const auto unit = UI::Format::chooseByteUnit(1024.0);
@@ -488,6 +918,7 @@ TEST(FormatTest, SplitPercentForAlignmentHandlesBoundaries)
     // Test clamping above 100
     const auto over = UI::Format::splitPercentForAlignment(150.0);
     EXPECT_EQ(over.wholePart, "100.");
+    EXPECT_EQ(over.decimalDigit, '0');
 }
 
 // =============================================================================
