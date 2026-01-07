@@ -381,6 +381,9 @@ struct AlignedBytesParts
 /// std::format overhead and heap allocations. Use for high-frequency rendering.
 [[nodiscard]] inline auto splitBytesForAlignmentFast(double bytes, ByteUnit unit) -> AlignedBytesParts
 {
+    // Clamp negative values to 0 (bytes should never be negative in practice)
+    bytes = std::max(0.0, bytes);
+
     const double value = bytes / unit.scale;
     auto wholeValue = static_cast<std::int64_t>(value);
     const bool isNegative = (wholeValue < 0);
@@ -410,16 +413,20 @@ struct AlignedBytesParts
     // Then insert thousand separators
     std::array<char, 24> digitBuf{}; // Enough for int64_t
     auto [endPtr, ec] = std::to_chars(digitBuf.data(), digitBuf.data() + digitBuf.size(), wholeValue);
+    assert(ec == std::errc{} && "std::to_chars failed unexpectedly");
     const std::size_t numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
 
     // Get locale separator ('\0' means no separators, e.g., C locale)
     const char sep = getLocaleThousandSep();
 
     // Insert digits with thousand separators (if separator is enabled)
-    // For numDigits=6 (e.g., 123456), separators go after positions 0 and 3 (before digits 3 and 6)
-    // Pattern: 123,456 - separator after every 3 digits from the right
-    // firstGroupSize: number of digits before first separator (1-3)
+    // For numDigits=6 (e.g., 123456), a separator is inserted before digit index 3, yielding "123,456"
+    // Pattern: effectively a separator after every 3 digits when scanning from the left
+    // firstGroupSize: number of digits before the first separator (1-3)
     const std::size_t firstGroupSize = ((numDigits - 1) % 3) + 1;
+
+    // Max buffer usage: 20 digits + 6 separators + 1 sign + 1 decimal + 1 null = 29 < BUFFER_SIZE(32)
+    assert(numDigits <= 20 && "Unexpected number of digits in byte value");
 
     for (std::size_t i = 0; i < numDigits; ++i)
     {

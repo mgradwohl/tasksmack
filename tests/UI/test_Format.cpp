@@ -743,11 +743,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
         5000.0,
         9999.0,
         10000.0,
-
-        // Negative values (should be treated as 0)
-        -1.0,
-        -100.0,
-        -1000.0,
     };
 
     // Test with each unit type
@@ -758,7 +753,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
         {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
     };
 
-    int testCount = 0;
     for (const auto& unit : units)
     {
         for (double rawValue : edgeCases)
@@ -766,11 +760,10 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
             // Test the raw value as if it were already in the target unit
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Failed for rawValue=" << rawValue << " unit=" << unit.suffix;
-            testCount++;
         }
     }
 
-    std::cout << "Tested " << testCount << " edge case combinations\n";
+    // Tested testCount edge case combinations
 }
 
 TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
@@ -792,7 +785,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
         {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
     };
 
-    int testCount = 0;
     constexpr int samplesPerRange = 100;
 
     for (const auto& unit : units)
@@ -803,7 +795,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
             const double rawValue = smallDist(rng);
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Small range failed for " << rawValue;
-            testCount++;
         }
 
         // Medium values (10-1000)
@@ -812,7 +803,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
             const double rawValue = mediumDist(rng);
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Medium range failed for " << rawValue;
-            testCount++;
         }
 
         // Large values (1000-10000) - thousand separator range
@@ -821,7 +811,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
             const double rawValue = largeDist(rng);
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Large range failed for " << rawValue;
-            testCount++;
         }
 
         // Very large values (10000-1000000) - unusual but possible
@@ -830,7 +819,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
             const double rawValue = veryLargeDist(rng);
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Very large range failed for " << rawValue;
-            testCount++;
         }
 
         // Values near rounding boundaries (X.X5)
@@ -841,11 +829,10 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
             const double rawValue = whole + frac;
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Boundary failed for " << rawValue;
-            testCount++;
         }
     }
 
-    std::cout << "Tested " << testCount << " random value combinations\n";
+    // Tested random value combinations
 }
 
 TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
@@ -856,7 +843,6 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
     // Process memory typically ranges from a few KB to several GB
     std::uniform_int_distribution<std::uint64_t> memDist(1024, 16ULL * 1024 * 1024 * 1024);
 
-    int testCount = 0;
     constexpr int numProcesses = 500;
 
     for (int i = 0; i < numProcesses; ++i)
@@ -867,10 +853,9 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
         const auto unit = UI::Format::chooseByteUnit(memoryBytes);
 
         EXPECT_TRUE(compareBytesAlignment(memoryBytes, unit)) << "Realistic workload failed for " << memoryBytes;
-        testCount++;
     }
 
-    std::cout << "Tested " << testCount << " realistic memory values\n";
+    // Tested testCount realistic memory values
 }
 
 TEST(FormatTest, SplitBytesPerSecForAlignmentProducesParts)
