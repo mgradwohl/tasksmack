@@ -6,6 +6,8 @@
 #include "Domain/ProcessSnapshot.h"
 
 #include <array>
+
+struct ImFont; // Forward declaration for TextSizeCache
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -124,7 +126,7 @@ class ProcessesPanel : public Panel
         float listViewLabelWidth = 0.0F;
 
         // Font pointer used when cache was populated (for invalidation)
-        const void* fontPtr = nullptr;
+        const ImFont* fontPtr = nullptr;
 
         /// Check if cache is valid for current font
         [[nodiscard]] bool isValid() const noexcept;

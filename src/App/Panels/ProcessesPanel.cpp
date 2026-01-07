@@ -171,8 +171,7 @@ void ProcessesPanel::TextSizeCache::populate()
     for (const ProcessColumn col : allProcessColumns())
     {
         const auto info = getColumnInfo(col);
-        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literal is null-terminated
-        columnHeaderWidths[toIndex(col)] = ImGui::CalcTextSize(info.name.data()).x;
+        columnHeaderWidths[toIndex(col)] = ImGui::CalcTextSize(info.name.data(), info.name.data() + info.name.size()).x;
     }
 
     // Cache unit string widths
