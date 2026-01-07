@@ -41,8 +41,8 @@ class NetlinkSocketStats
     NetlinkSocketStats();
 
     /// Construct with custom cache TTL
-    /// @param cacheTtl Time-to-live for cached results. Use 0ms to disable caching.
-    explicit NetlinkSocketStats(std::chrono::milliseconds cacheTtl);
+    /// @param cache_ttl Time-to-live for cached results. Use 0ms to disable caching.
+    explicit NetlinkSocketStats(std::chrono::milliseconds cache_ttl);
 
     ~NetlinkSocketStats() noexcept;
 
