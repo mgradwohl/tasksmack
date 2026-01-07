@@ -316,7 +316,12 @@ std::vector<SocketStats> NetlinkSocketStats::queryAllSockets()
     // Note: UDP may have limited byte counter support
     querySockets(IPPROTO_UDP, m_CachedResults);
 
-    m_LastQueryTime = now;
+    // Only update cache state if caching is enabled (TTL > 0)
+    // Skip cache updates when TTL is zero to avoid storing data that won't be used
+    if (m_CacheTtl.count() > 0)
+    {
+        m_LastQueryTime = now;
+    }
 
     return m_CachedResults;
 }
