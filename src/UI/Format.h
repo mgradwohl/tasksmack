@@ -418,16 +418,17 @@ struct AlignedBytesParts
     // Get locale separator ('\0' means no separators, e.g., C locale)
     const char sep = getLocaleThousandSep();
 
-    // Insert digits with thousand separators (if separator is enabled)
-    // For numDigits=6 (e.g., 123456), a separator is inserted before digit index 3, yielding "123,456"
-    // Pattern: effectively a separator after every 3 digits when scanning from the left
-    // firstGroupSize: number of digits before the first separator (1-3)
-    const std::size_t firstGroupSize = ((numDigits - 1) % 3) + 1;
-
     // Max buffer usage: 20 digits + 6 separators + 1 decimal + 1 null = 28 < BUFFER_SIZE(32)
     // Runtime clamp provides defense-in-depth for release builds where assert is compiled out
     assert(numDigits <= 20 && "Unexpected number of digits in byte value");
     const std::size_t safeNumDigits = std::min(numDigits, std::size_t{20});
+
+    // Insert digits with thousand separators (if separator is enabled)
+    // For numDigits=6 (e.g., 123456), a separator is inserted before digit index 3, yielding "123,456"
+    // Pattern: effectively a separator after every 3 digits when scanning from the left
+    // firstGroupSize: number of digits before the first separator (1-3)
+    // Use safeNumDigits to ensure consistency with the loop constraint
+    const std::size_t firstGroupSize = ((safeNumDigits - 1) % 3) + 1;
 
     for (std::size_t i = 0; i < safeNumDigits; ++i)
     {
@@ -443,8 +444,8 @@ struct AlignedBytesParts
     }
 
     // Add decimal point (unit.decimals is always 1 for byte units)
-    // Verify buffer bounds before final writes (defense-in-depth)
-    assert(pos < AlignedBytesParts::BUFFER_SIZE - 2 && "Buffer overflow in splitBytesForAlignmentFast");
+    // Verify we have room for decimal point + null terminator (2 chars)
+    assert(pos + 2 <= AlignedBytesParts::BUFFER_SIZE && "Buffer overflow in splitBytesForAlignmentFast");
     if (unit.decimals > 0)
     {
         parts.buffer[pos++] = '.';
