@@ -49,7 +49,8 @@ if(WIN32)
     )
 else()
     set(PLATFORM_BENCH_SOURCES
-        # Linux-specific benchmarks (if any)
+        # Linux-specific benchmarks
+        bench_NetlinkSocketStats.cpp
     )
     set(PLATFORM_SRC_UNDER_BENCH
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp

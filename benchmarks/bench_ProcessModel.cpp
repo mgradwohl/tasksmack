@@ -8,12 +8,12 @@
 #include "MemoryTracker.h"
 #include "Platform/Factory.h"
 
+#include <benchmark/benchmark.h>
+
 #include <algorithm>
 #include <chrono>
 #include <memory>
 #include <thread>
-
-#include <benchmark/benchmark.h>
 
 namespace
 {

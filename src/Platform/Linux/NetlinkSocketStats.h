@@ -3,6 +3,7 @@
 // Only compile on Linux with required headers
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
@@ -10,6 +11,14 @@
 
 namespace Platform
 {
+
+/// Default TTL for socket stats cache (500ms balances freshness vs. CPU cost)
+/// Network stats don't need to be as fresh as CPU/memory metrics.
+///
+/// Note: This constant is defined in Platform (not Domain/SamplingConfig.h) to avoid
+/// Platform→Domain dependency, which would violate the layered architecture.
+/// Domain-layer code can pass a custom TTL to the constructor if needed.
+inline constexpr auto DEFAULT_SOCKET_STATS_CACHE_TTL = std::chrono::milliseconds(500);
 
 /// Per-socket network statistics from Netlink INET_DIAG
 struct SocketStats
@@ -21,10 +30,20 @@ struct SocketStats
 
 /// Queries TCP/UDP socket statistics via Netlink INET_DIAG.
 /// This provides per-socket byte counters that can be mapped to processes.
+///
+/// Performance optimization: Results are cached with a configurable TTL to avoid
+/// expensive kernel queries on every call. The default TTL of 500ms balances
+/// network stat freshness against CPU cost (~10% of refresh cycle without caching).
 class NetlinkSocketStats
 {
   public:
+    /// Construct with default cache TTL (500ms)
     NetlinkSocketStats();
+
+    /// Construct with custom cache TTL
+    /// @param cache_ttl Time-to-live for cached results. Use 0ms to disable caching.
+    explicit NetlinkSocketStats(std::chrono::milliseconds cache_ttl);
+
     ~NetlinkSocketStats() noexcept;
 
     NetlinkSocketStats(const NetlinkSocketStats&) = delete;
@@ -34,7 +53,13 @@ class NetlinkSocketStats
 
     /// Query all TCP and UDP sockets with byte counters.
     /// Returns a vector of SocketStats with inode and byte counters.
+    /// Results are cached; subsequent calls within the TTL return cached data.
     [[nodiscard]] std::vector<SocketStats> queryAllSockets();
+
+    /// Force a fresh kernel query, completely bypassing the cache.
+    /// This does NOT update the internal cache; subsequent queryAllSockets() calls
+    /// will still use the existing cached data until TTL expires.
+    [[nodiscard]] std::vector<SocketStats> queryAllSocketsUncached();
 
     /// Check if Netlink INET_DIAG is available and functional
     [[nodiscard]] bool isAvailable() const noexcept
@@ -42,10 +67,24 @@ class NetlinkSocketStats
         return m_Available;
     }
 
+    /// Get the configured cache TTL
+    [[nodiscard]] std::chrono::milliseconds cacheTtl() const noexcept
+    {
+        return m_CacheTtl;
+    }
+
+    /// Invalidate the cache (next query will hit the kernel)
+    void invalidateCache() noexcept;
+
   private:
     int m_Socket = -1;                // Netlink socket file descriptor
     bool m_Available = false;         // Whether INET_DIAG is functional
-    mutable std::mutex m_SocketMutex; // Protects socket operations for thread safety
+    mutable std::mutex m_SocketMutex; // Protects socket operations and cache state for thread safety
+
+    // Cache state
+    std::chrono::milliseconds m_CacheTtl;                    // Cache time-to-live
+    std::chrono::steady_clock::time_point m_LastQueryTime{}; // When cache was last populated
+    std::vector<SocketStats> m_CachedResults;                // Cached socket stats
 
     /// Query sockets for a specific protocol (IPPROTO_TCP or IPPROTO_UDP)
     void querySockets(int protocol, std::vector<SocketStats>& results);

@@ -76,8 +76,8 @@ IncludeCategories:
   - Regex: '^".*"'
     Priority: 2
 
-  # 3. Third-party libraries (spdlog, imgui, implot, glad, GLFW, gtest, etc.)
-  - Regex: '^<(spdlog|fmt|boost|gtest|gmock|imgui|implot|glad|GLFW)/.*>'
+  # 3. Third-party libraries (spdlog, imgui, implot, glad, GLFW, gtest, benchmark, etc.)
+  - Regex: '^<(spdlog|fmt|boost|gtest|gmock|benchmark|imgui|implot|glad|GLFW)/.*>'
     Priority: 3
 
   # 4. Third-party single-header libs (imgui.h, implot.h without path)

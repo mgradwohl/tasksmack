@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <benchmark/benchmark.h>
+
 #include <atomic>
 #include <charconv>
 #include <cstdint>
@@ -14,8 +16,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-
-#include <benchmark/benchmark.h>
 
 namespace BenchmarkUtils
 {
