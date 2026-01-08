@@ -74,9 +74,8 @@ struct nvmlUtilization_t
 
 } // namespace
 
-NVMLGPUProbe::NVMLGPUProbe()
+NVMLGPUProbe::NVMLGPUProbe() : m_Initialized(loadNVML() && initializeNVML())
 {
-    m_Initialized = loadNVML() && initializeNVML();
     if (!m_Initialized)
     {
         spdlog::info("NVMLGPUProbe: NVML not available (NVIDIA GPU or driver not detected)");
@@ -141,6 +140,7 @@ void NVMLGPUProbe::unloadNVML()
     }
 }
 
+// NOLINTNEXTLINE(readability-make-member-function-const) - Calls NVML init which has global side effects
 bool NVMLGPUProbe::initializeNVML()
 {
     if (m_NVML.Init == nullptr)

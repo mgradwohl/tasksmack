@@ -47,9 +47,8 @@ namespace
 
 } // namespace
 
-DXGIGPUProbe::DXGIGPUProbe()
+DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
 {
-    m_Initialized = initialize();
 }
 
 DXGIGPUProbe::~DXGIGPUProbe()
