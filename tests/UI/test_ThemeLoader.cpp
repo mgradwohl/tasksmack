@@ -199,8 +199,7 @@ class ThemeLoaderDiscoveryTest : public ::testing::Test
     {
         std::ofstream file(m_TempDir / filename);
         file << content;
-        file.flush();
-        file.close();
+        // RAII handles flush and close automatically
     }
 };
 
@@ -228,7 +227,7 @@ windowBg = "#1E1E1E"
 )");
 
     auto themes = ThemeLoader::discoverThemes(m_TempDir);
-    ASSERT_EQ(themes.size(), 1);
+    ASSERT_EQ(themes.size(), 1U);
     EXPECT_EQ(themes[0].id, "test-theme");
     EXPECT_EQ(themes[0].name, "Test Theme");
     EXPECT_EQ(themes[0].description, "A test theme");
@@ -255,7 +254,7 @@ windowBg = "#FFFFFF"
 )");
 
     auto themes = ThemeLoader::discoverThemes(m_TempDir);
-    EXPECT_EQ(themes.size(), 2);
+    EXPECT_EQ(themes.size(), 2U);
 
     // Check both themes are found (order may vary)
     bool foundDark = false;
@@ -290,7 +289,7 @@ windowBg = "#1E1E1E"
     createThemeFile("config.json", "{}");
 
     auto themes = ThemeLoader::discoverThemes(m_TempDir);
-    EXPECT_EQ(themes.size(), 1);
+    EXPECT_EQ(themes.size(), 1U);
     EXPECT_EQ(themes[0].id, "valid");
 }
 
