@@ -66,7 +66,7 @@ namespace
     uli.HighPart = ft.dwHighDateTime;
 
     // Convert 100-nanosecond intervals to seconds and adjust for epoch difference
-    std::uint64_t windowsSeconds = uli.QuadPart / WINDOWS_TICKS_PER_SECOND;
+    const std::uint64_t windowsSeconds = uli.QuadPart / WINDOWS_TICKS_PER_SECOND;
     if (windowsSeconds < WINDOWS_EPOCH_TO_UNIX_EPOCH)
     {
         return 0; // Invalid time (before Unix epoch)

@@ -119,7 +119,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
             continue; // No NVML mapping for this GPU (not NVIDIA or not matched)
         }
 
-        uint32_t nvmlIdx = mapIt->second;
+        const uint32_t nvmlIdx = mapIt->second;
         if (nvmlIdx >= nvmlCounters.size())
         {
             continue; // Invalid mapping

@@ -7,8 +7,10 @@
 #include <vector>
 
 // Forward declare DXGI interfaces to avoid including d3d headers in header
+// NOLINTBEGIN(cppcoreguidelines-virtual-class-destructor) - COM interface forward decls
 struct IDXGIFactory1;
 struct IDXGIAdapter1;
+// NOLINTEND(cppcoreguidelines-virtual-class-destructor)
 
 namespace Platform
 {

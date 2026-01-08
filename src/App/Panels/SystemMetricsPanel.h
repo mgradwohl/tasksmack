@@ -160,8 +160,6 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
-    void updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds);
-    void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds);
 };
 
 } // namespace App

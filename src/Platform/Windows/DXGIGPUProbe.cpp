@@ -91,7 +91,7 @@ std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr)
     }
 
     // Get required buffer size
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
     if (size <= 0)
     {
         return {};
@@ -165,7 +165,7 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
         }
 
         DXGI_ADAPTER_DESC1 desc{};
-        HRESULT hr = adapter->GetDesc1(&desc);
+        const HRESULT hr = adapter->GetDesc1(&desc);
 
         if (SUCCEEDED(hr))
         {
@@ -233,9 +233,9 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
         }
 
         DXGI_ADAPTER_DESC1 desc{};
-        HRESULT hr = adapter->GetDesc1(&desc);
+        const HRESULT hrDesc = adapter->GetDesc1(&desc);
 
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hrDesc))
         {
             // Skip software adapters
             constexpr UINT SOFTWARE_FLAG = 2;
@@ -249,15 +249,15 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                 // __uuidof is a Microsoft extension, suppress warning
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
-                hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
+                const HRESULT hrQuery = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
 #pragma clang diagnostic pop
 
-                if (SUCCEEDED(hr) && adapter3 != nullptr)
+                if (SUCCEEDED(hrQuery) && adapter3 != nullptr)
                 {
                     DXGI_QUERY_VIDEO_MEMORY_INFO memInfo{};
-                    hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
+                    const HRESULT hrMemInfo = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
 
-                    if (SUCCEEDED(hr))
+                    if (SUCCEEDED(hrMemInfo))
                     {
                         counter.memoryUsedBytes = memInfo.CurrentUsage;
                         counter.memoryTotalBytes = memInfo.Budget;

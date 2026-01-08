@@ -30,10 +30,10 @@
 // These are standard Windows kernel-mode graphics types available via gdi32.dll
 
 // NTSTATUS type (from ntdef.h)
-typedef LONG NTSTATUS;
+using NTSTATUS = LONG;
 #define STATUS_SUCCESS ((NTSTATUS) 0x00000000L)
 
-typedef UINT D3DKMT_HANDLE;
+using D3DKMT_HANDLE = UINT;
 
 struct D3DKMT_OPENADAPTERFROMLUID
 {
@@ -41,7 +41,7 @@ struct D3DKMT_OPENADAPTERFROMLUID
     D3DKMT_HANDLE hAdapter;
 };
 
-enum D3DKMT_QUERYSTATISTICS_TYPE
+enum class D3DKMT_QUERYSTATISTICS_TYPE : std::uint8_t
 {
     D3DKMT_QUERYSTATISTICS_ADAPTER = 0,
     D3DKMT_QUERYSTATISTICS_PROCESS = 1,
@@ -108,8 +108,8 @@ struct D3DKMTGPUProbe::Impl
     bool initialized = false;
 
     bool initialize();
-    [[nodiscard]] std::string luidToString(const LUID& luid) const;
-    [[nodiscard]] std::vector<std::uint32_t> enumerateProcessIds() const;
+    [[nodiscard]] static std::string luidToString(const LUID& luid);
+    [[nodiscard]] static std::vector<std::uint32_t> enumerateProcessIds();
 };
 
 bool D3DKMTGPUProbe::Impl::initialize()
@@ -124,7 +124,7 @@ bool D3DKMTGPUProbe::Impl::initialize()
     // __uuidof is a Microsoft extension, suppress warning
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
-    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    const HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
 #pragma clang diagnostic pop
     if (FAILED(hr) || factory == nullptr)
     {
@@ -152,7 +152,7 @@ bool D3DKMTGPUProbe::Impl::initialize()
             info.gpuId = luidToString(desc.AdapterLuid);
 
             // Convert wide string to UTF-8
-            int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+            const int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
             if (sizeNeeded > 0)
             {
                 std::string utf8Name(static_cast<std::size_t>(sizeNeeded) - 1, '\0');
@@ -160,8 +160,9 @@ bool D3DKMTGPUProbe::Impl::initialize()
                 info.gpuName = std::move(utf8Name);
             }
 
-            // Detect integrated vs discrete
-            info.isIntegrated = (desc.DedicatedVideoMemory == 0 || desc.DedicatedVideoMemory < (128ULL * 1024 * 1024));
+            // Detect integrated vs discrete (< 128MB dedicated VRAM indicates integrated)
+            constexpr auto INTEGRATED_GPU_VRAM_THRESHOLD = 128ULL * 1024 * 1024;
+            info.isIntegrated = desc.DedicatedVideoMemory < INTEGRATED_GPU_VRAM_THRESHOLD;
 
             // Open adapter using D3DKMT
             D3DKMT_OPENADAPTERFROMLUID openAdapter{};
@@ -184,7 +185,7 @@ bool D3DKMTGPUProbe::Impl::initialize()
     return initialized;
 }
 
-std::string D3DKMTGPUProbe::Impl::luidToString(const LUID& luid) const
+std::string D3DKMTGPUProbe::Impl::luidToString(const LUID& luid)
 {
     char buffer[32]{};
     std::snprintf(
@@ -192,7 +193,7 @@ std::string D3DKMTGPUProbe::Impl::luidToString(const LUID& luid) const
     return {buffer};
 }
 
-std::vector<std::uint32_t> D3DKMTGPUProbe::Impl::enumerateProcessIds() const
+std::vector<std::uint32_t> D3DKMTGPUProbe::Impl::enumerateProcessIds()
 {
     std::vector<std::uint32_t> pids;
 
@@ -208,6 +209,8 @@ std::vector<std::uint32_t> D3DKMTGPUProbe::Impl::enumerateProcessIds() const
 
     if (Process32FirstW(snapshot, &pe32))
     {
+        // do-while is idiomatic for Process32First/Next enumeration pattern
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-do-while)
         do
         {
             pids.push_back(pe32.th32ProcessID);
@@ -267,10 +270,10 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
     std::vector<ProcessGPUCounters> allCounters;
 
     // Enumerate all processes
-    auto pids = m_Impl->enumerateProcessIds();
+    auto pids = Impl::enumerateProcessIds();
 
     // Query each process for GPU usage across all adapters
-    for (auto pid : pids)
+    for (const auto pid : pids)
     {
         // Skip system process
         if (pid == 0 || pid == 4)
@@ -282,20 +285,26 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
         {
             // Query process statistics for this adapter
             D3DKMT_QUERYSTATISTICS queryStats{};
-            queryStats.Type = D3DKMT_QUERYSTATISTICS_PROCESS;
+            queryStats.Type = D3DKMT_QUERYSTATISTICS_TYPE::D3DKMT_QUERYSTATISTICS_PROCESS;
             queryStats.AdapterLuid = adapter.adapterLuid;
+            // D3DKMT requires HANDLE from PID via cast - standard Windows pattern
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
             queryStats.hProcess = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(pid));
+            // Union access required by D3DKMT API structure
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
             queryStats.QueryProcessStatistics.ProcessId = pid;
 
-            auto status = D3DKMTQueryStatistics(&queryStats);
+            const auto status = D3DKMTQueryStatistics(&queryStats);
             if (status != STATUS_SUCCESS)
             {
                 continue;
             }
 
             // Check if process has any GPU activity
-            auto& processStats = queryStats.QueryResult.ProcessStatistics.SystemMemory;
-            std::uint64_t totalMemory = processStats.BytesAllocated + processStats.BytesReserved;
+            // Union access required by D3DKMT API structure
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
+            const auto& processStats = queryStats.QueryResult.ProcessStatistics.SystemMemory;
+            const std::uint64_t totalMemory = processStats.BytesAllocated + processStats.BytesReserved;
 
             if (totalMemory == 0)
             {

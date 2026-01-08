@@ -1182,36 +1182,4 @@ void SystemMetricsPanel::updateSmoothedThreadsFaults(double targetThreads, doubl
     m_SmoothedThreadsFaults.pageFaults = smoothTowards(m_SmoothedThreadsFaults.pageFaults, targetFaults, alpha);
 }
 
-void SystemMetricsPanel::updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    if (!m_SmoothedSystemIO.initialized)
-    {
-        m_SmoothedSystemIO.readBytesPerSec = targetRead;
-        m_SmoothedSystemIO.writeBytesPerSec = targetWrite;
-        m_SmoothedSystemIO.initialized = true;
-        return;
-    }
-
-    m_SmoothedSystemIO.readBytesPerSec = smoothTowards(m_SmoothedSystemIO.readBytesPerSec, targetRead, alpha);
-    m_SmoothedSystemIO.writeBytesPerSec = smoothTowards(m_SmoothedSystemIO.writeBytesPerSec, targetWrite, alpha);
-}
-
-void SystemMetricsPanel::updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    if (!m_SmoothedNetwork.initialized)
-    {
-        m_SmoothedNetwork.sentBytesPerSec = targetSent;
-        m_SmoothedNetwork.recvBytesPerSec = targetRecv;
-        m_SmoothedNetwork.initialized = true;
-        return;
-    }
-
-    m_SmoothedNetwork.sentBytesPerSec = smoothTowards(m_SmoothedNetwork.sentBytesPerSec, targetSent, alpha);
-    m_SmoothedNetwork.recvBytesPerSec = smoothTowards(m_SmoothedNetwork.recvBytesPerSec, targetRecv, alpha);
-}
-
 } // namespace App
