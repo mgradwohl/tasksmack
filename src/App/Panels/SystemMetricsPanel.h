@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
+#include "App/Panels/MemorySection.h"
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
@@ -96,13 +97,8 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedCpu;
 
-    struct SmoothedMemory
-    {
-        double usedPercent = 0.0;
-        double cachedPercent = 0.0;
-        double swapPercent = 0.0;
-        bool initialized = false;
-    } m_SmoothedMemory;
+    // Use MemorySection's SmoothedMemory type
+    MemorySection::SmoothedMemory m_SmoothedMemory;
 
     struct SmoothedDiskIO
     {

@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <format>
 #include <string>
 #include <vector>
 
