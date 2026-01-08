@@ -119,13 +119,16 @@ add_executable(TaskSmackTests
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
+    Domain/test_SamplingConfig.cpp
     UI/test_ChartWidgets.cpp
     UI/test_Format.cpp
+    UI/test_ThemeLoader.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_UserConfig.cpp
     App/test_ActiveTab.cpp
     App/test_PriorityHelpers.cpp
     App/test_SettingsLayerDetail.cpp
+    App/test_NetInterfaceUtils.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test (Domain layer is header + implementation)
@@ -134,6 +137,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    # UI source files under test
+    ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
 
@@ -149,6 +154,7 @@ target_include_directories(TaskSmackTests PRIVATE
 target_link_libraries(TaskSmackTests PRIVATE
     gtest_main
     spdlog::spdlog_header_only
+    tomlplusplus::tomlplusplus
 )
 
 # Platform-specific library linking

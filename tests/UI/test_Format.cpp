@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 
 #include <clocale>
+#include <cstdint>
+#include <limits>
 #include <locale>
 #include <random>
 #include <vector>
@@ -201,6 +203,124 @@ TEST(FormatTest, PercentToIntClampsNegativeToZero)
     EXPECT_EQ(UI::Format::percentToInt(0.0), 0);
     EXPECT_EQ(UI::Format::percentToInt(50.5), 51); // Rounds to nearest
     EXPECT_EQ(UI::Format::percentToInt(100.0), 100);
+}
+
+// =============================================================================
+// clampPercent Tests (Heavily Used - 30+ call sites)
+// =============================================================================
+
+TEST(FormatTest, ClampPercentInRange)
+{
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(50.0), 50.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(100.0), 100.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(25.5), 25.5);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(99.9), 99.9);
+}
+
+TEST(FormatTest, ClampPercentAboveMax)
+{
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(100.1), 100.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(150.0), 100.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(1000.0), 100.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(std::numeric_limits<double>::max()), 100.0);
+}
+
+TEST(FormatTest, ClampPercentBelowMin)
+{
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(-0.1), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(-50.0), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(-1000.0), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::clampPercent(std::numeric_limits<double>::lowest()), 0.0);
+}
+
+TEST(FormatTest, ClampPercentHandlesSpecialValues)
+{
+    // NaN and infinity handling - clamp should produce finite results
+    // Note: std::clamp behavior with NaN is implementation-defined
+    // We just ensure no crash and a bounded result
+    EXPECT_LE(UI::Format::clampPercent(std::numeric_limits<double>::infinity()), 100.0);
+    EXPECT_GE(UI::Format::clampPercent(-std::numeric_limits<double>::infinity()), 0.0);
+}
+
+// =============================================================================
+// percent01 Tests (Heavily Used - 20+ call sites)
+// =============================================================================
+
+TEST(FormatTest, Percent01InRange)
+{
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(50.0), 0.5);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(100.0), 1.0);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(25.0), 0.25);
+}
+
+TEST(FormatTest, Percent01ClampsAndConverts)
+{
+    // Values outside [0, 100] should be clamped then converted
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(150.0), 1.0);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(-50.0), 0.0);
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(200.0), 1.0);
+}
+
+TEST(FormatTest, Percent01Precision)
+{
+    // Test fractional percentages
+    EXPECT_DOUBLE_EQ(UI::Format::percent01(33.33), 0.3333);
+    EXPECT_NEAR(UI::Format::percent01(66.67), 0.6667, 1e-10);
+}
+
+// =============================================================================
+// toFloatNarrow Tests (Used for ImGui/ImPlot interop)
+// =============================================================================
+
+TEST(FormatTest, ToFloatNarrowFromDouble)
+{
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(0.0), 0.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(1.0), 1.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(-1.0), -1.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(3.14159), 3.14159F);
+}
+
+TEST(FormatTest, ToFloatNarrowFromIntegral)
+{
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(0), 0.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(42), 42.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(-42), -42.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(1000000), 1000000.0F);
+}
+
+TEST(FormatTest, ToFloatNarrowFromUint64)
+{
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(0ULL), 0.0F);
+    EXPECT_FLOAT_EQ(UI::Format::toFloatNarrow(255ULL), 255.0F);
+    // Large values lose precision but should not crash
+    const auto largeValue = static_cast<std::uint64_t>(1) << 40;
+    EXPECT_GT(UI::Format::toFloatNarrow(largeValue), 0.0F);
+}
+
+// =============================================================================
+// checkedCount Tests (Safe narrowing for ImPlot series)
+// =============================================================================
+
+TEST(FormatTest, CheckedCountNormalValues)
+{
+    EXPECT_EQ(UI::Format::checkedCount(0), 0);
+    EXPECT_EQ(UI::Format::checkedCount(100), 100);
+    EXPECT_EQ(UI::Format::checkedCount(1000), 1000);
+}
+
+TEST(FormatTest, CheckedCountLargeValuesSaturate)
+{
+    // Values larger than INT_MAX should saturate to INT_MAX
+    const auto hugeValue = static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1000;
+    EXPECT_EQ(UI::Format::checkedCount(hugeValue), std::numeric_limits<int>::max());
+}
+
+TEST(FormatTest, CheckedCountMaxSizeT)
+{
+    // SIZE_MAX should saturate to INT_MAX
+    EXPECT_EQ(UI::Format::checkedCount(std::numeric_limits<std::size_t>::max()), std::numeric_limits<int>::max());
 }
 
 // =============================================================================
