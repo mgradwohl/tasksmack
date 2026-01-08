@@ -2,8 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 namespace UI
 {
@@ -184,15 +187,31 @@ class ThemeLoaderDiscoveryTest : public ::testing::Test
 
     void SetUp() override
     {
-        // Create a temporary directory for test themes
-        m_TempDir = std::filesystem::temp_directory_path() / "tasksmack_theme_test";
+        // Create a unique temporary directory per test to avoid conflicts
+        // Use a combination of temp path + test name + random suffix
+        auto basePath = std::filesystem::temp_directory_path() / "tasksmack_theme_test";
+        auto testInfo = ::testing::UnitTest::GetInstance()->current_test_info();
+        std::string uniqueName = std::string(testInfo->test_suite_name()) + "_" + testInfo->name() + "_" + std::to_string(std::rand());
+        m_TempDir = basePath / uniqueName;
         std::filesystem::create_directories(m_TempDir);
     }
 
     void TearDown() override
     {
-        // Clean up temporary directory
-        std::filesystem::remove_all(m_TempDir);
+        // Clean up temporary directory with retry logic for Windows
+        // Windows may hold file handles briefly after close
+        std::error_code errorCode;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            std::filesystem::remove_all(m_TempDir, errorCode);
+            if (!errorCode)
+            {
+                break;
+            }
+            // Brief delay before retry on Windows
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        // Ignore final error - CI cleanup will handle any stragglers
     }
 
     void createThemeFile(const std::string& filename, const std::string& content)
