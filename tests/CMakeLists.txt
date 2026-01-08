@@ -119,6 +119,8 @@ add_executable(TaskSmackTests
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
+    Domain/test_SamplingConfig.cpp
+    Domain/test_Numeric.cpp
     UI/test_ChartWidgets.cpp
     UI/test_Format.cpp
     UI/test_ThemeLoader.cpp
