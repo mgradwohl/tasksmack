@@ -1,6 +1,7 @@
 #pragma once
 
-#include "UI/Numeric.h"
+#include "Domain/Numeric.h"
+#include "UI/Format.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <format>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -64,7 +66,7 @@ class PlotFontGuard
 
 inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
-    const double baseIntervalMs = UI::Numeric::toDouble(refreshInterval.count());
+    const double baseIntervalMs = Domain::Numeric::toDouble(refreshInterval.count());
     const double tauMs = std::clamp(baseIntervalMs * SMOOTH_FACTOR, TAU_MS_MIN, TAU_MS_MAX);
     const double dtMs = (deltaTimeSeconds > 0.0) ? deltaTimeSeconds * 1000.0 : baseIntervalMs;
     return std::clamp(1.0 - std::exp(-dtMs / std::max(1.0, tauMs)), 0.0, 1.0);
@@ -72,7 +74,7 @@ inline double computeAlpha(double deltaTimeSeconds, std::chrono::milliseconds re
 
 inline double computeAlpha(float deltaTimeSeconds, std::chrono::milliseconds refreshInterval)
 {
-    return computeAlpha(UI::Numeric::toDouble(deltaTimeSeconds), refreshInterval); // Explicit: float seconds -> double smoothing math
+    return computeAlpha(Domain::Numeric::toDouble(deltaTimeSeconds), refreshInterval); // Explicit: float seconds -> double smoothing math
 }
 
 inline double smoothTowards(double current, double target, double alpha)
@@ -305,7 +307,7 @@ inline std::vector<float> buildTimeAxis(const std::vector<double>& timestamps, s
     }
     for (size_t i = 0; i < n; ++i)
     {
-        timeData[i] = UI::Numeric::toFloatNarrow(timestamps[offset + i] - nowSeconds);
+        timeData[i] = UI::Format::toFloatNarrow(timestamps[offset + i] - nowSeconds);
     }
     return timeData;
 }
@@ -333,7 +335,7 @@ inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mou
         return std::nullopt;
     }
 
-    const float x = UI::Numeric::toFloatNarrow(mouseX);
+    const float x = UI::Format::toFloatNarrow(mouseX);
     const auto it = std::ranges::lower_bound(timeData, x);
 
     if (it == timeData.begin())
@@ -442,7 +444,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const size_t barColumnCount = std::max(bars.size(), minBarColumns);
-    const float barColumnCountF = UI::Numeric::toFloatNarrow(UI::Numeric::toDouble(barColumnCount));
+    const float barColumnCountF = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(barColumnCount));
     const float spacing = (barColumnCount > 1) ? style.ItemSpacing.x * (barColumnCountF - 1.0F) : 0.0F;
     const float columnWidth = (BAR_WIDTH * barColumnCountF) + spacing;
 
@@ -504,6 +506,32 @@ inline void renderHistoryWithNowBars(const char* tableId,
     if (pushedVars > 0)
     {
         ImGui::PopStyleVar(pushedVars);
+    }
+}
+
+// ============================================================================
+// Chart Data Utilities
+// ============================================================================
+
+/// Crop the front of a vector to reach a target size.
+/// Used to align history buffers when they have different lengths for charting.
+/// @param data The vector to crop (modified in place)
+/// @param targetSize The desired size after cropping
+template<typename T> void cropFrontToSize(std::vector<T>& data, std::size_t targetSize)
+{
+    if (data.size() > targetSize)
+    {
+        const std::size_t removeCount = data.size() - targetSize;
+        using Diff = typename std::vector<T>::difference_type;
+        constexpr Diff maxDiff = std::numeric_limits<Diff>::max();
+        const Diff removeCountDiff = Domain::Numeric::narrowOr<Diff>(removeCount, maxDiff);
+        if (removeCountDiff == maxDiff)
+        {
+            data.clear();
+            return;
+        }
+
+        data.erase(data.begin(), data.begin() + removeCountDiff);
     }
 }
 

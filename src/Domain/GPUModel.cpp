@@ -205,13 +205,13 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         // PCIe bandwidth rates
         if (current.pcieTxBytes >= previous->pcieTxBytes)
         {
-            std::uint64_t txDelta = current.pcieTxBytes - previous->pcieTxBytes;
+            const std::uint64_t txDelta = current.pcieTxBytes - previous->pcieTxBytes;
             snapshot.pcieTxBytesPerSec = static_cast<double>(txDelta) / timeDeltaSeconds;
         }
 
         if (current.pcieRxBytes >= previous->pcieRxBytes)
         {
-            std::uint64_t rxDelta = current.pcieRxBytes - previous->pcieRxBytes;
+            const std::uint64_t rxDelta = current.pcieRxBytes - previous->pcieRxBytes;
             snapshot.pcieRxBytesPerSec = static_cast<double>(rxDelta) / timeDeltaSeconds;
         }
     }

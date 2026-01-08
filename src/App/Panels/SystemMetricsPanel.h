@@ -1,6 +1,8 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/GpuSection.h"
+#include "App/Panels/MemorySection.h"
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
@@ -69,10 +71,6 @@ class SystemMetricsPanel : public Panel
   private:
     void renderOverview();
     void renderCpuSection();
-    void renderPerCoreSection();
-    void renderGpuSection();
-    void renderNetworkSection();
-    void renderDiskIOSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
@@ -99,13 +97,8 @@ class SystemMetricsPanel : public Panel
         bool initialized = false;
     } m_SmoothedCpu;
 
-    struct SmoothedMemory
-    {
-        double usedPercent = 0.0;
-        double cachedPercent = 0.0;
-        double swapPercent = 0.0;
-        bool initialized = false;
-    } m_SmoothedMemory;
+    // Use MemorySection's SmoothedMemory type
+    MemorySection::SmoothedMemory m_SmoothedMemory;
 
     struct SmoothedDiskIO
     {
@@ -146,15 +139,8 @@ class SystemMetricsPanel : public Panel
     // Selected network interface (-1 means "Total" / all interfaces combined)
     int m_SelectedNetworkInterface = -1;
 
-    struct SmoothedGPU
-    {
-        double utilizationPercent = 0.0;
-        double memoryPercent = 0.0;
-        double temperatureC = 0.0;
-        double powerWatts = 0.0;
-        bool initialized = false;
-    };
-    std::unordered_map<std::string, SmoothedGPU> m_SmoothedGPUs;
+    // GPU smoothed values (uses type from GpuSection)
+    std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
 
     std::vector<double> m_SmoothedPerCore;
 
@@ -171,13 +157,9 @@ class SystemMetricsPanel : public Panel
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
-    void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
-    void updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds);
-    void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds);
-    void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, float deltaTimeSeconds);
 };
 
 } // namespace App

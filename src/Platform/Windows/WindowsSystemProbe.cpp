@@ -403,8 +403,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // - Alias: friendly name (e.g., "Wi-Fi", "Ethernet")
         // - Description: full adapter description (e.g., "Intel(R) Wi-Fi 6 AX201 160MHz")
         // Fallback chain for name: Alias -> Description -> Interface index
-        std::string alias = WinString::wideToUtf8(row.Alias);
-        std::string description = WinString::wideToUtf8(row.Description);
+        const std::string alias = WinString::wideToUtf8(row.Alias);
+        const std::string description = WinString::wideToUtf8(row.Description);
 
         if (!alias.empty())
         {

@@ -78,18 +78,30 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     }
 
     // Enumerate physical disks
-    // Note: PDH APIs require DWORD for buffer sizes; explicit casts below are intentional.
-    DWORD bufferSize = 0;
-    status = PdhEnumObjectItemsW(nullptr, nullptr, L"PhysicalDisk", nullptr, &bufferSize, nullptr, nullptr, PERF_DETAIL_WIZARD, 0);
+    // PdhEnumObjectItemsW requires both counter and instance buffers on the second call.
+    // First call: determine buffer sizes needed
+    DWORD counterBufferSize = 0;
+    DWORD instanceBufferSize = 0;
+    status = PdhEnumObjectItemsW(
+        nullptr, nullptr, L"PhysicalDisk", nullptr, &counterBufferSize, nullptr, &instanceBufferSize, PERF_DETAIL_WIZARD, 0);
 
-    if (static_cast<DWORD>(status) == PDH_MORE_DATA && bufferSize != 0U)
+    if (static_cast<DWORD>(status) == PDH_MORE_DATA && instanceBufferSize != 0U)
     {
-        std::vector<wchar_t> instanceBuffer(bufferSize);
-        DWORD instanceSize = bufferSize;
-        DWORD counterSize = 0;
+        // Second call: retrieve actual data with properly sized buffers
+        std::vector<wchar_t> counterBuffer(counterBufferSize);
+        std::vector<wchar_t> instanceBuffer(instanceBufferSize);
+        DWORD counterSize = counterBufferSize;
+        DWORD instanceSize = instanceBufferSize;
 
-        status = PdhEnumObjectItemsW(
-            nullptr, nullptr, L"PhysicalDisk", nullptr, &counterSize, instanceBuffer.data(), &instanceSize, PERF_DETAIL_WIZARD, 0);
+        status = PdhEnumObjectItemsW(nullptr,
+                                     nullptr,
+                                     L"PhysicalDisk",
+                                     counterBuffer.data(),
+                                     &counterSize,
+                                     instanceBuffer.data(),
+                                     &instanceSize,
+                                     PERF_DETAIL_WIZARD,
+                                     0);
 
         if (status == ERROR_SUCCESS)
         {

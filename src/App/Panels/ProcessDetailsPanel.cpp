@@ -7,10 +7,9 @@
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "UI/ChartWidgets.h"
 #include "UI/Format.h"
-#include "UI/HistoryWidgets.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/Numeric.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -118,7 +117,7 @@ struct ProcessDetailsPanel::PrioritySliderContext
 
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
-      m_MaxHistorySeconds(UI::Numeric::toDouble(App::UserConfig::get().settings().maxHistorySeconds)),
+      m_MaxHistorySeconds(Domain::Numeric::toDouble(App::UserConfig::get().settings().maxHistorySeconds)),
       m_ProcessActions(Platform::makeProcessActions()),
       m_ActionCapabilities(m_ProcessActions->actionCapabilities())
 {
@@ -163,7 +162,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             {
                 // memoryPercent = (memoryBytes / totalSystemMemoryBytes) * 100
                 // => X% of system = X * (memoryPercent / memoryBytes)
-                scale = usedPercent / UI::Numeric::toDouble(snapshot->memoryBytes);
+                scale = usedPercent / Domain::Numeric::toDouble(snapshot->memoryBytes);
             }
 
             auto toPercent = [scale](std::uint64_t bytes) -> double
@@ -172,14 +171,14 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
                 {
                     return 0.0;
                 }
-                return std::clamp(UI::Numeric::toDouble(bytes) * scale, 0.0, 100.0);
+                return std::clamp(Domain::Numeric::toDouble(bytes) * scale, 0.0, 100.0);
             };
 
             m_MemoryHistory.push_back(usedPercent);
             m_SharedHistory.push_back(toPercent(snapshot->sharedBytes));
             m_VirtualHistory.push_back(toPercent(snapshot->virtualBytes));
-            m_ThreadHistory.push_back(UI::Numeric::toDouble(snapshot->threadCount));
-            m_HandleHistory.push_back(UI::Numeric::toDouble(snapshot->handleCount));
+            m_ThreadHistory.push_back(Domain::Numeric::toDouble(snapshot->threadCount));
+            m_HandleHistory.push_back(Domain::Numeric::toDouble(snapshot->handleCount));
             m_PageFaultHistory.push_back(snapshot->pageFaultsPerSec);
             m_IoReadHistory.push_back(snapshot->ioReadBytesPerSec);
             m_IoWriteHistory.push_back(snapshot->ioWriteBytesPerSec);
@@ -187,7 +186,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_NetRecvHistory.push_back(snapshot->netReceivedBytesPerSec);
             m_PowerHistory.push_back(snapshot->powerWatts);
             m_GpuUtilHistory.push_back(snapshot->gpuUtilPercent);
-            m_GpuMemHistory.push_back(UI::Numeric::toDouble(snapshot->gpuMemoryBytes));
+            m_GpuMemHistory.push_back(Domain::Numeric::toDouble(snapshot->gpuMemoryBytes));
             m_Timestamps.push_back(nowSeconds);
 
             // Update peak memory percent (from snapshot's peak value)
@@ -361,21 +360,21 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const auto refreshMs = std::chrono::milliseconds(App::UserConfig::get().settings().refreshIntervalMs);
     const double alpha = computeAlpha(deltaTimeSeconds, refreshMs);
 
-    const double targetCpu = UI::Numeric::clampPercent(snapshot.cpuPercent);
-    const double targetResident = UI::Numeric::toDouble(snapshot.memoryBytes);
-    const double targetVirtual = UI::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
-    const double targetCpuUser = UI::Numeric::clampPercent(snapshot.cpuUserPercent);
-    const double targetCpuSystem = UI::Numeric::clampPercent(snapshot.cpuSystemPercent);
-    const double targetThreads = UI::Numeric::toDouble(snapshot.threadCount);
-    const double targetHandles = UI::Numeric::toDouble(snapshot.handleCount);
+    const double targetCpu = UI::Format::clampPercent(snapshot.cpuPercent);
+    const double targetResident = Domain::Numeric::toDouble(snapshot.memoryBytes);
+    const double targetVirtual = Domain::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
+    const double targetCpuUser = UI::Format::clampPercent(snapshot.cpuUserPercent);
+    const double targetCpuSystem = UI::Format::clampPercent(snapshot.cpuSystemPercent);
+    const double targetThreads = Domain::Numeric::toDouble(snapshot.threadCount);
+    const double targetHandles = Domain::Numeric::toDouble(snapshot.handleCount);
     const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
     const double targetIoRead = std::max(0.0, snapshot.ioReadBytesPerSec);
     const double targetIoWrite = std::max(0.0, snapshot.ioWriteBytesPerSec);
     const double targetNetSent = std::max(0.0, snapshot.netSentBytesPerSec);
     const double targetNetRecv = std::max(0.0, snapshot.netReceivedBytesPerSec);
     const double targetPower = std::max(0.0, snapshot.powerWatts);
-    const double targetGpuUtil = UI::Numeric::clampPercent(snapshot.gpuUtilPercent);
-    const double targetGpuMem = UI::Numeric::toDouble(snapshot.gpuMemoryBytes);
+    const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
+    const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
 
     if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
     {
@@ -398,12 +397,12 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
         return;
     }
 
-    m_SmoothedUsage.cpuPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
+    m_SmoothedUsage.cpuPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
     m_SmoothedUsage.residentBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.residentBytes, targetResident, alpha));
     m_SmoothedUsage.virtualBytes = smoothTowards(m_SmoothedUsage.virtualBytes, targetVirtual, alpha);
     m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
-    m_SmoothedUsage.cpuUserPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha));
-    m_SmoothedUsage.cpuSystemPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha));
+    m_SmoothedUsage.cpuUserPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha));
+    m_SmoothedUsage.cpuSystemPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha));
     m_SmoothedUsage.threadCount = std::max(0.0, smoothTowards(m_SmoothedUsage.threadCount, targetThreads, alpha));
     m_SmoothedUsage.handleCount = std::max(0.0, smoothTowards(m_SmoothedUsage.handleCount, targetHandles, alpha));
     m_SmoothedUsage.pageFaultsPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha));
@@ -412,7 +411,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.netSentBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netSentBytesPerSec, targetNetSent, alpha));
     m_SmoothedUsage.netRecvBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netRecvBytesPerSec, targetNetRecv, alpha));
     m_SmoothedUsage.powerWatts = std::max(0.0, smoothTowards(m_SmoothedUsage.powerWatts, targetPower, alpha));
-    m_SmoothedUsage.gpuUtilPercent = UI::Numeric::clampPercent(smoothTowards(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha));
+    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha));
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha));
 }
 
@@ -607,15 +606,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
                                  .label = "CPU Total",
-                                 .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuPercent),
+                                 .value01 = UI::Format::percent01(m_SmoothedUsage.cpuPercent),
                                  .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
         const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
                                 .label = "User",
-                                .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuUserPercent),
+                                .value01 = UI::Format::percent01(m_SmoothedUsage.cpuUserPercent),
                                 .color = theme.scheme().cpuUser};
         const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
                                   .label = "System",
-                                  .value01 = UI::Numeric::percent01(m_SmoothedUsage.cpuSystemPercent),
+                                  .value01 = UI::Format::percent01(m_SmoothedUsage.cpuSystemPercent),
                                   .color = theme.scheme().cpuSystem};
 
         auto cpuPlot = [&]()
@@ -631,7 +630,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
                 if (alignedCount > 0)
                 {
-                    const int plotCount = UI::Numeric::checkedCount(alignedCount);
+                    const int plotCount = UI::Format::checkedCount(alignedCount);
                     std::vector<double> y0(alignedCount, 0.0);
                     std::vector<double> yUserTop(alignedCount);
                     std::vector<double> ySystemTop(alignedCount);
@@ -723,15 +722,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             std::vector<NowBar> memoryBars;
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
-                                  .value01 = UI::Numeric::percent01(usedNow),
+                                  .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
                                   .label = "Shared",
-                                  .value01 = UI::Numeric::percent01(sharedNow),
+                                  .value01 = UI::Format::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
-                                  .value01 = UI::Numeric::percent01(virtNowVal),
+                                  .value01 = UI::Format::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 
             auto memoryPlot = [&]()
@@ -763,7 +762,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         plotLineWithFill("Used",
                                          timeData.data(),
                                          usedData.data(),
-                                         UI::Numeric::checkedCount(usedData.size()),
+                                         UI::Format::checkedCount(usedData.size()),
                                          theme.scheme().chartMemory,
                                          theme.scheme().chartMemoryFill);
                     }
@@ -773,7 +772,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         plotLineWithFill("Shared",
                                          timeData.data(),
                                          sharedData.data(),
-                                         UI::Numeric::checkedCount(sharedData.size()),
+                                         UI::Format::checkedCount(sharedData.size()),
                                          theme.scheme().chartCpu,
                                          theme.scheme().chartCpuFill);
                     }
@@ -783,7 +782,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         plotLineWithFill("Virtual",
                                          timeData.data(),
                                          virtData.data(),
-                                         UI::Numeric::checkedCount(virtData.size()),
+                                         UI::Format::checkedCount(virtData.size()),
                                          theme.scheme().chartIo,
                                          theme.scheme().chartIoFill);
                     }
@@ -893,7 +892,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Dom
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill(
                 "Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
 
@@ -987,7 +986,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Read", timeData.data(), readData.data(), plotCount, theme.scheme().chartIo, theme.scheme().chartIoFill);
 
             plotLineWithFill("Write", timeData.data(), writeData.data(), plotCount, theme.accentColor(1));
@@ -1069,7 +1068,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
             ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            const int plotCount = UI::Numeric::checkedCount(alignedCount);
+            const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
 
             plotLineWithFill("Received", timeData.data(), recvData.data(), plotCount, theme.accentColor(2));
@@ -1149,7 +1148,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
             if (!powerData.empty())
             {
                 plotLineWithFill(
-                    "Power", timeData.data(), powerData.data(), UI::Numeric::checkedCount(powerData.size()), theme.scheme().textInfo);
+                    "Power", timeData.data(), powerData.data(), UI::Format::checkedCount(powerData.size()), theme.scheme().textInfo);
 
                 if (ImPlot::IsPlotHovered())
                 {

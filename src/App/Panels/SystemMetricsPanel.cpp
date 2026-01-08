@@ -1,15 +1,18 @@
 #include "SystemMetricsPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/CpuCoresSection.h"
+#include "App/Panels/GpuSection.h"
+#include "App/Panels/MemorySection.h"
+#include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
 #include "Domain/GPUModel.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
+#include "UI/ChartWidgets.h"
 #include "UI/Format.h"
-#include "UI/HistoryWidgets.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/Numeric.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -17,7 +20,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -27,7 +29,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -39,7 +40,6 @@ namespace
 
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
-using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
@@ -71,22 +71,8 @@ using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
     return ICON_FA_BATTERY_EMPTY;
 }
 
-template<typename T> void cropFrontToSize(std::vector<T>& data, size_t targetSize)
-{
-    if (data.size() > targetSize)
-    {
-        const size_t removeCount = data.size() - targetSize;
-        using Diff = std::ptrdiff_t;
-        const Diff removeCountDiff = UI::Numeric::narrowOr<Diff>(removeCount, std::numeric_limits<Diff>::min());
-        if (removeCountDiff == std::numeric_limits<Diff>::min())
-        {
-            data.clear();
-            return;
-        }
-
-        data.erase(data.begin(), data.begin() + removeCountDiff);
-    }
-}
+// Use shared implementation from ChartWidgets
+using UI::Widgets::cropFrontToSize;
 
 struct HistoryRange
 {
@@ -103,7 +89,7 @@ using UI::Widgets::renderHistoryWithNowBars;
 [[nodiscard]] int checkedRoundSeconds(double seconds)
 {
     const long rounded = std::lround(seconds);
-    return UI::Numeric::narrowOr<int>(rounded, std::numeric_limits<int>::max());
+    return Domain::Numeric::narrowOr<int>(rounded, std::numeric_limits<int>::max());
 }
 
 void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
@@ -128,6 +114,9 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
     ImGui::EndTooltip();
 }
 
+// Network interface utilities (isVirtualInterface, isBluetoothInterface, getSortedFilteredInterfaces)
+// are now in App/Panels/NetInterfaceUtils.h to avoid duplication with NetworkPanel.cpp
+
 } // namespace
 
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
@@ -143,7 +132,7 @@ void SystemMetricsPanel::onAttach()
 {
     auto& settings = UserConfig::get().settings();
     m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
-    m_MaxHistorySeconds = UI::Numeric::toDouble(settings.maxHistorySeconds);
+    m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
     m_HistoryScrollSeconds = 0.0;
     m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
@@ -320,7 +309,17 @@ void SystemMetricsPanel::renderContent()
         {
             if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
-                renderPerCoreSection();
+                // Build context for CpuCoresSection render function
+                CpuCoresSection::RenderContext cpuCtx{
+                    .systemModel = m_Model.get(),
+                    .timestampsCache = &m_TimestampsCache,
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .historyScrollSeconds = m_HistoryScrollSeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedPerCore = &m_SmoothedPerCore,
+                };
+                CpuCoresSection::renderCpuCoresSection(cpuCtx);
                 ImGui::EndTabItem();
             }
         }
@@ -333,7 +332,16 @@ void SystemMetricsPanel::renderContent()
             {
                 if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
                 {
-                    renderGpuSection();
+                    // Build context for GpuSection render function
+                    GpuSection::RenderContext gpuCtx{
+                        .gpuModel = m_GPUModel.get(),
+                        .maxHistorySeconds = m_MaxHistorySeconds,
+                        .historyScrollSeconds = m_HistoryScrollSeconds,
+                        .lastDeltaSeconds = m_LastDeltaSeconds,
+                        .refreshInterval = m_RefreshInterval,
+                        .smoothedGPUs = &m_SmoothedGPUs,
+                    };
+                    GpuSection::renderGpuSection(gpuCtx);
                     ImGui::EndTabItem();
                 }
             }
@@ -344,7 +352,23 @@ void SystemMetricsPanel::renderContent()
         {
             if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
             {
-                renderNetworkSection();
+                // Build context for NetworkSection render functions
+                NetworkSection::RenderContext netCtx{
+                    .systemModel = m_Model.get(),
+                    .storageModel = m_StorageModel.get(),
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .historyScrollSeconds = m_HistoryScrollSeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedDiskReadBytesPerSec = &m_SmoothedSystemIO.readBytesPerSec,
+                    .smoothedDiskWriteBytesPerSec = &m_SmoothedSystemIO.writeBytesPerSec,
+                    .smoothedDiskInitialized = &m_SmoothedSystemIO.initialized,
+                    .smoothedNetSentBytesPerSec = &m_SmoothedNetwork.sentBytesPerSec,
+                    .smoothedNetRecvBytesPerSec = &m_SmoothedNetwork.recvBytesPerSec,
+                    .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
+                    .selectedNetworkInterface = &m_SelectedNetworkInterface,
+                };
+                NetworkSection::renderNetworkSection(netCtx);
                 ImGui::EndTabItem();
             }
         }
@@ -377,7 +401,7 @@ void SystemMetricsPanel::renderOverview()
     std::string coreInfo;
     if (snap.cpuFreqMHz > 0)
     {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, UI::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
+        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, Domain::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
     }
     else
     {
@@ -499,15 +523,15 @@ void SystemMetricsPanel::renderOverview()
                 }
 
                 ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
-                ImPlot::PlotShaded("User", breakdownTimeData.data(), y0.data(), yUserTop.data(), UI::Numeric::checkedCount(breakdownCount));
+                ImPlot::PlotShaded("User", breakdownTimeData.data(), y0.data(), yUserTop.data(), UI::Format::checkedCount(breakdownCount));
 
                 ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
                 ImPlot::PlotShaded(
-                    "System", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), UI::Numeric::checkedCount(breakdownCount));
+                    "System", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), UI::Format::checkedCount(breakdownCount));
 
                 ImPlot::SetNextFillStyle(theme.scheme().cpuIowaitFill);
                 ImPlot::PlotShaded(
-                    "I/O Wait", breakdownTimeData.data(), ySystemTop.data(), yIowaitTop.data(), UI::Numeric::checkedCount(breakdownCount));
+                    "I/O Wait", breakdownTimeData.data(), ySystemTop.data(), yIowaitTop.data(), UI::Format::checkedCount(breakdownCount));
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -527,10 +551,10 @@ void SystemMetricsPanel::renderOverview()
             else if (!cpuHist.empty())
             {
                 ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
-                ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
+                ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()), 0.0);
 
                 ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                ImPlot::PlotLine("CPU", cpuTimeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()));
+                ImPlot::PlotLine("CPU", cpuTimeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()));
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -557,19 +581,19 @@ void SystemMetricsPanel::renderOverview()
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
                        .label = "CPU Total",
-                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.total),
+                       .value01 = UI::Format::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
                        .label = "User",
-                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.user),
+                       .value01 = UI::Format::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
                        .label = "System",
-                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.system),
+                       .value01 = UI::Format::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
                        .label = "I/O Wait",
-                       .value01 = UI::Numeric::percent01(m_SmoothedCpu.iowait),
+                       .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
 
     constexpr size_t OVERVIEW_NOW_BAR_COLUMNS = 4; // CPU: Total, User, System, I/O Wait
@@ -577,137 +601,17 @@ void SystemMetricsPanel::renderOverview()
 
     ImGui::Spacing();
 
-    // Memory & Swap history (moved from Memory tab)
+    // Memory & Swap history section
     {
-        auto memHist = m_Model->memoryHistory();
-        auto cachedHist = m_Model->memoryCachedHistory();
-        auto swapHist = m_Model->swapHistory();
-        double peakMemPercent = 0.0;
-
-        ImGui::TextColored(
-            theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
-        ImGui::Spacing();
-
-        const size_t memCount = std::min(memHist.size(), timestamps.size());
-        const size_t cachedCount = std::min(cachedHist.size(), timestamps.size());
-        const size_t swapCount = std::min(swapHist.size(), timestamps.size());
-
-        size_t alignedCount = memCount;
-        if (cachedCount > 0)
-        {
-            alignedCount = std::min(alignedCount, cachedCount);
-        }
-        if (swapCount > 0)
-        {
-            alignedCount = std::min(alignedCount, swapCount);
-        }
-
-        cropFrontToSize(memHist, alignedCount);
-        cropFrontToSize(cachedHist, std::min(cachedCount, alignedCount));
-        cropFrontToSize(swapHist, std::min(swapCount, alignedCount));
-        std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
-
-        auto memoryPlot = [&]()
-        {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##MemorySwapHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
-            {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
-                if (!memHist.empty())
-                {
-                    plotLineWithFill(
-                        "Used", timeData.data(), memHist.data(), UI::Numeric::checkedCount(memHist.size()), theme.scheme().chartMemory);
-                    peakMemPercent = static_cast<double>(*std::ranges::max_element(memHist));
-                }
-
-                if (!cachedHist.empty())
-                {
-                    plotLineWithFill("Cached",
-                                     timeData.data(),
-                                     cachedHist.data(),
-                                     UI::Numeric::checkedCount(cachedHist.size()),
-                                     theme.scheme().chartCpu);
-                }
-
-                if (!swapHist.empty())
-                {
-                    plotLineWithFill(
-                        "Swap", timeData.data(), swapHist.data(), UI::Numeric::checkedCount(swapHist.size()), theme.scheme().chartIo);
-                }
-
-                if (peakMemPercent > 0.0)
-                {
-                    const float peak = UI::Numeric::toFloatNarrow(peakMemPercent);
-                    const float xLine[2] = {UI::Numeric::toFloatNarrow(axisConfig.xMin), UI::Numeric::toFloatNarrow(axisConfig.xMax)};
-                    const float yLine[2] = {peak, peak};
-                    ImPlot::SetNextLineStyle(theme.scheme().textWarning, 1.5F);
-                    ImPlot::PlotLine("##MemPeak", xLine, yLine, 2);
-                }
-
-                if (ImPlot::IsPlotHovered())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                    {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-
-                        if (*idxVal < memHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
-                        }
-                        if (*idxVal < cachedHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().chartCpu, "Cached: %s", UI::Format::percentCompact(cachedHist[*idxVal]).c_str());
-                        }
-                        if (*idxVal < swapHist.size())
-                        {
-                            ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(swapHist[*idxVal]).c_str());
-                        }
-                        ImGui::EndTooltip();
-                    }
-                }
-
-                ImPlot::EndPlot();
-            }
+        MemorySection::RenderContext memCtx{
+            .systemModel = m_Model.get(),
+            .maxHistorySeconds = m_MaxHistorySeconds,
+            .historyScrollSeconds = m_HistoryScrollSeconds,
+            .lastDeltaSeconds = m_LastDeltaSeconds,
+            .refreshInterval = m_RefreshInterval,
+            .smoothedMemory = &m_SmoothedMemory,
         };
-
-        std::vector<NowBar> memoryBars;
-        if (snap.memoryTotalBytes > 0)
-        {
-            const double usedPercentClamped = std::clamp(m_SmoothedMemory.usedPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
-                                  .label = "Memory Used",
-                                  .value01 = UI::Numeric::percent01(usedPercentClamped),
-                                  .color = theme.scheme().chartMemory});
-
-            const double cachedPercentClamped = std::clamp(m_SmoothedMemory.cachedPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercentClamped),
-                                  .label = "Memory Cached",
-                                  .value01 = UI::Numeric::percent01(cachedPercentClamped),
-                                  .color = theme.scheme().chartCpu});
-        }
-
-        if (snap.swapTotalBytes > 0)
-        {
-            const double swapPercentClamped = std::clamp(m_SmoothedMemory.swapPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(swapPercentClamped),
-                                  .label = "Swap Used",
-                                  .value01 = UI::Numeric::percent01(swapPercentClamped),
-                                  .color = theme.scheme().chartIo});
-        }
-
-        renderHistoryWithNowBars(
-            "MemorySwapHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, memoryPlot, memoryBars, false, OVERVIEW_NOW_BAR_COLUMNS);
-
+        MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(OVERVIEW_NOW_BAR_COLUMNS));
         ImGui::Spacing();
     }
 
@@ -784,7 +688,7 @@ void SystemMetricsPanel::renderOverview()
             {
                 bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
                                 .label = "Battery Charge",
-                                .value01 = UI::Numeric::percent01(m_SmoothedPower.batteryChargePercent),
+                                .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
                                 .color = theme.scheme().chartMemory});
             }
 
@@ -816,7 +720,7 @@ void SystemMetricsPanel::renderOverview()
                         plotLineWithFill("Power",
                                          timeData.data(),
                                          powerHist.data(),
-                                         UI::Numeric::checkedCount(powerHist.size()),
+                                         UI::Format::checkedCount(powerHist.size()),
                                          theme.scheme().chartCpu);
                     }
 
@@ -827,7 +731,7 @@ void SystemMetricsPanel::renderOverview()
                         plotLineWithFill("Battery",
                                          timeData.data(),
                                          batteryHist.data(),
-                                         UI::Numeric::checkedCount(batteryHist.size()),
+                                         UI::Format::checkedCount(batteryHist.size()),
                                          theme.scheme().chartMemory);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
@@ -845,12 +749,12 @@ void SystemMetricsPanel::renderOverview()
 
                             if (*idxVal < powerHist.size())
                             {
-                                const double powerVal = UI::Numeric::toDouble(powerHist[*idxVal]);
+                                const double powerVal = Domain::Numeric::toDouble(powerHist[*idxVal]);
                                 ImGui::TextColored(theme.scheme().chartCpu, "Power: %s", UI::Format::formatPowerCompact(powerVal).c_str());
                             }
                             if (*idxVal < batteryHist.size() && snap.power.hasBattery)
                             {
-                                const double batteryVal = UI::Numeric::toDouble(batteryHist[*idxVal]);
+                                const double batteryVal = Domain::Numeric::toDouble(batteryHist[*idxVal]);
                                 ImGui::TextColored(
                                     theme.scheme().chartMemory, "Battery: %s", UI::Format::percentCompact(batteryVal).c_str());
                             }
@@ -1013,7 +917,7 @@ void SystemMetricsPanel::renderOverview()
                 ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
                 ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
-                const int count = UI::Numeric::checkedCount(alignedCount);
+                const int count = UI::Format::checkedCount(alignedCount);
                 plotLineWithFill("Threads", timeData.data(), threadData.data(), count, theme.scheme().chartCpu);
                 plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), count, theme.accentColor(3));
 
@@ -1048,102 +952,6 @@ void SystemMetricsPanel::renderOverview()
             "ThreadsFaultsHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
-}
-
-void SystemMetricsPanel::renderDiskIOSection()
-{
-    if (!m_StorageModel)
-    {
-        return;
-    }
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    const auto ioTimestamps = m_StorageModel->historyTimestamps();
-    const auto ioReadHist = m_StorageModel->totalReadHistory();
-    const auto ioWriteHist = m_StorageModel->totalWriteHistory();
-    const size_t aligned = std::min({ioTimestamps.size(), ioReadHist.size(), ioWriteHist.size()});
-
-    // Always use default axis config even with no data
-    const auto axis = aligned > 0 ? makeTimeAxisConfig(ioTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
-                                  : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    std::vector<float> ioTimes;
-    std::vector<float> readData;
-    std::vector<float> writeData;
-
-    if (aligned > 0)
-    {
-        ioTimes = buildTimeAxis(ioTimestamps, aligned, nowSeconds);
-        readData.assign(ioReadHist.end() - static_cast<std::ptrdiff_t>(aligned), ioReadHist.end());
-        writeData.assign(ioWriteHist.end() - static_cast<std::ptrdiff_t>(aligned), ioWriteHist.end());
-
-        // Update smoothed values
-        const double targetRead = static_cast<double>(readData.back());
-        const double targetWrite = static_cast<double>(writeData.back());
-        updateSmoothedSystemIO(targetRead, targetWrite, m_LastDeltaSeconds);
-    }
-
-    const double ioMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
-                                   writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
-                                   m_SmoothedSystemIO.readBytesPerSec,
-                                   m_SmoothedSystemIO.writeBytesPerSec,
-                                   1.0});
-    const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.readBytesPerSec),
-                         .label = "Disk Read",
-                         .value01 = std::clamp(m_SmoothedSystemIO.readBytesPerSec / ioMax, 0.0, 1.0),
-                         .color = theme.scheme().chartCpu};
-    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedSystemIO.writeBytesPerSec),
-                          .label = "Disk Write",
-                          .value01 = std::clamp(m_SmoothedSystemIO.writeBytesPerSec / ioMax, 0.0, 1.0),
-                          .color = theme.scheme().chartIo};
-
-    auto plot = [&]()
-    {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##SystemIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
-        {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
-            const int count = UI::Numeric::checkedCount(aligned);
-            plotLineWithFill("Read", ioTimes.data(), readData.data(), count, theme.scheme().chartCpu);
-            plotLineWithFill("Write", ioTimes.data(), writeData.data(), count, theme.scheme().chartIo);
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(ioTimes, mouse.x))
-                {
-                    if (*idxVal < aligned)
-                    {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(ioTimes[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-                        ImGui::Separator();
-                        ImGui::TextColored(theme.scheme().chartCpu,
-                                           "Read: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal])).c_str());
-                        ImGui::TextColored(theme.scheme().chartIo,
-                                           "Write: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal])).c_str());
-                        ImGui::EndTooltip();
-                    }
-                }
-            }
-
-            ImPlot::EndPlot();
-        }
-    };
-
-    constexpr size_t DISKIO_NOW_BAR_COLUMNS = 2; // Read, Write
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O (%zu samples)", aligned);
-    renderHistoryWithNowBars(
-        "SystemIoHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {readBar, writeBar}, false, DISKIO_NOW_BAR_COLUMNS);
-    ImGui::Spacing();
 }
 
 void SystemMetricsPanel::renderCpuSection()
@@ -1186,11 +994,11 @@ void SystemMetricsPanel::renderCpuSection()
             if (!cpuHist.empty())
             {
                 ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
-                ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()), 0.0);
+                ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()), 0.0);
 
                 // Draw the line on top of the shaded region.
                 ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                ImPlot::PlotLine("##CPU", timeData.data(), cpuHist.data(), UI::Numeric::checkedCount(cpuHist.size()));
+                ImPlot::PlotLine("##CPU", timeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()));
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -1236,609 +1044,9 @@ void SystemMetricsPanel::renderCpuSection()
     ImGui::Text("Current: %.1f%% (User: %.1f%%, System: %.1f%%)", m_SmoothedCpu.total, m_SmoothedCpu.user, m_SmoothedCpu.system);
 }
 
-void SystemMetricsPanel::renderPerCoreSection()
-{
-    auto snap = m_Model->snapshot();
-    auto perCoreHist = m_Model->perCoreHistory();
-    auto& theme = UI::Theme::get();
-
-    // CPU model header (same as Overview tab)
-    std::string coreInfo;
-    if (snap.cpuFreqMHz > 0)
-    {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, UI::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
-    }
-    else
-    {
-        coreInfo = std::format(" ({} cores)", snap.coreCount);
-    }
-    ImGui::TextUnformatted(snap.cpuModel.c_str());
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(coreInfo.c_str());
-    ImGui::Spacing();
-
-    const size_t numCores = snap.cpuPerCore.size();
-    if (numCores == 0)
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "No per-core data available");
-        return;
-    }
-
-    updateSmoothedPerCore(snap, m_LastDeltaSeconds);
-
-    // ========================================
-    // Per-core history grid with vertical now bars
-    // ========================================
-    // Removed redundant heading to reduce clutter
-
-    const auto& timestamps = m_TimestampsCache;
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    if (perCoreHist.empty() || timestamps.empty())
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "Collecting data...");
-        return;
-    }
-
-    const size_t coreCount = perCoreHist.size();
-
-    // Grid layout
-    {
-        const float gridWidth = ImGui::GetContentRegionAvail().x;
-        constexpr float minCellWidth = 240.0F;
-        const float barWidth = ImGui::GetFrameHeight(); // Match prior horizontal bar height for visual consistency
-        const float cellWidth = minCellWidth + barWidth;
-        const size_t gridCols = std::max<size_t>(1, static_cast<size_t>(gridWidth / cellWidth));
-        const int gridColsInt = UI::Numeric::checkedCount(gridCols);
-        const size_t gridRows = (coreCount + gridCols - 1) / gridCols;
-
-        if (ImGui::BeginTable("PerCoreGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
-        {
-            for (size_t row = 0; row < gridRows; ++row)
-            {
-                ImGui::TableNextRow();
-                for (size_t col = 0; col < gridCols; ++col)
-                {
-                    const size_t coreIdx = (row * gridCols) + col;
-                    ImGui::TableNextColumn();
-
-                    if (coreIdx >= coreCount)
-                    {
-                        continue;
-                    }
-
-                    const auto& samples = perCoreHist[coreIdx];
-                    if (samples.empty())
-                    {
-                        ImGui::TextColored(theme.scheme().textMuted, "Core %zu\nCollecting data...", coreIdx);
-                        continue;
-                    }
-
-                    const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
-
-                    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
-                    ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-                    const std::string childId = std::format("CoreCell{}", coreIdx);
-                    const float labelHeight = ImGui::GetTextLineHeight();
-                    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-                    const float childHeight =
-                        labelHeight + spacingY + HISTORY_PLOT_HEIGHT_DEFAULT + UI::Widgets::BAR_WIDTH + (spacingY * 2.0F);
-                    if (ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders))
-                    {
-                        const float availableWidth = ImGui::GetContentRegionAvail().x;
-                        const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
-                        const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
-                        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
-                        ImGui::TextUnformatted(coreLabel.c_str());
-                        ImGui::Spacing();
-
-                        std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
-                        auto plotFn = [&]()
-                        {
-                            const UI::Widgets::PlotFontGuard fontGuard;
-                            if (ImPlot::BeginPlot("##PerCorePlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
-                            {
-                                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
-                                plotLineWithFill("##Core",
-                                                 timeData.data(),
-                                                 samples.data(),
-                                                 UI::Numeric::checkedCount(timeData.size()),
-                                                 theme.scheme().chartCpu);
-
-                                if (ImPlot::IsPlotHovered() && !timeData.empty())
-                                {
-                                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                                    {
-                                        ImGui::BeginTooltip();
-                                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                                        ImGui::TextUnformatted(ageText.c_str());
-                                        if (*idxVal < samples.size())
-                                        {
-                                            ImGui::TextColored(
-                                                theme.scheme().chartCpu, "CPU: %.1f%%", static_cast<double>(samples[*idxVal]));
-                                        }
-                                        ImGui::EndTooltip();
-                                    }
-                                }
-                                ImPlot::EndPlot();
-                            }
-                        };
-
-                        const double smoothed =
-                            (coreIdx < m_SmoothedPerCore.size()) ? m_SmoothedPerCore[coreIdx] : snap.cpuPerCore[coreIdx].totalPercent;
-                        const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
-                                         .label = std::format("Core {}", coreIdx),
-                                         .value01 = UI::Numeric::percent01(smoothed),
-                                         .color = theme.progressColor(smoothed)};
-
-                        std::vector<NowBar> bars;
-                        bars.push_back(bar);
-                        const std::string tableId = std::format("CoreLayout{}", coreIdx);
-                        renderHistoryWithNowBars(tableId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, plotFn, bars, false, 0, true);
-                    }
-                    ImGui::EndChild();
-                    ImGui::PopStyleColor(2);
-                }
-            }
-            ImGui::EndTable();
-        }
-    }
-}
-
-void SystemMetricsPanel::renderGpuSection()
-{
-    if (!m_GPUModel)
-    {
-        ImGui::Text("GPU monitoring not available");
-        return;
-    }
-
-    const auto gpuSnapshots = m_GPUModel->snapshots();
-    const auto gpuInfos = m_GPUModel->gpuInfo();
-    const auto caps = m_GPUModel->capabilities();
-    auto& theme = UI::Theme::get();
-
-    if (gpuSnapshots.empty())
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "No GPU data available");
-        return;
-    }
-
-    // Get timestamps for history charts
-    const auto gpuTimestamps = m_GPUModel->historyTimestamps();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(gpuTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
-    ImGui::Spacing();
-
-    // Update smoothed values for all GPUs
-    for (const auto& snap : gpuSnapshots)
-    {
-        updateSmoothedGPU(snap.gpuId, snap, m_LastDeltaSeconds);
-    }
-
-    // Render each GPU
-    for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
-    {
-        const auto& snap = gpuSnapshots[gpuIdx];
-        const auto& smoothed = m_SmoothedGPUs[snap.gpuId];
-
-        // Find GPU info for this GPU
-        std::string gpuName = snap.name;
-        bool isIntegrated = snap.isIntegrated;
-        for (const auto& info : gpuInfos)
-        {
-            if (info.id == snap.gpuId)
-            {
-                gpuName = info.name;
-                isIntegrated = info.isIntegrated;
-                break;
-            }
-        }
-
-        // GPU header with collapsible section
-        // Discrete: show VRAM amount after name, label as "Discrete"
-        // Integrated: no VRAM amount (shares system RAM), label as "Shared Memory"
-        std::string vramInfo;
-        if (!isIntegrated && snap.memoryTotalBytes > 0)
-        {
-            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
-        }
-        const std::string headerLabel =
-            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
-
-        ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
-        const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
-        ImGui::PopID();
-
-        if (!expanded)
-        {
-            continue;
-        }
-
-        ImGui::Indent();
-
-        // Get history data for this GPU
-        auto utilHist = m_GPUModel->utilizationHistory(snap.gpuId);
-        auto memHist = m_GPUModel->memoryPercentHistory(snap.gpuId);
-        auto clockHist = m_GPUModel->gpuClockHistory(snap.gpuId);
-        auto encoderHist = m_GPUModel->encoderHistory(snap.gpuId);
-        auto decoderHist = m_GPUModel->decoderHistory(snap.gpuId);
-        auto tempHist = m_GPUModel->temperatureHistory(snap.gpuId);
-        auto powerHist = m_GPUModel->powerHistory(snap.gpuId);
-        auto fanHist = m_GPUModel->fanSpeedHistory(snap.gpuId);
-
-        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
-
-        // Crop histories to aligned size using existing helper
-        cropFrontToSize(utilHist, alignedCount);
-        cropFrontToSize(memHist, alignedCount);
-        cropFrontToSize(encoderHist, alignedCount);
-        cropFrontToSize(decoderHist, alignedCount);
-        cropFrontToSize(clockHist, alignedCount);
-        cropFrontToSize(tempHist, alignedCount);
-        cropFrontToSize(powerHist, alignedCount);
-        cropFrontToSize(fanHist, alignedCount);
-
-        std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
-
-        // Get max clock for normalization
-        const float maxClockMHz =
-            caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
-
-        // ========================================
-        // Chart 1: Core + Video (all percentages)
-        // Utilization, Memory, Clock, Encoder, Decoder
-        // ========================================
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
-
-        auto gpuCorePlot = [&]()
-        {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##GPUCoreHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
-            {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
-                if (!utilHist.empty())
-                {
-                    plotLineWithFill("Utilization",
-                                     timeData.data(),
-                                     utilHist.data(),
-                                     UI::Numeric::checkedCount(utilHist.size()),
-                                     theme.scheme().gpuUtilization);
-                }
-
-                if (!memHist.empty())
-                {
-                    plotLineWithFill(
-                        "Memory", timeData.data(), memHist.data(), UI::Numeric::checkedCount(memHist.size()), theme.scheme().gpuMemory);
-                }
-
-                // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
-                if (caps.hasClockSpeeds && !clockHist.empty())
-                {
-                    std::vector<float> clockPercent(clockHist.size());
-                    for (size_t i = 0; i < clockHist.size(); ++i)
-                    {
-                        clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
-                    }
-                    plotLineWithFill("Clock",
-                                     timeData.data(),
-                                     clockPercent.data(),
-                                     UI::Numeric::checkedCount(clockPercent.size()),
-                                     theme.scheme().gpuClockFill);
-                }
-
-                // Encoder utilization
-                if (caps.hasEncoderDecoder && !encoderHist.empty())
-                {
-                    plotLineWithFill("Encoder",
-                                     timeData.data(),
-                                     encoderHist.data(),
-                                     UI::Numeric::checkedCount(encoderHist.size()),
-                                     theme.scheme().gpuEncoder);
-                }
-
-                // Decoder utilization
-                if (caps.hasEncoderDecoder && !decoderHist.empty())
-                {
-                    plotLineWithFill("Decoder",
-                                     timeData.data(),
-                                     decoderHist.data(),
-                                     UI::Numeric::checkedCount(decoderHist.size()),
-                                     theme.scheme().gpuDecoder);
-                }
-
-                // Tooltip on hover
-                if (ImPlot::IsPlotHovered() && !timeData.empty())
-                {
-                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                    {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-                        ImGui::Separator();
-                        if (*idxVal < utilHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().gpuUtilization, "Utilization: %s", UI::Format::percentCompact(utilHist[*idxVal]).c_str());
-                        }
-                        if (*idxVal < memHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
-                        }
-                        if (caps.hasClockSpeeds && *idxVal < clockHist.size())
-                        {
-                            ImGui::TextColored(theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
-                        }
-                        if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[*idxVal]).c_str());
-                        }
-                        if (caps.hasEncoderDecoder && *idxVal < decoderHist.size())
-                        {
-                            ImGui::TextColored(
-                                theme.scheme().gpuDecoder, "Decoder: %s", UI::Format::percentCompact(decoderHist[*idxVal]).c_str());
-                        }
-                        ImGui::EndTooltip();
-                    }
-                }
-
-                ImPlot::EndPlot();
-            }
-        };
-
-        // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
-        std::vector<NowBar> gpuCoreBars;
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
-                               .label = "GPU Utilization",
-                               .value01 = UI::Numeric::percent01(smoothed.utilizationPercent),
-                               .color = theme.scheme().gpuUtilization});
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                               .label = "GPU Memory",
-                               .value01 = UI::Numeric::percent01(smoothed.memoryPercent),
-                               .color = theme.scheme().gpuMemory});
-        if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
-        {
-            const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
-            gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
-                                   .label = "GPU Clock",
-                                   .value01 = UI::Numeric::percent01(clockPercent),
-                                   .color = theme.scheme().gpuClock});
-        }
-        if (caps.hasEncoderDecoder)
-        {
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.encoderUtilPercent),
-                                   .label = "Encoder",
-                                   .value01 = UI::Numeric::percent01(snap.encoderUtilPercent),
-                                   .color = theme.scheme().gpuEncoder});
-            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.decoderUtilPercent),
-                                   .label = "Decoder",
-                                   .value01 = UI::Numeric::percent01(snap.decoderUtilPercent),
-                                   .color = theme.scheme().gpuDecoder});
-        }
-
-        // Build thermal bars early so we can calculate max column count for alignment
-        std::vector<NowBar> gpuThermalBars;
-        constexpr float maxTempC = 100.0F;
-        const float maxPowerW = snap.powerLimitWatts > 0.0 ? static_cast<float>(snap.powerLimitWatts) : 300.0F;
-        if (caps.hasTemperature)
-        {
-            const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
-                                      .label = "GPU Temperature",
-                                      .value01 = UI::Numeric::percent01(tempPercent),
-                                      .color = theme.scheme().gpuTemperature});
-        }
-        if (caps.hasPowerMetrics)
-        {
-            const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
-            gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
-                                      .label = "GPU Power",
-                                      .value01 = UI::Numeric::percent01(powerPercent),
-                                      .color = theme.scheme().gpuPower});
-        }
-        if (caps.hasFanSpeed)
-        {
-            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedRPMPercent),
-                                      .label = "GPU Fan Speed",
-                                      .value01 = UI::Numeric::percent01(static_cast<double>(snap.fanSpeedRPMPercent)),
-                                      .color = theme.scheme().gpuFan});
-        }
-
-        // Use max bar count across both charts for x-axis alignment
-        const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
-
-        const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
-        renderHistoryWithNowBars(coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
-
-        // Show notes for unavailable core metrics
-        {
-            std::vector<std::string> unavailableCoreNotes;
-            if (!caps.hasClockSpeeds)
-            {
-                unavailableCoreNotes.emplace_back("clock speed");
-            }
-            if (!caps.hasEncoderDecoder)
-            {
-                unavailableCoreNotes.emplace_back("encoder/decoder utilization");
-            }
-
-            if (!unavailableCoreNotes.empty())
-            {
-                std::string noteText = "Note: This system does not report GPU ";
-                for (size_t i = 0; i < unavailableCoreNotes.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        noteText += (i == unavailableCoreNotes.size() - 1) ? " or " : ", ";
-                    }
-                    noteText += unavailableCoreNotes[i];
-                }
-                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
-            }
-        }
-
-        ImGui::Spacing();
-
-        // ========================================
-        // Chart 2: Thermal/Power (temp, power, fan)
-        // These have different units, normalize to percentage for display
-        // ========================================
-        if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
-        {
-            ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
-
-            // Note: maxTempC and maxPowerW are defined above with the thermal bars
-            // Note: Fan speed is already a percentage (0-100%), no max needed
-
-            auto gpuThermalPlot = [&]()
-            {
-                const UI::Widgets::PlotFontGuard fontGuard;
-                if (ImPlot::BeginPlot("##GPUThermalHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
-                {
-                    UI::Widgets::setupLegendDefault();
-                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                    ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
-                    // Temperature (normalized to 0-100%)
-                    if (caps.hasTemperature && !tempHist.empty())
-                    {
-                        std::vector<float> tempPercent(tempHist.size());
-                        for (size_t i = 0; i < tempHist.size(); ++i)
-                        {
-                            tempPercent[i] = (tempHist[i] / maxTempC) * 100.0F;
-                        }
-                        plotLineWithFill("Temp",
-                                         timeData.data(),
-                                         tempPercent.data(),
-                                         UI::Numeric::checkedCount(tempPercent.size()),
-                                         theme.scheme().gpuTemperature);
-                    }
-
-                    // Power (normalized to power limit percentage)
-                    if (caps.hasPowerMetrics && !powerHist.empty())
-                    {
-                        std::vector<float> powerPercent(powerHist.size());
-                        for (size_t i = 0; i < powerHist.size(); ++i)
-                        {
-                            powerPercent[i] = (powerHist[i] / maxPowerW) * 100.0F;
-                        }
-                        plotLineWithFill("Power",
-                                         timeData.data(),
-                                         powerPercent.data(),
-                                         UI::Numeric::checkedCount(powerPercent.size()),
-                                         theme.scheme().gpuPower);
-                    }
-
-                    // Fan speed (already a percentage)
-                    if (caps.hasFanSpeed && !fanHist.empty())
-                    {
-                        plotLineWithFill(
-                            "Fan", timeData.data(), fanHist.data(), UI::Numeric::checkedCount(fanHist.size()), theme.scheme().gpuFan);
-                    }
-
-                    // Tooltip on hover
-                    if (ImPlot::IsPlotHovered() && !timeData.empty())
-                    {
-                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                        {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                            ImGui::TextUnformatted(ageText.c_str());
-                            ImGui::Separator();
-                            if (caps.hasTemperature && *idxVal < tempHist.size())
-                            {
-                                ImGui::TextColored(theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[*idxVal]));
-                            }
-                            if (caps.hasPowerMetrics && *idxVal < powerHist.size())
-                            {
-                                ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[*idxVal]));
-                            }
-                            if (caps.hasFanSpeed && *idxVal < fanHist.size())
-                            {
-                                ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[*idxVal]));
-                            }
-                            ImGui::EndTooltip();
-                        }
-                    }
-
-                    ImPlot::EndPlot();
-                }
-            };
-
-            // Thermal bars were already built above for alignment calculation
-            // Render thermal chart with the same column count as core chart for x-axis alignment
-            if (!gpuThermalBars.empty())
-            {
-                const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
-                renderHistoryWithNowBars(
-                    thermalLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
-            }
-            else
-            {
-                // No current data, just render the plot without now bars
-                gpuThermalPlot();
-            }
-
-            // Show notes for unavailable metrics
-            std::vector<std::string> unavailableNotes;
-            if (!caps.hasTemperature)
-            {
-                unavailableNotes.emplace_back("temperature");
-            }
-            if (!caps.hasPowerMetrics)
-            {
-                unavailableNotes.emplace_back("power draw");
-            }
-            if (!caps.hasFanSpeed)
-            {
-                unavailableNotes.emplace_back("fan speed");
-            }
-
-            if (!unavailableNotes.empty())
-            {
-                std::string noteText = "Note: This system does not report GPU ";
-                for (size_t i = 0; i < unavailableNotes.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        noteText += (i == unavailableNotes.size() - 1) ? " or " : ", ";
-                    }
-                    noteText += unavailableNotes[i];
-                }
-                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
-            }
-        }
-
-        ImGui::Unindent();
-        ImGui::Spacing();
-    }
-}
-
 void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
+    using UI::Format::clampPercent;
 
     const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 
@@ -1873,53 +1081,7 @@ void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, f
 
 void SystemMetricsPanel::updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
-
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    const double targetMem = clampPercent(snap.memoryUsedPercent);
-    const double targetCached = clampPercent(snap.memoryCachedPercent);
-    const double targetSwap = clampPercent(snap.swapUsedPercent);
-
-    if (!m_SmoothedMemory.initialized)
-    {
-        m_SmoothedMemory.usedPercent = targetMem;
-        m_SmoothedMemory.cachedPercent = targetCached;
-        m_SmoothedMemory.swapPercent = targetSwap;
-        m_SmoothedMemory.initialized = true;
-        return;
-    }
-
-    m_SmoothedMemory.usedPercent = clampPercent(smoothTowards(m_SmoothedMemory.usedPercent, targetMem, alpha));
-    m_SmoothedMemory.cachedPercent = clampPercent(smoothTowards(m_SmoothedMemory.cachedPercent, targetCached, alpha));
-    m_SmoothedMemory.swapPercent = clampPercent(smoothTowards(m_SmoothedMemory.swapPercent, targetSwap, alpha));
-}
-
-void SystemMetricsPanel::updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
-{
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
-
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-    const size_t numCores = snap.cpuPerCore.size();
-    m_SmoothedPerCore.resize(numCores, 0.0);
-
-    for (size_t i = 0; i < numCores; ++i)
-    {
-        const double target = clampPercent(snap.cpuPerCore[i].totalPercent);
-        double& current = m_SmoothedPerCore[i];
-        if (deltaTimeSeconds <= 0.0F)
-        {
-            current = target;
-            continue;
-        }
-        current = clampPercent(smoothTowards(current, target, alpha));
-    }
+    MemorySection::updateSmoothedMemory(m_SmoothedMemory, snap, deltaTimeSeconds, m_RefreshInterval);
 }
 
 void SystemMetricsPanel::updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds)
@@ -2015,463 +1177,6 @@ void SystemMetricsPanel::updateSmoothedThreadsFaults(double targetThreads, doubl
 
     m_SmoothedThreadsFaults.threads = smoothTowards(m_SmoothedThreadsFaults.threads, targetThreads, alpha);
     m_SmoothedThreadsFaults.pageFaults = smoothTowards(m_SmoothedThreadsFaults.pageFaults, targetFaults, alpha);
-}
-
-void SystemMetricsPanel::updateSmoothedSystemIO(double targetRead, double targetWrite, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    if (!m_SmoothedSystemIO.initialized)
-    {
-        m_SmoothedSystemIO.readBytesPerSec = targetRead;
-        m_SmoothedSystemIO.writeBytesPerSec = targetWrite;
-        m_SmoothedSystemIO.initialized = true;
-        return;
-    }
-
-    m_SmoothedSystemIO.readBytesPerSec = smoothTowards(m_SmoothedSystemIO.readBytesPerSec, targetRead, alpha);
-    m_SmoothedSystemIO.writeBytesPerSec = smoothTowards(m_SmoothedSystemIO.writeBytesPerSec, targetWrite, alpha);
-}
-
-void SystemMetricsPanel::updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    if (!m_SmoothedNetwork.initialized)
-    {
-        m_SmoothedNetwork.sentBytesPerSec = targetSent;
-        m_SmoothedNetwork.recvBytesPerSec = targetRecv;
-        m_SmoothedNetwork.initialized = true;
-        return;
-    }
-
-    m_SmoothedNetwork.sentBytesPerSec = smoothTowards(m_SmoothedNetwork.sentBytesPerSec, targetSent, alpha);
-    m_SmoothedNetwork.recvBytesPerSec = smoothTowards(m_SmoothedNetwork.recvBytesPerSec, targetRecv, alpha);
-}
-
-void SystemMetricsPanel::updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, float deltaTimeSeconds)
-{
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-
-    auto& smoothed = m_SmoothedGPUs[gpuId];
-    if (!smoothed.initialized)
-    {
-        smoothed.utilizationPercent = snap.utilizationPercent;
-        smoothed.memoryPercent = snap.memoryUsedPercent;
-        smoothed.temperatureC = static_cast<double>(snap.temperatureC);
-        smoothed.powerWatts = snap.powerDrawWatts;
-        smoothed.initialized = true;
-        return;
-    }
-
-    smoothed.utilizationPercent = smoothTowards(smoothed.utilizationPercent, snap.utilizationPercent, alpha);
-    smoothed.memoryPercent = smoothTowards(smoothed.memoryPercent, snap.memoryUsedPercent, alpha);
-    smoothed.temperatureC = smoothTowards(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha);
-    smoothed.powerWatts = smoothTowards(smoothed.powerWatts, snap.powerDrawWatts, alpha);
-}
-
-void SystemMetricsPanel::renderNetworkSection()
-{
-    // Render Disk I/O section at the top of Network and I/O tab
-    renderDiskIOSection();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    if (m_Model == nullptr || !m_Model->capabilities().hasNetworkCounters)
-    {
-        ImGui::TextUnformatted("Network monitoring not available on this platform.");
-        return;
-    }
-
-    const auto netSnap = m_Model->snapshot();
-    const auto& interfaces = netSnap.networkInterfaces;
-
-    // Build interface selector dropdown
-    std::vector<std::string> interfaceNames;
-    interfaceNames.emplace_back("Total (All Interfaces)");
-    for (const auto& iface : interfaces)
-    {
-        // Use display name if available, otherwise interface name
-        interfaceNames.push_back(iface.displayName.empty() ? iface.name : iface.displayName);
-    }
-
-    const auto interfaceCount = interfaces.size();
-
-    // Clamp selected interface to current range so indexing into interfaceNames is always safe.
-    // Interfaces can disappear (e.g., USB adapter unplugged, VPN disconnected).
-    if (std::cmp_greater_equal(m_SelectedNetworkInterface, interfaceCount))
-    {
-        // Guard against potential overflow when converting from size_t to int.
-        // While extremely unlikely (would require SIZE_MAX interfaces), be defensive.
-        constexpr auto maxIntIndex = static_cast<size_t>(std::numeric_limits<int>::max());
-        if ((interfaceCount == 0) || (interfaceCount > maxIntIndex))
-        {
-            // Fall back to "Total" mode when no interfaces or index would overflow int.
-            m_SelectedNetworkInterface = -1;
-        }
-        else
-        {
-            m_SelectedNetworkInterface = static_cast<int>(interfaceCount) - 1;
-        }
-    }
-
-    // Interface selector
-    ImGui::SetNextItemWidth(250.0F);
-    // Index 0 is "Total", indices 1+ are interfaces. m_SelectedNetworkInterface: -1 = Total, 0+ = interface index
-    // Safe: m_SelectedNetworkInterface is always >= -1, so m_SelectedNetworkInterface + 1 is always >= 0
-    const size_t comboIndex = (m_SelectedNetworkInterface < 0) ? 0 : static_cast<size_t>(m_SelectedNetworkInterface) + 1;
-    if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
-    {
-        for (size_t i = 0; i <= interfaceCount; ++i)
-        {
-            // i=0 means "Total" (m_SelectedNetworkInterface == -1), i=1+ means interface index 0+
-            const int selectionValue = static_cast<int>(i) - 1;
-            const bool isSelected = (m_SelectedNetworkInterface == selectionValue);
-            if (ImGui::Selectable(interfaceNames[i].c_str(), isSelected))
-            {
-                m_SelectedNetworkInterface = selectionValue;
-                // Reset smoothed values when changing interface
-                m_SmoothedNetwork.initialized = false;
-            }
-            if (isSelected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
-    }
-
-    ImGui::SameLine();
-
-    // Show link speed for selected interface (if available and not "Total")
-    const bool hasValidSelection = m_SelectedNetworkInterface >= 0 && std::cmp_less(m_SelectedNetworkInterface, interfaceCount);
-    if (hasValidSelection)
-    {
-        const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
-        if (selectedIface.linkSpeedMbps > 0)
-        {
-            const auto linkText = std::format("Link: {} Mbps", selectedIface.linkSpeedMbps);
-            ImGui::TextColored(theme.scheme().textMuted, "%s", linkText.c_str());
-        }
-        else
-        {
-            ImGui::TextColored(theme.scheme().textMuted, "Link: Unknown");
-        }
-        ImGui::SameLine();
-        ImGui::TextColored(selectedIface.isUp ? theme.scheme().textSuccess : theme.scheme().textError,
-                           selectedIface.isUp ? "[Up]" : "[Down]");
-    }
-
-    ImGui::Spacing();
-
-    // Get data based on selection
-    double targetSent = 0.0;
-    double targetRecv = 0.0;
-
-    if (m_SelectedNetworkInterface < 0)
-    {
-        // Total mode - use existing system-wide history
-        targetSent = netSnap.netTxBytesPerSec;
-        targetRecv = netSnap.netRxBytesPerSec;
-    }
-    else if (hasValidSelection)
-    {
-        // Specific interface - use its current rates
-        const auto& selectedIface = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)];
-        targetSent = selectedIface.txBytesPerSec;
-        targetRecv = selectedIface.rxBytesPerSec;
-    }
-
-    const auto netTimestamps = m_Model->timestamps();
-    const auto netTxHist = m_Model->netTxHistory();
-    const auto netRxHist = m_Model->netRxHistory();
-    const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
-
-    // Get per-interface history if an interface is selected
-    const bool showingInterface = m_SelectedNetworkInterface >= 0 && hasValidSelection;
-    const std::string ifaceName = showingInterface ? interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name : "";
-    const auto ifaceTxHist = showingInterface ? m_Model->netTxHistoryForInterface(ifaceName) : std::vector<float>{};
-    const auto ifaceRxHist = showingInterface ? m_Model->netRxHistoryForInterface(ifaceName) : std::vector<float>{};
-
-    // Always use default axis config even with no data
-    const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
-                                  : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    std::vector<float> netTimes;
-    std::vector<float> sentData;
-    std::vector<float> recvData;
-    std::vector<float> ifaceSentData;
-    std::vector<float> ifaceRecvData;
-
-    if (aligned > 0)
-    {
-        // Use real-time for smooth scrolling (not netTimestamps.back() which freezes between refreshes)
-        netTimes = buildTimeAxis(netTimestamps, aligned, nowSeconds);
-        sentData.assign(netTxHist.end() - static_cast<std::ptrdiff_t>(aligned), netTxHist.end());
-        recvData.assign(netRxHist.end() - static_cast<std::ptrdiff_t>(aligned), netRxHist.end());
-
-        // Per-interface history (if available and same length as total)
-        if (showingInterface && ifaceTxHist.size() >= aligned)
-        {
-            ifaceSentData.assign(ifaceTxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceTxHist.end());
-        }
-        if (showingInterface && ifaceRxHist.size() >= aligned)
-        {
-            ifaceRecvData.assign(ifaceRxHist.end() - static_cast<std::ptrdiff_t>(aligned), ifaceRxHist.end());
-        }
-    }
-
-    // Update smoothed network rates
-    updateSmoothedNetwork(targetSent, targetRecv, m_LastDeltaSeconds);
-
-    // Calculate max across all data for consistent Y axis
-    double netMax = std::max({sentData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(sentData)),
-                              recvData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(recvData)),
-                              m_SmoothedNetwork.sentBytesPerSec,
-                              m_SmoothedNetwork.recvBytesPerSec,
-                              1.0});
-    if (!ifaceSentData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceSentData)));
-    }
-    if (!ifaceRecvData.empty())
-    {
-        netMax = std::max(netMax, static_cast<double>(*std::ranges::max_element(ifaceRecvData)));
-    }
-
-    // Determine labels based on selection
-    const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name : "Network";
-    const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
-    const std::string recvBarLabel = showingInterface ? std::format("{} Recv", ifaceDisplayName) : "Network Received";
-
-    const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.sentBytesPerSec),
-                         .label = sentBarLabel,
-                         .value01 = std::clamp(m_SmoothedNetwork.sentBytesPerSec / netMax, 0.0, 1.0),
-                         .color = theme.scheme().chartCpu};
-    const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(m_SmoothedNetwork.recvBytesPerSec),
-                         .label = recvBarLabel,
-                         .value01 = std::clamp(m_SmoothedNetwork.recvBytesPerSec / netMax, 0.0, 1.0),
-                         .color = theme.accentColor(2)};
-
-    // Determine plot title based on selection
-    std::string plotTitle = "Total";
-    if (m_SelectedNetworkInterface >= 0 && hasValidSelection)
-    {
-        plotTitle = interfaces[static_cast<size_t>(m_SelectedNetworkInterface)].name;
-    }
-
-    // Colors for interface-specific lines (lighter/dashed to distinguish from total)
-    const auto ifaceSentColor = ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.7F);
-    const auto ifaceRecvColor = ImVec4(theme.accentColor(2).x, theme.accentColor(2).y, theme.accentColor(2).z, 0.7F);
-
-    auto plot = [&]()
-    {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##SystemNetHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
-        {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
-            const int count = UI::Numeric::checkedCount(aligned);
-
-            // When an interface is selected, show both total (muted) and interface (bright)
-            if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
-            {
-                // Total lines (muted, in background)
-                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
-                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
-
-                // Interface-specific lines (bright, in foreground)
-                const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-                const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
-                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.accentColor(2));
-            }
-            else
-            {
-                // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
-            }
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(netTimes, mouse.x))
-                {
-                    if (*idxVal < aligned)
-                    {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-                        ImGui::Separator();
-                        if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
-                        {
-                            // Show both total and interface values
-                            ImGui::TextColored(theme.scheme().textMuted, "Total:");
-                            ImGui::TextColored(ifaceSentColor,
-                                               "  Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(ifaceRecvColor,
-                                               "  Recv: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
-                            ImGui::Spacing();
-                            ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
-                            ImGui::TextColored(theme.scheme().chartCpu,
-                                               "  Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.accentColor(2),
-                                               "  Recv: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
-                        }
-                        else
-                        {
-                            ImGui::TextColored(theme.scheme().chartCpu,
-                                               "Sent: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.accentColor(2),
-                                               "Recv: %s",
-                                               UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
-                        }
-                        ImGui::EndTooltip();
-                    }
-                }
-            }
-
-            ImPlot::EndPlot();
-        }
-    };
-
-    ImGui::TextColored(
-        theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
-    constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
-    renderHistoryWithNowBars(
-        "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);
-    ImGui::Spacing();
-
-    // Interface status table with sortable columns
-    if (!interfaces.empty())
-    {
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
-        ImGui::Spacing();
-
-        constexpr ImGuiTableFlags tableFlags =
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Sortable;
-
-        if (ImGui::BeginTable("##InterfaceTable", 5, tableFlags))
-        {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort, 2.0F);
-            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_None, 1.0F);
-            ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_None, 1.0F);
-            ImGui::TableSetupColumn("TX Rate", ImGuiTableColumnFlags_None, 1.5F);
-            ImGui::TableSetupColumn("RX Rate", ImGuiTableColumnFlags_None, 1.5F);
-            ImGui::TableHeadersRow();
-
-            // Sort interfaces if needed
-            using InterfaceSnapshot = Domain::SystemSnapshot::InterfaceSnapshot;
-            std::vector<InterfaceSnapshot> sortedInterfaces(interfaces.begin(), interfaces.end());
-
-            if (const auto* sortSpecs = ImGui::TableGetSortSpecs(); sortSpecs != nullptr && sortSpecs->SpecsCount > 0)
-            {
-                const auto& spec = sortSpecs->Specs[0];
-                const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-
-                std::ranges::sort(sortedInterfaces,
-                                  [&spec, ascending](const InterfaceSnapshot& lhs, const InterfaceSnapshot& rhs)
-                                  {
-                                      int result = 0;
-                                      switch (spec.ColumnIndex)
-                                      {
-                                      case 0: // Name
-                                      {
-                                          const auto& lhsName = lhs.displayName.empty() ? lhs.name : lhs.displayName;
-                                          const auto& rhsName = rhs.displayName.empty() ? rhs.name : rhs.displayName;
-                                          result = lhsName.compare(rhsName);
-                                          break;
-                                      }
-                                      case 1: // Status
-                                          result = static_cast<int>(lhs.isUp) - static_cast<int>(rhs.isUp);
-                                          break;
-                                      case 2: // Speed
-                                          if (lhs.linkSpeedMbps < rhs.linkSpeedMbps)
-                                          {
-                                              result = -1;
-                                          }
-                                          else if (lhs.linkSpeedMbps > rhs.linkSpeedMbps)
-                                          {
-                                              result = 1;
-                                          }
-                                          break;
-                                      case 3: // TX Rate
-                                          if (lhs.txBytesPerSec < rhs.txBytesPerSec)
-                                          {
-                                              result = -1;
-                                          }
-                                          else if (lhs.txBytesPerSec > rhs.txBytesPerSec)
-                                          {
-                                              result = 1;
-                                          }
-                                          break;
-                                      case 4: // RX Rate
-                                          if (lhs.rxBytesPerSec < rhs.rxBytesPerSec)
-                                          {
-                                              result = -1;
-                                          }
-                                          else if (lhs.rxBytesPerSec > rhs.rxBytesPerSec)
-                                          {
-                                              result = 1;
-                                          }
-                                          break;
-                                      default:
-                                          break;
-                                      }
-                                      return ascending ? (result < 0) : (result > 0);
-                                  });
-            }
-
-            for (const auto& iface : sortedInterfaces)
-            {
-                ImGui::TableNextRow();
-
-                // Name
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(iface.displayName.empty() ? iface.name.c_str() : iface.displayName.c_str());
-
-                // Status
-                ImGui::TableNextColumn();
-                ImGui::TextColored(iface.isUp ? theme.scheme().textSuccess : theme.scheme().textError, iface.isUp ? "Up" : "Down");
-
-                // Speed
-                ImGui::TableNextColumn();
-                if (iface.linkSpeedMbps > 0)
-                {
-                    const auto speedText = std::format("{} Mbps", iface.linkSpeedMbps);
-                    ImGui::TextUnformatted(speedText.c_str());
-                }
-                else
-                {
-                    ImGui::TextColored(theme.scheme().textMuted, "Unknown");
-                }
-
-                // TX Rate
-                ImGui::TableNextColumn();
-                ImGui::TextColored(theme.scheme().chartCpu, "%s", UI::Format::formatBytesPerSec(iface.txBytesPerSec).c_str());
-
-                // RX Rate
-                ImGui::TableNextColumn();
-                ImGui::TextColored(theme.accentColor(2), "%s", UI::Format::formatBytesPerSec(iface.rxBytesPerSec).c_str());
-            }
-
-            ImGui::EndTable();
-        }
-    }
 }
 
 } // namespace App

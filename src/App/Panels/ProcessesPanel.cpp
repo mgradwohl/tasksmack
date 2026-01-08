@@ -8,7 +8,6 @@
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/Numeric.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -543,7 +542,7 @@ void ProcessesPanel::renderContent()
 
     // Always create all columns with stable IDs (using enum value as ID)
     // Hidden columns use ImGuiTableColumnFlags_Disabled
-    const int totalColumns = UI::Numeric::checkedCount(processColumnCount());
+    const int totalColumns = UI::Format::checkedCount(processColumnCount());
 
     if (ImGui::BeginTable("ProcessTable",
                           totalColumns,

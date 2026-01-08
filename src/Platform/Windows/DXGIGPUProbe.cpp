@@ -18,7 +18,6 @@
 #pragma clang diagnostic pop
 // clang-format on
 
-#include <array>
 #include <cstring>
 #include <format>
 
@@ -48,9 +47,8 @@ namespace
 
 } // namespace
 
-DXGIGPUProbe::DXGIGPUProbe()
+DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
 {
-    m_Initialized = initialize();
 }
 
 DXGIGPUProbe::~DXGIGPUProbe()
@@ -85,7 +83,7 @@ void DXGIGPUProbe::cleanup()
     }
 }
 
-std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr) const
+std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr)
 {
     if (wstr == nullptr || wstr[0] == L'\0')
     {
@@ -93,7 +91,7 @@ std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr) const
     }
 
     // Get required buffer size
-    int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
     if (size <= 0)
     {
         return {};
@@ -105,7 +103,7 @@ std::string DXGIGPUProbe::wcharToUtf8(const wchar_t* wstr) const
     return result;
 }
 
-bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter) const
+bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
 {
     if (adapter == nullptr)
     {
@@ -167,7 +165,7 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
         }
 
         DXGI_ADAPTER_DESC1 desc{};
-        HRESULT hr = adapter->GetDesc1(&desc);
+        const HRESULT hr = adapter->GetDesc1(&desc);
 
         if (SUCCEEDED(hr))
         {
@@ -195,14 +193,14 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                gpus.push_back(std::move(info));
-
                 spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - Driver: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
                               info.driverVersion,
                               info.isIntegrated);
+
+                gpus.push_back(std::move(info));
             }
         }
 
@@ -235,9 +233,9 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
         }
 
         DXGI_ADAPTER_DESC1 desc{};
-        HRESULT hr = adapter->GetDesc1(&desc);
+        const HRESULT hrDesc = adapter->GetDesc1(&desc);
 
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hrDesc))
         {
             // Skip software adapters
             constexpr UINT SOFTWARE_FLAG = 2;
@@ -251,15 +249,15 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
                 // __uuidof is a Microsoft extension, suppress warning
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
-                hr = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
+                const HRESULT hrQuery = adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3));
 #pragma clang diagnostic pop
 
-                if (SUCCEEDED(hr) && adapter3 != nullptr)
+                if (SUCCEEDED(hrQuery) && adapter3 != nullptr)
                 {
                     DXGI_QUERY_VIDEO_MEMORY_INFO memInfo{};
-                    hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
+                    const HRESULT hrMemInfo = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
 
-                    if (SUCCEEDED(hr))
+                    if (SUCCEEDED(hrMemInfo))
                     {
                         counter.memoryUsedBytes = memInfo.CurrentUsage;
                         counter.memoryTotalBytes = memInfo.Budget;

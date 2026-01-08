@@ -3,13 +3,14 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
-#include <memory>
 #include <string>
 #include <vector>
 
 // Forward declare DXGI interfaces to avoid including d3d headers in header
+// NOLINTBEGIN(cppcoreguidelines-virtual-class-destructor) - COM interface forward decls
 struct IDXGIFactory1;
 struct IDXGIAdapter1;
+// NOLINTEND(cppcoreguidelines-virtual-class-destructor)
 
 namespace Platform
 {
@@ -38,8 +39,8 @@ class DXGIGPUProbe : public IGPUProbe
     bool initialize();
     void cleanup();
 
-    [[nodiscard]] std::string wcharToUtf8(const wchar_t* wstr) const;
-    [[nodiscard]] bool isIntegratedGPU(IDXGIAdapter1* adapter) const;
+    [[nodiscard]] static std::string wcharToUtf8(const wchar_t* wstr);
+    [[nodiscard]] static bool isIntegratedGPU(IDXGIAdapter1* adapter);
 
     IDXGIFactory1* m_Factory{nullptr};
     bool m_Initialized{false};

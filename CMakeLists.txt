@@ -294,6 +294,14 @@ if(NOT glad_POPULATED)
 endif()
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 
+# Mark GLAD headers as SYSTEM to suppress warnings (e.g., -Wlanguage-extension-token from __int32)
+get_target_property(_glad_includes glad_gl_core_33 INTERFACE_INCLUDE_DIRECTORIES)
+if(_glad_includes)
+    set_target_properties(glad_gl_core_33 PROPERTIES
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_glad_includes}"
+    )
+endif()
+
 # FreeType for improved font rendering (always use FetchContent to avoid noisy Findfreetype warnings)
 
 # Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
@@ -463,6 +471,11 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/SystemMetricsPanel.cpp
+    src/App/Panels/CpuCoresSection.cpp
+    src/App/Panels/MemorySection.cpp
+    src/App/Panels/NetworkSection.cpp
+    src/App/Panels/StorageSection.cpp
+    src/App/Panels/GpuSection.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp

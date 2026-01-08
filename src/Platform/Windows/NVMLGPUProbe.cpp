@@ -13,7 +13,6 @@
 // clang-format on
 
 #include <array>
-#include <cstring>
 #include <format>
 
 namespace Platform
@@ -75,9 +74,8 @@ struct nvmlUtilization_t
 
 } // namespace
 
-NVMLGPUProbe::NVMLGPUProbe()
+NVMLGPUProbe::NVMLGPUProbe() : m_Initialized(loadNVML() && initializeNVML())
 {
-    m_Initialized = loadNVML() && initializeNVML();
     if (!m_Initialized)
     {
         spdlog::info("NVMLGPUProbe: NVML not available (NVIDIA GPU or driver not detected)");
@@ -142,6 +140,7 @@ void NVMLGPUProbe::unloadNVML()
     }
 }
 
+// NOLINTNEXTLINE(readability-make-member-function-const) - Calls NVML init which has global side effects
 bool NVMLGPUProbe::initializeNVML()
 {
     if (m_NVML.Init == nullptr)
@@ -183,7 +182,7 @@ void NVMLGPUProbe::shutdownNVML()
     m_Initialized = false;
 }
 
-std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result) const
+std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
 {
     switch (result)
     {
@@ -295,9 +294,9 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
 
         info.deviceIndex = i;
 
-        gpus.push_back(std::move(info));
-
         spdlog::debug("NVMLGPUProbe: Enumerated NVIDIA GPU {}: {}", i, info.name);
+
+        gpus.push_back(std::move(info));
     }
 
     spdlog::info("NVMLGPUProbe: Enumerated {} NVIDIA GPU(s)", gpus.size());

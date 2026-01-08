@@ -72,7 +72,7 @@ try {
     $env:LLVM_PROFILE_FILE = "$BuildDir\coverage-%p.profraw"
 
     # Run the test executable directly
-    & "$BuildDir\tests\TaskSmack_tests.exe"
+    & "$BuildDir\tests\TaskSmackTests.exe"
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Some tests failed, but continuing with coverage report..."
     }
@@ -88,7 +88,7 @@ try {
     New-Item -ItemType Directory -Force -Path $CoverageDir | Out-Null
 
     & $LlvmCov show `
-        "$BuildDir\tests\TaskSmack_tests.exe" `
+        "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
         -format=html `
         "-output-dir=$CoverageDir" `
@@ -100,7 +100,7 @@ try {
     # Step 5: Generate summary
     Write-Host "==> Coverage Summary:"
     & $LlvmCov report `
-        "$BuildDir\tests\TaskSmack_tests.exe" `
+        "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
         "-ignore-filename-regex=.*(\\|/)(build|_deps|tests)(\\|/).*"
 

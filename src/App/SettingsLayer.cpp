@@ -78,7 +78,7 @@ namespace
     }
 
     // ShellExecuteW returns > 32 on success
-    const auto shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)

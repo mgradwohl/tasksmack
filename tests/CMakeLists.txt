@@ -53,6 +53,7 @@ if(WIN32)
         Platform/test_WindowsDiskProbe.cpp
         Platform/test_WindowsPathProvider.cpp
         Platform/test_WindowsPowerProbe.cpp
+        Platform/test_WinString.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
@@ -118,7 +119,7 @@ add_executable(TaskSmackTests
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
-    UI/test_HistoryWidgets.cpp
+    UI/test_ChartWidgets.cpp
     UI/test_Format.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_UserConfig.cpp
