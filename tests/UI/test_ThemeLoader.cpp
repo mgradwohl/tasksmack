@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -188,10 +187,11 @@ class ThemeLoaderDiscoveryTest : public ::testing::Test
     void SetUp() override
     {
         // Create a unique temporary directory per test to avoid conflicts
-        // Use a combination of temp path + test name + random suffix
+        // Use a combination of temp path + test name + time-based suffix
         auto basePath = std::filesystem::temp_directory_path() / "tasksmack_theme_test";
         auto testInfo = ::testing::UnitTest::GetInstance()->current_test_info();
-        std::string uniqueName = std::string(testInfo->test_suite_name()) + "_" + testInfo->name() + "_" + std::to_string(std::rand());
+        auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        std::string uniqueName = std::string(testInfo->test_suite_name()) + "_" + testInfo->name() + "_" + std::to_string(timestamp);
         m_TempDir = basePath / uniqueName;
         std::filesystem::create_directories(m_TempDir);
     }
