@@ -41,8 +41,7 @@ using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 /// Update smoothed disk I/O values
 void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
 {
-    if (ctx.smoothedDiskReadBytesPerSec == nullptr || ctx.smoothedDiskWriteBytesPerSec == nullptr ||
-        ctx.smoothedDiskInitialized == nullptr)
+    if (ctx.smoothedDiskReadBytesPerSec == nullptr || ctx.smoothedDiskWriteBytesPerSec == nullptr || ctx.smoothedDiskInitialized == nullptr)
     {
         return;
     }
@@ -64,8 +63,7 @@ void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTime
 /// Update smoothed network values
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
 {
-    if (ctx.smoothedNetSentBytesPerSec == nullptr || ctx.smoothedNetRecvBytesPerSec == nullptr ||
-        ctx.smoothedNetInitialized == nullptr)
+    if (ctx.smoothedNetSentBytesPerSec == nullptr || ctx.smoothedNetRecvBytesPerSec == nullptr || ctx.smoothedNetInitialized == nullptr)
     {
         return;
     }
@@ -189,7 +187,8 @@ void renderDiskIOSection(RenderContext& ctx)
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
     constexpr size_t DISK_NOW_BAR_COLUMNS = 2; // Read, Write
-    renderHistoryWithNowBars("SystemDiskHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, diskPlot, {readBar, writeBar}, false, DISK_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars(
+        "SystemDiskHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, diskPlot, {readBar, writeBar}, false, DISK_NOW_BAR_COLUMNS);
 }
 
 void renderNetworkSection(RenderContext& ctx)
@@ -622,4 +621,3 @@ void renderNetworkSection(RenderContext& ctx)
 }
 
 } // namespace App::NetworkSection
-

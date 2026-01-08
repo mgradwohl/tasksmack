@@ -51,4 +51,3 @@ void renderGpuSection(RenderContext& ctx);
 void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap, RenderContext& ctx);
 
 } // namespace App::GpuSection
-

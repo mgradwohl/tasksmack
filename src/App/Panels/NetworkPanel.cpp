@@ -67,7 +67,7 @@ using InterfaceSnapshot = Domain::SystemSnapshot::InterfaceSnapshot;
 [[nodiscard]] std::vector<std::size_t> getSortedInterfaceIndices(const std::vector<InterfaceSnapshot>& interfaces)
 {
     std::vector<std::size_t> indices(interfaces.size());
-    std::iota(indices.begin(), indices.end(), 0);
+    std::ranges::iota(indices, 0);
 
     std::ranges::sort(indices,
                       [&interfaces](std::size_t a, std::size_t b)
@@ -391,7 +391,7 @@ void NetworkPanel::renderInterfaceSelector()
 
         // Determine type icon
         const char* icon = ICON_FA_NETWORK_WIRED;
-        if (name.find("lo") == 0 || name.contains("Loopback"))
+        if (name.starts_with("lo") || name.contains("Loopback"))
         {
             icon = ICON_FA_HOUSE;
         }
@@ -428,7 +428,7 @@ void NetworkPanel::renderInterfaceSelector()
         // Check if selected interface is in filtered list
         for (const auto idx : filteredIndices)
         {
-            if (static_cast<int>(idx) == m_SelectedInterface)
+            if (std::cmp_equal(idx, m_SelectedInterface))
             {
                 selectionValid = true;
                 break;
@@ -452,7 +452,7 @@ void NetworkPanel::renderInterfaceSelector()
     {
         for (std::size_t i = 0; i < filteredIndices.size(); ++i)
         {
-            if (filteredIndices[i] == static_cast<std::size_t>(m_SelectedInterface))
+            if (std::cmp_equal(filteredIndices[i], m_SelectedInterface))
             {
                 displayIndex = i + 1; // +1 because index 0 is "All Interfaces"
                 break;
@@ -746,7 +746,7 @@ void NetworkPanel::renderInterfaceStatus()
 
             // Determine interface type by name pattern
             const auto& name = iface.name;
-            if (name.find("lo") == 0 || name.contains("Loopback"))
+            if (name.starts_with("lo") || name.contains("Loopback"))
             {
                 typeIcon = ICON_FA_HOUSE;
                 iconColor = theme.scheme().textMuted;

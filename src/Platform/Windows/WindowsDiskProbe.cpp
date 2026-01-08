@@ -93,8 +93,15 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
         DWORD counterSize = counterBufferSize;
         DWORD instanceSize = instanceBufferSize;
 
-        status = PdhEnumObjectItemsW(
-            nullptr, nullptr, L"PhysicalDisk", counterBuffer.data(), &counterSize, instanceBuffer.data(), &instanceSize, PERF_DETAIL_WIZARD, 0);
+        status = PdhEnumObjectItemsW(nullptr,
+                                     nullptr,
+                                     L"PhysicalDisk",
+                                     counterBuffer.data(),
+                                     &counterSize,
+                                     instanceBuffer.data(),
+                                     &instanceSize,
+                                     PERF_DETAIL_WIZARD,
+                                     0);
 
         if (status == ERROR_SUCCESS)
         {

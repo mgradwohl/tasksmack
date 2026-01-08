@@ -804,8 +804,7 @@ struct AlignedBytesParts
 }
 
 /// Narrowing conversion to float for integral types
-template<std::integral T>
-[[nodiscard]] constexpr auto toFloatNarrow(T value) noexcept -> float
+template<std::integral T> [[nodiscard]] constexpr auto toFloatNarrow(T value) noexcept -> float
 {
     return static_cast<float>(value);
 }

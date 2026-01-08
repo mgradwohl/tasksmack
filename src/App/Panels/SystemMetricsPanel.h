@@ -70,7 +70,6 @@ class SystemMetricsPanel : public Panel
   private:
     void renderOverview();
     void renderCpuSection();
-    void renderPerCoreSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
@@ -162,7 +161,6 @@ class SystemMetricsPanel : public Panel
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
-    void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
     void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);

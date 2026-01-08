@@ -48,4 +48,3 @@ void renderDiskIOSection(RenderContext& ctx);
 void renderNetworkSection(RenderContext& ctx);
 
 } // namespace App::NetworkSection
-

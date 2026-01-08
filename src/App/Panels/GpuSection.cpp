@@ -20,17 +20,17 @@ namespace App::GpuSection
 namespace
 {
 
-using UI::Widgets::cropFrontToSize;
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
+using UI::Widgets::cropFrontToSize;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisPercent;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::plotLineWithFill;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
+using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
@@ -85,8 +85,7 @@ void renderGpuSection(RenderContext& ctx)
 
     // Get timestamps for history charts
     const auto gpuTimestamps = ctx.gpuModel->historyTimestamps();
-    const double nowSeconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(gpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
@@ -123,11 +122,10 @@ void renderGpuSection(RenderContext& ctx)
         std::string vramInfo;
         if (!isIntegrated && snap.memoryTotalBytes > 0)
         {
-            vramInfo =
-                std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+            vramInfo = std::format(", {} VRAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
         }
-        const std::string headerLabel = std::format(
-            "{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
+        const std::string headerLabel =
+            std::format("{} {}{} [{}]", ICON_FA_MICROCHIP, gpuName, vramInfo, isIntegrated ? "Shared Memory" : "Discrete");
 
         ImGui::PushID(static_cast<int>(gpuIdx)); // gpuIdx is a small index; explicit narrowing to match ImGui API
         const bool expanded = ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
@@ -165,16 +163,14 @@ void renderGpuSection(RenderContext& ctx)
         std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
 
         // Get max clock for normalization
-        const float maxClockMHz = caps.hasClockSpeeds && snap.gpuClockMHz > 0
-                                      ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U))
-                                      : 2000.0F;
+        const float maxClockMHz =
+            caps.hasClockSpeeds && snap.gpuClockMHz > 0 ? static_cast<float>(std::max(snap.gpuClockMHz, 2000U)) : 2000.0F;
 
         // ========================================
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        ImGui::TextColored(
-            theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
+        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_VIDEO "  GPU Core & Video (%zu samples)", alignedCount);
 
         auto gpuCorePlot = [&]()
         {
@@ -182,8 +178,7 @@ void renderGpuSection(RenderContext& ctx)
             if (ImPlot::BeginPlot("##GPUCoreHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
             {
                 UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes(
-                    "Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
                 ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
@@ -199,11 +194,8 @@ void renderGpuSection(RenderContext& ctx)
 
                 if (!memHist.empty())
                 {
-                    plotLineWithFill("Memory",
-                                     timeData.data(),
-                                     memHist.data(),
-                                     UI::Format::checkedCount(memHist.size()),
-                                     theme.scheme().gpuMemory);
+                    plotLineWithFill(
+                        "Memory", timeData.data(), memHist.data(), UI::Format::checkedCount(memHist.size()), theme.scheme().gpuMemory);
                 }
 
                 // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
@@ -253,33 +245,27 @@ void renderGpuSection(RenderContext& ctx)
                         ImGui::Separator();
                         if (*idxVal < utilHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuUtilization,
-                                               "Utilization: %s",
-                                               UI::Format::percentCompact(utilHist[*idxVal]).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().gpuUtilization, "Utilization: %s", UI::Format::percentCompact(utilHist[*idxVal]).c_str());
                         }
                         if (*idxVal < memHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuMemory,
-                                               "Memory: %s",
-                                               UI::Format::percentCompact(memHist[*idxVal]).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
                         }
                         if (caps.hasClockSpeeds && *idxVal < clockHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuClock,
-                                               "Clock: %u MHz",
-                                               static_cast<unsigned int>(clockHist[*idxVal]));
+                            ImGui::TextColored(theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
                         }
                         if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuEncoder,
-                                               "Encoder: %s",
-                                               UI::Format::percentCompact(encoderHist[*idxVal]).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[*idxVal]).c_str());
                         }
                         if (caps.hasEncoderDecoder && *idxVal < decoderHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuDecoder,
-                                               "Decoder: %s",
-                                               UI::Format::percentCompact(decoderHist[*idxVal]).c_str());
+                            ImGui::TextColored(
+                                theme.scheme().gpuDecoder, "Decoder: %s", UI::Format::percentCompact(decoderHist[*idxVal]).c_str());
                         }
                         ImGui::EndTooltip();
                     }
@@ -301,8 +287,7 @@ void renderGpuSection(RenderContext& ctx)
                                .color = theme.scheme().gpuMemory});
         if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
         {
-            const double clockPercent =
-                (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
+            const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
             gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
                                    .label = "GPU Clock",
                                    .value01 = UI::Format::percent01(clockPercent),
@@ -352,8 +337,7 @@ void renderGpuSection(RenderContext& ctx)
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
         const std::string coreLayoutId = std::format("GPUCoreLayout{}", gpuIdx);
-        renderHistoryWithNowBars(
-            coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+        renderHistoryWithNowBars(coreLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
 
         // Show notes for unavailable core metrics
         {
@@ -398,12 +382,10 @@ void renderGpuSection(RenderContext& ctx)
             auto gpuThermalPlot = [&]()
             {
                 const UI::Widgets::PlotFontGuard fontGuard;
-                if (ImPlot::BeginPlot(
-                        "##GPUThermalHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+                if (ImPlot::BeginPlot("##GPUThermalHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
                 {
                     UI::Widgets::setupLegendDefault();
-                    ImPlot::SetupAxes(
-                        "Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
                     ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent);
                     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
                     ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
@@ -441,11 +423,8 @@ void renderGpuSection(RenderContext& ctx)
                     // Fan speed (already a percentage)
                     if (caps.hasFanSpeed && !fanHist.empty())
                     {
-                        plotLineWithFill("Fan",
-                                         timeData.data(),
-                                         fanHist.data(),
-                                         UI::Format::checkedCount(fanHist.size()),
-                                         theme.scheme().gpuFan);
+                        plotLineWithFill(
+                            "Fan", timeData.data(), fanHist.data(), UI::Format::checkedCount(fanHist.size()), theme.scheme().gpuFan);
                     }
 
                     // Tooltip on hover
@@ -460,19 +439,15 @@ void renderGpuSection(RenderContext& ctx)
                             ImGui::Separator();
                             if (caps.hasTemperature && *idxVal < tempHist.size())
                             {
-                                ImGui::TextColored(theme.scheme().gpuTemperature,
-                                                   "Temperature: %d°C",
-                                                   static_cast<int>(tempHist[*idxVal]));
+                                ImGui::TextColored(theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[*idxVal]));
                             }
                             if (caps.hasPowerMetrics && *idxVal < powerHist.size())
                             {
-                                ImGui::TextColored(
-                                    theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[*idxVal]));
+                                ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[*idxVal]));
                             }
                             if (caps.hasFanSpeed && *idxVal < fanHist.size())
                             {
-                                ImGui::TextColored(
-                                    theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[*idxVal]));
+                                ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[*idxVal]));
                             }
                             ImGui::EndTooltip();
                         }
@@ -487,12 +462,8 @@ void renderGpuSection(RenderContext& ctx)
             if (!gpuThermalBars.empty())
             {
                 const std::string thermalLayoutId = std::format("GPUThermalLayout{}", gpuIdx);
-                renderHistoryWithNowBars(thermalLayoutId.c_str(),
-                                         HISTORY_PLOT_HEIGHT_DEFAULT,
-                                         gpuThermalPlot,
-                                         gpuThermalBars,
-                                         false,
-                                         gpuNowBarColumns);
+                renderHistoryWithNowBars(
+                    thermalLayoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
             }
             else
             {
@@ -536,4 +507,3 @@ void renderGpuSection(RenderContext& ctx)
 }
 
 } // namespace App::GpuSection
-

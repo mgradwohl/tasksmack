@@ -1,6 +1,7 @@
 #include "SystemMetricsPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
@@ -18,7 +19,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -308,7 +308,17 @@ void SystemMetricsPanel::renderContent()
         {
             if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  CPU Cores"))
             {
-                renderPerCoreSection();
+                // Build context for CpuCoresSection render function
+                CpuCoresSection::RenderContext cpuCtx{
+                    .systemModel = m_Model.get(),
+                    .timestampsCache = &m_TimestampsCache,
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .historyScrollSeconds = m_HistoryScrollSeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedPerCore = &m_SmoothedPerCore,
+                };
+                CpuCoresSection::renderCpuCoresSection(cpuCtx);
                 ImGui::EndTabItem();
             }
         }
@@ -640,11 +650,8 @@ void SystemMetricsPanel::renderOverview()
 
                 if (!cachedHist.empty())
                 {
-                    plotLineWithFill("Cached",
-                                     timeData.data(),
-                                     cachedHist.data(),
-                                     UI::Format::checkedCount(cachedHist.size()),
-                                     theme.scheme().chartCpu);
+                    plotLineWithFill(
+                        "Cached", timeData.data(), cachedHist.data(), UI::Format::checkedCount(cachedHist.size()), theme.scheme().chartCpu);
                 }
 
                 if (!swapHist.empty())
@@ -1153,161 +1160,6 @@ void SystemMetricsPanel::renderCpuSection()
     ImGui::Text("Current: %.1f%% (User: %.1f%%, System: %.1f%%)", m_SmoothedCpu.total, m_SmoothedCpu.user, m_SmoothedCpu.system);
 }
 
-void SystemMetricsPanel::renderPerCoreSection()
-{
-    auto snap = m_Model->snapshot();
-    auto perCoreHist = m_Model->perCoreHistory();
-    auto& theme = UI::Theme::get();
-
-    // CPU model header (same as Overview tab)
-    std::string coreInfo;
-    if (snap.cpuFreqMHz > 0)
-    {
-        coreInfo = std::format(" ({} cores @ {:.2f} GHz)", snap.coreCount, Domain::Numeric::toDouble(snap.cpuFreqMHz) / 1000.0);
-    }
-    else
-    {
-        coreInfo = std::format(" ({} cores)", snap.coreCount);
-    }
-    ImGui::TextUnformatted(snap.cpuModel.c_str());
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(coreInfo.c_str());
-    ImGui::Spacing();
-
-    const size_t numCores = snap.cpuPerCore.size();
-    if (numCores == 0)
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "No per-core data available");
-        return;
-    }
-
-    updateSmoothedPerCore(snap, m_LastDeltaSeconds);
-
-    // ========================================
-    // Per-core history grid with vertical now bars
-    // ========================================
-    // Removed redundant heading to reduce clutter
-
-    const auto& timestamps = m_TimestampsCache;
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
-
-    if (perCoreHist.empty() || timestamps.empty())
-    {
-        ImGui::TextColored(theme.scheme().textMuted, "Collecting data...");
-        return;
-    }
-
-    const size_t coreCount = perCoreHist.size();
-
-    // Grid layout
-    {
-        const float gridWidth = ImGui::GetContentRegionAvail().x;
-        constexpr float minCellWidth = 240.0F;
-        const float barWidth = ImGui::GetFrameHeight(); // Match prior horizontal bar height for visual consistency
-        const float cellWidth = minCellWidth + barWidth;
-        const size_t gridCols = std::max<size_t>(1, static_cast<size_t>(gridWidth / cellWidth));
-        const int gridColsInt = UI::Format::checkedCount(gridCols);
-        const size_t gridRows = (coreCount + gridCols - 1) / gridCols;
-
-        if (ImGui::BeginTable("PerCoreGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
-        {
-            for (size_t row = 0; row < gridRows; ++row)
-            {
-                ImGui::TableNextRow();
-                for (size_t col = 0; col < gridCols; ++col)
-                {
-                    const size_t coreIdx = (row * gridCols) + col;
-                    ImGui::TableNextColumn();
-
-                    if (coreIdx >= coreCount)
-                    {
-                        continue;
-                    }
-
-                    const auto& samples = perCoreHist[coreIdx];
-                    if (samples.empty())
-                    {
-                        ImGui::TextColored(theme.scheme().textMuted, "Core %zu\nCollecting data...", coreIdx);
-                        continue;
-                    }
-
-                    const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
-
-                    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
-                    ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-                    const std::string childId = std::format("CoreCell{}", coreIdx);
-                    const float labelHeight = ImGui::GetTextLineHeight();
-                    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-                    const float childHeight =
-                        labelHeight + spacingY + HISTORY_PLOT_HEIGHT_DEFAULT + UI::Widgets::BAR_WIDTH + (spacingY * 2.0F);
-                    if (ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders))
-                    {
-                        const float availableWidth = ImGui::GetContentRegionAvail().x;
-                        const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
-                        const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
-                        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
-                        ImGui::TextUnformatted(coreLabel.c_str());
-                        ImGui::Spacing();
-
-                        std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
-                        auto plotFn = [&]()
-                        {
-                            const UI::Widgets::PlotFontGuard fontGuard;
-                            if (ImPlot::BeginPlot("##PerCorePlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
-                            {
-                                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
-                                plotLineWithFill("##Core",
-                                                 timeData.data(),
-                                                 samples.data(),
-                                                 UI::Format::checkedCount(timeData.size()),
-                                                 theme.scheme().chartCpu);
-
-                                if (ImPlot::IsPlotHovered() && !timeData.empty())
-                                {
-                                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
-                                    {
-                                        ImGui::BeginTooltip();
-                                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                                        ImGui::TextUnformatted(ageText.c_str());
-                                        if (*idxVal < samples.size())
-                                        {
-                                            ImGui::TextColored(
-                                                theme.scheme().chartCpu, "CPU: %.1f%%", static_cast<double>(samples[*idxVal]));
-                                        }
-                                        ImGui::EndTooltip();
-                                    }
-                                }
-                                ImPlot::EndPlot();
-                            }
-                        };
-
-                        const double smoothed =
-                            (coreIdx < m_SmoothedPerCore.size()) ? m_SmoothedPerCore[coreIdx] : snap.cpuPerCore[coreIdx].totalPercent;
-                        const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
-                                         .label = std::format("Core {}", coreIdx),
-                                         .value01 = UI::Format::percent01(smoothed),
-                                         .color = theme.progressColor(smoothed)};
-
-                        std::vector<NowBar> bars;
-                        bars.push_back(bar);
-                        const std::string tableId = std::format("CoreLayout{}", coreIdx);
-                        renderHistoryWithNowBars(tableId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, plotFn, bars, false, 0, true);
-                    }
-                    ImGui::EndChild();
-                    ImGui::PopStyleColor(2);
-                }
-            }
-            ImGui::EndTable();
-        }
-    }
-}
-
 void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
     auto clampPercent = [](double value)
@@ -1371,30 +1223,6 @@ void SystemMetricsPanel::updateSmoothedMemory(const Domain::SystemSnapshot& snap
     m_SmoothedMemory.usedPercent = clampPercent(smoothTowards(m_SmoothedMemory.usedPercent, targetMem, alpha));
     m_SmoothedMemory.cachedPercent = clampPercent(smoothTowards(m_SmoothedMemory.cachedPercent, targetCached, alpha));
     m_SmoothedMemory.swapPercent = clampPercent(smoothTowards(m_SmoothedMemory.swapPercent, targetSwap, alpha));
-}
-
-void SystemMetricsPanel::updateSmoothedPerCore(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
-{
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
-
-    const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-    const size_t numCores = snap.cpuPerCore.size();
-    m_SmoothedPerCore.resize(numCores, 0.0);
-
-    for (size_t i = 0; i < numCores; ++i)
-    {
-        const double target = clampPercent(snap.cpuPerCore[i].totalPercent);
-        double& current = m_SmoothedPerCore[i];
-        if (deltaTimeSeconds <= 0.0F)
-        {
-            current = target;
-            continue;
-        }
-        current = clampPercent(smoothTowards(current, target, alpha));
-    }
 }
 
 void SystemMetricsPanel::updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds)

@@ -517,8 +517,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 /// Used to align history buffers when they have different lengths for charting.
 /// @param data The vector to crop (modified in place)
 /// @param targetSize The desired size after cropping
-template<typename T>
-void cropFrontToSize(std::vector<T>& data, std::size_t targetSize)
+template<typename T> void cropFrontToSize(std::vector<T>& data, std::size_t targetSize)
 {
     if (data.size() > targetSize)
     {
