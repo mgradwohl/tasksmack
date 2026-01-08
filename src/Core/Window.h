@@ -31,16 +31,16 @@ class Window
 
     [[nodiscard]] bool shouldClose() const noexcept;
 
-    [[nodiscard]] int getWidth() const
+    [[nodiscard]] int getWidth() const noexcept
     {
         return m_Spec.Width;
     }
-    [[nodiscard]] int getHeight() const
+    [[nodiscard]] int getHeight() const noexcept
     {
         return m_Spec.Height;
     }
 
-    [[nodiscard]] GLFWwindow* getHandle() const
+    [[nodiscard]] GLFWwindow* getHandle() const noexcept
     {
         return m_Handle;
     }

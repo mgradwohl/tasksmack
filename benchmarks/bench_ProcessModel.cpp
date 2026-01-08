@@ -179,7 +179,7 @@ static void BM_ProcessModel_RefreshRate(benchmark::State& state)
     }
 
     // Calculate rate in Hz (0ms delay is clamped to 1ms to avoid division by zero)
-    state.counters["rate_hz"] = benchmark::Counter(1000.0 / (static_cast<double>(std::max(delayMilliseconds, 1L))));
+    state.counters["rate_hz"] = benchmark::Counter(1000.0 / (static_cast<double>(std::max(delayMilliseconds, int64_t{1}))));
 }
 // Test 0ms (as fast as possible), 100ms (10Hz), 500ms (2Hz), 1000ms (1Hz)
 BENCHMARK(BM_ProcessModel_RefreshRate)->Arg(0)->Arg(100)->Arg(500)->Arg(1000)->Unit(benchmark::kMillisecond);

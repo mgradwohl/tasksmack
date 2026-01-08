@@ -48,25 +48,25 @@ class Panel
     virtual void render(bool* open) = 0;
 
     /// Get the panel's display name.
-    [[nodiscard]] const std::string& name() const
+    [[nodiscard]] const std::string& name() const noexcept
     {
         return m_Name;
     }
 
     /// Check if the panel is currently visible.
-    [[nodiscard]] bool isVisible() const
+    [[nodiscard]] bool isVisible() const noexcept
     {
         return m_Visible;
     }
 
     /// Set panel visibility.
-    void setVisible(bool visible)
+    void setVisible(bool visible) noexcept
     {
         m_Visible = visible;
     }
 
     /// Toggle panel visibility.
-    void toggleVisible()
+    void toggleVisible() noexcept
     {
         m_Visible = !m_Visible;
     }
