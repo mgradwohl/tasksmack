@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -200,6 +199,8 @@ class ThemeLoaderDiscoveryTest : public ::testing::Test
     {
         std::ofstream file(m_TempDir / filename);
         file << content;
+        file.flush();
+        file.close();
     }
 };
 
