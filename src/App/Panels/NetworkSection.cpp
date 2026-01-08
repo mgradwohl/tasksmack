@@ -1,6 +1,7 @@
 #include "NetworkSection.h"
 
 #include "App/Panels/NetInterfaceUtils.h"
+#include "App/Panels/StorageSection.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -38,28 +39,6 @@ using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
-/// Update smoothed disk I/O values
-void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
-{
-    if (ctx.smoothedDiskReadBytesPerSec == nullptr || ctx.smoothedDiskWriteBytesPerSec == nullptr || ctx.smoothedDiskInitialized == nullptr)
-    {
-        return;
-    }
-
-    const double alpha = computeAlpha(deltaTimeSeconds, ctx.refreshInterval);
-
-    if (!*ctx.smoothedDiskInitialized)
-    {
-        *ctx.smoothedDiskReadBytesPerSec = targetRead;
-        *ctx.smoothedDiskWriteBytesPerSec = targetWrite;
-        *ctx.smoothedDiskInitialized = true;
-        return;
-    }
-
-    *ctx.smoothedDiskReadBytesPerSec = smoothTowards(*ctx.smoothedDiskReadBytesPerSec, targetRead, alpha);
-    *ctx.smoothedDiskWriteBytesPerSec = smoothTowards(*ctx.smoothedDiskWriteBytesPerSec, targetWrite, alpha);
-}
-
 /// Update smoothed network values
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
 {
@@ -86,109 +65,18 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
 
 void renderDiskIOSection(RenderContext& ctx)
 {
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    if (ctx.storageModel == nullptr)
-    {
-        ImGui::TextUnformatted("Storage model not available.");
-        return;
-    }
-
-    const auto& diskSnap = ctx.storageModel->latestSnapshot();
-    const auto diskTimestamps = ctx.storageModel->historyTimestamps();
-    const auto diskReadHist = ctx.storageModel->totalReadHistory();
-    const auto diskWriteHist = ctx.storageModel->totalWriteHistory();
-    const size_t alignedDisk = std::min({diskTimestamps.size(), diskReadHist.size(), diskWriteHist.size()});
-
-    const auto diskAxis = alignedDisk > 0 ? makeTimeAxisConfig(diskTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
-                                          : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
-
-    std::vector<float> diskTimes;
-    std::vector<float> readData;
-    std::vector<float> writeData;
-
-    if (alignedDisk > 0)
-    {
-        diskTimes = buildTimeAxis(diskTimestamps, alignedDisk, nowSeconds);
-        readData.reserve(alignedDisk);
-        writeData.reserve(alignedDisk);
-        // Copy from double to float
-        for (size_t i = diskReadHist.size() - alignedDisk; i < diskReadHist.size(); ++i)
-        {
-            readData.push_back(static_cast<float>(diskReadHist[i]));
-            writeData.push_back(static_cast<float>(diskWriteHist[i]));
-        }
-    }
-
-    // Update smoothed I/O values
-    updateSmoothedDiskIO(diskSnap.totalReadBytesPerSec, diskSnap.totalWriteBytesPerSec, ctx.lastDeltaSeconds, ctx);
-
-    const double smoothedRead =
-        ctx.smoothedDiskReadBytesPerSec != nullptr ? *ctx.smoothedDiskReadBytesPerSec : diskSnap.totalReadBytesPerSec;
-    const double smoothedWrite =
-        ctx.smoothedDiskWriteBytesPerSec != nullptr ? *ctx.smoothedDiskWriteBytesPerSec : diskSnap.totalWriteBytesPerSec;
-
-    // Calculate max across all data for consistent Y axis
-    const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
-                                     writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
-                                     smoothedRead,
-                                     smoothedWrite,
-                                     1.0});
-
-    const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
-                         .label = "Disk Read",
-                         .value01 = std::clamp(smoothedRead / diskMax, 0.0, 1.0),
-                         .color = theme.scheme().chartCpu};
-    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(smoothedWrite),
-                          .label = "Disk Write",
-                          .value01 = std::clamp(smoothedWrite / diskMax, 0.0, 1.0),
-                          .color = theme.accentColor(2)};
-
-    auto diskPlot = [&]()
-    {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##SystemDiskHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
-        {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, diskAxis.xMin, diskAxis.xMax, ImPlotCond_Always);
-
-            const int count = UI::Format::checkedCount(alignedDisk);
-            plotLineWithFill("Read", diskTimes.data(), readData.data(), count, theme.scheme().chartCpu);
-            plotLineWithFill("Write", diskTimes.data(), writeData.data(), count, theme.accentColor(2));
-
-            if (ImPlot::IsPlotHovered())
-            {
-                const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                if (const auto idxVal = hoveredIndexFromPlotX(diskTimes, mouse.x))
-                {
-                    if (*idxVal < alignedDisk)
-                    {
-                        ImGui::BeginTooltip();
-                        const auto ageText = formatAgeSeconds(static_cast<double>(diskTimes[*idxVal]));
-                        ImGui::TextUnformatted(ageText.c_str());
-                        ImGui::Separator();
-                        ImGui::TextColored(theme.scheme().chartCpu,
-                                           "Read: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(readData[*idxVal])).c_str());
-                        ImGui::TextColored(theme.accentColor(2),
-                                           "Write: %s",
-                                           UI::Format::formatBytesPerSec(static_cast<double>(writeData[*idxVal])).c_str());
-                        ImGui::EndTooltip();
-                    }
-                }
-            }
-
-            ImPlot::EndPlot();
-        }
+    // Delegate to StorageSection - this wrapper maintains API compatibility
+    StorageSection::RenderContext storageCtx{
+        .storageModel = ctx.storageModel,
+        .maxHistorySeconds = ctx.maxHistorySeconds,
+        .historyScrollSeconds = ctx.historyScrollSeconds,
+        .lastDeltaSeconds = ctx.lastDeltaSeconds,
+        .refreshInterval = ctx.refreshInterval,
+        .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
+        .smoothedWriteBytesPerSec = ctx.smoothedDiskWriteBytesPerSec,
+        .smoothedInitialized = ctx.smoothedDiskInitialized,
     };
-
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
-    constexpr size_t DISK_NOW_BAR_COLUMNS = 2; // Read, Write
-    renderHistoryWithNowBars(
-        "SystemDiskHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, diskPlot, {readBar, writeBar}, false, DISK_NOW_BAR_COLUMNS);
+    StorageSection::renderStorageSection(storageCtx);
 }
 
 void renderNetworkSection(RenderContext& ctx)
