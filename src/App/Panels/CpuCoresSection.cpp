@@ -210,10 +210,7 @@ void updateSmoothedPerCore(const Domain::SystemSnapshot& snap, RenderContext& ct
         return;
     }
 
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
+    using UI::Format::clampPercent;
 
     const double alpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
     const size_t numCores = snap.cpuPerCore.size();

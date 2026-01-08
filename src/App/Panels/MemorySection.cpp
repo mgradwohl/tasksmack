@@ -41,10 +41,7 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
                           float deltaTimeSeconds,
                           std::chrono::milliseconds refreshInterval)
 {
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
+    using UI::Format::clampPercent;
 
     const double alpha = computeAlpha(deltaTimeSeconds, refreshInterval);
 

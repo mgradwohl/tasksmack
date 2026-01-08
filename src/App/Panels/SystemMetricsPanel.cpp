@@ -1046,10 +1046,7 @@ void SystemMetricsPanel::renderCpuSection()
 
 void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
-    auto clampPercent = [](double value)
-    {
-        return std::clamp(value, 0.0, 100.0);
-    };
+    using UI::Format::clampPercent;
 
     const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 

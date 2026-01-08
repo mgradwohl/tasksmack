@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/SystemSnapshot.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
 #include <string>
@@ -102,30 +103,30 @@ namespace App::NetInterfaceUtils
     // Check for Bluetooth first
     if (isBluetoothInterface(iface))
     {
-        return "\xef\x8a\x93"; // ICON_FA_BLUETOOTH
+        return ICON_FA_BLUETOOTH;
     }
 
     // WiFi detection
     if (name.starts_with("wl") || name.contains("Wi-Fi") || name.contains("WiFi") || name.contains("Wireless") ||
         displayName.contains("Wi-Fi") || displayName.contains("WiFi") || displayName.contains("Wireless"))
     {
-        return "\xef\x87\xab"; // ICON_FA_WIFI
+        return ICON_FA_WIFI;
     }
 
     // Virtual/cloud interfaces
     if (isVirtualInterface(iface))
     {
-        return "\xef\x83\x82"; // ICON_FA_CLOUD
+        return ICON_FA_CLOUD;
     }
 
     // Loopback/localhost
     if (name == "lo" || name.contains("Loopback"))
     {
-        return "\xef\x80\x95"; // ICON_FA_HOUSE
+        return ICON_FA_HOUSE;
     }
 
     // Default to ethernet
-    return "\xef\x9e\x96"; // ICON_FA_ETHERNET
+    return ICON_FA_ETHERNET;
 }
 
 /// Sort interfaces: Up first, then by activity, then by speed, then alphabetically
@@ -173,13 +174,9 @@ getSortedFilteredInterfaces(const std::vector<Domain::SystemSnapshot::InterfaceS
                               return hasActivityA > hasActivityB;
                           }
 
-                          // 3. Higher link speed first (0 = unknown, sort last)
+                          // 3. Higher link speed first (0 = unknown, sort last among interfaces with same status)
                           if (a.linkSpeedMbps != b.linkSpeedMbps)
                           {
-                              if (a.linkSpeedMbps > 0 && b.linkSpeedMbps > 0)
-                              {
-                                  return a.linkSpeedMbps > b.linkSpeedMbps;
-                              }
                               return a.linkSpeedMbps > b.linkSpeedMbps;
                           }
 
