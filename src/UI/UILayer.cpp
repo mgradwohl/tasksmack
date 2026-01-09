@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "Core/Layer.h"
 #include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"

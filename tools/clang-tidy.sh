@@ -24,7 +24,7 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE] [FILES...]
 
 Run clang-tidy static analysis on source files with parallel execution.
-Configures if needed, strips PCH flags, and runs clang-tidy on all source files.
+Configures if needed, strips module flags, and runs clang-tidy on all source files.
 
 BUILD_TYPE:
   debug           Use debug build (default)
@@ -94,16 +94,12 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
     cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Strip PCH flags from compile_commands.json (clang-tidy doesn't handle them well)
+# Strip C++20 module flags from compile_commands.json (clang-tidy doesn't handle them)
+# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
 if $VERBOSE; then
-    echo "Stripping PCH flags from compile_commands.json..."
+    echo "Stripping module flags from compile_commands.json..."
 fi
 sed -i.bak \
-    -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
-    -e 's/-Xclang -emit-pch//g' \
-    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-    -e 's/-Winvalid-pch//g' \
-    -e 's/-fpch-instantiate-templates//g' \
     -e 's/@[^ ]*\.modmap//g' \
     -e 's/-fmodule-output=[^ ]*//g' \
     "$COMPILE_COMMANDS"

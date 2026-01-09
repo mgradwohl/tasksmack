@@ -571,8 +571,9 @@ elseif(WIN32)
 endif()
 
 if(CLANG_TIDY_EXE)
-    # Generate a PCH-free and module-free compile_commands.json for clang-tidy
-    # This avoids version mismatch issues between compiler and clang-tidy
+    # Generate a module-free compile_commands.json for clang-tidy
+    # CMake/Ninja adds C++20 module dependency files (@*.modmap) that clang-tidy doesn't understand.
+    # PCH flags are no longer included in compile_commands.json by modern CMake/Ninja.
     # Use platform-appropriate tools: sed on Unix, PowerShell on Windows
     if(WIN32)
         add_custom_target(generate-clang-tidy-compile-commands
@@ -580,9 +581,9 @@ if(CLANG_TIDY_EXE)
                 ${CMAKE_BINARY_DIR}/compile_commands.json
                 ${CMAKE_BINARY_DIR}/compile_commands.json.bak
             COMMAND powershell -NoProfile -Command
-                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '-Xclang -include-pch -Xclang [^ ]*\\.pch', '' -replace '-Xclang -emit-pch', '' -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', '' -replace '-Winvalid-pch', '' -replace '-fpch-instantiate-templates', '' -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
+                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping PCH flags from compile_commands.json for clang-tidy"
+            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
         )
     else()
         add_custom_target(generate-clang-tidy-compile-commands
@@ -590,16 +591,11 @@ if(CLANG_TIDY_EXE)
                 ${CMAKE_BINARY_DIR}/compile_commands.json
                 ${CMAKE_BINARY_DIR}/compile_commands.json.bak
             COMMAND sed -i
-                -e "s/-Xclang -include-pch -Xclang [^ ]*\\.pch//g"
-                -e "s/-Xclang -emit-pch//g"
-                -e "s/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g"
-                -e "s/-Winvalid-pch//g"
-                -e "s/-fpch-instantiate-templates//g"
                 -e "s/@[^ ]*\\.modmap//g"
                 -e "s/-fmodule-output=[^ ]*//g"
                 ${CMAKE_BINARY_DIR}/compile_commands.json
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping PCH flags from compile_commands.json for clang-tidy"
+            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
         )
     endif()
 

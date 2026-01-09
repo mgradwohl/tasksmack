@@ -1,9 +1,14 @@
 #include "NVMLGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -14,11 +19,13 @@
 namespace
 {
 
+// NOLINTBEGIN(readability-identifier-naming) - these types mirror NVIDIA NVML C API naming
 using nvmlDevice_t = void*;
+// NOLINTEND(readability-identifier-naming)
 
 // These enums must match NVML's ABI exactly (C-style enums, unsigned int).
 // Using enum class would break dynamic loading compatibility.
-// NOLINTBEGIN(performance-enum-size,cppcoreguidelines-use-enum-class)
+// NOLINTBEGIN(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
 enum nvmlReturn_t : unsigned int
 {
     NVML_SUCCESS = 0,
@@ -67,12 +74,13 @@ enum nvmlPcieUtilCounter_t : unsigned int
     NVML_PCIE_UTIL_RX_BYTES = 1,
     NVML_PCIE_UTIL_COUNT = 2
 };
-// NOLINTEND(performance-enum-size,cppcoreguidelines-use-enum-class)
+// NOLINTEND(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
 
 // NVML buffer size constants
 constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
 constexpr unsigned int NVML_DEVICE_UUID_BUFFER_SIZE = 80;
 
+// NOLINTBEGIN(readability-identifier-naming) - these structs mirror NVIDIA NVML C API naming
 struct nvmlMemory_t
 {
     unsigned long long total;
@@ -93,6 +101,7 @@ struct nvmlProcessInfo_t
     unsigned int gpuInstanceId;
     unsigned int computeInstanceId;
 };
+// NOLINTEND(readability-identifier-naming)
 
 } // anonymous namespace
 

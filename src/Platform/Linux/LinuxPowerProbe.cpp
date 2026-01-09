@@ -4,6 +4,8 @@
 
 #include "LinuxPowerProbe.h"
 
+#include "Platform/PowerTypes.h"
+
 #include <spdlog/spdlog.h>
 
 #include <charconv>
@@ -12,6 +14,7 @@
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -66,10 +69,10 @@ LinuxPowerProbe::LinuxPowerProbe()
 
 void LinuxPowerProbe::discoverBatteries()
 {
-    namespace fs = std::filesystem;
+    namespace Fs = std::filesystem;
 
     std::error_code ec;
-    if (!fs::exists(POWER_SUPPLY_PATH, ec) || !fs::is_directory(POWER_SUPPLY_PATH, ec))
+    if (!Fs::exists(POWER_SUPPLY_PATH, ec) || !Fs::is_directory(POWER_SUPPLY_PATH, ec))
     {
         spdlog::debug("LinuxPowerProbe: {} not found or not a directory", POWER_SUPPLY_PATH);
         m_Capabilities.hasBattery = false;
@@ -80,7 +83,7 @@ void LinuxPowerProbe::discoverBatteries()
     std::vector<std::string> primaryBatteries;    // BAT*, CMB*, etc.
     std::vector<std::string> peripheralBatteries; // hidpp_battery_*, wacom_*, etc.
 
-    for (const auto& entry : fs::directory_iterator(POWER_SUPPLY_PATH, ec))
+    for (const auto& entry : Fs::directory_iterator(POWER_SUPPLY_PATH, ec))
     {
         if (!entry.is_directory(ec))
         {
@@ -120,14 +123,14 @@ void LinuxPowerProbe::discoverBatteries()
     {
         // Probe the first (primary) battery to determine available fields
         const auto& batteryPath = m_BatteryPaths[0];
-        m_Capabilities.hasChargePercent = fs::exists(batteryPath + "/capacity", ec);
-        m_Capabilities.hasChargeCapacity = fs::exists(batteryPath + "/energy_now", ec) || fs::exists(batteryPath + "/charge_now", ec);
-        m_Capabilities.hasPowerRate = fs::exists(batteryPath + "/power_now", ec) || fs::exists(batteryPath + "/current_now", ec);
-        m_Capabilities.hasVoltage = fs::exists(batteryPath + "/voltage_now", ec);
-        m_Capabilities.hasTechnology = fs::exists(batteryPath + "/technology", ec);
-        m_Capabilities.hasCycleCount = fs::exists(batteryPath + "/cycle_count", ec);
+        m_Capabilities.hasChargePercent = Fs::exists(batteryPath + "/capacity", ec);
+        m_Capabilities.hasChargeCapacity = Fs::exists(batteryPath + "/energy_now", ec) || Fs::exists(batteryPath + "/charge_now", ec);
+        m_Capabilities.hasPowerRate = Fs::exists(batteryPath + "/power_now", ec) || Fs::exists(batteryPath + "/current_now", ec);
+        m_Capabilities.hasVoltage = Fs::exists(batteryPath + "/voltage_now", ec);
+        m_Capabilities.hasTechnology = Fs::exists(batteryPath + "/technology", ec);
+        m_Capabilities.hasCycleCount = Fs::exists(batteryPath + "/cycle_count", ec);
         m_Capabilities.hasHealthPercent =
-            fs::exists(batteryPath + "/energy_full", ec) && fs::exists(batteryPath + "/energy_full_design", ec);
+            Fs::exists(batteryPath + "/energy_full", ec) && Fs::exists(batteryPath + "/energy_full_design", ec);
         m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
     }
 }

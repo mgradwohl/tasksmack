@@ -1,7 +1,10 @@
 #include "SystemModel.h"
 
 #include "Numeric.h"
+#include "Platform/IPowerProbe.h"
+#include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
+#include "Platform/SystemTypes.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -11,6 +14,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace Domain
 {

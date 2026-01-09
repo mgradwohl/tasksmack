@@ -2,6 +2,7 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
+#include "Core/Layer.h"
 #include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -10,6 +11,8 @@
 #include <spdlog/spdlog.h>
 
 #include <cassert>
+#include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <tuple>
@@ -19,8 +22,11 @@
 #include <cerrno>
 #include <system_error>
 
+// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+// NOLINTEND(misc-include-cleaner)
 #endif
 
 #ifdef _WIN32
@@ -35,13 +41,13 @@
 namespace App
 {
 
-// Import detail types and functions into this translation unit
-using detail::findFontSizeIndex;
-using detail::findHistoryIndex;
-using detail::findRefreshRateIndex;
-using detail::FONT_SIZE_OPTIONS;
-using detail::HISTORY_OPTIONS;
-using detail::REFRESH_RATE_OPTIONS;
+// Import Detail types and functions into this translation unit
+using Detail::findFontSizeIndex;
+using Detail::findHistoryIndex;
+using Detail::findRefreshRateIndex;
+using Detail::FONT_SIZE_OPTIONS;
+using Detail::HISTORY_OPTIONS;
+using Detail::REFRESH_RATE_OPTIONS;
 
 namespace
 {
@@ -89,6 +95,7 @@ namespace
     return true;
 #else
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
+    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
     const pid_t pid = ::fork();
     if (pid == -1)
     {
@@ -123,13 +130,17 @@ namespace
         spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
         return false;
     }
+    // NOLINTNEXTLINE(misc-include-cleaner) - WIFEXITED/WEXITSTATUS from sys/wait.h, include-cleaner false positive
     if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
     {
+        // NOLINTNEXTLINE(misc-include-cleaner) - WEXITSTATUS from sys/wait.h
         spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
         return false;
     }
+    // NOLINTNEXTLINE(misc-include-cleaner) - WIFSIGNALED from sys/wait.h, include-cleaner false positive
     if (WIFSIGNALED(status))
     {
+        // NOLINTNEXTLINE(misc-include-cleaner) - WTERMSIG from sys/wait.h
         spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
         return false;
     }

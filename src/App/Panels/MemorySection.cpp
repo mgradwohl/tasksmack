@@ -1,6 +1,6 @@
 #include "MemorySection.h"
 
-#include "Domain/Numeric.h"
+#include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -10,7 +10,8 @@
 #include <implot.h>
 
 #include <algorithm>
-#include <cmath>
+#include <chrono>
+#include <cstddef>
 #include <vector>
 
 namespace App::MemorySection

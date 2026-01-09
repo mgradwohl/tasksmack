@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/Factory.h"
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <format>
 #include <limits>
 #include <string>
@@ -85,21 +87,21 @@ namespace App
 {
 
 // Import priority slider constants and helpers selectively
-using detail::getNiceColor;
-using detail::getNiceFromPosition;
-using detail::getNicePosition;
-using detail::NICE_MAX;
-using detail::NICE_MIN;
-using detail::NICE_RANGE;
-using detail::PRIORITY_BADGE_ARROW_SIZE;
-using detail::PRIORITY_BADGE_CORNER_RADIUS;
-using detail::PRIORITY_BADGE_HEIGHT;
-using detail::PRIORITY_GRADIENT_SEGMENTS;
-using detail::PRIORITY_LABEL_PADDING;
-using detail::PRIORITY_SLIDER_CORNER_RADIUS;
-using detail::PRIORITY_SLIDER_HEIGHT;
-using detail::PRIORITY_SLIDER_WIDTH;
-using detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
+using Detail::getNiceColor;
+using Detail::getNiceFromPosition;
+using Detail::getNicePosition;
+using Detail::NICE_MAX;
+using Detail::NICE_MIN;
+using Detail::NICE_RANGE;
+using Detail::PRIORITY_BADGE_ARROW_SIZE;
+using Detail::PRIORITY_BADGE_CORNER_RADIUS;
+using Detail::PRIORITY_BADGE_HEIGHT;
+using Detail::PRIORITY_GRADIENT_SEGMENTS;
+using Detail::PRIORITY_LABEL_PADDING;
+using Detail::PRIORITY_SLIDER_CORNER_RADIUS;
+using Detail::PRIORITY_SLIDER_HEIGHT;
+using Detail::PRIORITY_SLIDER_WIDTH;
+using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 
 /// Context structure for priority slider rendering
 /// Captures all computed layout values in one place for helper methods

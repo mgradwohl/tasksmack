@@ -7,10 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
-#include <format>
-#include <ranges>
 
-namespace App::detail
+namespace App::Detail
 {
 namespace
 {
@@ -156,4 +154,4 @@ TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 }
 
 } // namespace
-} // namespace App::detail
+} // namespace App::Detail

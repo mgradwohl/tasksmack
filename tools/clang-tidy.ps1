@@ -84,23 +84,19 @@ if (-not (Test-Path $NinjaFile)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Ensure compile_commands.json exists and strip PCH flags
+# Ensure compile_commands.json exists
 if (-not (Test-Path $CompileCommandsJson)) {
     Write-Host "Building to generate compile_commands.json..."
     & cmake --build $BuildDir --target copy-compile-commands
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Strip PCH flags from compile_commands.json (clang-tidy doesn't handle them well)
+# Strip C++20 module flags from compile_commands.json (clang-tidy doesn't handle them)
+# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
 if ($ShowDetails) {
-    Write-Host "Stripping PCH flags from compile_commands.json..."
+    Write-Host "Stripping module flags from compile_commands.json..."
 }
 $content = Get-Content $CompileCommandsJson -Raw
-$content = $content -replace '-Xclang -include-pch -Xclang [^ ]*\.pch', ''
-$content = $content -replace '-Xclang -emit-pch', ''
-$content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
-$content = $content -replace '-Winvalid-pch', ''
-$content = $content -replace '-fpch-instantiate-templates', ''
 $content = $content -replace '@[^ ]*\.modmap', ''
 $content = $content -replace '-fmodule-output=[^ ]*', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline

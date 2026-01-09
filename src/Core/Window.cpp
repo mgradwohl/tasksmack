@@ -3,7 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <bit>
+#include <bit> // NOLINT(misc-include-cleaner) - std::bit_cast used on Windows
 #include <cassert>
 #include <stdexcept>
 #include <string_view>

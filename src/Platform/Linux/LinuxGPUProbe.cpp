@@ -2,9 +2,15 @@
 
 #include "DRMGPUProbe.h"
 #include "NVMLGPUProbe.h"
+#include "Platform/GPUTypes.h"
 #include "ROCmGPUProbe.h"
 
 #include <spdlog/spdlog.h>
+
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace Platform
 {

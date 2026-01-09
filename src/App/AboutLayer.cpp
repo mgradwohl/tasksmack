@@ -1,5 +1,7 @@
 #include "App/AboutLayer.h"
 
+#include "Core/Layer.h"
+#include "UI/IconLoader.h"
 #include "UI/Theme.h"
 #include "version.h"
 
@@ -14,9 +16,12 @@
 #include <string_view>
 #include <system_error>
 
+// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t
 #ifdef __linux__
+#include <sys/types.h>
 #include <unistd.h>
 #endif
+// NOLINTEND(misc-include-cleaner)
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -269,6 +274,7 @@ void AboutLayer::openUrl(const std::string& url)
     const std::wstring wideUrl(url.begin(), url.end());
     ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
+    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
     const pid_t pid = ::fork();
     if (pid == 0)
     {

@@ -522,7 +522,7 @@ template<typename T> void cropFrontToSize(std::vector<T>& data, std::size_t targ
     if (data.size() > targetSize)
     {
         const std::size_t removeCount = data.size() - targetSize;
-        using Diff = typename std::vector<T>::difference_type;
+        using Diff = std::vector<T>::difference_type;
         constexpr Diff maxDiff = std::numeric_limits<Diff>::max();
         const Diff removeCountDiff = Domain::Numeric::narrowOr<Diff>(removeCount, maxDiff);
         if (removeCountDiff == maxDiff)

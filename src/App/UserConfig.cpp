@@ -1,6 +1,8 @@
 #include "UserConfig.h"
 
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
+#include "ProcessColumnConfig.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -10,9 +12,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include <toml++/toml.hpp>

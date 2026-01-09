@@ -4,28 +4,41 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "Platform/PlatformConfig.h"
+
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "NetlinkSocketStats.h"
 #endif
 
+#include "Platform/ProcessTypes.h"
+
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <atomic>
 #include <charconv>
+#include <concepts>
+#include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include <dirent.h>
 #include <pwd.h>
 #include <sched.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 namespace Platform

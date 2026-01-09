@@ -1,14 +1,19 @@
 #include "LinuxProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/IProcessActions.h"
 
 #include <spdlog/spdlog.h>
 
 #include <cerrno>
-#include <csignal> // POSIX signals
+#include <cstdint>
+#include <string>
 #include <system_error>
 
+// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
+#include <signal.h>
 #include <sys/resource.h>
+#include <sys/types.h>
 
 namespace Platform
 {
