@@ -3,6 +3,7 @@ CompileFlags:
     # Language/std
     - -std=c++23
     - -fno-modules
+    - -Wno-unknown-warning-option
 
     # Project includes so standalone files still work
     - -Isrc
@@ -13,6 +14,8 @@ CompileFlags:
     - --system-header-prefix=spdlog/
     - --system-header-prefix=gtest/
     - --system-header-prefix=gmock/
+    - --system-header-prefix=imgui
+    - --system-header-prefix=implot
 
     # Standard system header paths (suppress warnings from OS/compiler headers)
     - --system-header-prefix=/usr/include/

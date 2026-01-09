@@ -111,6 +111,7 @@ struct rsmi_frequencies_t
 {
     std::uint32_t num_supported;
     std::uint32_t current;
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
     std::uint64_t frequency[32];
 };
 
@@ -297,6 +298,7 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         info.isIntegrated = false; // ROCm typically monitors discrete AMD GPUs
 
         // Get device name
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char nameBuf[RSMI_MAX_BUFFER_LENGTH] = {};
         rsmi_status_t result = m_Impl->rsmi_dev_name_get(deviceIdx, nameBuf, sizeof(nameBuf));
         if (result == RSMI_STATUS_SUCCESS)

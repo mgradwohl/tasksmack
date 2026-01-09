@@ -141,6 +141,7 @@ void UILayer::loadAllFonts()
     }
 
     // Icon font glyph range (Font Awesome 6)
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires null-terminated C array for AddFontFromFileTTF
     static constexpr ImWchar ICON_RANGES[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
 
     spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);

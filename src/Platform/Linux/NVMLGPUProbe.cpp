@@ -297,6 +297,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         info.isIntegrated = false; // NVIDIA GPUs are typically discrete
 
         // Get GPU name
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char name[NVML_DEVICE_NAME_BUFFER_SIZE]{};
         auto result = m_Impl->nvmlDeviceGetName(device, name, sizeof(name));
         if (result == NVML_SUCCESS)
@@ -305,6 +306,7 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
         }
 
         // Get UUID as ID
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
         result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
         if (result == NVML_SUCCESS)
@@ -339,6 +341,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         GPUCounters counter;
 
         // Get UUID as GPU ID
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
         auto result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
         if (result == NVML_SUCCESS)
@@ -449,6 +452,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         nvmlDevice_t device = m_Impl->devices[i];
 
         // Get UUID as GPU ID
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char uuid[NVML_DEVICE_UUID_BUFFER_SIZE]{};
         std::string gpuId;
         auto result = m_Impl->nvmlDeviceGetUUID(device, uuid, sizeof(uuid));

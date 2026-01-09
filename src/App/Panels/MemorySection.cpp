@@ -10,6 +10,7 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <vector>
@@ -138,10 +139,10 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             if (peakMemPercent > 0.0)
             {
                 const float peak = UI::Format::toFloatNarrow(peakMemPercent);
-                const float xLine[2] = {UI::Format::toFloatNarrow(axisConfig.xMin), UI::Format::toFloatNarrow(axisConfig.xMax)};
-                const float yLine[2] = {peak, peak};
+                const std::array<float, 2> xLine = {UI::Format::toFloatNarrow(axisConfig.xMin), UI::Format::toFloatNarrow(axisConfig.xMax)};
+                const std::array<float, 2> yLine = {peak, peak};
                 ImPlot::SetNextLineStyle(theme.scheme().textWarning, 1.5F);
-                ImPlot::PlotLine("##MemPeak", xLine, yLine, 2);
+                ImPlot::PlotLine("##MemPeak", xLine.data(), yLine.data(), 2);
             }
 
             // Tooltip on hover

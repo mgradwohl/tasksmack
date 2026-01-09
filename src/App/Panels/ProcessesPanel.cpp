@@ -14,6 +14,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -174,8 +175,8 @@ void renderDecimalAligned(const UI::Format::AlignedPercentParts& parts, float ca
     // Render decimal digit (single char, fixed position)
     ImGui::SameLine(0.0F, 0.0F);
     ImGui::SetCursorPosX(decimalRegionStart);
-    const char decimalStr[2] = {parts.decimalDigit, '\0'};
-    ImGui::TextUnformatted(decimalStr);
+    const std::array<char, 2> decimalStr = {parts.decimalDigit, '\0'};
+    ImGui::TextUnformatted(decimalStr.data());
 
     // Render unit part (fixed "%" - static constexpr string_view)
     ImGui::SameLine(0.0F, 0.0F);
@@ -208,8 +209,8 @@ void renderDecimalAligned(const UI::Format::AlignedBytesParts& parts, float cach
     // Render decimal digit (single char, fixed position)
     ImGui::SameLine(0.0F, 0.0F);
     ImGui::SetCursorPosX(decimalRegionStart);
-    const char decimalStr[2] = {parts.decimalDigit, '\0'};
-    ImGui::TextUnformatted(decimalStr);
+    const std::array<char, 2> decimalStr = {parts.decimalDigit, '\0'};
+    ImGui::TextUnformatted(decimalStr.data());
 
     // Render unit part (string_view to " KB", " MB", " GB", etc.)
     ImGui::SameLine(0.0F, 0.0F);
@@ -1004,14 +1005,14 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             }
 
             // Center the state character in the column
-            const char stateStr[2] = {stateChar, '\0'};
-            const float textWidth = ImGui::CalcTextSize(stateStr).x;
+            const std::array<char, 2> stateStr = {stateChar, '\0'};
+            const float textWidth = ImGui::CalcTextSize(stateStr.data()).x;
             const float availWidth = ImGui::GetContentRegionAvail().x;
             const float offset = std::max(0.0F, (availWidth - textWidth) * 0.5F);
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
             ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
-            ImGui::TextUnformatted(stateStr);
+            ImGui::TextUnformatted(stateStr.data());
             ImGui::PopStyleColor();
             break;
         }
