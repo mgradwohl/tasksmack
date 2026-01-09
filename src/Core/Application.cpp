@@ -1,11 +1,15 @@
 #include "Application.h"
 
+#include "Core/Window.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <cassert>
+#include <memory>
 #include <ranges>
 #include <stdexcept>
+#include <utility>
 
 // clang-format off
 #define GLFW_INCLUDE_NONE

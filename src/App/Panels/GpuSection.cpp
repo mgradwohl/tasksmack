@@ -1,5 +1,6 @@
 #include "GpuSection.h"
 
+#include "Domain/GPUSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <format>
 #include <string>
 #include <vector>

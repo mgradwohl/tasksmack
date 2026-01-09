@@ -7,7 +7,9 @@
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
 #include "Domain/GPUModel.h"
+#include "Domain/Numeric.h"
 #include "Domain/StorageModel.h"
+#include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
 #include "UI/ChartWidgets.h"
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <functional>
 #include <limits>

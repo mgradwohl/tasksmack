@@ -1,16 +1,24 @@
 #include "ProcessModel.h"
 
 #include "Numeric.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/ProcessTypes.h"
+#include "ProcessSnapshot.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace Domain
 {

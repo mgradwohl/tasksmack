@@ -1,9 +1,26 @@
 #include "GPUModel.h"
 
+#include "GPUSnapshot.h"
+#include "History.h"
+#include "Platform/GPUTypes.h"
+#include "Platform/IGPUProbe.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <memory>
+#include <mutex>
+// NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if is in <ranges>, libc++ provides fallback in <algorithm>
 #include <ranges>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace Domain
 {

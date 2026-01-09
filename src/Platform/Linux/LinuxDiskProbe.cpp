@@ -4,8 +4,12 @@
 
 #include "LinuxDiskProbe.h"
 
+#include "Platform/StorageTypes.h"
+
 #include <spdlog/spdlog.h>
 
+#include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -44,7 +48,7 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
     // But exclude numbered partitions (sda1, sda2, nvme0n1p1, etc.) for the main view
 
     // Check if it ends with a digit (likely a partition)
-    if (!deviceName.empty() && std::isdigit(static_cast<unsigned char>(deviceName.back())))
+    if (!deviceName.empty() && (std::isdigit(static_cast<unsigned char>(deviceName.back())) != 0))
     {
         // Exception: NVMe devices like "nvme0n1" end with a digit but are whole devices
         // Include nvme0n1, nvme1n1, etc. but skip partitions like sda1, sda2, nvme0n1p1

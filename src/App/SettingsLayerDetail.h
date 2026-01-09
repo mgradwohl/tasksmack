@@ -10,7 +10,7 @@
 #include <array>
 #include <cstddef>
 
-namespace App::detail
+namespace App::Detail
 {
 
 // ========================================
@@ -97,4 +97,4 @@ inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
     return it != HISTORY_OPTIONS.end() ? static_cast<std::size_t>(it - HISTORY_OPTIONS.begin()) : 2;
 }
 
-} // namespace App::detail
+} // namespace App::Detail

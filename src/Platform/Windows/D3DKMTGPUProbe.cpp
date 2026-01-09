@@ -187,6 +187,7 @@ bool D3DKMTGPUProbe::Impl::initialize()
 
 std::string D3DKMTGPUProbe::Impl::luidToString(const LUID& luid)
 {
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - snprintf buffer
     char buffer[32]{};
     std::snprintf(
         buffer, sizeof(buffer), "%08lX%08lX", static_cast<unsigned long>(luid.HighPart), static_cast<unsigned long>(luid.LowPart));

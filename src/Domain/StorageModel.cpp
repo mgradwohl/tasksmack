@@ -1,5 +1,6 @@
 #include "StorageModel.h"
 
+#include "Domain/StorageSnapshot.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
 
@@ -7,7 +8,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <utility>

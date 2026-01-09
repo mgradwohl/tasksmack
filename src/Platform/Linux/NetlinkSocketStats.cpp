@@ -6,13 +6,25 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <cerrno>
 #include <charconv>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <limits>
+#include <mutex>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
+// NOLINTBEGIN(misc-include-cleaner) - POSIX/Linux headers: include-cleaner lacks mappings for ssize_t, strerror_r, IPPROTO_*
 #include <dirent.h>
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
@@ -22,6 +34,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+// NOLINTEND(misc-include-cleaner)
 
 namespace Platform
 {
@@ -38,7 +51,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
 {
     std::array<char, 256> buffer{};
 
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - using thread-safe strerror_r, not strerror
+    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - using thread-safe strerror_r, include-cleaner false positive for POSIX
     auto* result = strerror_r(errnum, buffer.data(), buffer.size());
 
     // Handle both GNU (returns char*) and POSIX (returns int) variants
@@ -172,7 +185,7 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
 
     while (!done)
     {
-        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - not called from within critical sections
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection,misc-include-cleaner) - not called from within critical sections, ssize_t POSIX false positive
         const ssize_t len = recv(socket, buffer.data(), buffer.size(), 0);
         if (len < 0)
         {

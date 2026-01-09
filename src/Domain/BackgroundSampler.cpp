@@ -1,6 +1,18 @@
 #include "BackgroundSampler.h"
 
+#include "Platform/IProcessProbe.h"
+#include "Platform/ProcessTypes.h"
+
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <stop_token>
+#include <thread>
+#include <utility>
 
 namespace Domain
 {

@@ -7,6 +7,13 @@
 #include "LinuxProcessActions.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxSystemProbe.h"
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
+#include "Platform/IPathProvider.h"
+#include "Platform/IPowerProbe.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/ISystemProbe.h"
 
 #include <memory>
 

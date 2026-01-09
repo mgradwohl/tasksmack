@@ -1,16 +1,19 @@
 #include "DRMGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
+
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace Platform
 {
 
-namespace fs = std::filesystem;
+namespace Fs = std::filesystem;
 
 DRMGPUProbe::DRMGPUProbe()
 {
@@ -52,7 +55,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
     std::vector<DRMCard> cards;
 
     const std::string drmPath = "/sys/class/drm";
-    if (!fs::exists(drmPath))
+    if (!Fs::exists(drmPath))
     {
         spdlog::debug("DRMGPUProbe: /sys/class/drm not found");
         return cards;
@@ -66,7 +69,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
     };
 
     // Iterate over /sys/class/drm/card* entries
-    for (const auto& entry : fs::directory_iterator(drmPath))
+    for (const auto& entry : Fs::directory_iterator(drmPath))
     {
         const std::string cardName = entry.path().filename().string();
 
@@ -91,7 +94,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
         }
 
         // Check if device symlink exists
-        if (!fs::exists(card.devicePath))
+        if (!Fs::exists(card.devicePath))
         {
             spdlog::debug("DRMGPUProbe: Skipping {} - no device symlink", cardName);
             continue;
@@ -99,9 +102,9 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
 
         // Read driver name from /sys/class/drm/cardX/device/driver
         const std::string driverLink = card.devicePath + "/driver";
-        if (fs::is_symlink(driverLink))
+        if (Fs::is_symlink(driverLink))
         {
-            const auto driverTarget = fs::read_symlink(driverLink);
+            const auto driverTarget = Fs::read_symlink(driverLink);
             card.driver = driverTarget.filename().string();
         }
 
@@ -110,9 +113,9 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards()
 
         // Generate unique GPU ID (use PCI address if available)
         const std::string pciPath = card.devicePath;
-        if (fs::is_symlink(pciPath))
+        if (Fs::is_symlink(pciPath))
         {
-            const auto target = fs::read_symlink(pciPath);
+            const auto target = Fs::read_symlink(pciPath);
             card.gpuId = target.filename().string(); // e.g., 0000:00:02.0
         }
         else
@@ -176,13 +179,13 @@ uint64_t DRMGPUProbe::readSysfsUint64(const std::string& path)
 std::string DRMGPUProbe::findHwmonPath(const std::string& devicePath)
 {
     const std::string hwmonDir = devicePath + "/hwmon";
-    if (!fs::exists(hwmonDir) || !fs::is_directory(hwmonDir))
+    if (!Fs::exists(hwmonDir) || !Fs::is_directory(hwmonDir))
     {
         return "";
     }
 
     // Find first hwmonX directory
-    for (const auto& entry : fs::directory_iterator(hwmonDir))
+    for (const auto& entry : Fs::directory_iterator(hwmonDir))
     {
         const std::string hwmonName = entry.path().filename().string();
         if (hwmonName.starts_with("hwmon"))

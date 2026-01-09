@@ -1,5 +1,6 @@
 #include "LinuxPathProvider.h"
 
+// NOLINTNEXTLINE(misc-include-cleaner) - cstdlib provides secure_getenv when _GNU_SOURCE is defined
 #include <cstdlib>
 #include <filesystem>
 #include <system_error>
@@ -16,6 +17,7 @@ namespace
 [[nodiscard]] const char* getEnvSafe(const char* name)
 {
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
+    // NOLINTNEXTLINE(misc-include-cleaner) - secure_getenv from cstdlib with _GNU_SOURCE, include-cleaner false positive
     return secure_getenv(name);
 #else
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - fallback when secure_getenv unavailable

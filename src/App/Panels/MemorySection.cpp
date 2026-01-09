@@ -1,6 +1,6 @@
 #include "MemorySection.h"
 
-#include "Domain/Numeric.h"
+#include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -10,7 +10,9 @@
 #include <implot.h>
 
 #include <algorithm>
-#include <cmath>
+#include <array>
+#include <chrono>
+#include <cstddef>
 #include <vector>
 
 namespace App::MemorySection
@@ -137,10 +139,10 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             if (peakMemPercent > 0.0)
             {
                 const float peak = UI::Format::toFloatNarrow(peakMemPercent);
-                const float xLine[2] = {UI::Format::toFloatNarrow(axisConfig.xMin), UI::Format::toFloatNarrow(axisConfig.xMax)};
-                const float yLine[2] = {peak, peak};
+                const std::array<float, 2> xLine = {UI::Format::toFloatNarrow(axisConfig.xMin), UI::Format::toFloatNarrow(axisConfig.xMax)};
+                const std::array<float, 2> yLine = {peak, peak};
                 ImPlot::SetNextLineStyle(theme.scheme().textWarning, 1.5F);
-                ImPlot::PlotLine("##MemPeak", xLine, yLine, 2);
+                ImPlot::PlotLine("##MemPeak", xLine.data(), yLine.data(), 2);
             }
 
             // Tooltip on hover

@@ -1,9 +1,14 @@
 #include "ROCmGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
+
 #include <spdlog/spdlog.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <dlfcn.h>
@@ -13,8 +18,10 @@
 namespace
 {
 
+// NOLINTBEGIN(readability-identifier-naming) - these types mirror AMD ROCm SMI C API naming
 using rsmi_device_t = std::uint32_t;
 using rsmi_status_t = std::uint32_t;
+// NOLINTEND(readability-identifier-naming)
 
 // ROCm SMI return codes
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
@@ -35,7 +42,7 @@ constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 [[maybe_unused]] constexpr rsmi_status_t RSMI_STATUS_UNKNOWN_ERROR = 0xFFFFFFFF;
 
 // ROCm SMI temperature types
-// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
 {
     RSMI_TEMP_TYPE_EDGE = 0,
@@ -46,10 +53,10 @@ enum rsmi_temperature_type_t : std::uint32_t
     RSMI_TEMP_TYPE_HBM_2 = 5,
     RSMI_TEMP_TYPE_HBM_3 = 6
 };
-// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
 // ROCm SMI temperature metric
-// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_metric_t : std::uint32_t
 {
     RSMI_TEMP_CURRENT = 0,
@@ -67,10 +74,10 @@ enum rsmi_temperature_metric_t : std::uint32_t
     RSMI_TEMP_LOWEST = 12,
     RSMI_TEMP_HIGHEST = 13
 };
-// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
 // ROCm SMI clock types
-// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_clk_type_t : std::uint32_t
 {
     RSMI_CLK_TYPE_SYS = 0,
@@ -81,10 +88,10 @@ enum rsmi_clk_type_t : std::uint32_t
     RSMI_CLK_TYPE_FIRST = RSMI_CLK_TYPE_SYS,
     RSMI_CLK_TYPE_LAST = RSMI_CLK_TYPE_MEM
 };
-// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
 // ROCm SMI memory types
-// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size) - must match AMD ROCm SMI API
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_memory_type_t : std::uint32_t
 {
     RSMI_MEM_TYPE_VRAM = 0,
@@ -93,16 +100,18 @@ enum rsmi_memory_type_t : std::uint32_t
     RSMI_MEM_TYPE_FIRST = RSMI_MEM_TYPE_VRAM,
     RSMI_MEM_TYPE_LAST = RSMI_MEM_TYPE_GTT
 };
-// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size)
+// NOLINTEND(cppcoreguidelines-use-enum-class,performance-enum-size,readability-identifier-naming)
 
 // ROCm SMI buffer size constants
 constexpr std::size_t RSMI_MAX_BUFFER_LENGTH = 256;
 
 // ROCm SMI frequency structure
+// NOLINTNEXTLINE(readability-identifier-naming) - must match AMD ROCm SMI API
 struct rsmi_frequencies_t
 {
     std::uint32_t num_supported;
     std::uint32_t current;
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
     std::uint64_t frequency[32];
 };
 
@@ -289,6 +298,7 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         info.isIntegrated = false; // ROCm typically monitors discrete AMD GPUs
 
         // Get device name
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char nameBuf[RSMI_MAX_BUFFER_LENGTH] = {};
         rsmi_status_t result = m_Impl->rsmi_dev_name_get(deviceIdx, nameBuf, sizeof(nameBuf));
         if (result == RSMI_STATUS_SUCCESS)

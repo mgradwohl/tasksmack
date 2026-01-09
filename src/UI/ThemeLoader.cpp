@@ -1,12 +1,22 @@
 #include "ThemeLoader.h"
 
+#include "Theme.h"
 #include "UI/Format.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cstddef>
+#include <exception>
+#include <filesystem>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 #include <toml++/toml.hpp>
 

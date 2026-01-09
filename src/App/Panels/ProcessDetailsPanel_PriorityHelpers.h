@@ -13,7 +13,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace App::detail
+namespace App::Detail
 {
 
 // =============================================================================
@@ -129,4 +129,4 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
 // Note: For priority labels, use Domain::Priority::getPriorityLabel() from PriorityConfig.h
 // to maintain consistency across the application.
 
-} // namespace App::detail
+} // namespace App::Detail

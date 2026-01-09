@@ -26,7 +26,9 @@
 #include <memory>
 #include <vector>
 #endif
+#include <algorithm>
 #include <clocale>
+#include <exception>
 #include <iostream>
 #include <print>
 

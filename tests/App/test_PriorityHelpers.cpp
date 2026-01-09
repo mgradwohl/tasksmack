@@ -3,7 +3,7 @@
 
 #include <gtest/gtest.h>
 
-namespace App::detail
+namespace App::Detail
 {
 namespace
 {
@@ -211,4 +211,4 @@ TEST(PriorityHelpersTest, GetPriorityLabelCategories)
 }
 
 } // namespace
-} // namespace App::detail
+} // namespace App::Detail

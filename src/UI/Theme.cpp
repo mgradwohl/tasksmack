@@ -5,7 +5,11 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <cstddef>
+#include <filesystem>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace UI
 {

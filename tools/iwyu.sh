@@ -234,30 +234,21 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     exit 1
 fi
 
-# Strip PCH flags from compile_commands.json (IWYU doesn't support PCH)
+# Strip C++20 module flags from compile_commands.json (IWYU doesn't support them)
+# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
 if $VERBOSE; then
-    echo "Stripping PCH flags from compile_commands.json..."
+    echo "Stripping module flags from compile_commands.json..."
 fi
 # Use portable sed in-place editing that works on both GNU sed (Linux) and BSD sed (macOS)
 if [[ "$(uname)" == "Darwin" ]]; then
     # BSD sed requires a separate argument for backup extension
     sed -i '' \
-        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
-        -e 's/-Xclang -emit-pch//g' \
-        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-        -e 's/-Winvalid-pch//g' \
-        -e 's/-fpch-instantiate-templates//g' \
         -e 's/@[^ ]*\.modmap//g' \
         -e 's/-fmodule-output=[^ ]*//g' \
         "$COMPILE_COMMANDS"
 else
     # GNU sed: -i with no argument for in-place without backup
     sed -i \
-        -e 's/-Xclang -include-pch -Xclang [^ ]*\.pch//g' \
-        -e 's/-Xclang -emit-pch//g' \
-        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-        -e 's/-Winvalid-pch//g' \
-        -e 's/-fpch-instantiate-templates//g' \
         -e 's/@[^ ]*\.modmap//g' \
         -e 's/-fmodule-output=[^ ]*//g' \
         "$COMPILE_COMMANDS"
@@ -438,7 +429,9 @@ if selected_cmd is not None:
         command = ''
     if command:
         # Extract flags: remove compiler name and output-related flags
-        # Keep: -I, -D, -std, -f flags (except -fpch*), -W flags, --sysroot, etc.
+        # Keep: -I, -D, -std, -f flags, -W flags, --sysroot, etc.
+        # Note: PCH flags are filtered as a safety measure, though CMake/Ninja
+        # no longer includes them in compile_commands.json
         tokens = shlex.split(command)
         flags = []
         skip_next = False

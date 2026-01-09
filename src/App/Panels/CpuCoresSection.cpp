@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <string>

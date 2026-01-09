@@ -9,7 +9,6 @@ Checks: >
   portability-*,
   readability-*,
   -bugprone-easily-swappable-parameters,
-  -cppcoreguidelines-avoid-c-arrays,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-non-private-member-variables-in-classes,
   -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
@@ -19,17 +18,13 @@ Checks: >
   -cppcoreguidelines-pro-type-reinterpret-cast,
   -cppcoreguidelines-pro-type-vararg,
   -misc-confusable-identifiers,
-  -misc-include-cleaner,
   -misc-non-private-member-variables-in-classes,
-  -modernize-avoid-c-arrays,
   -modernize-return-braced-init-list,
   -modernize-use-auto,
   -modernize-use-trailing-return-type,
   -portability-avoid-pragma-once,
   -readability-function-cognitive-complexity,
   -readability-identifier-length,
-  -readability-identifier-naming,
-  -readability-implicit-bool-conversion,
   -readability-magic-numbers,
   -readability-use-concise-preprocessor-directives,
 
@@ -46,3 +41,36 @@ CheckOptions:
   - key: misc-include-cleaner.IgnoreHeaders
     value: >-
       (.*/build/.*|.*/_deps/.*|.*/dist/.*|.*/coverage/.*|.*/spdlog/.*|.*/vcpkg/.*|.*/gtest/.*|.*/gmock/.*|.*/assets/.*|.*/\.cache/.*|.*/tools/.*)
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: true
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: false
+  # Identifier naming conventions matching project style
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.MethodCase
+    value: camelBack
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: CamelCase
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: 'm_'
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: CamelCase
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: 'm_'
+  - key: readability-identifier-naming.NamespaceCase
+    value: CamelCase
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
