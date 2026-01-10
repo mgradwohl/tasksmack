@@ -10,6 +10,12 @@ cmake_policy(SET CMP0169 OLD)
 
 project(TaskSmack VERSION 0.2.0 LANGUAGES C CXX)
 
+# Windows: Configure MSVC runtime library linkage for Clang
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # Use dynamic MSVC runtime (/MD for Release, /MDd for Debug)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
