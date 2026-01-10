@@ -264,7 +264,8 @@ TEST(LayerTest, LayerIsMovable)
 TEST(LayerTest, CopyConstructorPreservesName)
 {
     Core::Layer layer1("Original");
-    Core::Layer layer2(layer1); // NOLINT(performance-unnecessary-copy-initialization)
+    Core::Layer layer2(layer1); // Intentional copy to exercise copy constructor in this test
+                                 // NOLINT(performance-unnecessary-copy-initialization)
 
     EXPECT_EQ(layer2.getName(), "Original");
 }
