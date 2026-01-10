@@ -1,15 +1,17 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
-#include "App/UserConfig.h"
-#include "Domain/SamplingConfig.h"
-#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 namespace App
 {

@@ -20,13 +20,15 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <cstdlib>
-#include <memory>
 #include <string>
+#include <type_traits>
+
+namespace
+{
 
 // Check if we have a display available
-static bool hasDisplay()
+bool hasDisplay()
 {
 #ifdef _WIN32
     // Windows always has a display subsystem available (GDI/D3D)
@@ -40,9 +42,6 @@ static bool hasDisplay()
     return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
 #endif
 }
-
-namespace
-{
 
 /// Test layer that tracks lifecycle callbacks
 class TestLayer : public Core::Layer

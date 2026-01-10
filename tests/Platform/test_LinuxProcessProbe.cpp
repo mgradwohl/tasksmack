@@ -20,7 +20,6 @@
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <thread>

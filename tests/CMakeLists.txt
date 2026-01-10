@@ -126,6 +126,7 @@ add_executable(TaskSmackTests
     UI/test_Format.cpp
     UI/test_ThemeLoader.cpp
     App/test_ProcessColumnConfig.cpp
+    App/test_ProcessesPanel.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigPersistence.cpp
     App/test_ActiveTab.cpp
@@ -146,6 +147,7 @@ add_executable(TaskSmackTests
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     # UI source files under test
+    ${CMAKE_SOURCE_DIR}/src/UI/Theme.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
