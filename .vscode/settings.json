@@ -9,6 +9,15 @@
         }
     },
     "terminal.integrated.defaultProfile.linux": "bash-copilot",
+    "terminal.integrated.profiles.windows": {
+        "pwsh-copilot": {
+            "path": "pwsh.exe",
+            "args": [
+                "-NoProfile"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "pwsh-copilot",
     "github.copilot.chat.terminal.profile": "bash-copilot",
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
