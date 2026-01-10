@@ -1366,16 +1366,16 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
 
 TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 {
-    auto mockProbe = new MockProcessProbe();
-    mockProbe->setTotalCpuTime(100000);
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
 
-    // Keep raw pointer for test control
-    MockProcessProbe* probe = mockProbe;
-    Domain::ProcessModel model{std::unique_ptr<Platform::IProcessProbe>(mockProbe)};
+    // Keep raw pointer for test control before moving unique_ptr
+    auto* rawProbe = probe.get();
+    Domain::ProcessModel model{std::move(probe)};
 
     // Start with 10MB
     auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
-    probe->setCounters({counter});
+    rawProbe->setCounters({counter});
     model.refresh();
 
     auto snaps1 = model.snapshots();
@@ -1387,7 +1387,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     // Increase to 20MB
     counter.rssBytes = 20 * 1024 * 1024;
     counter.userTime += 100;
-    probe->setCounters({counter});
+    rawProbe->setCounters({counter});
     model.refresh();
 
     auto snaps2 = model.snapshots();
@@ -1402,7 +1402,7 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
     // Decrease to 15MB - peak should stay at 20MB
     counter.rssBytes = 15 * 1024 * 1024;
     counter.userTime += 100;
-    probe->setCounters({counter});
+    rawProbe->setCounters({counter});
     model.refresh();
 
     auto snaps3 = model.snapshots();
@@ -1414,16 +1414,16 @@ TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
 
 TEST(ProcessModelTest, PeakRssResetForNewProcess)
 {
-    auto mockProbe = new MockProcessProbe();
-    mockProbe->setTotalCpuTime(100000);
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
 
-    // Keep raw pointer for test control
-    MockProcessProbe* probe = mockProbe;
-    Domain::ProcessModel model{std::unique_ptr<Platform::IProcessProbe>(mockProbe)};
+    // Keep raw pointer for test control before moving unique_ptr
+    auto* rawProbe = probe.get();
+    Domain::ProcessModel model{std::move(probe)};
 
     // Process with PID 100
     auto counter1 = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 20 * 1024 * 1024);
-    probe->setCounters({counter1});
+    rawProbe->setCounters({counter1});
     model.refresh();
 
     auto snaps1 = model.snapshots();
@@ -1434,7 +1434,7 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
 
     // New process with same PID but different start time (PID reuse)
     auto counter2 = makeCounter(100, "proc2", 'R', 500, 250, 2000, 5 * 1024 * 1024);
-    probe->setCounters({counter2});
+    rawProbe->setCounters({counter2});
     model.refresh();
 
     auto snaps2 = model.snapshots();

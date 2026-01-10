@@ -4,7 +4,7 @@
             "path": "/bin/bash",
             "args": [
                 "--rcfile",
-                "/home/mattg/.bashrc.copilot"
+                "${env:HOME}/.bashrc.copilot"
             ]
         }
     },

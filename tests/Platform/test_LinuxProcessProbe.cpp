@@ -522,4 +522,3 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 } // namespace Platform
 
 #endif
-

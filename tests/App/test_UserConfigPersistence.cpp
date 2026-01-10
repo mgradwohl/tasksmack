@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -178,9 +179,7 @@ y = -999999999
 
 TEST_F(UserConfigPersistenceTest, AllValidFontSizes)
 {
-    const std::vector<std::string> validSizes = {
-        "small", "medium", "large", "extra-large", "huge", "even-huger"
-    };
+    const std::vector<std::string> validSizes = {"small", "medium", "large", "extra-large", "huge", "even-huger"};
 
     for (const auto& size : validSizes)
     {
@@ -335,21 +334,14 @@ TEST_F(UserConfigPersistenceTest, SaveHandlesReadOnlyDirectory)
     // Make directory read-only (Linux-specific test)
 #ifndef _WIN32
     std::filesystem::permissions(
-        m_TempDir,
-        std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
-        std::filesystem::perm_options::replace
-    );
+        m_TempDir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, std::filesystem::perm_options::replace);
 
     // Attempting to write should fail gracefully
     std::ofstream file(m_ConfigPath);
     EXPECT_FALSE(file.is_open());
 
     // Restore permissions for cleanup
-    std::filesystem::permissions(
-        m_TempDir,
-        std::filesystem::perms::owner_all,
-        std::filesystem::perm_options::replace
-    );
+    std::filesystem::permissions(m_TempDir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
 #endif
 }
 

@@ -13,17 +13,17 @@
 #include "Core/Application.h"
 #include "Core/Layer.h"
 
+// clang-format off
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+// clang-format on
+
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <cstdlib>
 #include <memory>
 #include <string>
-
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-// clang-format on
 
 // Check if we have a display available
 static bool hasDisplay()
@@ -167,6 +167,11 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
 
 TEST(ApplicationTest, PushLayerCallsOnAttach)
 {
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
     Core::ApplicationSpecification spec;
     spec.Name = "LayerTest";
 
@@ -182,6 +187,11 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
 
 TEST(ApplicationTest, PushMultipleLayers)
 {
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
     Core::ApplicationSpecification spec;
     spec.Name = "MultiLayerTest";
 
@@ -287,6 +297,11 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
 
 TEST(ApplicationTest, DestructorDetachesLayers)
 {
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
     // This test ensures destruction completes without crashes
     {
         Core::ApplicationSpecification spec;
