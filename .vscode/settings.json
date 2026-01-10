@@ -4,7 +4,7 @@
             "path": "/bin/bash",
             "args": [
                 "--rcfile",
-                "${env:HOME}/.bashrc.copilot"
+                "/home/mattg/.bashrc.copilot"
             ]
         }
     },
@@ -16,7 +16,7 @@
                 "-NoProfile",
                 "-NoExit",
                 "-Command",
-                ". '${env:USERPROFILE}\\OneDrive\\Documents\\PowerShell\\Microsoft.PowerShell_profile_copilot.ps1'"
+                ". 'C:\\Users\\mattg\\OneDrive\\Documents\\PowerShell\\Microsoft.PowerShell_profile_copilot.ps1'"
             ]
         }
     },
@@ -72,13 +72,11 @@
         "**/.cache/**": true
     },
     "files.watcherExclude": {
-        "**/.git/**": true,
         "**/build/**": true,
         "**/_deps/**": true,
         "**/.cache/**": true
     },
     "search.exclude": {
-        "**/.git/**": true,
         "**/build/**": true,
         "**/_deps/**": true,
         "**/.cache/**": true
@@ -97,7 +95,10 @@
     "C_Cpp.default.intelliSenseMode": "clang-x64",
     "C_Cpp.clang_format_sortIncludes": false,
     // Disable CMake Tools test discovery - use CTest preset tasks instead
-    "cmake.ctest.testExplorerIntegrationEnabled": false
+    "cmake.ctest.testExplorerIntegrationEnabled": false,
+    "chat.tools.terminal.autoApprove": {
+        "cmake": true
+    }
     // "cmake.cmakePath": "/snap/bin/cmake",
     // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
     // "cmake.ctestPath": "/snap/bin/cmake"

@@ -34,9 +34,13 @@ bool hasDisplay()
 {
 #ifdef _WIN32
     // Check for CI environment - GitHub Actions sets CI=true
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called during single-threaded test startup
-    const char* ciEnv = std::getenv("CI");
-    if (ciEnv != nullptr && std::string(ciEnv) == "true")
+    char* ciEnv = nullptr;
+    size_t len = 0;
+    _dupenv_s(&ciEnv, &len, "CI");
+    bool isCI = (ciEnv != nullptr && std::string(ciEnv) == "true");
+    free(ciEnv);
+
+    if (isCI)
     {
         // Windows CI runners are typically headless
         return false;
@@ -45,10 +49,10 @@ bool hasDisplay()
     return true;
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called during single-threaded test startup before any test threads are created
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check
     const char* display = std::getenv("DISPLAY");
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called during single-threaded test startup before any test threads are created
     const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
 #endif
 }
