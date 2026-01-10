@@ -33,9 +33,9 @@ static bool hasDisplay()
     return true;
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - single-threaded test startup
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called during single-threaded test startup before any test threads are created
     const char* display = std::getenv("DISPLAY");
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - single-threaded test startup
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called during single-threaded test startup before any test threads are created
     const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
     return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
 #endif
