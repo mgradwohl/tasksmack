@@ -333,7 +333,11 @@ TEST_F(UserConfigPersistenceTest, SaveCreatesParentDirectory)
 
 TEST_F(UserConfigPersistenceTest, SaveHandlesReadOnlyDirectory)
 {
-    // Make directory read-only (Linux-specific test)
+    // This test is Linux-only because:
+    // - Windows file permissions work differently (ACLs vs POSIX permissions)
+    // - Windows std::filesystem::permissions() behavior varies by filesystem
+    // - The NTFS permission model doesn't map cleanly to owner_read/owner_exec
+    // On Windows, permission testing would require Windows-specific ACL manipulation.
 #ifndef _WIN32
     std::filesystem::permissions(
         m_TempDir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, std::filesystem::perm_options::replace);
