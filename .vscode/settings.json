@@ -13,7 +13,10 @@
         "pwsh-copilot": {
             "path": "pwsh.exe",
             "args": [
-                "-NoProfile"
+                "-NoProfile",
+                "-NoExit",
+                "-Command",
+                ". 'C:\\Users\\mattg\\OneDrive\\Documents\\PowerShell\\Microsoft.PowerShell_profile_copilot.ps1'"
             ]
         }
     },
