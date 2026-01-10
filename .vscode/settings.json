@@ -1,4 +1,15 @@
 {
+    "terminal.integrated.profiles.linux": {
+        "bash-copilot": {
+            "path": "/bin/bash",
+            "args": [
+                "--rcfile",
+                "/home/mattg/.bashrc.copilot"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.linux": "bash-copilot",
+    "github.copilot.chat.terminal.profile": "bash-copilot",
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
     "cmake.generator": "Ninja",

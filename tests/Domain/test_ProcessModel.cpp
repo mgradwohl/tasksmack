@@ -1297,3 +1297,147 @@ TEST(ProcessModelTest, StartTimeEpochZeroIsPassedThrough)
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_EQ(snaps[0].startTimeEpoch, 0);
 }
+
+// =============================================================================
+// System-Level History Tests (for untested functions)
+// =============================================================================
+
+TEST(ProcessModelTest, SystemNetSentHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemNetSentHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, SystemNetRecvHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemNetRecvHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, SystemPageFaultsHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemPageFaultsHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, SystemThreadCountHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemThreadCountHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, SystemPowerHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemPowerHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto timestamps = model.historyTimestamps();
+    EXPECT_TRUE(timestamps.empty());
+}
+
+// Note: Additional system history tests (systemNetSentHistory, systemThreadCountHistory, etc.)
+// require the ability to call updateFromCounters() with mock data after model construction.
+// These tests are deferred pending refactoring of ProcessModel to support test injection patterns.
+
+// =============================================================================
+// Peak RSS Tracking Tests
+// =============================================================================
+
+TEST(ProcessModelTest, PeakRssTracksMaximumMemory)
+{
+    auto mockProbe = new MockProcessProbe();
+    mockProbe->setTotalCpuTime(100000);
+
+    // Keep raw pointer for test control
+    MockProcessProbe* probe = mockProbe;
+    Domain::ProcessModel model{std::unique_ptr<Platform::IProcessProbe>(mockProbe)};
+
+    // Start with 10MB
+    auto counter = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 10 * 1024 * 1024);
+    probe->setCounters({counter});
+    model.refresh();
+
+    auto snaps1 = model.snapshots();
+    ASSERT_EQ(snaps1.size(), 1);
+    auto peak1 = snaps1[0].peakMemoryBytes;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Increase to 20MB
+    counter.rssBytes = 20 * 1024 * 1024;
+    counter.userTime += 100;
+    probe->setCounters({counter});
+    model.refresh();
+
+    auto snaps2 = model.snapshots();
+    ASSERT_EQ(snaps2.size(), 1);
+    auto peak2 = snaps2[0].peakMemoryBytes;
+
+    EXPECT_GT(peak2, peak1);
+    EXPECT_EQ(peak2, 20 * 1024 * 1024);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // Decrease to 15MB - peak should stay at 20MB
+    counter.rssBytes = 15 * 1024 * 1024;
+    counter.userTime += 100;
+    probe->setCounters({counter});
+    model.refresh();
+
+    auto snaps3 = model.snapshots();
+    ASSERT_EQ(snaps3.size(), 1);
+    auto peak3 = snaps3[0].peakMemoryBytes;
+
+    EXPECT_EQ(peak3, 20 * 1024 * 1024); // Peak should not decrease
+}
+
+TEST(ProcessModelTest, PeakRssResetForNewProcess)
+{
+    auto mockProbe = new MockProcessProbe();
+    mockProbe->setTotalCpuTime(100000);
+
+    // Keep raw pointer for test control
+    MockProcessProbe* probe = mockProbe;
+    Domain::ProcessModel model{std::unique_ptr<Platform::IProcessProbe>(mockProbe)};
+
+    // Process with PID 100
+    auto counter1 = makeCounter(100, "proc1", 'R', 1000, 500, 1000, 20 * 1024 * 1024);
+    probe->setCounters({counter1});
+    model.refresh();
+
+    auto snaps1 = model.snapshots();
+    ASSERT_EQ(snaps1.size(), 1);
+    EXPECT_EQ(snaps1[0].peakMemoryBytes, 20 * 1024 * 1024);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    // New process with same PID but different start time (PID reuse)
+    auto counter2 = makeCounter(100, "proc2", 'R', 500, 250, 2000, 5 * 1024 * 1024);
+    probe->setCounters({counter2});
+    model.refresh();
+
+    auto snaps2 = model.snapshots();
+    ASSERT_EQ(snaps2.size(), 1);
+    EXPECT_EQ(snaps2[0].peakMemoryBytes, 5 * 1024 * 1024); // Peak should reset for new process
+}

@@ -111,6 +111,8 @@ endif()
 # Test executable with all test sources
 add_executable(TaskSmackTests
     test_main.cpp
+    Core/test_Application.cpp
+    Core/test_Layer.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -125,18 +127,24 @@ add_executable(TaskSmackTests
     UI/test_ThemeLoader.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_UserConfig.cpp
+    App/test_UserConfigPersistence.cpp
     App/test_ActiveTab.cpp
     App/test_PriorityHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
-    # Source files under test (Domain layer is header + implementation)
+    # Source files under test
+    ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    # App layer
+    ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     # UI source files under test
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${PLATFORM_SRC_UNDER_TEST}
@@ -149,12 +157,15 @@ target_include_directories(TaskSmackTests PRIVATE
     ${imgui_SOURCE_DIR}/backends
     ${imgui_SOURCE_DIR}/misc/cpp
     ${implot_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}/gladsources/include  # For glad/gl.h
 )
 
 target_link_libraries(TaskSmackTests PRIVATE
     gtest_main
     spdlog::spdlog_header_only
     tomlplusplus::tomlplusplus
+    glfw
+    glad_gl_core_33
 )
 
 # Platform-specific library linking
