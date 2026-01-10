@@ -72,11 +72,13 @@
         "**/.cache/**": true
     },
     "files.watcherExclude": {
+        "**/.git/**": true,
         "**/build/**": true,
         "**/_deps/**": true,
         "**/.cache/**": true
     },
     "search.exclude": {
+        "**/.git/**": true,
         "**/build/**": true,
         "**/_deps/**": true,
         "**/.cache/**": true

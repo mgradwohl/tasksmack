@@ -144,10 +144,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
-    # App layer
-    ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
-    # UI source files under test
-    ${CMAKE_SOURCE_DIR}/src/UI/Theme.cpp
+    # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
