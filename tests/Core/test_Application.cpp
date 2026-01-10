@@ -28,10 +28,17 @@
 // Check if we have a display available
 static bool hasDisplay()
 {
-    // Check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
+#ifdef _WIN32
+    // Windows always has a display subsystem available (GDI/D3D)
+    return true;
+#else
+    // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - single-threaded test startup
     const char* display = std::getenv("DISPLAY");
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - single-threaded test startup
     const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
     return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
+#endif
 }
 
 namespace
