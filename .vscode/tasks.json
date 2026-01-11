@@ -186,7 +186,8 @@
 				"panel": "dedicated",
 				"clear": false,
 				"echo": true,
-				"focus": false
+				"focus": true,
+				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
@@ -319,10 +320,11 @@
 			],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared",
+				"panel": "dedicated",
 				"clear": false,
 				"echo": true,
-				"focus": false
+				"focus": true,
+				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
@@ -351,10 +353,11 @@
 			],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared",
+				"panel": "dedicated",
 				"clear": false,
 				"echo": true,
-				"focus": false
+				"focus": true,
+				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
@@ -431,10 +434,11 @@
 			"dependsOn": "CMake: Build Debug",
 			"problemMatcher": [],
 			"presentation": {
-				"reveal": "always",
-				"panel": "shared",
+				"reveal": dedicated",
 				"clear": false,
 				"echo": true,
+				"focus": true,
+				"showReuseMessage: true,
 				"focus": false
 			},
 			"options": {

@@ -27,6 +27,11 @@
         "terminal.foreground": "#CCCCCC",
         "terminal.background": "#1E1E1E"
     },
+    // Task shell configuration - use plain PowerShell for tasks
+    "terminal.integrated.automationProfile.windows": {
+        "path": "pwsh.exe",
+        "args": ["-NoProfile", "-NonInteractive"]
+    },
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
     "cmake.generator": "Ninja",
