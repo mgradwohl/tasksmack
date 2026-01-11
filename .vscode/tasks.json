@@ -434,12 +434,10 @@
 			"dependsOn": "CMake: Build Debug",
 			"problemMatcher": [],
 			"presentation": {
-				"reveal": dedicated",
-				"clear": false,
+				"reveal": dedicated","clear": false,
 				"echo": true,
 				"focus": true,
-				"showReuseMessage: true,
-				"focus": false
+				"showReuseMessage: true,"focus": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
