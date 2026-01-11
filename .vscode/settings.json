@@ -22,6 +22,11 @@
     },
     "terminal.integrated.defaultProfile.windows": "pwsh-copilot",
     "github.copilot.chat.terminal.profile": "bash-copilot",
+    // Terminal colors - ensure readable text
+    "workbench.colorCustomizations": {
+        "terminal.foreground": "#CCCCCC",
+        "terminal.background": "#1E1E1E"
+    },
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
     "cmake.generator": "Ninja",
