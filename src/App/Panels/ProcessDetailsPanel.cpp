@@ -2,6 +2,8 @@
 
 #include "App/Panel.h"
 #include "App/UserConfig.h"
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Domain/Numeric.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
@@ -103,7 +105,14 @@ using Detail::PRIORITY_SLIDER_HEIGHT;
 using Detail::PRIORITY_SLIDER_WIDTH;
 using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 
-/// Context structure for priority slider rendering
+// Constructor (inside App namespace)
+ProcessDetailsPanel::ProcessDetailsPanel()
+    : Panel("Process Details"),
+      m_ProcessActions(Platform::makeProcessActions()),
+      m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
+{
+}
+
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext
 {
@@ -116,14 +125,6 @@ struct ProcessDetailsPanel::PrioritySliderContext
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
 };
-
-ProcessDetailsPanel::ProcessDetailsPanel()
-    : Panel("Process Details"),
-      m_MaxHistorySeconds(Domain::Numeric::toDouble(App::UserConfig::get().settings().maxHistorySeconds)),
-      m_ProcessActions(Platform::makeProcessActions()),
-      m_ActionCapabilities(m_ProcessActions->actionCapabilities())
-{
-}
 
 void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime)
 {
@@ -252,6 +253,12 @@ void ProcessDetailsPanel::renderContent()
         return;
     }
 
+    // Skip rendering when tab is inactive (data collection continues in updateWithSnapshot)
+    if (!m_IsActiveTab)
+    {
+        return;
+    }
+
     if (!m_HasSnapshot)
     {
         const auto& theme = UI::Theme::get();
@@ -316,6 +323,35 @@ void ProcessDetailsPanel::renderContent()
     }
 
     ImGui::PopStyleVar(); // FramePadding
+}
+
+void ProcessDetailsPanel::onEvent(Core::Event& event)
+{
+    Core::EventDispatcher dispatcher(event);
+
+    // Listen for active tab changes
+    dispatcher.dispatch<Core::ActiveTabChangedEvent>(
+        [this](Core::ActiveTabChangedEvent& e)
+        {
+            m_IsActiveTab = (e.tabName() == "ProcessDetails");
+            return false;
+        });
+
+    // Listen for process selection events
+    dispatcher.dispatch<Core::ProcessSelectedEvent>(
+        [this](Core::ProcessSelectedEvent& e)
+        {
+            setSelectedPid(e.getPid());
+            return false; // Don't consume - other panels might care
+        });
+
+    // Listen for history duration changes
+    dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
+        [this](Core::HistoryDurationChangedEvent& e)
+        {
+            m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
+            return false;
+        });
 }
 
 void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)

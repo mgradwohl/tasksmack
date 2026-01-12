@@ -1,6 +1,6 @@
 # TaskSmack
 
-TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and GLFW.
+TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
 
 ## System Requirements
 

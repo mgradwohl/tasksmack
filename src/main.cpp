@@ -5,6 +5,7 @@
 #include "App/AboutLayer.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
+#include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "UI/UILayer.h"
@@ -135,7 +136,7 @@ auto runApp() -> int
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
-    // Load user configuration early so we can apply window geometry before creating the GLFW window.
+    // Load user configuration early so we can apply window geometry before creating the SDL window.
     auto& userConfig = App::UserConfig::get();
     userConfig.load();
     const auto& settings = userConfig.settings();
@@ -163,14 +164,20 @@ auto runApp() -> int
     // Push UI layer (initializes ImGui/ImPlot backends)
     app.pushLayer<UI::UILayer>();
 
+    // Push title bar layer (custom window chrome)
+    app.pushLayer<App::TitleBarLayer>();
+
     // Push shell layer (docking workspace with panels)
-    app.pushLayer<App::ShellLayer>();
+    auto& shell = app.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
     app.pushLayer<App::AboutLayer>();
 
     // Settings dialog layer (modal overlay)
     app.pushLayer<App::SettingsLayer>();
+
+    // Tell shell layer the title bar height for content offset
+    shell.setContentYOffset(App::TITLE_BAR_HEIGHT);
 
     // Run the application
     app.run();

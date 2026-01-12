@@ -3,6 +3,9 @@
 #include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "Core/Application.h"
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Platform/Factory.h"
@@ -316,6 +319,32 @@ void ProcessesPanel::onDetach()
     m_ProcessModel.reset();
 }
 
+void ProcessesPanel::onEvent(Core::Event& event)
+{
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::ActiveTabChangedEvent>(
+        [this](Core::ActiveTabChangedEvent& e)
+        {
+            m_IsActiveTab = (e.tabName() == "Processes");
+            return false;
+        });
+    dispatcher.dispatch<Core::ThemeChangedEvent>(
+        [this](Core::ThemeChangedEvent&)
+        {
+            // Invalidate text cache and request refresh
+            m_TextSizeCache.fontPtr = nullptr;
+            m_ForceRefresh = true;
+            return false;
+        });
+    dispatcher.dispatch<Core::FontSizeChangedEvent>(
+        [this](Core::FontSizeChangedEvent&)
+        {
+            m_TextSizeCache.fontPtr = nullptr;
+            m_ForceRefresh = true;
+            return false;
+        });
+}
+
 void ProcessesPanel::onUpdate(float deltaTime)
 {
     if (!m_ProcessModel)
@@ -387,6 +416,12 @@ void ProcessesPanel::renderContent()
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textError, "Process model not initialized");
+        return;
+    }
+
+    // Skip rendering when tab is inactive (data collection continues in onUpdate)
+    if (!m_IsActiveTab)
+    {
         return;
     }
 
@@ -775,6 +810,9 @@ void ProcessesPanel::renderContent()
         if (settingsChanged)
         {
             UserConfig::get().settings().processColumns = m_ColumnSettings;
+            // Notify listeners that process column settings have changed
+            Core::ProcessColumnsChangedEvent evt;
+            Core::Application::get().raiseEvent(evt);
         }
 
         ImGui::EndTable();
@@ -892,6 +930,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                     selectableId.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
             {
                 m_SelectedPid = proc.pid;
+
+                // Emit process selection event for other panels to react
+                Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
+                Core::Application::get().raiseEvent(event);
             }
             ImGui::SameLine(0.0F, 0.0F);
             renderRightAlignedText(label);

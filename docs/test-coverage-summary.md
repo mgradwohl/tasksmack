@@ -28,7 +28,7 @@
 ### 1. Core Layer - Application Lifecycle
 **Risk**: 🔴 HIGH  
 **Files**: `src/Core/Application.cpp`, `src/Core/Window.cpp`  
-**Impact**: Main loop crashes, layer lifecycle bugs, GLFW initialization failures
+**Impact**: Main loop crashes, layer lifecycle bugs, SDL3 initialization failures
 
 ### 2. UserConfig - Configuration Persistence
 **Risk**: 🔴 HIGH  

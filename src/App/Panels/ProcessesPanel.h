@@ -48,6 +48,8 @@ class ProcessesPanel : public Panel
 
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent();
+    /// Handle application events (theme/font changes)
+    void onEvent(Core::Event& event) override;
 
     /// Get the currently selected process PID.
     /// @return Selected PID, or -1 if none selected.
@@ -93,6 +95,7 @@ class ProcessesPanel : public Panel
     std::chrono::milliseconds m_RefreshInterval{1000};
     float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
+    bool m_IsActiveTab = false;
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;

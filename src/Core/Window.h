@@ -1,9 +1,9 @@
 #pragma once
 
+#include <SDL3/SDL_video.h>
+
 #include <string>
 #include <utility>
-
-struct GLFWwindow;
 
 namespace Core
 {
@@ -14,6 +14,7 @@ struct WindowSpecification
     int Width = 1280;
     int Height = 720;
     bool VSync = true;
+    bool Borderless = true; // Enable custom title bar by default
 };
 
 class Window
@@ -30,6 +31,8 @@ class Window
     void swapBuffers() const;
 
     [[nodiscard]] bool shouldClose() const noexcept;
+    void requestClose() noexcept;
+    void clearCloseRequest() noexcept; // Reset close flag after handling WindowCloseEvent
 
     [[nodiscard]] int getWidth() const noexcept
     {
@@ -40,9 +43,14 @@ class Window
         return m_Spec.Height;
     }
 
-    [[nodiscard]] GLFWwindow* getHandle() const noexcept
+    [[nodiscard]] SDL_Window* getHandle() const noexcept
     {
         return m_Handle;
+    }
+
+    [[nodiscard]] SDL_GLContext getGLContext() const noexcept
+    {
+        return m_GLContext;
     }
 
     void setPosition(int x, int y) const;
@@ -52,11 +60,30 @@ class Window
     [[nodiscard]] auto getSize() const -> std::pair<int, int>;
 
     [[nodiscard]] bool isMaximized() const;
-    void maximize() const;
+    void maximize();
+    void restore();
+    void minimize() const;
+
+    // Custom title bar support
+    [[nodiscard]] bool isBorderless() const noexcept
+    {
+        return m_Spec.Borderless;
+    }
+    // Set a hit test callback for custom window dragging/resizing
+    void setHitTestCallback(SDL_HitTest callback, void* callbackData) const;
 
   private:
     WindowSpecification m_Spec;
-    GLFWwindow* m_Handle = nullptr;
+    SDL_Window* m_Handle = nullptr;
+    SDL_GLContext m_GLContext = nullptr;
+    bool m_ShouldClose = false;
+
+    // For borderless window maximize/restore tracking
+    bool m_IsMaximizedBorderless = false;
+    int m_RestoreX = 0;
+    int m_RestoreY = 0;
+    int m_RestoreWidth = 0;
+    int m_RestoreHeight = 0;
 };
 
 } // namespace Core

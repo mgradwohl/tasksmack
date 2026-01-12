@@ -1,11 +1,6 @@
 #include "UI/IconLoader.h"
 
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
 #include <glad/gl.h>
-// clang-format on
-
 #include <spdlog/spdlog.h>
 
 #ifdef __clang__

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Core/Event.h"
+
 #include <string>
 #include <utility>
 
@@ -38,6 +40,12 @@ class Panel
     /// Called every frame before render.
     /// @param deltaTime Time since last frame in seconds.
     virtual void onUpdate([[maybe_unused]] float deltaTime)
+    {
+    }
+
+    /// Handle application events (process selection, settings changes, etc.)
+    /// Return true from your handler to mark the event as handled and stop propagation
+    virtual void onEvent([[maybe_unused]] Core::Event& event)
     {
     }
 

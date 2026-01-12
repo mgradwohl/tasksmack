@@ -55,7 +55,7 @@ App (ShellLayer, Panels)
     ↓
 UI (ImGui/ImPlot integration)
     ↓
-Core (Application loop, Window, GLFW)
+Core (Application loop, Window, SDL3)
     ↓
 Domain (ProcessModel, SystemModel, History)
     ↓
@@ -139,16 +139,13 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 
 ### Constants
 - Shared sampling defaults/guardrails live in `src/Domain/SamplingConfig.h` (refresh interval ms, history seconds, clamp helpers). Reuse these instead of re-declaring literals across App/Domain/UI.
-- Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, `GLFW_INCLUDE_NONE`, etc.) as `#define`.
+- Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, etc.) as `#define`.
 - **String encoding:** Internally everything is UTF-8. On Windows, call the wide-character (W) Win32/PDH APIs and convert at the boundary; do not use ANSI APIs. Keep Windows file/process/device names as UTF-8 in our code.
 
-### GLFW/GLAD Header Order
+### SDL3/GLAD Header Order
 ```cpp
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-// clang-format on
 #include <glad/gl.h>
+#include <SDL3/SDL.h>
 ```
 
 ### Modern C++23 Features (Prefer)
@@ -271,7 +268,6 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 - ❌ Computing CPU% in Platform probes (belongs in Domain)
 - ❌ Calling probes from UI thread (use Domain models)
-- ❌ Forgetting `GLFW_INCLUDE_NONE` before GLFW headers
 - ❌ `EXPECT_EQ` on floats (use `EXPECT_DOUBLE_EQ`)
 - ❌ Mocks inside anonymous namespace with `make_unique`
 - ❌ Using `using namespace std` in headers

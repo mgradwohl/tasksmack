@@ -285,8 +285,14 @@ class Theme
     /// Get a smaller font for chart axis labels and legends (one size below current)
     [[nodiscard]] auto smallerFont() const -> ImFont*;
 
+    /// Get the title font (Sixtyfour pixel font for custom title bar)
+    [[nodiscard]] auto titleFont() const -> ImFont*;
+
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
+
+    /// Register the title font (called by UILayer during initialization)
+    void registerTitleFont(ImFont* font);
 
   private:
     Theme();
@@ -308,6 +314,7 @@ class Theme
         ImFont* monospace = nullptr;
     };
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
+    ImFont* m_TitleFont = nullptr; // Sixtyfour pixel font for title bar
 
     void initializeFontSizes();
     void loadDefaultFallbackTheme();

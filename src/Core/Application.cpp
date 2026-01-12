@@ -1,7 +1,10 @@
 #include "Application.h"
 
+#include "Core/Event.h"
 #include "Core/Window.h"
+#include "Core/WindowEvents.h"
 
+#include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -11,23 +14,10 @@
 #include <stdexcept>
 #include <utility>
 
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-// clang-format on
-
 namespace Core
 {
 
 Application* Application::s_Instance = nullptr;
-
-namespace
-{
-void glfwErrorCallback(int error, const char* description)
-{
-    spdlog::error("[GLFW Error {}]: {}", error, description);
-}
-} // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
@@ -36,19 +26,21 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 
     spdlog::info("Initializing {} application", m_Spec.Name);
 
-    glfwSetErrorCallback(glfwErrorCallback);
-
-    if (glfwInit() == GLFW_FALSE)
+    // Initialize SDL video subsystem
+    if (!SDL_Init(SDL_INIT_VIDEO))
     {
-        spdlog::critical("Failed to initialize GLFW");
-        throw std::runtime_error("Failed to initialize GLFW");
+        spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
+        throw std::runtime_error("Failed to initialize SDL");
     }
+
+    spdlog::info("SDL initialized: {}", SDL_GetRevision());
 
     WindowSpecification windowSpec;
     windowSpec.Title = m_Spec.Name;
     windowSpec.Width = m_Spec.Width;
     windowSpec.Height = m_Spec.Height;
     windowSpec.VSync = m_Spec.VSync;
+    windowSpec.Borderless = true; // Enable custom title bar
 
     m_Window = std::make_unique<Window>(windowSpec);
 }
@@ -63,7 +55,7 @@ Application::~Application()
     m_LayerStack.clear();
     m_Window.reset();
 
-    glfwTerminate();
+    SDL_Quit();
 
     s_Instance = nullptr;
 }
@@ -78,7 +70,28 @@ void Application::run()
 
     while (m_Running)
     {
-        glfwPollEvents();
+        // Process SDL events
+        SDL_Event sdlEvent;
+        while (SDL_PollEvent(&sdlEvent))
+        {
+            // Let layers handle raw SDL events (for ImGui integration and input handling)
+            for (const auto& layer : m_LayerStack)
+            {
+                layer->onSDLEvent(&sdlEvent);
+            }
+
+            // Only translate window close events to our event system for clean shutdown coordination
+            // All other input events are handled via SDL directly
+            if (sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+            {
+                WindowCloseEvent event;
+                raiseEvent(event);
+                if (!event.isHandled())
+                {
+                    stop();
+                }
+            }
+        }
 
         if (m_Window->shouldClose())
         {
@@ -123,6 +136,19 @@ void Application::stop()
     m_Running = false;
 }
 
+void Application::raiseEvent(Event& event)
+{
+    // Dispatch to layers in reverse order (topmost first)
+    for (auto& layer : std::views::reverse(m_LayerStack))
+    {
+        layer->onEvent(event);
+        if (event.isHandled())
+        {
+            break;
+        }
+    }
+}
+
 Application& Application::get()
 {
     assert(s_Instance != nullptr && "Application does not exist!");
@@ -131,7 +157,7 @@ Application& Application::get()
 
 float Application::getTime()
 {
-    return static_cast<float>(glfwGetTime());
+    // SDL_GetTicks returns milliseconds as Uint64
+    return static_cast<float>(SDL_GetTicks()) / 1000.0F;
 }
-
 } // namespace Core

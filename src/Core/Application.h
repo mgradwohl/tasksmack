@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Event.h"
 #include "Layer.h"
 #include "Window.h"
 
@@ -34,12 +35,22 @@ class Application
     void run();
     void stop();
 
+    /// Dispatch an event to all layers (in reverse order)
+    /// Stops when a layer marks the event as handled
+    void raiseEvent(Event& event);
+
+    /// Push a new layer onto the layer stack and return a reference to it.
+    /// The returned reference is valid for the lifetime of the Application.
+    /// Use the returned reference for immediate configuration (e.g., calling setters after construction).
+    /// Example: auto& shell = app.pushLayer<ShellLayer>(); shell.setContentYOffset(height);
     template<typename T, typename... Args>
         requires std::is_base_of_v<Layer, T>
-    void pushLayer(Args&&... args)
+    T& pushLayer(Args&&... args)
     {
         auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         layer->onAttach();
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast) - Type is guaranteed by template
+        return static_cast<T&>(*layer);
     }
 
     [[nodiscard]] Window& getWindow() const

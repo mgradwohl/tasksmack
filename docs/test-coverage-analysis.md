@@ -24,17 +24,17 @@
 **Missing Coverage**:
 - Application startup/shutdown sequence
 - Layer stack management (push/pop, lifecycle)
-- GLFW initialization/teardown
+- SDL3 initialization/teardown
 - Window creation/destruction
 - Event loop handling
 - Frame timing calculations
-- Error handling when GLFW fails
+- Error handling when SDL3 fails
 
 **Recommended Tests**:
 - Unit test: Application construction/destruction
 - Unit test: Layer stack operations (push, iterate, detach in reverse)
-- Integration test: Mocked GLFW window creation
-- Edge case: GLFW initialization failure handling
+- Integration test: Mocked SDL3 window creation
+- Edge case: SDL3 initialization failure handling
 - Edge case: Window creation failure
 - Stress test: Multiple rapid layer attachments/detachments
 
@@ -242,7 +242,7 @@ Current NOLINTs are generally justified but some can be eliminated:
    - **Action**: Keep
 
 9. **Window.cpp:126** - `prefer-member-initializer`
-   - **Status**: JUSTIFIED - GLFW requires ordering
+   - **Status**: JUSTIFIED - SDL3 requires ordering
    - **Action**: Keep with explanation
 
 10. **WindowsProcessProbe.cpp:397** - TODO for network counters
@@ -406,16 +406,16 @@ All iteration is explicit or via standard algorithms.
 #include "Core/Application.h"
 #include <gtest/gtest.h>
 
-// Mock GLFW for testing without creating actual windows
-class MockGLFWFixture : public ::testing::Test {
+// Mock SDL3 for testing without creating actual windows
+class MockSDL3Fixture : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Initialize GLFW once for all tests
-        // Or mock GLFW functions
+        // Initialize SDL3 once for all tests
+        // Or mock SDL3 functions
     }
 };
 
-TEST_F(MockGLFWFixture, ApplicationConstructsSuccessfully) {
+TEST_F(MockSDL3Fixture, ApplicationConstructsSuccessfully) {
     Core::ApplicationSpecification spec;
     spec.Name = "TestApp";
     spec.Width = 800;
@@ -425,7 +425,7 @@ TEST_F(MockGLFWFixture, ApplicationConstructsSuccessfully) {
     EXPECT_EQ(&app, &Core::Application::get());
 }
 
-TEST_F(MockGLFWFixture, ApplicationPushLayerCallsOnAttach) {
+TEST_F(MockSDL3Fixture, ApplicationPushLayerCallsOnAttach) {
     Core::Application app;
 
     class MockLayer : public Core::Layer {
@@ -440,7 +440,7 @@ TEST_F(MockGLFWFixture, ApplicationPushLayerCallsOnAttach) {
     // Verify layer->onAttach() was called
 }
 
-TEST_F(MockGLFWFixture, ApplicationDetachsLayersInReverseOrder) {
+TEST_F(MockSDL3Fixture, ApplicationDetachsLayersInReverseOrder) {
     // Test that destructor calls onDetach() in reverse order
     // Track call sequence with static/global counter
 }
@@ -852,7 +852,7 @@ Create `tests/Integration/test_ApplicationLifecycle.cpp`:
 - Test full startup → run → shutdown sequence
 - Verify no memory leaks (with ASAN)
 - Verify proper layer lifecycle
-- Test graceful handling of GLFW/OpenGL errors
+- Test graceful handling of SDL3/OpenGL errors
 
 ### 3. Add Property-Based Tests for Numeric Utilities
 
