@@ -54,7 +54,11 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     // Get window size in LOGICAL coordinates for consistency
     int windowWidth = 0;
     int windowHeight = 0;
-    SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight);
+    if (!SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight))
+    {
+        spdlog::error("SDL_GetWindowSize failed in hitTestCallback: {}", SDL_GetError());
+        return SDL_HITTEST_NORMAL;
+    }
 
     // Check if window is maximized - no resize borders when maximized
     const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
@@ -200,6 +204,7 @@ void TitleBarLayer::onAttach()
             if (error != GL_NO_ERROR)
             {
                 spdlog::error("OpenGL error {} while uploading title bar icon texture", static_cast<unsigned int>(error));
+                glBindTexture(GL_TEXTURE_2D, 0); // Unbind before deletion
                 glDeleteTextures(1, &m_IconTexture);
                 m_IconTexture = 0U;
                 m_IconWidth = 0;
@@ -260,8 +265,13 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         const bool altPressed = (keyEvent.mod & (SDL_KMOD_LALT | SDL_KMOD_RALT)) != 0;
 
         // Check keyboard state for the key that wasn't just pressed
-        const bool* keyboardState = SDL_GetKeyboardState(nullptr);
-        const bool spaceHeld = keyboardState != nullptr && keyboardState[SDL_SCANCODE_SPACE];
+        int numKeys = 0;
+        const bool* keyboardState = SDL_GetKeyboardState(&numKeys);
+        bool spaceHeld = false;
+        if (keyboardState != nullptr && SDL_SCANCODE_SPACE >= 0 && SDL_SCANCODE_SPACE < numKeys)
+        {
+            spaceHeld = keyboardState[SDL_SCANCODE_SPACE];
+        }
 
         const bool ctrlPressed = (keyEvent.mod & (SDL_KMOD_LCTRL | SDL_KMOD_RCTRL)) != 0;
 

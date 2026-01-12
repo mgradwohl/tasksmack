@@ -173,6 +173,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     }
 
     // Load OpenGL functions using GLAD with SDL's GetProcAddress
+    // NOLINT justification: SDL_FunctionPointer and GLADloadfunc have compatible signatures;
+    // this is the standard pattern for loading OpenGL functions with SDL3
     const int version =
         gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     if (version == 0)
