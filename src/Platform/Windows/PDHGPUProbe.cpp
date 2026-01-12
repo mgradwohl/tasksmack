@@ -37,15 +37,15 @@ struct EngineTypeInfo
 
 // Known GPU engine types from Windows GPU Engine counters
 const std::vector<EngineTypeInfo> KNOWN_ENGINE_TYPES = {
-    {"3D", "3D"},
-    {"Copy", "Copy"},
-    {"VideoDecode", "VideoDecode"},
-    {"VideoEncode", "VideoEncode"},
-    {"VideoProcessing", "VideoProcessing"},
-    {"Compute_0", "Compute"},
-    {"Compute_1", "Compute"},
-    {"Graphics_0", "3D"},
-    {"Graphics_1", "3D"},
+    EngineTypeInfo{.suffix = "3D", .displayName = "3D"},
+    EngineTypeInfo{.suffix = "Copy", .displayName = "Copy"},
+    EngineTypeInfo{.suffix = "VideoDecode", .displayName = "VideoDecode"},
+    EngineTypeInfo{.suffix = "VideoEncode", .displayName = "VideoEncode"},
+    EngineTypeInfo{.suffix = "VideoProcessing", .displayName = "VideoProcessing"},
+    EngineTypeInfo{.suffix = "Compute_0", .displayName = "Compute"},
+    EngineTypeInfo{.suffix = "Compute_1", .displayName = "Compute"},
+    EngineTypeInfo{.suffix = "Graphics_0", .displayName = "3D"},
+    EngineTypeInfo{.suffix = "Graphics_1", .displayName = "3D"},
 };
 
 /// @brief Parse a GPU Engine or GPU Process Memory instance name to extract PID and engine type
@@ -347,7 +347,7 @@ struct PDHGPUProbe::Impl
         {
             std::string narrowInstance;
             narrowInstance.reserve(instance.size());
-            for (wchar_t wc : instance)
+            for (const wchar_t wc : instance)
             {
                 narrowInstance.push_back(static_cast<char>(wc));
             }
@@ -358,7 +358,7 @@ struct PDHGPUProbe::Impl
                 continue;
             }
 
-            std::wstring counterPath = L"\\GPU Engine(" + instance + L")\\Utilization Percentage";
+            const std::wstring counterPath = L"\\GPU Engine(" + instance + L")\\Utilization Percentage";
 
             PDH_HCOUNTER counter = nullptr;
             status = pdhAddEnglishCounter(query, counterPath.c_str(), 0, &counter);
@@ -433,7 +433,7 @@ struct PDHGPUProbe::Impl
         {
             std::string narrowInstance;
             narrowInstance.reserve(instance.size());
-            for (wchar_t wc : instance)
+            for (const wchar_t wc : instance)
             {
                 narrowInstance.push_back(static_cast<char>(wc));
             }
@@ -606,7 +606,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         DWORD counterType = 0;
 
         // Use appropriate format based on counter type
-        DWORD format = ci.isMemoryCounter ? PDH_FMT_LARGE : (PDH_FMT_DOUBLE | PDH_FMT_NOCAP100);
+        const DWORD format = ci.isMemoryCounter ? PDH_FMT_LARGE : (PDH_FMT_DOUBLE | PDH_FMT_NOCAP100);
         status = m_Impl->pdhGetFormattedCounterValue(ci.counter, format, &counterType, &value);
 
         if (status != ERROR_SUCCESS || (value.CStatus != ERROR_SUCCESS && value.CStatus != PDH_CSTATUS_NEW_DATA))
@@ -614,7 +614,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             continue;
         }
 
-        AggKey key{ci.pid, ci.gpuLuid};
+        const AggKey key{.pid = ci.pid, .gpuLuid = ci.gpuLuid};
         auto& agg = aggregated[key];
 
         if (ci.isMemoryCounter)
@@ -622,20 +622,19 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             // Memory counter - aggregate by type
             if (ci.engineType == "DedicatedMemory")
             {
-                // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type;
-                // union member access is unavoidable when reading PDH counter values
+                // NOLINT(cppcoreguidelines-pro-type-union-access)
                 agg.dedicatedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
             else if (ci.engineType == "SharedMemory")
             {
-                // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type
+                // NOLINT(cppcoreguidelines-pro-type-union-access)
                 agg.sharedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
         }
         else
         {
             // Utilization counter
-            // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type
+            // NOLINT(cppcoreguidelines-pro-type-union-access)
             agg.totalUtilization += value.doubleValue;
 
             // Add engine type if not already present
