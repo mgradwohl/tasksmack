@@ -6,9 +6,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <cctype>
-#include <ranges>
 
 namespace Platform
 {
@@ -23,10 +21,10 @@ std::string normalizeGPUName(const std::string& name)
     normalized.reserve(name.size());
 
     // Convert to lowercase and remove extra whitespace
-    bool lastWasSpace = true;  // Skip leading spaces
+    bool lastWasSpace = true; // Skip leading spaces
     for (char c : name)
     {
-        if (std::isspace(static_cast<unsigned char>(c)))
+        if (std::isspace(static_cast<unsigned char>(c)) != 0)
         {
             if (!lastWasSpace)
             {
@@ -77,7 +75,7 @@ bool gpuNamesMatch(const std::string& name1, const std::string& name2)
     return false;
 }
 
-}  // namespace
+} // namespace
 
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
@@ -136,7 +134,10 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
                     {
                         m_DXGIToNVMLMap[static_cast<uint32_t>(dxgiIdx)] = static_cast<uint32_t>(nvmlIdx);
                         spdlog::info("WindowsGPUProbe: Mapped DXGI GPU {} to NVML GPU {} ('{}' <-> '{}')",
-                                     dxgiIdx, nvmlIdx, dxgiGPU.name, nvmlGPU.name);
+                                     dxgiIdx,
+                                     nvmlIdx,
+                                     dxgiGPU.name,
+                                     nvmlGPU.name);
                         matched = true;
                         break;
                     }
@@ -231,9 +232,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't)
         // Always use NVML utilization when available, even if it's 0 (which is valid at idle)
         dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
-        spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: GPU {} utilization = {}%",
-                      dxgiIdx,
-                      nvmlCounter.utilizationPercent);
+        spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: GPU {} utilization = {}%", dxgiIdx, nvmlCounter.utilizationPercent);
 
         // Prefer NVML memory metrics (more accurate)
         if (nvmlCounter.memoryTotalBytes > 0)

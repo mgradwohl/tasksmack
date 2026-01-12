@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Platform/GPUTypes.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 

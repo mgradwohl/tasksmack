@@ -15,7 +15,6 @@
 #include <memory>
 #include <mutex>
 // NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if is in <ranges>, libc++ provides fallback in <algorithm>
-#include <ranges>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>

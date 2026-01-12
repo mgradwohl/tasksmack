@@ -15,7 +15,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <ranges>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -317,9 +316,12 @@ void ProcessModel::mergeGPUData()
 
     // Build a lookup map: GPU ID -> friendly name
     std::unordered_map<std::string, std::string> gpuIdToName;
-    for (const auto& gpuSnap : m_GPUModel->snapshots())
+    auto gpuSnaps = m_GPUModel->snapshots();
+    spdlog::debug("ProcessModel::mergeGPUData: Got {} GPU snapshots for name lookup", gpuSnaps.size());
+    for (const auto& gpuSnap : gpuSnaps)
     {
         gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
+        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.name);
     }
 
     // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
@@ -335,6 +337,12 @@ void ProcessModel::mergeGPUData()
         std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
     };
     std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
+
+    // Log the first counter's GPU ID for debugging
+    if (!gpuCounters.empty())
+    {
+        spdlog::debug("ProcessModel::mergeGPUData: First per-process counter gpuId='{}'", gpuCounters[0].gpuId);
+    }
 
     for (const auto& gc : gpuCounters)
     {
@@ -408,8 +416,12 @@ void ProcessModel::mergeGPUData()
 
             // Log GPU-using processes for debugging
             spdlog::debug("ProcessModel: PID {} ({}) using GPU: {:.1f}%, {} bytes, devices='{}', engines={}",
-                          snapshot.pid, snapshot.name, snapshot.gpuUtilPercent, snapshot.gpuMemoryBytes,
-                          snapshot.gpuDevices, snapshot.gpuEngines.size());
+                          snapshot.pid,
+                          snapshot.name,
+                          snapshot.gpuUtilPercent,
+                          snapshot.gpuMemoryBytes,
+                          snapshot.gpuDevices,
+                          snapshot.gpuEngines.size());
         }
     }
 

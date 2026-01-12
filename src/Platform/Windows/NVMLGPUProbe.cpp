@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <array>
 #include <format>
-#include <ranges>
 #include <utility>
 
 namespace Platform
@@ -451,18 +450,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     for (const auto& [index, device] : m_DeviceHandles)
     {
-        // Get UUID as GPU ID
-        std::array<char, NVML_DEVICE_UUID_BUFFER_SIZE> uuid{};
-        std::string gpuId;
-        nvmlReturn_t result = m_NVML.DeviceGetUUID(device, uuid.data(), NVML_DEVICE_UUID_BUFFER_SIZE);
-        if (result == NVML_SUCCESS)
-        {
-            gpuId = uuid.data();
-        }
-        else
-        {
-            gpuId = std::format("NVML_GPU{}", index);
-        }
+        // Use index-based GPU ID to match WindowsGPUProbe (DXGI) format
+        // The NVML UUID is different from the DXGI LUID-based ID, so we use
+        // a consistent index-based format that aligns with the merged snapshots
+        std::string gpuId = std::format("GPU{}", index);
 
         // Query compute processes (CUDA, OpenCL)
         // NVML API pattern: first call with count=0 returns NVML_ERROR_INSUFFICIENT_SIZE and populates count
@@ -471,7 +462,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
             constexpr unsigned int MAX_PROCESSES = 256;
             unsigned int computeCount = MAX_PROCESSES;
             std::vector<nvmlProcessInfo_t> computeProcesses(MAX_PROCESSES);
-            result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
+            nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
             if (result == NVML_SUCCESS && computeCount > 0)
             {
                 spdlog::debug("NVMLGPUProbe: Found {} compute processes on GPU {}", computeCount, index);
@@ -487,8 +478,8 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     counter.gpuId = gpuId;
                     counter.gpuMemoryBytes = hasValidMemory ? proc.usedGpuMemory : 0;
                     counter.activeEngines.emplace_back("Compute");
-                    spdlog::trace("NVMLGPUProbe: Compute process PID {} on GPU '{}', mem={}", 
-                                  counter.pid, counter.gpuId, counter.gpuMemoryBytes);
+                    spdlog::trace(
+                        "NVMLGPUProbe: Compute process PID {} on GPU '{}', mem={}", counter.pid, counter.gpuId, counter.gpuMemoryBytes);
                     allCounters.push_back(std::move(counter));
                 }
             }
@@ -504,7 +495,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
             constexpr unsigned int MAX_PROCESSES = 256;
             unsigned int graphicsCount = MAX_PROCESSES;
             std::vector<nvmlProcessInfo_t> graphicsProcesses(MAX_PROCESSES);
-            result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
+            nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
             if (result == NVML_SUCCESS && graphicsCount > 0)
             {
                 spdlog::debug("NVMLGPUProbe: Found {} graphics processes on GPU {}", graphicsCount, index);
@@ -537,8 +528,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                         counter.gpuId = gpuId;
                         counter.gpuMemoryBytes = memBytes;
                         counter.activeEngines.emplace_back("3D");
-                        spdlog::trace("NVMLGPUProbe: Graphics process PID {} on GPU '{}', mem={}", 
-                                      counter.pid, counter.gpuId, counter.gpuMemoryBytes);
+                        spdlog::trace("NVMLGPUProbe: Graphics process PID {} on GPU '{}', mem={}",
+                                      counter.pid,
+                                      counter.gpuId,
+                                      counter.gpuMemoryBytes);
                         allCounters.push_back(std::move(counter));
                     }
                 }
@@ -572,8 +565,7 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     caps.hasPCIeMetrics = true;
     caps.hasEngineUtilization = true;
     // Per-process metrics available if we have the required functions
-    caps.hasPerProcessMetrics =
-        (m_NVML.DeviceGetComputeRunningProcesses != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);
+    caps.hasPerProcessMetrics = (m_NVML.DeviceGetComputeRunningProcesses != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);
     caps.hasEncoderDecoder = false; // Not implemented yet
     caps.supportsMultiGPU = true;
 

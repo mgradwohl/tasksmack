@@ -1,12 +1,8 @@
 #include "D3DKMTGPUProbe.h"
 
-#include <algorithm>
-#include <map>
-#include <ranges>
-#include <unordered_map>
-#include <utility>
-
 #include <spdlog/spdlog.h>
+
+#include <utility>
 
 // clang-format off
 // Windows headers
@@ -288,8 +284,7 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
 
         // Open process handle with query permissions
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast) - Windows HANDLE required
-        HANDLE hProcess =
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
         if (hProcess == nullptr)
         {
             continue; // No permission to query this process
