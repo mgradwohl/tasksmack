@@ -44,20 +44,31 @@ enum class EventType : uint8_t
 class Event
 {
   public:
-    bool handled = false;
-
     Event() = default;
     virtual ~Event() = default;
     Event(const Event&) = delete;
     auto operator=(const Event&) -> Event& = delete;
     Event(Event&&) = default;
     auto operator=(Event&&) -> Event& = default;
+
+    [[nodiscard]] bool isHandled() const
+    {
+        return m_Handled;
+    }
+    void setHandled(bool handled)
+    {
+        m_Handled = handled;
+    }
+
     [[nodiscard]] virtual auto getEventType() const -> EventType = 0;
     [[nodiscard]] virtual auto getName() const -> const char* = 0;
     [[nodiscard]] virtual auto toString() const -> std::string
     {
         return getName();
     }
+
+  private:
+    bool m_Handled = false;
 };
 
 /// Type-safe event dispatcher
@@ -72,9 +83,9 @@ class EventDispatcher
     /// Returns true if the event was dispatched (regardless of whether it was handled)
     template<typename T> auto dispatch(const std::function<bool(T&)>& func) -> bool
     {
-        if (m_Event.getEventType() == T::getStaticType() && !m_Event.handled)
+        if (m_Event.getEventType() == T::getStaticType() && !m_Event.isHandled())
         {
-            m_Event.handled = func(static_cast<T&>(m_Event));
+            m_Event.setHandled(func(static_cast<T&>(m_Event)));
             return true;
         }
         return false;

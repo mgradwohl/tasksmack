@@ -86,7 +86,7 @@ void Application::run()
             {
                 WindowCloseEvent event;
                 raiseEvent(event);
-                if (!event.handled)
+                if (!event.isHandled())
                 {
                     stop();
                 }
@@ -142,7 +142,7 @@ void Application::raiseEvent(Event& event)
     for (auto& layer : std::views::reverse(m_LayerStack))
     {
         layer->onEvent(event);
-        if (event.handled)
+        if (event.isHandled())
         {
             break;
         }

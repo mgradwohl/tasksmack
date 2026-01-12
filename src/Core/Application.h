@@ -39,6 +39,10 @@ class Application
     /// Stops when a layer marks the event as handled
     void raiseEvent(Event& event);
 
+    /// Push a new layer onto the layer stack and return a reference to it.
+    /// The returned reference is valid for the lifetime of the Application.
+    /// Use the returned reference for immediate configuration (e.g., calling setters after construction).
+    /// Example: auto& shell = app.pushLayer<ShellLayer>(); shell.setContentYOffset(height);
     template<typename T, typename... Args>
         requires std::is_base_of_v<Layer, T>
     T& pushLayer(Args&&... args)

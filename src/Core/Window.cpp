@@ -54,7 +54,8 @@ namespace
 
 void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 {
-    // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely.
+    // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely
+    // NOLINT: Required cast for Win32 API - HICON and LPARAM have compatible sizes
     SendMessage(hwnd,
                 WM_SETICON,
                 iconType,
@@ -63,10 +64,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 
 void setWindowIconFromResource(SDL_Window* window)
 {
-    // Get the native Win32 handle from SDL
-    // SDL_GetPointerProperty returns the HWND directly as a void* pointer (not a pointer to HWND)
-    // We use reinterpret_cast to convert the void* directly to HWND
-    // NOLINT: This is a void*-to-HWND conversion required by SDL's API contract
+    // SDL returns HWND as void* per its property API contract; direct cast is required and safe
     HWND hwnd = reinterpret_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                                               SDL_PROP_WINDOW_WIN32_HWND_POINTER,
                                                               nullptr)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)

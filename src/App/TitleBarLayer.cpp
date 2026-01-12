@@ -353,6 +353,9 @@ void TitleBarLayer::renderTitleBar()
 
         // Draw icon over the invisible button
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
+        // ImTextureID is void* in ImGui's SDL/OpenGL backend and treated as an opaque texture handle.
+        // We convert the OpenGL texture ID (GLuint) to void* via uintptr_t for portability.
+        // The backend handles the actual type conversion internally when rendering.
         ImGui::Image(reinterpret_cast<void*>(static_cast<uintptr_t>(m_IconTexture)),
                      ImVec2(ICON_SIZE, ICON_SIZE)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 
