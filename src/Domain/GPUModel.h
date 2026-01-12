@@ -59,6 +59,9 @@ class GPUModel
     // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
 
+    // Configuration: Set PDH instance refresh interval (Windows-only)
+    void setInstanceRefreshInterval(std::chrono::seconds interval);
+
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     std::vector<Platform::GPUInfo> m_GPUInfo;

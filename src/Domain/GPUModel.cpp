@@ -196,6 +196,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.name = infoIt->name;
         snapshot.vendor = infoIt->vendor;
         snapshot.isIntegrated = infoIt->isIntegrated;
+        snapshot.luidId = infoIt->luidId; // For PDH counter matching
     }
 
     // Copy instantaneous values
@@ -307,6 +308,14 @@ std::vector<double> GPUModel::historyTimestamps() const
 {
     const std::shared_lock lock(m_Mutex);
     return m_HistoryTimestamps;
+}
+
+void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)
+{
+    if (m_Probe)
+    {
+        m_Probe->setInstanceRefreshInterval(interval);
+    }
 }
 
 } // namespace Domain

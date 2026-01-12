@@ -2,15 +2,12 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/NVMLTypes.h"
 
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-// Forward declare NVML types to avoid including nvml.h in header
-using nvmlDevice_t = struct nvmlDevice_st*;
-using nvmlReturn_t = int;
 
 namespace Platform
 {
@@ -48,31 +45,31 @@ class NVMLGPUProbe : public IGPUProbe
     bool initializeNVML();
     void shutdownNVML();
 
-    [[nodiscard]] static std::string getNVMLErrorString(nvmlReturn_t result);
+    [[nodiscard]] static std::string getNVMLErrorString(NVML::nvmlReturn_t result);
 
     // NVML function pointers (dynamically loaded)
     struct NVMLFunctions
     {
-        nvmlReturn_t (*Init)();
-        nvmlReturn_t (*Shutdown)();
-        nvmlReturn_t (*DeviceGetCount)(unsigned int*);
-        nvmlReturn_t (*DeviceGetHandleByIndex)(unsigned int, nvmlDevice_t*);
-        nvmlReturn_t (*DeviceGetName)(nvmlDevice_t, char*, unsigned int);
-        nvmlReturn_t (*DeviceGetUUID)(nvmlDevice_t, char*, unsigned int);
-        nvmlReturn_t (*DeviceGetMemoryInfo)(nvmlDevice_t, void*);
-        nvmlReturn_t (*DeviceGetTemperature)(nvmlDevice_t, int, unsigned int*);
-        nvmlReturn_t (*DeviceGetPowerUsage)(nvmlDevice_t, unsigned int*);
-        nvmlReturn_t (*DeviceGetPowerManagementLimit)(nvmlDevice_t, unsigned int*);
-        nvmlReturn_t (*DeviceGetClockInfo)(nvmlDevice_t, int, unsigned int*);
-        nvmlReturn_t (*DeviceGetMaxClockInfo)(nvmlDevice_t, int, unsigned int*);
-        nvmlReturn_t (*DeviceGetUtilizationRates)(nvmlDevice_t, void*);
-        nvmlReturn_t (*DeviceGetPcieThroughput)(nvmlDevice_t, int, unsigned int*);
-        nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int);
-        nvmlReturn_t (*DeviceGetVbiosVersion)(nvmlDevice_t, char*, unsigned int);
-        nvmlReturn_t (*DeviceGetFanSpeed)(nvmlDevice_t, unsigned int*);
+        NVML::nvmlReturn_t (*Init)();
+        NVML::nvmlReturn_t (*Shutdown)();
+        NVML::nvmlReturn_t (*DeviceGetCount)(unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetHandleByIndex)(unsigned int, NVML::nvmlDevice_t*);
+        NVML::nvmlReturn_t (*DeviceGetName)(NVML::nvmlDevice_t, char*, unsigned int);
+        NVML::nvmlReturn_t (*DeviceGetUUID)(NVML::nvmlDevice_t, char*, unsigned int);
+        NVML::nvmlReturn_t (*DeviceGetMemoryInfo)(NVML::nvmlDevice_t, void*);
+        NVML::nvmlReturn_t (*DeviceGetTemperature)(NVML::nvmlDevice_t, int, unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetPowerUsage)(NVML::nvmlDevice_t, unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetPowerManagementLimit)(NVML::nvmlDevice_t, unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetClockInfo)(NVML::nvmlDevice_t, int, unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetMaxClockInfo)(NVML::nvmlDevice_t, int, unsigned int*);
+        NVML::nvmlReturn_t (*DeviceGetUtilizationRates)(NVML::nvmlDevice_t, void*);
+        NVML::nvmlReturn_t (*DeviceGetPcieThroughput)(NVML::nvmlDevice_t, int, unsigned int*);
+        NVML::nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int);
+        NVML::nvmlReturn_t (*DeviceGetVbiosVersion)(NVML::nvmlDevice_t, char*, unsigned int);
+        NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*);
         // Per-process GPU functions
-        nvmlReturn_t (*DeviceGetComputeRunningProcesses)(nvmlDevice_t, unsigned int*, void*);
-        nvmlReturn_t (*DeviceGetGraphicsRunningProcesses)(nvmlDevice_t, unsigned int*, void*);
+        NVML::nvmlReturn_t (*DeviceGetComputeRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
+        NVML::nvmlReturn_t (*DeviceGetGraphicsRunningProcesses)(NVML::nvmlDevice_t, unsigned int*, void*);
     };
 
     void* m_NVMLHandle{nullptr};
@@ -80,7 +77,7 @@ class NVMLGPUProbe : public IGPUProbe
     bool m_Initialized{false};
 
     // Map device index to NVML handle
-    std::unordered_map<uint32_t, nvmlDevice_t> m_DeviceHandles;
+    std::unordered_map<uint32_t, NVML::nvmlDevice_t> m_DeviceHandles;
 };
 
 } // namespace Platform

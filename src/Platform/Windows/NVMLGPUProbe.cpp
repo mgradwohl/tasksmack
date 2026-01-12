@@ -1,5 +1,7 @@
 #include "NVMLGPUProbe.h"
 
+#include "Platform/NVMLTypes.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off
@@ -17,73 +19,11 @@
 #include <format>
 #include <utility>
 
+// Import NVML types from shared header
+using namespace Platform::NVML;
+
 namespace Platform
 {
-
-namespace
-{
-
-// NVML return codes
-constexpr int NVML_SUCCESS = 0;
-constexpr int NVML_ERROR_UNINITIALIZED = 1;
-constexpr int NVML_ERROR_INVALID_ARGUMENT = 2;
-constexpr int NVML_ERROR_NOT_SUPPORTED = 3;
-constexpr int NVML_ERROR_NO_PERMISSION = 4;
-constexpr int NVML_ERROR_ALREADY_INITIALIZED = 5;
-constexpr int NVML_ERROR_NOT_FOUND = 6;
-constexpr int NVML_ERROR_INSUFFICIENT_SIZE = 7;
-constexpr int NVML_ERROR_INSUFFICIENT_POWER = 8;
-constexpr int NVML_ERROR_DRIVER_NOT_LOADED = 9;
-constexpr int NVML_ERROR_TIMEOUT = 10;
-constexpr int NVML_ERROR_IRQ_ISSUE = 11;
-constexpr int NVML_ERROR_LIBRARY_NOT_FOUND = 12;
-constexpr int NVML_ERROR_FUNCTION_NOT_FOUND = 13;
-constexpr int NVML_ERROR_CORRUPTED_INFOROM = 14;
-constexpr int NVML_ERROR_GPU_IS_LOST = 15;
-
-// NVML temperature sensors
-constexpr int NVML_TEMPERATURE_GPU = 0;
-
-// NVML clock types
-constexpr int NVML_CLOCK_GRAPHICS = 0;
-[[maybe_unused]] constexpr int NVML_CLOCK_SM = 1;
-constexpr int NVML_CLOCK_MEM = 2;
-
-// NVML PCIe counter types
-[[maybe_unused]] constexpr int NVML_PCIE_UTIL_TX_BYTES = 0;
-[[maybe_unused]] constexpr int NVML_PCIE_UTIL_RX_BYTES = 1;
-
-// NVML constants
-constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
-constexpr unsigned int NVML_DEVICE_UUID_BUFFER_SIZE = 80;
-constexpr unsigned int NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE = 80;
-constexpr unsigned int NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE = 32;
-
-// NVML memory info structure
-struct nvmlMemory_t
-{
-    uint64_t total;
-    uint64_t free;
-    uint64_t used;
-};
-
-// NVML utilization structure
-struct nvmlUtilization_t
-{
-    unsigned int gpu;
-    unsigned int memory;
-};
-
-// NVML process info structure (for per-process GPU metrics)
-struct nvmlProcessInfo_t
-{
-    unsigned int pid;
-    unsigned long long usedGpuMemory;
-    unsigned int gpuInstanceId;
-    unsigned int computeInstanceId;
-};
-
-} // namespace
 
 NVMLGPUProbe::NVMLGPUProbe() : m_Initialized(loadNVML() && initializeNVML())
 {
@@ -206,7 +146,7 @@ void NVMLGPUProbe::shutdownNVML()
     m_Initialized = false;
 }
 
-std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
+std::string NVMLGPUProbe::getNVMLErrorString(NVML::nvmlReturn_t result)
 {
     switch (result)
     {
@@ -243,7 +183,7 @@ std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
     case NVML_ERROR_GPU_IS_LOST:
         return "GPU is lost";
     default:
-        return std::format("Unknown error ({})", result);
+        return std::format("Unknown error ({})", static_cast<unsigned int>(result));
     }
 }
 
@@ -478,14 +418,14 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     counter.gpuId = gpuId;
                     counter.gpuMemoryBytes = hasValidMemory ? proc.usedGpuMemory : 0;
                     counter.activeEngines.emplace_back("Compute");
-                    spdlog::trace(
-                        "NVMLGPUProbe: Compute process PID {} on GPU '{}', mem={}", counter.pid, counter.gpuId, counter.gpuMemoryBytes);
+                    spdlog::debug("NVMLGPUProbe: Compute PID {} mem raw={} valid={} final={}",
+                                  counter.pid, proc.usedGpuMemory, hasValidMemory, counter.gpuMemoryBytes);
                     allCounters.push_back(std::move(counter));
                 }
             }
             else if (result != NVML_SUCCESS && result != NVML_ERROR_NOT_SUPPORTED)
             {
-                spdlog::debug("NVMLGPUProbe: DeviceGetComputeRunningProcesses returned {}", result);
+                spdlog::debug("NVMLGPUProbe: DeviceGetComputeRunningProcesses returned {}", static_cast<unsigned int>(result));
             }
         }
 
@@ -520,6 +460,8 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                         {
                             it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, memBytes);
                         }
+                        spdlog::debug("NVMLGPUProbe: Graphics PID {} (merged) raw={} valid={} final={}",
+                                      proc.pid, proc.usedGpuMemory, hasValidMemory, it->gpuMemoryBytes);
                     }
                     else
                     {
@@ -528,17 +470,15 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                         counter.gpuId = gpuId;
                         counter.gpuMemoryBytes = memBytes;
                         counter.activeEngines.emplace_back("3D");
-                        spdlog::trace("NVMLGPUProbe: Graphics process PID {} on GPU '{}', mem={}",
-                                      counter.pid,
-                                      counter.gpuId,
-                                      counter.gpuMemoryBytes);
+                        spdlog::debug("NVMLGPUProbe: Graphics PID {} (new) raw={} valid={} final={}",
+                                      counter.pid, proc.usedGpuMemory, hasValidMemory, counter.gpuMemoryBytes);
                         allCounters.push_back(std::move(counter));
                     }
                 }
             }
             else if (result != NVML_SUCCESS && result != NVML_ERROR_NOT_SUPPORTED)
             {
-                spdlog::debug("NVMLGPUProbe: DeviceGetGraphicsRunningProcesses returned {}", result);
+                spdlog::debug("NVMLGPUProbe: DeviceGetGraphicsRunningProcesses returned {}", static_cast<unsigned int>(result));
             }
         }
     }

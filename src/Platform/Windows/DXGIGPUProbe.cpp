@@ -45,6 +45,14 @@ namespace
     }
 }
 
+/// Convert LUID to PDH-compatible format string: "GPU_0x{HighPart}_0x{LowPart}"
+/// PDH instance names use this format for GPU identification
+[[nodiscard]] std::string luidToPdhFormat(const LUID& luid)
+{
+    return std::format("GPU_0x{:08X}_0x{:08X}", static_cast<unsigned int>(luid.HighPart),
+                       static_cast<unsigned int>(luid.LowPart));
+}
+
 } // namespace
 
 DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
@@ -175,8 +183,12 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
             {
                 GPUInfo info{};
 
-                // Generate unique ID from LUID
+                // Generate unique ID from adapter index
                 info.id = std::format("GPU{}", adapterIndex);
+
+                // Generate LUID-based ID for PDH counter matching
+                // PDH GPU counters use LUID format: GPU_0x{HighPart}_0x{LowPart}
+                info.luidId = luidToPdhFormat(desc.AdapterLuid);
 
                 // Convert name from wide char
                 info.name = wcharToUtf8(desc.Description);
@@ -193,11 +205,11 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
                 // Device index
                 info.deviceIndex = adapterIndex;
 
-                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - Driver: {}, Integrated: {}",
+                spdlog::debug("DXGIGPUProbe: Enumerated GPU {}: {} ({}) - LUID: {}, Integrated: {}",
                               adapterIndex,
                               info.name,
                               info.vendor,
-                              info.driverVersion,
+                              info.luidId,
                               info.isIntegrated);
 
                 gpus.push_back(std::move(info));

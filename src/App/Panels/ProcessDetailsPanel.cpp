@@ -1220,25 +1220,12 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 {
     auto& theme = UI::Theme::get();
 
-    // Check if this process has any GPU data
-    const bool hasGpuData = (proc.gpuUtilPercent > 0.0 || proc.gpuMemoryBytes > 0 || !proc.gpuDevices.empty());
-    spdlog::debug("renderGpuUsage: PID {} hasGpuData={}, util={}, mem={}, devices='{}'", 
-                  proc.pid, hasGpuData, proc.gpuUtilPercent, proc.gpuMemoryBytes, proc.gpuDevices);
+    spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'", proc.pid, proc.gpuUtilPercent,
+                  proc.gpuMemoryBytes, proc.gpuDevices);
 
     // Show GPU info
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
     ImGui::Spacing();
-
-    if (!hasGpuData)
-    {
-        ImGui::TextWrapped(
-            "This process is not currently using the GPU, or per-process GPU metrics are not available.");
-        ImGui::Spacing();
-        ImGui::TextDisabled(
-            "Note: NVML provides limited per-process data (memory only, no utilization).\n"
-            "Per-process GPU utilization requires D3DKMT or vendor-specific APIs.");
-        return;
-    }
 
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))

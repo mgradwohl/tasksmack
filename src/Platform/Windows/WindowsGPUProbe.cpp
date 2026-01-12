@@ -3,6 +3,7 @@
 #include "D3DKMTGPUProbe.h"
 #include "DXGIGPUProbe.h"
 #include "NVMLGPUProbe.h"
+#include "PDHGPUProbe.h"
 
 #include <spdlog/spdlog.h>
 
@@ -80,7 +81,8 @@ bool gpuNamesMatch(const std::string& name1, const std::string& name2)
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_D3DKMTProbe(std::make_unique<D3DKMTGPUProbe>())
+      m_D3DKMTProbe(std::make_unique<D3DKMTGPUProbe>()),
+      m_PDHProbe(std::make_unique<PDHGPUProbe>())
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -90,6 +92,10 @@ WindowsGPUProbe::WindowsGPUProbe()
     if (m_D3DKMTProbe->capabilities().hasPerProcessMetrics)
     {
         probeSummary += " + D3DKMT";
+    }
+    if (m_PDHProbe->isAvailable())
+    {
+        probeSummary += " + PDH";
     }
     spdlog::debug("WindowsGPUProbe: Initialized with {} probe(s)", probeSummary);
 }
@@ -247,27 +253,20 @@ std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
 {
     std::vector<ProcessGPUCounters> allCounters;
 
-    // Get per-process data from NVML (NVIDIA-specific, high-quality data)
-    if (m_NVMLProbe && m_NVMLProbe->isAvailable())
+    // Use PDH for per-process GPU data (utilization + memory)
+    // This is the same mechanism Task Manager uses - works cross-vendor
+    if (m_PDHProbe && m_PDHProbe->isAvailable())
     {
-        auto nvmlCounters = m_NVMLProbe->readProcessGPUCounters();
-        if (!nvmlCounters.empty())
+        auto pdhCounters = m_PDHProbe->readProcessGPUCounters();
+        if (!pdhCounters.empty())
         {
-            spdlog::debug("WindowsGPUProbe: Got {} per-process GPU counters from NVML", nvmlCounters.size());
-            allCounters = std::move(nvmlCounters);
+            spdlog::debug("WindowsGPUProbe: Got {} per-process GPU entries from PDH (utilization + memory)", pdhCounters.size());
+            allCounters = std::move(pdhCounters);
         }
     }
 
-    // Fall back to D3DKMT if NVML didn't provide data (works for all vendors)
-    if (allCounters.empty() && m_D3DKMTProbe)
-    {
-        auto d3dkmtCounters = m_D3DKMTProbe->readProcessGPUCounters();
-        if (!d3dkmtCounters.empty())
-        {
-            spdlog::debug("WindowsGPUProbe: Got {} per-process GPU counters from D3DKMT", d3dkmtCounters.size());
-            allCounters = std::move(d3dkmtCounters);
-        }
-    }
+    // PDH provides both GPU Engine (utilization) and GPU Process Memory counters
+    // No need to merge from other sources - PDH is the authoritative source for per-process data
 
     return allCounters;
 }
@@ -276,13 +275,13 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
 {
     GPUCapabilities caps{};
 
-    // Start with DXGI capabilities
+    // Start with DXGI capabilities (basic enumeration)
     if (m_DXGIProbe)
     {
         caps = m_DXGIProbe->capabilities();
     }
 
-    // Merge NVML capabilities (OR operation - if either supports, we support)
+    // Merge NVML capabilities for system-level GPU metrics (temp, power, clocks)
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
         auto nvmlCaps = m_NVMLProbe->capabilities();
@@ -293,23 +292,29 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
         caps.hasClockSpeeds = caps.hasClockSpeeds || nvmlCaps.hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed || nvmlCaps.hasFanSpeed;
         caps.hasPCIeMetrics = caps.hasPCIeMetrics || nvmlCaps.hasPCIeMetrics;
-        caps.hasEngineUtilization = caps.hasEngineUtilization || nvmlCaps.hasEngineUtilization;
-        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || nvmlCaps.hasPerProcessMetrics;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || nvmlCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || nvmlCaps.supportsMultiGPU;
     }
 
-    // Merge D3DKMT capabilities (per-process metrics for all vendors)
-    if (m_D3DKMTProbe)
+    // Merge PDH capabilities for per-process metrics (works cross-vendor)
+    if (m_PDHProbe && m_PDHProbe->isAvailable())
     {
-        auto d3dkmtCaps = m_D3DKMTProbe->capabilities();
+        auto pdhCaps = m_PDHProbe->capabilities();
 
-        caps.hasEngineUtilization = caps.hasEngineUtilization || d3dkmtCaps.hasEngineUtilization;
-        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || d3dkmtCaps.hasPerProcessMetrics;
-        caps.supportsMultiGPU = caps.supportsMultiGPU || d3dkmtCaps.supportsMultiGPU;
+        caps.hasEngineUtilization = caps.hasEngineUtilization || pdhCaps.hasEngineUtilization;
+        caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || pdhCaps.hasPerProcessMetrics;
+        caps.supportsMultiGPU = caps.supportsMultiGPU || pdhCaps.supportsMultiGPU;
     }
 
     return caps;
+}
+
+void WindowsGPUProbe::setInstanceRefreshInterval(std::chrono::seconds interval)
+{
+    if (m_PDHProbe)
+    {
+        m_PDHProbe->setInstanceRefreshInterval(interval);
+    }
 }
 
 } // namespace Platform

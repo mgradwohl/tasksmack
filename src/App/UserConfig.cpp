@@ -167,6 +167,13 @@ void UserConfig::load()
         }
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
+        // PDH instance refresh interval (Windows-only, controls how often PDH refreshes GPU process instances)
+        if (auto val = config["sampling"]["pdh_instance_refresh_seconds"].value<std::int64_t>())
+        {
+            m_Settings.pdhInstanceRefreshSeconds = Domain::Sampling::clampPdhInstanceRefreshSeconds(
+                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT));
+        }
+
         // Theme
         if (auto theme = config["theme"]["id"].value<std::string>())
         {
@@ -347,6 +354,8 @@ void UserConfig::save() const
          toml::table{
              {"interval_ms", Domain::Sampling::clampRefreshInterval(m_Settings.refreshIntervalMs)},
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
+             {"pdh_instance_refresh_seconds",
+              Domain::Sampling::clampPdhInstanceRefreshSeconds(m_Settings.pdhInstanceRefreshSeconds)},
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},

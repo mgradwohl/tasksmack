@@ -23,6 +23,13 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 // Link speed rarely changes (only on cable replug or driver reload)
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 
+// PDH GPU instance refresh interval (seconds)
+// Controls how often we re-enumerate GPU instances to detect new processes
+// This is separate from the data sampling interval
+inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_DEFAULT = 5;
+inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MIN = 1;
+inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MAX = 60;
+
 template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(REFRESH_INTERVAL_MIN_MS), static_cast<T>(REFRESH_INTERVAL_MAX_MS));
@@ -31,6 +38,12 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
+}
+
+template<typename T> [[nodiscard]] constexpr T clampPdhInstanceRefreshSeconds(T value) noexcept
+{
+    return std::clamp(value, static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MIN),
+                      static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MAX));
 }
 
 } // namespace Domain::Sampling

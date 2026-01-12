@@ -314,14 +314,22 @@ void ProcessModel::mergeGPUData()
         return;
     }
 
-    // Build a lookup map: GPU ID -> friendly name
+    // Build lookup maps: GPU ID -> friendly name
+    // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
+    // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
     std::unordered_map<std::string, std::string> gpuIdToName;
     auto gpuSnaps = m_GPUModel->snapshots();
     spdlog::debug("ProcessModel::mergeGPUData: Got {} GPU snapshots for name lookup", gpuSnaps.size());
     for (const auto& gpuSnap : gpuSnaps)
     {
+        // Map both ID formats to the same name
         gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
-        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.name);
+        if (!gpuSnap.luidId.empty())
+        {
+            gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
+        }
+        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' / LUID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.luidId,
+                      gpuSnap.name);
     }
 
     // Build a lookup map: PID -> GPU counters (aggregated across GPUs)

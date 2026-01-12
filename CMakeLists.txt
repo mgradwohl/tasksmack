@@ -522,6 +522,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/DXGIGPUProbe.cpp
     src/Platform/Windows/D3DKMTGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
+    src/Platform/Windows/PDHGPUProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
