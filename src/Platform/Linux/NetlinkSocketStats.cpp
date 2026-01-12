@@ -60,7 +60,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
         // GNU variant: returns char* (may return static string or use buffer)
         if (result != nullptr)
         {
-            return std::string(result);
+            return {result};
         }
     }
     else if constexpr (std::is_same_v<decltype(result), int>)
@@ -69,7 +69,7 @@ constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
         // NOLINTNEXTLINE(modernize-use-nullptr) - POSIX variant: result is int, not pointer
         if (result == 0)
         {
-            return std::string(buffer.data());
+            return {buffer.data()};
         }
     }
 

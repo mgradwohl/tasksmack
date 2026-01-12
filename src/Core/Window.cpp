@@ -47,7 +47,7 @@ namespace
 
     // OpenGL returns a byte pointer (GLubyte*); treat it as a C-string for logging only.
     const auto* chars = reinterpret_cast<const char*>(bytes); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-    return std::string_view(chars);
+    return {chars};
 }
 } // namespace
 

@@ -178,7 +178,7 @@ StorageSnapshot StorageModel::latestSnapshot() const
 std::vector<StorageSnapshot> StorageModel::history() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<StorageSnapshot>(m_History.begin(), m_History.end());
+    return {m_History.begin(), m_History.end()};
 }
 
 std::vector<double> StorageModel::totalReadHistory() const
@@ -208,7 +208,7 @@ std::vector<double> StorageModel::totalWriteHistory() const
 std::vector<double> StorageModel::historyTimestamps() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
+    return {m_Timestamps.begin(), m_Timestamps.end()};
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)

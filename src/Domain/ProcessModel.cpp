@@ -247,37 +247,37 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 std::vector<double> ProcessModel::systemNetSentHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_SystemNetSentHistory.begin(), m_SystemNetSentHistory.end());
+    return {m_SystemNetSentHistory.begin(), m_SystemNetSentHistory.end()};
 }
 
 std::vector<double> ProcessModel::systemNetRecvHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_SystemNetRecvHistory.begin(), m_SystemNetRecvHistory.end());
+    return {m_SystemNetRecvHistory.begin(), m_SystemNetRecvHistory.end()};
 }
 
 std::vector<double> ProcessModel::systemPageFaultsHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_SystemPageFaultsHistory.begin(), m_SystemPageFaultsHistory.end());
+    return {m_SystemPageFaultsHistory.begin(), m_SystemPageFaultsHistory.end()};
 }
 
 std::vector<double> ProcessModel::systemThreadCountHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end());
+    return {m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end()};
 }
 
 std::vector<double> ProcessModel::systemPowerHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_SystemPowerHistory.begin(), m_SystemPowerHistory.end());
+    return {m_SystemPowerHistory.begin(), m_SystemPowerHistory.end()};
 }
 
 std::vector<double> ProcessModel::historyTimestamps() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return std::vector<double>(m_Timestamps.begin(), m_Timestamps.end());
+    return {m_Timestamps.begin(), m_Timestamps.end()};
 }
 
 void ProcessModel::setMaxHistorySeconds(double seconds)

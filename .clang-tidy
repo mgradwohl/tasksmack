@@ -19,7 +19,6 @@ Checks: >
   -cppcoreguidelines-pro-type-vararg,
   -misc-confusable-identifiers,
   -misc-non-private-member-variables-in-classes,
-  -modernize-return-braced-init-list,
   -modernize-use-auto,
   -modernize-use-trailing-return-type,
   -portability-avoid-pragma-once,
