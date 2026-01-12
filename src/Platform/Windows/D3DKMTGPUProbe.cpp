@@ -31,22 +31,27 @@
 using NTSTATUS = LONG;
 #define STATUS_SUCCESS ((NTSTATUS) 0x00000000L)
 
+// NOLINT(readability-identifier-naming) - Windows API types must match standard names
 using D3DKMT_HANDLE = UINT;
 
+// NOLINT(readability-identifier-naming) - Windows API type
 struct D3DKMT_OPENADAPTERFROMLUID
 {
     LUID AdapterLuid;
     D3DKMT_HANDLE hAdapter;
 };
 
+// NOLINT(readability-identifier-naming) - Windows API enum
 enum class D3DKMT_QUERYSTATISTICS_TYPE : std::uint8_t
 {
+    // NOLINT(readability-identifier-naming) - Windows API enum constants
     D3DKMT_QUERYSTATISTICS_ADAPTER = 0,
     D3DKMT_QUERYSTATISTICS_PROCESS = 1,
     D3DKMT_QUERYSTATISTICS_PROCESS_ADAPTER = 2,
     D3DKMT_QUERYSTATISTICS_SEGMENT = 3
 };
 
+// NOLINT(readability-identifier-naming) - Windows API type
 struct D3DKMT_QUERYSTATISTICS_MEMORY
 {
     UINT64 BytesAllocated;
@@ -56,16 +61,19 @@ struct D3DKMT_QUERYSTATISTICS_MEMORY
     UINT64 BytesResidentInSharedMemory;
 };
 
+// NOLINT(readability-identifier-naming) - Windows API type
 struct D3DKMT_QUERYSTATISTICS_QUERY_PROCESS
 {
     ULONG ProcessId;
 };
 
+// NOLINT(readability-identifier-naming) - Windows API type
 struct D3DKMT_QUERYSTATISTICS_PROCESS_RESULT
 {
     D3DKMT_QUERYSTATISTICS_MEMORY SystemMemory;
 };
 
+// NOLINT(readability-identifier-naming) - Windows API type
 struct D3DKMT_QUERYSTATISTICS
 {
     D3DKMT_QUERYSTATISTICS_TYPE Type;
@@ -84,7 +92,9 @@ struct D3DKMT_QUERYSTATISTICS
 // Function prototypes (exported from gdi32.dll)
 extern "C"
 {
+    // NOLINT(readability-identifier-naming) - Windows API function
     NTSTATUS WINAPI D3DKMTOpenAdapterFromLuid(D3DKMT_OPENADAPTERFROMLUID* pAdapter);
+    // NOLINT(readability-identifier-naming) - Windows API function
     NTSTATUS WINAPI D3DKMTQueryStatistics(D3DKMT_QUERYSTATISTICS* pQueryStats);
 }
 
@@ -206,14 +216,14 @@ std::vector<std::uint32_t> D3DKMTGPUProbe::Impl::enumerateProcessIds()
     PROCESSENTRY32W pe32{};
     pe32.dwSize = sizeof(PROCESSENTRY32W);
 
-    if (Process32FirstW(snapshot, &pe32))
+    if (Process32FirstW(snapshot, &pe32) != FALSE)
     {
         // do-while is idiomatic for Process32First/Next enumeration pattern
         // NOLINTNEXTLINE(cppcoreguidelines-avoid-do-while)
         do
         {
             pids.push_back(pe32.th32ProcessID);
-        } while (Process32NextW(snapshot, &pe32));
+        } while (Process32NextW(snapshot, &pe32) != FALSE);
     }
 
     CloseHandle(snapshot);

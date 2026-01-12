@@ -8,6 +8,7 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -33,6 +34,13 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] uint64_t totalCpuTime() const override;
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    /// Set the socket stats cache TTL (Linux only)
+    /// @param ttlMs Time-to-live in milliseconds for cached socket stats
+    /// Use this to override the default cache TTL at runtime (e.g., from user config)
+    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs);
+#endif
 
   private:
     long m_TicksPerSecond;

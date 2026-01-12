@@ -3,9 +3,6 @@
 #include "Platform/GPUTypes.h"
 
 #include <chrono>
-#include <cstdint>
-#include <memory>
-#include <string>
 #include <vector>
 
 namespace Platform

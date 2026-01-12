@@ -186,8 +186,8 @@ struct PDHGPUProbe::Impl
     // Trade-off: Shorter intervals = faster detection of new GPU-using processes but more
     // CPU overhead from PdhEnumObjectItems calls. Default 5s is a reasonable balance.
     // Configurable via sampling.pdh_instance_refresh_seconds in user config.
-    std::chrono::steady_clock::time_point lastRefreshTime{};
-    std::chrono::seconds instanceRefreshInterval{5}; // Configurable via setInstanceRefreshInterval()
+    std::chrono::steady_clock::time_point lastRefreshTime; // Default-initialized to epoch
+    std::chrono::seconds instanceRefreshInterval{5};       // Configurable via setInstanceRefreshInterval()
 
     // Cache of last valid results - returned during warm-up to avoid data gaps
     std::vector<ProcessGPUCounters> lastValidResults;
@@ -622,16 +622,20 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             // Memory counter - aggregate by type
             if (ci.engineType == "DedicatedMemory")
             {
+                // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type;
+                // union member access is unavoidable when reading PDH counter values
                 agg.dedicatedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
             else if (ci.engineType == "SharedMemory")
             {
+                // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type
                 agg.sharedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
         }
         else
         {
             // Utilization counter
+            // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_COUNTERVALUE is a Windows API type
             agg.totalUtilization += value.doubleValue;
 
             // Add engine type if not already present

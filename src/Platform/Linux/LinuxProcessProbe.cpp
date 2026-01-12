@@ -169,6 +169,17 @@ LinuxProcessProbe::LinuxProcessProbe()
 #endif
 }
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+void LinuxProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
+{
+    if (m_SocketStats)
+    {
+        // Recreate with new TTL
+        m_SocketStats = std::make_unique<NetlinkSocketStats>(ttlMs);
+    }
+}
+#endif
+
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> processes;

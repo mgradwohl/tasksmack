@@ -8,7 +8,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -172,6 +171,62 @@ void UserConfig::load()
         {
             m_Settings.pdhInstanceRefreshSeconds = Domain::Sampling::clampPdhInstanceRefreshSeconds(
                 Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT));
+        }
+
+        // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
+        if (auto val = config["sampling"]["socket_stats_cache_ttl_ms"].value<std::int64_t>())
+        {
+            m_Settings.socketStatsCacheTtlMs = Domain::Sampling::clampSocketStatsCacheTtlMs(
+                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT));
+        }
+
+        // Metrics calculation parameters
+        if (auto val = config["metrics"]["min_time_for_rate_seconds"].value<double>())
+        {
+            m_Settings.minTimeForRateSeconds =
+                Domain::Sampling::clampMinTimeForRateSeconds(*val);
+        }
+
+        if (auto val = config["metrics"]["max_sane_rate_bps"].value<double>())
+        {
+            m_Settings.maxSaneRateBps = Domain::Sampling::clampMaxSaneRateBps(*val);
+        }
+
+        if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
+        {
+            const int64_t bytes = (*val) * 1024 * 1024;
+            m_Settings.integratedGpuVramThresholdBytes =
+                Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
+        }
+
+        // UI behavior parameters
+        if (auto val = config["ui"]["chart_smooth_factor"].value<double>())
+        {
+            m_Settings.chartSmoothFactor = Domain::Sampling::clampChartSmoothFactor(*val);
+        }
+
+        if (auto val = config["ui"]["chart_tau_ms_min"].value<std::int64_t>())
+        {
+            m_Settings.chartTauMsMin = Domain::Sampling::clampChartTauMsMin(
+                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT));
+        }
+
+        if (auto val = config["ui"]["chart_tau_ms_max"].value<std::int64_t>())
+        {
+            m_Settings.chartTauMsMax = Domain::Sampling::clampChartTauMsMax(
+                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT));
+        }
+
+        if (auto val = config["ui"]["progress_color_low_threshold"].value<double>())
+        {
+            m_Settings.progressColorLowThreshold =
+                Domain::Sampling::clampProgressColorLowThreshold(*val);
+        }
+
+        if (auto val = config["ui"]["progress_color_high_threshold"].value<double>())
+        {
+            m_Settings.progressColorHighThreshold =
+                Domain::Sampling::clampProgressColorHighThreshold(*val);
         }
 
         // Theme
@@ -356,6 +411,24 @@ void UserConfig::save() const
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
              {"pdh_instance_refresh_seconds",
               Domain::Sampling::clampPdhInstanceRefreshSeconds(m_Settings.pdhInstanceRefreshSeconds)},
+             {"socket_stats_cache_ttl_ms",
+              Domain::Sampling::clampSocketStatsCacheTtlMs(m_Settings.socketStatsCacheTtlMs)},
+         }},
+        {"metrics",
+         toml::table{
+             {"min_time_for_rate_seconds", Domain::Sampling::clampMinTimeForRateSeconds(m_Settings.minTimeForRateSeconds)},
+             {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(m_Settings.maxSaneRateBps)},
+             {"integrated_gpu_vram_threshold_mb", m_Settings.integratedGpuVramThresholdBytes / (1024 * 1024)},
+         }},
+        {"ui",
+         toml::table{
+             {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(m_Settings.chartSmoothFactor)},
+             {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(m_Settings.chartTauMsMin)},
+             {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(m_Settings.chartTauMsMax)},
+             {"progress_color_low_threshold",
+              Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
+             {"progress_color_high_threshold",
+              Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
@@ -374,9 +447,18 @@ void UserConfig::save() const
     file << "# TaskSmack user configuration\n";
     file << "# This file is auto-generated. Manual edits are preserved.\n";
     file << "# Notes:\n";
-    file << "# - sampling: interval_ms controls refresh cadence (ms); history_max_seconds caps timeline history.\n";
-    file << "# - process_columns: toggle columns on/off; true shows the column.\n";
-    file << "# - Themes: built-in themes live in assets/themes. Add your own .toml themes beside this config under a 'themes' folder.\n\n";
+    file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
+    file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
+    file << "#   [sampling] pdh_instance_refresh_seconds: Windows only; GPU process discovery interval (1-60s)\n";
+    file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
+    file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
+    file << "#   [metrics] integrated_gpu_vram_threshold_mb: GPU classification threshold (16-512MB)\n";
+    file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
+    file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
+    file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+    file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());

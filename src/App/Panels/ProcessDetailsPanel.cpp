@@ -272,6 +272,7 @@ void ProcessDetailsPanel::renderContent()
 
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
+        // 1. Overview
         if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
         {
             renderBasicInfo(m_CachedSnapshot);
@@ -284,13 +285,14 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
+        // 2. GPU (always show, with message if data unavailable)
+        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
         {
-            renderActions();
+            renderGpuUsage(m_CachedSnapshot);
             ImGui::EndTabItem();
         }
 
-        // Network and I/O tab - show if process has network or I/O data
+        // 3. Network and I/O - show if process has network or I/O data
         {
             const bool hasNetworkData = (m_CachedSnapshot.netSentBytesPerSec > 0.0 || m_CachedSnapshot.netReceivedBytesPerSec > 0.0 ||
                                          !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
@@ -309,10 +311,10 @@ void ProcessDetailsPanel::renderContent()
             }
         }
 
-        // GPU tab - always show, with message if data unavailable
-        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
+        // 4. Actions (last)
+        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
         {
-            renderGpuUsage(m_CachedSnapshot);
+            renderActions();
             ImGui::EndTabItem();
         }
 
