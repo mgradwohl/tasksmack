@@ -328,8 +328,7 @@ void ProcessModel::mergeGPUData()
         {
             gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
         }
-        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' / LUID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.luidId,
-                      gpuSnap.name);
+        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' / LUID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.luidId, gpuSnap.name);
     }
 
     // Build a lookup map: PID -> GPU counters (aggregated across GPUs)

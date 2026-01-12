@@ -18,7 +18,7 @@ namespace Platform
 /// Instance format: pid_<PID>_luid_<LUID>_phys_<N>_eng_<N>_engtype_<Type>
 class PDHGPUProbe
 {
-public:
+  public:
     PDHGPUProbe();
     ~PDHGPUProbe();
 
@@ -43,7 +43,7 @@ public:
     /// @param interval The refresh interval (default 5 seconds)
     void setInstanceRefreshInterval(std::chrono::seconds interval);
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> m_Impl;
 };

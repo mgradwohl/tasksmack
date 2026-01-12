@@ -105,8 +105,8 @@ struct nvmlProcessInfo_t
 {
     unsigned int pid;
     std::uint64_t usedGpuMemory;
-    unsigned int gpuInstanceId;      // For MIG (Multi-Instance GPU) support
-    unsigned int computeInstanceId;  // For MIG support
+    unsigned int gpuInstanceId;     // For MIG (Multi-Instance GPU) support
+    unsigned int computeInstanceId; // For MIG support
 };
 
 // NOLINTEND(readability-identifier-naming)

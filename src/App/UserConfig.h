@@ -52,8 +52,7 @@ struct UserSettings
 
     // GPU integrated VRAM threshold (bytes) - Windows only
     // Used to classify GPUs as integrated vs. discrete based on dedicated VRAM.
-    int64_t integratedGpuVramThresholdBytes =
-        Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT;
+    int64_t integratedGpuVramThresholdBytes = Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT;
 
     // UI Behavior Parameters
     // Exponential smoothing factor for charts (0.0 = no smoothing, 1.0 = full averaging)

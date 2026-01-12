@@ -134,8 +134,10 @@ void ShellLayer::onUpdate(float deltaTime)
                 // Debug: Log if GPU data is present
                 if (!snap.gpuDevices.empty() || snap.gpuMemoryBytes > 0)
                 {
-                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}", 
-                                  selectedPid, snap.gpuDevices, snap.gpuMemoryBytes);
+                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
+                                  selectedPid,
+                                  snap.gpuDevices,
+                                  snap.gpuMemoryBytes);
                 }
                 break;
             }

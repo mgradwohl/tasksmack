@@ -1222,8 +1222,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 {
     auto& theme = UI::Theme::get();
 
-    spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'", proc.pid, proc.gpuUtilPercent,
-                  proc.gpuMemoryBytes, proc.gpuDevices);
+    spdlog::debug(
+        "renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'", proc.pid, proc.gpuUtilPercent, proc.gpuMemoryBytes, proc.gpuDevices);
 
     // Show GPU info
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
@@ -1451,12 +1451,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
                 if (plotCount > 0)
                 {
-                    plotLineWithFill("GPU Memory",
-                                     timeData.data(),
-                                     gpuMemVec.data(),
-                                     plotCount,
-                                     theme.scheme().gpuMemory,
-                                     theme.scheme().gpuMemoryFill);
+                    plotLineWithFill(
+                        "GPU Memory", timeData.data(), gpuMemVec.data(), plotCount, theme.scheme().gpuMemory, theme.scheme().gpuMemoryFill);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())

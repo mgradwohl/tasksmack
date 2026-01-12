@@ -224,8 +224,8 @@ struct PDHGPUProbe::Impl
         pdhRemoveCounter = reinterpret_cast<PdhRemoveCounterFn>(GetProcAddress(pdhModule, "PdhRemoveCounter"));
         // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
-        if (pdhOpenQuery == nullptr || pdhCloseQuery == nullptr || pdhAddEnglishCounter == nullptr ||
-            pdhCollectQueryData == nullptr || pdhGetFormattedCounterValue == nullptr || pdhEnumObjectItems == nullptr)
+        if (pdhOpenQuery == nullptr || pdhCloseQuery == nullptr || pdhAddEnglishCounter == nullptr || pdhCollectQueryData == nullptr ||
+            pdhGetFormattedCounterValue == nullptr || pdhEnumObjectItems == nullptr)
         {
             spdlog::debug("PDHGPUProbe: Failed to load required PDH functions");
             FreeLibrary(pdhModule);
@@ -303,8 +303,8 @@ struct PDHGPUProbe::Impl
         // Enumerate GPU Engine instances
         DWORD counterListSize = 0;
         DWORD instanceListSize = 0;
-        PDH_STATUS status =
-            pdhEnumObjectItems(nullptr, nullptr, L"GPU Engine", nullptr, &counterListSize, nullptr, &instanceListSize, PERF_DETAIL_WIZARD, 0);
+        PDH_STATUS status = pdhEnumObjectItems(
+            nullptr, nullptr, L"GPU Engine", nullptr, &counterListSize, nullptr, &instanceListSize, PERF_DETAIL_WIZARD, 0);
 
         // PDH_MORE_DATA is unsigned, PDH_STATUS is signed - cast for comparison
         if (static_cast<unsigned long>(status) != PDH_MORE_DATA && status != ERROR_SUCCESS)
@@ -322,8 +322,15 @@ struct PDHGPUProbe::Impl
         std::vector<wchar_t> counterList(counterListSize);
         std::vector<wchar_t> instanceList(instanceListSize);
 
-        status = pdhEnumObjectItems(
-            nullptr, nullptr, L"GPU Engine", counterList.data(), &counterListSize, instanceList.data(), &instanceListSize, PERF_DETAIL_WIZARD, 0);
+        status = pdhEnumObjectItems(nullptr,
+                                    nullptr,
+                                    L"GPU Engine",
+                                    counterList.data(),
+                                    &counterListSize,
+                                    instanceList.data(),
+                                    &instanceListSize,
+                                    PERF_DETAIL_WIZARD,
+                                    0);
 
         if (status != ERROR_SUCCESS)
         {
@@ -581,7 +588,10 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         std::int32_t pid;
         std::string gpuLuid;
 
-        bool operator==(const AggKey& other) const { return pid == other.pid && gpuLuid == other.gpuLuid; }
+        bool operator==(const AggKey& other) const
+        {
+            return pid == other.pid && gpuLuid == other.gpuLuid;
+        }
     };
     struct AggKeyHash
     {

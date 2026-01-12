@@ -183,8 +183,7 @@ void UserConfig::load()
         // Metrics calculation parameters
         if (auto val = config["metrics"]["min_time_for_rate_seconds"].value<double>())
         {
-            m_Settings.minTimeForRateSeconds =
-                Domain::Sampling::clampMinTimeForRateSeconds(*val);
+            m_Settings.minTimeForRateSeconds = Domain::Sampling::clampMinTimeForRateSeconds(*val);
         }
 
         if (auto val = config["metrics"]["max_sane_rate_bps"].value<double>())
@@ -195,8 +194,7 @@ void UserConfig::load()
         if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
         {
             const int64_t bytes = (*val) * 1024 * 1024;
-            m_Settings.integratedGpuVramThresholdBytes =
-                Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
+            m_Settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
         }
 
         // UI behavior parameters
@@ -207,26 +205,24 @@ void UserConfig::load()
 
         if (auto val = config["ui"]["chart_tau_ms_min"].value<std::int64_t>())
         {
-            m_Settings.chartTauMsMin = Domain::Sampling::clampChartTauMsMin(
-                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT));
+            m_Settings.chartTauMsMin =
+                Domain::Sampling::clampChartTauMsMin(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT));
         }
 
         if (auto val = config["ui"]["chart_tau_ms_max"].value<std::int64_t>())
         {
-            m_Settings.chartTauMsMax = Domain::Sampling::clampChartTauMsMax(
-                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT));
+            m_Settings.chartTauMsMax =
+                Domain::Sampling::clampChartTauMsMax(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT));
         }
 
         if (auto val = config["ui"]["progress_color_low_threshold"].value<double>())
         {
-            m_Settings.progressColorLowThreshold =
-                Domain::Sampling::clampProgressColorLowThreshold(*val);
+            m_Settings.progressColorLowThreshold = Domain::Sampling::clampProgressColorLowThreshold(*val);
         }
 
         if (auto val = config["ui"]["progress_color_high_threshold"].value<double>())
         {
-            m_Settings.progressColorHighThreshold =
-                Domain::Sampling::clampProgressColorHighThreshold(*val);
+            m_Settings.progressColorHighThreshold = Domain::Sampling::clampProgressColorHighThreshold(*val);
         }
 
         // Theme
@@ -409,10 +405,8 @@ void UserConfig::save() const
          toml::table{
              {"interval_ms", Domain::Sampling::clampRefreshInterval(m_Settings.refreshIntervalMs)},
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
-             {"pdh_instance_refresh_seconds",
-              Domain::Sampling::clampPdhInstanceRefreshSeconds(m_Settings.pdhInstanceRefreshSeconds)},
-             {"socket_stats_cache_ttl_ms",
-              Domain::Sampling::clampSocketStatsCacheTtlMs(m_Settings.socketStatsCacheTtlMs)},
+             {"pdh_instance_refresh_seconds", Domain::Sampling::clampPdhInstanceRefreshSeconds(m_Settings.pdhInstanceRefreshSeconds)},
+             {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(m_Settings.socketStatsCacheTtlMs)},
          }},
         {"metrics",
          toml::table{
@@ -425,10 +419,8 @@ void UserConfig::save() const
              {"chart_smooth_factor", Domain::Sampling::clampChartSmoothFactor(m_Settings.chartSmoothFactor)},
              {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(m_Settings.chartTauMsMin)},
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(m_Settings.chartTauMsMax)},
-             {"progress_color_low_threshold",
-              Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
-             {"progress_color_high_threshold",
-              Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
+             {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
+             {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},

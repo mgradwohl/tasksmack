@@ -42,7 +42,9 @@ class IProcessProbe
     /// Set socket stats cache TTL (Linux only; no-op on Windows).
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// @note This is a performance optimization cache, separate from the user's refresh interval.
-    virtual void setSocketStatsCacheTtl([[maybe_unused]] std::chrono::milliseconds ttlMs) {}
+    virtual void setSocketStatsCacheTtl([[maybe_unused]] std::chrono::milliseconds ttlMs)
+    {
+    }
 };
 
 } // namespace Platform

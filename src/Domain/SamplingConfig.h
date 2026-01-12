@@ -134,7 +134,7 @@ inline constexpr double MAX_SANE_RATE_BPS_MAX = 100'000'000'000.0;    // 800 Gbp
 // This affects how we report GPU memory to avoid confusion (system RAM vs. VRAM).
 // Configurable via [metrics] integrated_gpu_vram_threshold_mb in config.toml.
 inline constexpr int64_t INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT = 128ULL * 1024 * 1024; // 128MB
-inline constexpr int64_t INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN = 16ULL * 1024 * 1024;       // 16MB
+inline constexpr int64_t INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN = 16ULL * 1024 * 1024;      // 16MB
 inline constexpr int64_t INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX = 512ULL * 1024 * 1024;     // 512MB
 
 // -----------------------------------------------------------------------------
@@ -191,20 +191,17 @@ template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noex
 
 template<typename T> [[nodiscard]] constexpr T clampPdhInstanceRefreshSeconds(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MIN),
-                      static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MAX));
+    return std::clamp(value, static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MIN), static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampSocketStatsCacheTtlMs(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(SOCKET_STATS_CACHE_TTL_MS_MIN),
-                      static_cast<T>(SOCKET_STATS_CACHE_TTL_MS_MAX));
+    return std::clamp(value, static_cast<T>(SOCKET_STATS_CACHE_TTL_MS_MIN), static_cast<T>(SOCKET_STATS_CACHE_TTL_MS_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampMinTimeForRateSeconds(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MIN),
-                      static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MAX));
+    return std::clamp(value, static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MIN), static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampMaxSaneRateBps(T value) noexcept
@@ -214,8 +211,8 @@ template<typename T> [[nodiscard]] constexpr T clampMaxSaneRateBps(T value) noex
 
 template<typename T> [[nodiscard]] constexpr T clampIntegratedGpuVramThresholdBytes(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN),
-                      static_cast<T>(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX));
+    return std::clamp(
+        value, static_cast<T>(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN), static_cast<T>(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampChartSmoothFactor(T value) noexcept
@@ -235,14 +232,12 @@ template<typename T> [[nodiscard]] constexpr T clampChartTauMsMax(T value) noexc
 
 template<typename T> [[nodiscard]] constexpr T clampProgressColorLowThreshold(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MIN),
-                      static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MAX));
+    return std::clamp(value, static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MIN), static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampProgressColorHighThreshold(T value) noexcept
 {
-    return std::clamp(value, static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MIN),
-                      static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MAX));
+    return std::clamp(value, static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MIN), static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MAX));
 }
 
 } // namespace Domain::Sampling

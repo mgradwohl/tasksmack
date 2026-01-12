@@ -1458,8 +1458,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesProcessSnapshots)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
-    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor")
-        .withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
 
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
     Domain::ProcessModel processModel(std::move(processProbe));

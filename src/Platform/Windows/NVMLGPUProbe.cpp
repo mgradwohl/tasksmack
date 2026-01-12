@@ -419,7 +419,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     counter.gpuMemoryBytes = hasValidMemory ? proc.usedGpuMemory : 0;
                     counter.activeEngines.emplace_back("Compute");
                     spdlog::debug("NVMLGPUProbe: Compute PID {} mem raw={} valid={} final={}",
-                                  counter.pid, proc.usedGpuMemory, hasValidMemory, counter.gpuMemoryBytes);
+                                  counter.pid,
+                                  proc.usedGpuMemory,
+                                  hasValidMemory,
+                                  counter.gpuMemoryBytes);
                     allCounters.push_back(std::move(counter));
                 }
             }
@@ -461,7 +464,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                             it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, memBytes);
                         }
                         spdlog::debug("NVMLGPUProbe: Graphics PID {} (merged) raw={} valid={} final={}",
-                                      proc.pid, proc.usedGpuMemory, hasValidMemory, it->gpuMemoryBytes);
+                                      proc.pid,
+                                      proc.usedGpuMemory,
+                                      hasValidMemory,
+                                      it->gpuMemoryBytes);
                     }
                     else
                     {
@@ -471,7 +477,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                         counter.gpuMemoryBytes = memBytes;
                         counter.activeEngines.emplace_back("3D");
                         spdlog::debug("NVMLGPUProbe: Graphics PID {} (new) raw={} valid={} final={}",
-                                      counter.pid, proc.usedGpuMemory, hasValidMemory, counter.gpuMemoryBytes);
+                                      counter.pid,
+                                      proc.usedGpuMemory,
+                                      hasValidMemory,
+                                      counter.gpuMemoryBytes);
                         allCounters.push_back(std::move(counter));
                     }
                 }
