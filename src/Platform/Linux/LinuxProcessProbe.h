@@ -8,8 +8,6 @@
 #endif
 
 #include <atomic>
-#include <chrono>
-#include <memory>
 #include <mutex>
 
 namespace Platform

@@ -418,7 +418,7 @@ void UserConfig::save() const
          toml::table{
              {"min_time_for_rate_seconds", Domain::Sampling::clampMinTimeForRateSeconds(m_Settings.minTimeForRateSeconds)},
              {"max_sane_rate_bps", Domain::Sampling::clampMaxSaneRateBps(m_Settings.maxSaneRateBps)},
-             {"integrated_gpu_vram_threshold_mb", m_Settings.integratedGpuVramThresholdBytes / (1024 * 1024)},
+             {"integrated_gpu_vram_threshold_mb", m_Settings.integratedGpuVramThresholdBytes / (1024LL * 1024LL)},
          }},
         {"ui",
          toml::table{

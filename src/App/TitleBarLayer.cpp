@@ -12,8 +12,6 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <cstdint>
-
 #include <stb_image.h>
 
 #ifdef _WIN32
