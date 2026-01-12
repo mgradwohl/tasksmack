@@ -13,8 +13,8 @@ PS D:\source\tasksmack> cmake --build --preset win-debug
 ninja: warning: premature end of file; recovering
 [0/2] Re-checking globbed directories...
 [156/542] Building C object D:/source/tasks
-
 Make sure all colors and fonts come from the theme and are not manipulated in code
+
 Sweep for dead code that should be removed or duplicate code that should be refactored into helpers and fix any issues from the problems panel. Do not remove Background Sampler.
 Enhance and run tests
 clang-tidy until clean

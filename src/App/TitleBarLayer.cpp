@@ -363,7 +363,7 @@ void TitleBarLayer::renderTitleBar()
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
         // Make icon clickable with invisible button
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Button, scheme.button);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
         if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
@@ -441,15 +441,15 @@ void TitleBarLayer::renderTitleBar()
     // Use theme colors for button hover (except close which is red)
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
+    ImGui::PushStyleColor(ImGuiCol_Button, scheme.button);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 
-    // Close button (red hover - special case)
+    // Close button
     float buttonX = rightX - BUTTON_WIDTH;
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7F, 0.15F, 0.15F, 1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
     if (ImGui::Button(ICON_FA_XMARK "##Close", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
     {
         window.requestClose();
