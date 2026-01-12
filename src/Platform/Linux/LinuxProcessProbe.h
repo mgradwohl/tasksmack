@@ -37,7 +37,7 @@ class LinuxProcessProbe : public IProcessProbe
     /// Set the socket stats cache TTL (Linux only)
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// Use this to override the default cache TTL at runtime (e.g., from user config)
-    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs);
+    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
 #endif
 
   private:
