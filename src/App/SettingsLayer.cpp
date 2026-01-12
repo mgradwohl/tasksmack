@@ -2,6 +2,9 @@
 
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
+#include "Core/Application.h"
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
@@ -194,6 +197,19 @@ void SettingsLayer::onRender()
     renderSettingsDialog();
 }
 
+void SettingsLayer::onEvent(Core::Event& event)
+{
+    Core::EventDispatcher dispatcher(event);
+
+    // Listen for settings dialog requests
+    dispatcher.dispatch<Core::OpenSettingsEvent>(
+        [this](Core::OpenSettingsEvent&)
+        {
+            requestOpen();
+            return false; // Don't consume
+        });
+}
+
 auto SettingsLayer::instance() -> SettingsLayer*
 {
     return s_Instance;
@@ -244,6 +260,11 @@ void SettingsLayer::applySettings()
         {
             settings.themeId = newThemeId;
             themeManager.setThemeById(newThemeId);
+            // Notify UI to invalidate theme-dependent caches
+            {
+                Core::ThemeChangedEvent event(newThemeId);
+                Core::Application::get().raiseEvent(event);
+            }
             spdlog::info("Theme changed to {}", newThemeId);
         }
     }
@@ -254,6 +275,11 @@ void SettingsLayer::applySettings()
     {
         settings.fontSize = newFontSize;
         themeManager.setFontSize(newFontSize);
+        // Notify panels to invalidate font-dependent caches
+        {
+            Core::FontSizeChangedEvent event(static_cast<int>(newFontSize));
+            Core::Application::get().raiseEvent(event);
+        }
         spdlog::info("Font size changed to {}", m_SelectedFontSizeIndex);
     }
 
@@ -262,6 +288,11 @@ void SettingsLayer::applySettings()
     if (newRefreshMs != settings.refreshIntervalMs)
     {
         settings.refreshIntervalMs = newRefreshMs;
+        // Notify panels/samplers of interval change via event
+        {
+            Core::RefreshRateChangedEvent event(newRefreshMs);
+            Core::Application::get().raiseEvent(event);
+        }
         spdlog::info("Settings: Refresh rate changed to {} ms", newRefreshMs);
     }
 
@@ -270,6 +301,11 @@ void SettingsLayer::applySettings()
     if (newHistorySeconds != settings.maxHistorySeconds)
     {
         settings.maxHistorySeconds = newHistorySeconds;
+        // Notify panels/models to adjust history window via event
+        {
+            Core::HistoryDurationChangedEvent event(newHistorySeconds);
+            Core::Application::get().raiseEvent(event);
+        }
         spdlog::info("Settings: History duration changed to {} seconds", newHistorySeconds);
     }
 

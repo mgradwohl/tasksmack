@@ -1,5 +1,7 @@
 #include "App/AboutLayer.h"
 
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
@@ -78,7 +80,7 @@ AboutLayer::~AboutLayer()
 
 void AboutLayer::onAttach()
 {
-    // Layer lifecycle is guaranteed to be called from main thread only (GLFW requirement).
+    // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
     // Enforce single instance with assertion rather than atomic operations.
     assert(s_Instance == nullptr && "AboutLayer instance already exists!");
     s_Instance = this;
@@ -101,6 +103,19 @@ void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
 void AboutLayer::onRender()
 {
     renderAboutDialog();
+}
+
+void AboutLayer::onEvent(Core::Event& event)
+{
+    Core::EventDispatcher dispatcher(event);
+
+    // Listen for about/help requests
+    dispatcher.dispatch<Core::OpenAboutEvent>(
+        [this](Core::OpenAboutEvent&)
+        {
+            requestOpen();
+            return false; // Don't consume
+        });
 }
 
 auto AboutLayer::instance() -> AboutLayer*

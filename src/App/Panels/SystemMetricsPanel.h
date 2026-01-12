@@ -58,6 +58,8 @@ class SystemMetricsPanel : public Panel
 
     /// Render the panel (with ImGui window wrapper).
     void render(bool* open) override;
+    /// Handle application events (history/refresh changes)
+    void onEvent(Core::Event& event) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent();
@@ -86,6 +88,7 @@ class SystemMetricsPanel : public Panel
     float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
+    bool m_IsActiveTab = true; // System Overview is default tab
 
     struct SmoothedCpu
     {

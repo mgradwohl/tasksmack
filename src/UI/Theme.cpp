@@ -566,4 +566,14 @@ void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont*
     m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
 }
 
+void Theme::registerTitleFont(ImFont* font)
+{
+    m_TitleFont = font;
+}
+
+auto Theme::titleFont() const -> ImFont*
+{
+    return m_TitleFont;
+}
+
 } // namespace UI

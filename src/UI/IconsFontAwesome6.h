@@ -133,4 +133,13 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_ETHERNET "\xef\x9b\x96"  // U+f796 - Ethernet plug
 #define ICON_FA_CLOUD "\xef\x83\x82"     // U+f0c2 - Cloud (for virtual/VPN)
 #define ICON_FA_HOUSE "\xef\x80\x95"     // U+f015 - House (for loopback)
+
+// ============================================================================
+// Window Control Icons
+// ============================================================================
+#define ICON_FA_WINDOW_MINIMIZE "\xef\x8b\x91" // U+f2d1 - Window minimize
+#define ICON_FA_WINDOW_MAXIMIZE "\xef\x8b\x90" // U+f2d0 - Window maximize (square)
+#define ICON_FA_WINDOW_RESTORE "\xef\x8b\x92"  // U+f2d2 - Window restore (overlapping squares)
+#define ICON_FA_SQUARE "\xef\x83\x88"          // U+f0c8 - Solid square
+#define ICON_FA_CLONE "\xef\x89\x8d"           // U+f24d - Clone/overlapping (alternative restore)
 // NOLINTEND(cppcoreguidelines-macro-usage)

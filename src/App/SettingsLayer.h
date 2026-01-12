@@ -10,7 +10,7 @@ namespace App
 
 /// Settings dialog layer (singleton).
 /// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
-/// are guaranteed to be called from the main thread only, as required by GLFW and ImGui.
+/// are guaranteed to be called from the main thread only, as required by SDL and ImGui.
 class SettingsLayer : public Core::Layer
 {
   public:
@@ -26,6 +26,7 @@ class SettingsLayer : public Core::Layer
     void onDetach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
+    void onEvent(Core::Event& event) override;
 
     static auto instance() -> SettingsLayer*;
     void requestOpen();

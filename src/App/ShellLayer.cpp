@@ -1,8 +1,8 @@
 #include "ShellLayer.h"
 
-#include "App/AboutLayer.h"
-#include "App/SettingsLayer.h"
 #include "Core/Application.h"
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "UI/IconsFontAwesome6.h"
@@ -12,8 +12,10 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -70,6 +72,25 @@ void ShellLayer::onDetach()
     spdlog::info("ShellLayer detached");
 }
 
+void ShellLayer::onEvent(Core::Event& event)
+{
+    // Handle app-wide coordination events
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::RefreshRateChangedEvent>(
+        [this](Core::RefreshRateChangedEvent& e)
+        {
+            const auto interval = std::chrono::milliseconds(e.getIntervalMs());
+            m_ProcessesPanel.setSamplingInterval(interval);
+            m_SystemMetricsPanel.setSamplingInterval(interval);
+            return false; // Do not consume; allow others to react as well
+        });
+
+    // Forward events to all panels
+    m_ProcessesPanel.onEvent(event);
+    m_ProcessDetailsPanel.onEvent(event);
+    m_SystemMetricsPanel.onEvent(event);
+}
+
 void ShellLayer::onUpdate(float deltaTime)
 {
     // Update FPS counter (average over ~0.5 seconds)
@@ -88,14 +109,12 @@ void ShellLayer::onUpdate(float deltaTime)
     m_ProcessesPanel.onUpdate(deltaTime);
     m_SystemMetricsPanel.onUpdate(deltaTime);
 
-    // Sync selected PID from processes panel to details panel
-    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
-    m_ProcessDetailsPanel.setSelectedPid(selectedPid);
-
-    // Find the selected process snapshot
-    // Note: snapshots() returns a copy, so we store it to iterate safely
+    // Find the selected process snapshot for rendering
+    // Note: Selection is now coordinated via ProcessSelectedEvent, but we still need
+    // to look up the snapshot for ProcessDetailsPanel to render
     const Domain::ProcessSnapshot* selectedSnapshot = nullptr;
     Domain::ProcessSnapshot cachedSnapshot;
+    const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     if (selectedPid != -1)
     {
         auto currentSnapshots = m_ProcessesPanel.snapshots();
@@ -133,9 +152,9 @@ void ShellLayer::onRender()
     // Calculate status bar height
     const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
-    // Create fullscreen window that covers the viewport minus status bar
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight));
+    // Create fullscreen window that covers the viewport minus title bar and status bar
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + m_ContentYOffset));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight - m_ContentYOffset));
     ImGui::SetNextWindowViewport(viewport->ID);
 
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
@@ -189,8 +208,6 @@ void ShellLayer::onRender()
 
 void ShellLayer::renderTabBar()
 {
-    const ImGuiStyle& style = ImGui::GetStyle();
-
     // Add top edge padding for visual balance
     constexpr float TOP_EDGE_PADDING = 4.0F;
     ImGui::Dummy(ImVec2(0.0F, TOP_EDGE_PADDING));
@@ -199,21 +216,14 @@ void ShellLayer::renderTabBar()
     constexpr float LEFT_INDENT = 12.0F;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + LEFT_INDENT);
 
-    // Tab bar with icons on the right
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-
-    // Calculate icon button sizes (include 8px right edge padding)
-    constexpr float RIGHT_EDGE_PADDING = 8.0F;
-    const float iconButtonWidth = ImGui::GetFrameHeight();
-    const float iconButtonSpacing = style.ItemSpacing.x;
-    const float rightIconsWidth = (iconButtonWidth * 2.0F) + iconButtonSpacing + style.ItemSpacing.x + RIGHT_EDGE_PADDING;
-
-    // Tab bar takes remaining width
     // Add horizontal padding inside tabs and vertical padding for taller tabs
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0F, 10.0F));
 
     if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
     {
+        // Track previous tab to emit change event if selection changes
+        const ActiveTab previousTab = m_ActiveTab;
+
         // Tab 1: System Overview (hostname)
         const std::string& hostname = m_SystemMetricsPanel.hostname();
         const std::string systemLabel = std::string(ICON_FA_COMPUTER) + "  " + hostname;
@@ -239,60 +249,29 @@ void ShellLayer::renderTabBar()
         }
 
         ImGui::EndTabBar();
+
+        // Emit ActiveTabChangedEvent when tab selection changes
+        if (previousTab != m_ActiveTab)
+        {
+            std::string tabName;
+            switch (m_ActiveTab)
+            {
+            case ActiveTab::SystemOverview:
+                tabName = "SystemOverview";
+                break;
+            case ActiveTab::Processes:
+                tabName = "Processes";
+                break;
+            case ActiveTab::ProcessDetails:
+                tabName = "ProcessDetails";
+                break;
+            }
+            Core::ActiveTabChangedEvent evt(std::move(tabName));
+            Core::Application::get().raiseEvent(evt);
+        }
     }
 
     ImGui::PopStyleVar();
-
-    // Right-aligned icon buttons on the same row as tabs
-    ImGui::SameLine(availWidth - rightIconsWidth + style.ItemSpacing.x);
-
-    // Vertically center the icon buttons with the tabs
-    // Tabs have 10px vertical padding, buttons have default (~4px), so offset by the difference
-    constexpr float TAB_VERTICAL_PADDING = 10.0F;
-    const float defaultVerticalPadding = style.FramePadding.y;
-    const float verticalOffset = TAB_VERTICAL_PADDING - defaultVerticalPadding;
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + verticalOffset);
-
-    // Push text color for icon buttons to ensure visibility
-    auto& theme = UI::Theme::get();
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-
-    // Make buttons have transparent background matching tab bar
-    const ImVec4& windowBg = theme.scheme().windowBg;
-    ImGui::PushStyleColor(ImGuiCol_Button, windowBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(windowBg.x, windowBg.y, windowBg.z, 0.8F));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(windowBg.x, windowBg.y, windowBg.z, 0.6F));
-
-    // Help button (?)
-    if (ImGui::Button(ICON_FA_CIRCLE_QUESTION))
-    {
-        if (auto* about = AboutLayer::instance(); about != nullptr)
-        {
-            about->requestOpen();
-        }
-    }
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("About TaskSmack");
-    }
-
-    ImGui::SameLine();
-
-    // Settings button (gear) - also needs vertical alignment like help button
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + verticalOffset);
-    if (ImGui::Button(ICON_FA_GEAR))
-    {
-        if (auto* settings = SettingsLayer::instance(); settings != nullptr)
-        {
-            settings->requestOpen();
-        }
-    }
-    if (ImGui::IsItemHovered())
-    {
-        ImGui::SetTooltip("Settings");
-    }
-
-    ImGui::PopStyleColor(4); // Text + Button colors
 }
 
 void ShellLayer::renderStatusBar() const

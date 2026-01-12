@@ -249,25 +249,30 @@ if(NOT stb_POPULATED)
     FetchContent_Populate(stb)
 endif()
 
-# GLFW
-find_package(glfw3 3.4 QUIET)
-if(NOT glfw3_FOUND)
-    FetchContent_Declare(
-        glfw3
-        DOWNLOAD_EXTRACT_TIMESTAMP OFF
-        URL https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip
-    )
-    FetchContent_GetProperties(glfw3)
-    if(NOT glfw3_POPULATED)
-        set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-        set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
-        FetchContent_Populate(glfw3)
-        add_subdirectory(${glfw3_SOURCE_DIR} ${glfw3_BINARY_DIR})
-    endif()
-endif()
-set_target_properties(glfw PROPERTIES FOLDER "third_party")
+# SDL3 for windowing, input, and custom title bar support
+FetchContent_Declare(
+    SDL3
+    DOWNLOAD_EXTRACT_TIMESTAMP OFF
+    URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.0.tar.gz
+    URL_HASH SHA256=9614b9696abc4597ffce6b888829dc6537ae500423474c342ac4a67222c5654c
+    SYSTEM  # Treat as system headers to suppress warnings from SDL3
+)
+
+# Configure SDL3 build options (disable unnecessary components)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_AUDIO OFF CACHE BOOL "" FORCE)  # We don't need audio
+set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)  # We don't need haptic
+set(SDL_SENSOR OFF CACHE BOOL "" FORCE)  # We don't need sensor
+set(SDL_CAMERA OFF CACHE BOOL "" FORCE)  # We don't need camera
+set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)  # We don't need screensaver support
+set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)  # We don't need XTEST
+set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering extension
+
+FetchContent_MakeAvailable(SDL3)
+set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
 # OpenGL
 find_package(OpenGL REQUIRED)
@@ -294,8 +299,8 @@ FetchContent_Declare(
 )
 FetchContent_GetProperties(glad)
 if(NOT glad_POPULATED)
-    FetchContent_MakeAvailable(glad)
-    add_subdirectory("${glad_SOURCE_DIR}/cmake" glad_cmake)
+    FetchContent_Populate(glad)
+    add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
     glad_add_library(glad_gl_core_33 REPRODUCIBLE EXCLUDE_FROM_ALL LOADER API gl:core=3.3)
 endif()
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
@@ -397,7 +402,7 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
     ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
@@ -408,7 +413,7 @@ target_include_directories(imgui_lib
         ${imgui_SOURCE_DIR}/misc/cpp
         ${imgui_SOURCE_DIR}/misc/freetype
 )
-target_link_libraries(imgui_lib PUBLIC glfw glad_gl_core_33 Freetype::Freetype)
+target_link_libraries(imgui_lib PUBLIC SDL3::SDL3-static glad_gl_core_33 Freetype::Freetype)
 target_compile_definitions(imgui_lib PUBLIC
     IMGUI_IMPL_OPENGL_LOADER_GLAD2
     IMGUI_ENABLE_FREETYPE
@@ -473,6 +478,7 @@ set(TASKSMACK_SOURCES
     src/App/AboutLayer.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp
+    src/App/TitleBarLayer.cpp
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
@@ -792,11 +798,7 @@ if(TARGET Freetype::Freetype)
     endif()
 endif()
 
-# Link X11 on Linux (required by ImGui GLFW backend)
-if(UNIX AND NOT APPLE)
-    find_package(X11 REQUIRED)
-    target_link_libraries(TaskSmack PRIVATE X11::X11)
-endif()
+# Note: SDL3 handles X11/Wayland internally, no explicit X11 linking needed
 
 install(TARGETS TaskSmack
     BUNDLE DESTINATION .
@@ -866,7 +868,7 @@ elseif(UNIX)
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
         set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libglfw3, libx11-6, libfreetype6")
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsdl3-0, libx11-6, libfreetype6")
     endif()
     # Check for rpmbuild (Red Hat/Fedora)
     find_program(RPMBUILD_PROGRAM rpmbuild)

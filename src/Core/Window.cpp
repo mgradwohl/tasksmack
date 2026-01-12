@@ -1,30 +1,20 @@
 #include "Window.h"
 
+#include <SDL3/SDL.h>
+#include <glad/gl.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <bit> // NOLINT(misc-include-cleaner) - std::bit_cast used on Windows
 #include <cassert>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-#include <glad/gl.h>
-// clang-format on
-
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-
 #include <windows.h>
-
-#define GLFW_EXPOSE_NATIVE_WIN32
-
-#include <GLFW/glfw3native.h>
 #endif
 
 namespace Core
@@ -65,12 +55,16 @@ namespace
 void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 {
     // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely.
-    SendMessage(hwnd, WM_SETICON, iconType, std::bit_cast<LPARAM>(icon));
+    SendMessage(hwnd,
+                WM_SETICON,
+                iconType,
+                reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 }
 
-void setWindowIconFromResource(GLFWwindow* window)
+void setWindowIconFromResource(SDL_Window* window)
 {
-    HWND hwnd = glfwGetWin32Window(window);
+    // Get the native Win32 handle from SDL
+    HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
     if (hwnd == nullptr)
     {
         spdlog::warn("Failed to get Win32 window handle for icon");
@@ -134,26 +128,48 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     m_Spec.Width = clampWindowDimension(m_Spec.Width);
     m_Spec.Height = clampWindowDimension(m_Spec.Height);
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    // Set OpenGL attributes before creating window
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 #ifndef NDEBUG
-    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
 
-    // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) - glfwWindowHint must be called before glfwCreateWindow
-    m_Handle = glfwCreateWindow(m_Spec.Width, m_Spec.Height, m_Spec.Title.c_str(), nullptr, nullptr);
+    // Create window flags
+    SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (m_Spec.Borderless)
+    {
+        windowFlags |= SDL_WINDOW_BORDERLESS;
+    }
+
+    m_Handle = SDL_CreateWindow(m_Spec.Title.c_str(), m_Spec.Width, m_Spec.Height, windowFlags);
 
     if (m_Handle == nullptr)
     {
-        spdlog::critical("Failed to create GLFW window");
-        throw std::runtime_error("Failed to create GLFW window");
+        spdlog::critical("Failed to create SDL window: {}", SDL_GetError());
+        throw std::runtime_error("Failed to create SDL window");
     }
 
-    glfwMakeContextCurrent(m_Handle);
+    m_GLContext = SDL_GL_CreateContext(m_Handle);
+    if (m_GLContext == nullptr)
+    {
+        spdlog::critical("Failed to create OpenGL context: {}", SDL_GetError());
+        SDL_DestroyWindow(m_Handle);
+        throw std::runtime_error("Failed to create OpenGL context");
+    }
 
-    // Load OpenGL functions using GLAD
-    const int version = gladLoadGL(glfwGetProcAddress);
+    if (!SDL_GL_MakeCurrent(m_Handle, m_GLContext))
+    {
+        spdlog::critical("Failed to make OpenGL context current: {}", SDL_GetError());
+        SDL_GL_DestroyContext(m_GLContext);
+        SDL_DestroyWindow(m_Handle);
+        throw std::runtime_error("Failed to make OpenGL context current");
+    }
+
+    // Load OpenGL functions using GLAD with SDL's GetProcAddress
+    const int version =
+        gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     if (version == 0)
     {
         spdlog::critical("Failed to initialize GLAD");
@@ -165,22 +181,7 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     spdlog::info("  Renderer: {}", glString(GL_RENDERER));
     spdlog::info("  Version: {}", glString(GL_VERSION));
 
-    glfwSwapInterval(m_Spec.VSync ? 1 : 0);
-
-    glfwSetWindowUserPointer(m_Handle, this);
-
-    // Framebuffer resize callback
-    glfwSetFramebufferSizeCallback(m_Handle,
-                                   [](GLFWwindow* window, int width, int height)
-                                   {
-                                       // GLFW stores the user pointer as void*; we set it to Window* in this constructor.
-                                       auto* self = static_cast<Window*>(glfwGetWindowUserPointer(window));
-                                       const int clampedWidth = clampWindowDimension(width);
-                                       const int clampedHeight = clampWindowDimension(height);
-                                       self->m_Spec.Width = clampedWidth;
-                                       self->m_Spec.Height = clampedHeight;
-                                       glViewport(0, 0, clampedWidth, clampedHeight);
-                                   });
+    SDL_GL_SetSwapInterval(m_Spec.VSync ? 1 : 0);
 
 #ifdef _WIN32
     // Set window icon from embedded resource (title bar and taskbar)
@@ -190,21 +191,32 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 
 Window::~Window()
 {
+    if (m_GLContext != nullptr)
+    {
+        SDL_GL_DestroyContext(m_GLContext);
+        m_GLContext = nullptr;
+    }
+
     if (m_Handle != nullptr)
     {
-        glfwDestroyWindow(m_Handle);
+        SDL_DestroyWindow(m_Handle);
         m_Handle = nullptr;
     }
 }
 
 void Window::swapBuffers() const
 {
-    glfwSwapBuffers(m_Handle);
+    SDL_GL_SwapWindow(m_Handle);
 }
 
 bool Window::shouldClose() const noexcept
 {
-    return m_Handle != nullptr && glfwWindowShouldClose(m_Handle) != 0;
+    return m_ShouldClose;
+}
+
+void Window::requestClose() noexcept
+{
+    m_ShouldClose = true;
 }
 
 void Window::setPosition(int x, int y) const
@@ -213,7 +225,7 @@ void Window::setPosition(int x, int y) const
     {
         return;
     }
-    glfwSetWindowPos(m_Handle, x, y);
+    SDL_SetWindowPosition(m_Handle, x, y);
 }
 
 auto Window::getPosition() const -> std::pair<int, int>
@@ -225,7 +237,7 @@ auto Window::getPosition() const -> std::pair<int, int>
 
     int x = 0;
     int y = 0;
-    glfwGetWindowPos(m_Handle, &x, &y);
+    SDL_GetWindowPosition(m_Handle, &x, &y);
     return {x, y};
 }
 
@@ -238,7 +250,7 @@ void Window::setSize(int width, int height)
 
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
-    glfwSetWindowSize(m_Handle, clampedWidth, clampedHeight);
+    SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight);
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
 }
@@ -252,7 +264,7 @@ auto Window::getSize() const -> std::pair<int, int>
 
     int width = 0;
     int height = 0;
-    glfwGetWindowSize(m_Handle, &width, &height);
+    SDL_GetWindowSize(m_Handle, &width, &height);
     return {width, height};
 }
 
@@ -263,17 +275,94 @@ bool Window::isMaximized() const
         return false;
     }
 
-    return glfwGetWindowAttrib(m_Handle, GLFW_MAXIMIZED) != 0;
+    // For borderless windows, use our tracked state
+    if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    {
+        return m_IsMaximizedBorderless;
+    }
+
+    return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0;
 }
 
-void Window::maximize() const
+void Window::maximize()
 {
     if (m_Handle == nullptr)
     {
         return;
     }
 
-    glfwMaximizeWindow(m_Handle);
+    // For borderless windows, SDL_MaximizeWindow may not work correctly
+    // on all platforms. We need to manually set the window to fill the
+    // usable display bounds (excluding taskbar/dock).
+    if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    {
+        // Save current position and size for restore
+        SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
+        SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
+
+        const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
+        if (displayID != 0)
+        {
+            SDL_Rect usableBounds{};
+            if (SDL_GetDisplayUsableBounds(displayID, &usableBounds))
+            {
+                // Position window at the usable area origin
+                SDL_SetWindowPosition(m_Handle, usableBounds.x, usableBounds.y);
+                // Size window to fill the usable area
+                SDL_SetWindowSize(m_Handle, usableBounds.w, usableBounds.h);
+                m_IsMaximizedBorderless = true;
+                return;
+            }
+        }
+    }
+
+    // Fall back to SDL's built-in maximize for non-borderless windows
+    SDL_MaximizeWindow(m_Handle);
+}
+
+void Window::restore()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    // For borderless windows, restore to saved position and size
+    if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    {
+        if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
+        {
+            SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);
+            SDL_SetWindowSize(m_Handle, m_RestoreWidth, m_RestoreHeight);
+            m_IsMaximizedBorderless = false;
+            return;
+        }
+    }
+
+    SDL_RestoreWindow(m_Handle);
+}
+
+void Window::minimize() const
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    SDL_MinimizeWindow(m_Handle);
+}
+
+void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+
+    if (!SDL_SetWindowHitTest(m_Handle, callback, callbackData))
+    {
+        spdlog::warn("Failed to set window hit test callback: {}", SDL_GetError());
+    }
 }
 
 } // namespace Core

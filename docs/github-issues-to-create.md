@@ -16,8 +16,8 @@ The Core layer has no test coverage, representing high risk for crashes and init
 **Tasks**:
 - [ ] Add unit tests for Application construction/destruction
 - [ ] Add unit tests for layer stack operations (push, iterate, detach in reverse)
-- [ ] Add integration tests with mocked GLFW window creation
-- [ ] Add edge case tests for GLFW initialization failure
+- [ ] Add integration tests with mocked SDL3 window creation
+- [ ] Add edge case tests for SDL3 initialization failure
 - [ ] Add edge case tests for window creation failure
 
 **Reference**: See `docs/test-coverage-analysis.md` section "Core Layer (Application Lifecycle)" and `docs/test-coverage-implementation-guide.md` Priority 2.

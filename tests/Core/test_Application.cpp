@@ -6,17 +6,12 @@
 /// - Layer stack management (push, lifecycle callbacks)
 /// - Application run/stop control
 /// - Singleton instance access
-/// - Error handling (GLFW initialization)
+/// - Error handling (SDL initialization)
 ///
 /// Note: These tests require a display/windowing system. They are skipped in headless environments.
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
-
-// clang-format off
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-// clang-format on
 
 #include <gtest/gtest.h>
 
@@ -166,7 +161,7 @@ TEST(ApplicationTest, ConstructWithDefaultSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -193,7 +188,7 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -214,7 +209,7 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -245,7 +240,7 @@ TEST(ApplicationTest, PushLayerCallsOnAttach)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -271,7 +266,7 @@ TEST(ApplicationTest, PushMultipleLayers)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -304,7 +299,7 @@ TEST(ApplicationTest, StopPreventsRunLoop)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -330,7 +325,7 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -356,7 +351,7 @@ TEST(ApplicationTest, GetTimeIsConsistent)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -386,7 +381,7 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
 
@@ -420,7 +415,7 @@ TEST(ApplicationTest, DestructorDetachesLayers)
         }
         catch (const std::exception& e)
         {
-            GTEST_SKIP() << "Application creation failed (GLFW error): " << e.what();
+            GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
         }
     }
 

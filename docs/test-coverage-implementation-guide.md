@@ -395,7 +395,7 @@ Look at HTML report in `coverage/index.html`:
 - Domain: Target 85%+
 - UI: Target 50%+ (harder due to ImGui)
 - App: Target 70%+
-- Core: Target 60%+ (harder due to GLFW)
+- Core: Target 60%+ (harder due to SDL3)
 
 ### 3. Document New Tests
 

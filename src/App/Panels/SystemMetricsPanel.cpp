@@ -6,6 +6,8 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
+#include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/StorageModel.h"
@@ -192,6 +194,36 @@ void SystemMetricsPanel::requestRefresh()
     m_ForceRefresh = true;
 }
 
+void SystemMetricsPanel::onEvent(Core::Event& event)
+{
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::ActiveTabChangedEvent>(
+        [this](Core::ActiveTabChangedEvent& e)
+        {
+            m_IsActiveTab = (e.tabName() == "SystemOverview");
+            return false;
+        });
+    dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
+        [this](Core::HistoryDurationChangedEvent& e)
+        {
+            m_MaxHistorySeconds = Domain::Numeric::toDouble(e.getSeconds());
+            if (m_Model)
+            {
+                m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
+            }
+            if (m_StorageModel)
+            {
+                m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+            }
+            if (m_ProcessModel)
+            {
+                m_ProcessModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+            }
+            m_ForceRefresh = true;
+            return false; // Allow others to react
+        });
+}
+
 void SystemMetricsPanel::onUpdate(float deltaTime)
 {
     m_LastDeltaSeconds = deltaTime;
@@ -273,6 +305,12 @@ void SystemMetricsPanel::renderContent()
     {
         const auto& theme = UI::Theme::get();
         ImGui::TextColored(theme.scheme().textError, "System model not initialized");
+        return;
+    }
+
+    // Skip rendering when tab is inactive (data collection continues in onUpdate)
+    if (!m_IsActiveTab)
+    {
         return;
     }
 

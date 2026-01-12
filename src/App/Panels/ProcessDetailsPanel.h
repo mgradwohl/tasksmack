@@ -42,6 +42,9 @@ class ProcessDetailsPanel : public Panel
     /// Get a label for this panel (process name or "Select a process").
     [[nodiscard]] std::string tabLabel() const;
 
+    /// Handle application events (process selection)
+    void onEvent(Core::Event& event) override;
+
     /// Set the process to display.
     void setSelectedPid(std::int32_t pid);
 
@@ -74,6 +77,7 @@ class ProcessDetailsPanel : public Panel
     std::int32_t m_SelectedPid = -1;
     float m_HistoryTimer = 0.0F;
     float m_LastDeltaSeconds = 0.0F;
+    bool m_IsActiveTab = false;
 
     // History buffers (trimmed by time window)
     static constexpr float HISTORY_SAMPLE_INTERVAL = 1.0F;

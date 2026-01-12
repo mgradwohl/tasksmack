@@ -140,7 +140,7 @@ Create `tests/Core/test_Application.cpp`:
 - Application construction/destruction
 - Layer stack management (push, pop, lifecycle)
 - Frame timing calculations
-- GLFW initialization failure handling
+- SDL3 initialization failure handling
 
 Create `tests/Core/test_Window.cpp`:
 - Window creation with various specs
@@ -278,7 +278,7 @@ Total: 15 instances (down from 20)
 | ShellLayer.cpp | 129 | concurrency-mt-unsafe | ⚠️ Security | Replace with fork/exec |
 | WindowsDiskProbe.cpp | 58 | pro-type-union-access | ✅ Justified | Keep (helper function) |
 | WindowsProcAddress.h | 38 | reinterpret_cast | ✅ Justified | Keep (Windows API) |
-| Window.cpp | 48, 126 | various | ✅ Justified | Keep (GLFW/low-level) |
+| Window.cpp | 48, 126 | various | ✅ Justified | Keep (SDL3/low-level) |
 
 **Recommendations**:
 1. Document why each NOLINT is safe in adjacent comments

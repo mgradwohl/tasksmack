@@ -6,19 +6,14 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
-#include <spdlog/spdlog.h>
-
-// clang-format off
-// GLFW_INCLUDE_NONE must be defined before including GLFW to prevent GL header conflicts with glad
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
 #include <glad/gl.h>
-// clang-format on
 #include <imgui.h>
 #include <imgui_freetype.h>
-#include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_impl_sdl3.h>
 #include <implot.h>
+#include <spdlog/spdlog.h>
 
 #include <array>
 #include <filesystem>
@@ -54,17 +49,17 @@ std::filesystem::path getExecutableDir()
 float pointsToPixels(float points)
 {
     constexpr float BASE_DPI = 96.0F;
-    float scaleX = 1.0F;
-    float scaleY = 1.0F;
 
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    if (monitor != nullptr)
+    // Get display scale from SDL
+    float scale = 1.0F;
+    SDL_Window* window = Core::Application::get().getWindow().getHandle();
+    if (window != nullptr)
     {
-        glfwGetMonitorContentScale(monitor, &scaleX, &scaleY);
+        scale = SDL_GetWindowDisplayScale(window);
     }
 
     // pixels = points * (DPI / 72), where effective DPI = BASE_DPI * scale
-    return points * (BASE_DPI * scaleX) / 72.0F;
+    return points * (BASE_DPI * scale) / 72.0F;
 }
 
 // Best-effort system monospace font discovery (platform-specific, prefers widely available defaults)
@@ -223,6 +218,30 @@ void UILayer::loadAllFonts()
         theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
     }
 
+    // Load Sixtyfour pixel font for custom title bar
+    // This is a fixed-size font that looks best at specific pixel sizes
+    constexpr float TITLE_FONT_SIZE_PX = 18.0F;
+    auto titleFontPath = (exeDir / "assets" / "fonts" / "Sixtyfour.ttf").string();
+    if (std::filesystem::exists(titleFontPath))
+    {
+        ImFontConfig titleConfig;
+        titleConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_Bitmap;
+        ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), TITLE_FONT_SIZE_PX, &titleConfig);
+        if (titleFont != nullptr)
+        {
+            theme.registerTitleFont(titleFont);
+            spdlog::info("Loaded Sixtyfour title font at {}px", TITLE_FONT_SIZE_PX);
+        }
+        else
+        {
+            spdlog::warn("Failed to load Sixtyfour title font from {}", titleFontPath);
+        }
+    }
+    else
+    {
+        spdlog::warn("Sixtyfour title font not found at {}", titleFontPath);
+    }
+
     spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
 }
 
@@ -272,8 +291,8 @@ void UILayer::onAttach()
     }
 
     // Setup Platform/Renderer backends
-    GLFWwindow* window = Core::Application::get().getWindow().getHandle();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    SDL_Window* window = Core::Application::get().getWindow().getHandle();
+    ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
     spdlog::info("ImGui initialized successfully");
@@ -284,7 +303,7 @@ void UILayer::onDetach()
     spdlog::info("Shutting down ImGui");
 
     ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
 }
@@ -307,6 +326,12 @@ void UILayer::onPostRender()
     endFrame();
 }
 
+void UILayer::onSDLEvent(SDL_Event* event)
+{
+    // Pass SDL events to ImGui for input handling
+    ImGui_ImplSDL3_ProcessEvent(event);
+}
+
 void UILayer::beginFrame()
 {
     // Apply any pending theme change BEFORE starting the ImGui frame
@@ -314,7 +339,7 @@ void UILayer::beginFrame()
     Theme::get().applyPendingTheme();
 
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
     // Push the current font size - this applies to all ImGui rendering this frame
@@ -346,10 +371,11 @@ void UILayer::endFrame()
     const ImGuiIO& imguiIO = ImGui::GetIO();
     if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
     {
-        GLFWwindow* backupCurrentContext = glfwGetCurrentContext();
+        SDL_Window* backupWindow = SDL_GL_GetCurrentWindow();
+        SDL_GLContext backupContext = SDL_GL_GetCurrentContext();
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
-        glfwMakeContextCurrent(backupCurrentContext);
+        SDL_GL_MakeCurrent(backupWindow, backupContext);
     }
 }
 

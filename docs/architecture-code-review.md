@@ -41,7 +41,7 @@ App (ShellLayer, Panels)
     ↓
 UI (ImGui/ImPlot integration)
     ↓
-Core (Application loop, Window, GLFW)
+Core (Application loop, Window, SDL3)
     ↓
 Domain (ProcessModel, SystemModel, History)
     ↓
@@ -149,7 +149,7 @@ auto exeDir = pathProvider->getExecutableDir();
 
 #### ✅ Core Layer (COMPLIANT)
 - **Location**: `src/Core/`
-- **Dependencies**: GLFW, OpenGL (acceptable for windowing/rendering core)
+- **Dependencies**: SDL3, OpenGL (acceptable for windowing/rendering core)
 - **Violations**: None
 - **Status**: ✅ **EXCELLENT**
 
@@ -169,7 +169,7 @@ Analyzed all `#include` directives across 77 source files:
 - Domain → Platform interfaces only
 - UI → Core, Domain (correct direction)
 - App → UI, Domain, Platform (via factory), Core
-- Core → GLFW, OpenGL only
+- Core → SDL3, OpenGL only
 
 **Status**: ✅ **EXCELLENT** - Strict unidirectional dependency flow maintained.
 
@@ -182,7 +182,7 @@ Analyzed all `#include` directives across 77 source files:
 
 **Justification**: ✅ **APPROPRIATE**
 - Single application instance is a valid architectural constraint
-- Required for GLFW callbacks
+- Required for SDL3 callbacks
 - Cannot reasonably be multi-instanced
 
 **Recommendation**: No change needed.
@@ -444,7 +444,7 @@ std::copy(startIt, data.end(), std::back_inserter(out));
 **Breakdown**:
 1. **Justified** (11):
    - `concurrency-mt-unsafe` (std::system, getenv) - thread safety documented
-   - `cppcoreguidelines-prefer-member-initializer` (GLFW initialization order)
+   - `cppcoreguidelines-prefer-member-initializer` (SDL3 initialization order)
    - `readability-redundant-member-init` (ColorScheme large struct)
 
 2. **Could be improved** (3):
@@ -468,7 +468,7 @@ std::copy(startIt, data.end(), std::back_inserter(out));
 
 **Critical Untested Components**:
 1. `Core/Application.cpp` - main loop, layer lifecycle
-2. `Core/Window.cpp` - GLFW window management
+2. `Core/Window.cpp` - SDL3 window management
 3. `App/UserConfig.cpp` - TOML parsing/persistence
 4. `App/ShellLayer.cpp` - UI orchestration
 5. All panels (ProcessesPanel, ProcessDetailsPanel, SystemMetricsPanel, StoragePanel)
@@ -507,7 +507,7 @@ inline bool checkPdhStatus(PDH_STATUS status, std::string_view operation) {
 **Finding**: Excellent memory management practices
 
 **Evidence**:
-1. **RAII everywhere**: Smart pointers, GLFW/OpenGL resource wrappers
+1. **RAII everywhere**: Smart pointers, SDL3/OpenGL resource wrappers
 2. **No leaks detected**: All resources properly scoped
 3. **Proper move semantics**: Rule of 5 followed where needed
 4. **History trimming**: Deques properly trimmed by time window

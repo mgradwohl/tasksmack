@@ -163,7 +163,7 @@ target_link_libraries(TaskSmackTests PRIVATE
     gtest_main
     spdlog::spdlog_header_only
     tomlplusplus::tomlplusplus
-    glfw
+    SDL3::SDL3
     glad_gl_core_33
 )
 
