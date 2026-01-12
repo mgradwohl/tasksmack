@@ -176,7 +176,16 @@ struct PDHGPUProbe::Impl
     // Warm-up tracking - first sample after adding counters is meaningless
     bool warmedUp = false;
 
-    // Last time we refreshed the counter list (instances change as processes start/stop)
+    // Instance refresh timing.
+    // PDH counter paths embed the PID in the instance name (e.g., "pid_1234_luid_0x...").
+    // When a new process starts using the GPU, we must re-enumerate instances to discover it
+    // and add counters for it. This is separate from ProcessModel's process enumeration -
+    // ProcessModel discovers all processes via OS APIs, while PDH discovers specifically which
+    // processes are actively using GPU resources via Performance Counters.
+    //
+    // Trade-off: Shorter intervals = faster detection of new GPU-using processes but more
+    // CPU overhead from PdhEnumObjectItems calls. Default 5s is a reasonable balance.
+    // Configurable via sampling.pdh_instance_refresh_seconds in user config.
     std::chrono::steady_clock::time_point lastRefreshTime{};
     std::chrono::seconds instanceRefreshInterval{5}; // Configurable via setInstanceRefreshInterval()
 

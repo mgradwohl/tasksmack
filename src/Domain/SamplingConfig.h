@@ -24,8 +24,10 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 
 // PDH GPU instance refresh interval (seconds)
-// Controls how often we re-enumerate GPU instances to detect new processes
-// This is separate from the data sampling interval
+// Controls how often we re-enumerate GPU instances to detect new GPU-using processes.
+// This is separate from ProcessModel's process enumeration (which discovers all processes).
+// PDH specifically discovers which processes actively use GPU via Windows Performance Counters.
+// Shorter intervals = faster detection but more CPU overhead from PdhEnumObjectItems calls.
 inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_DEFAULT = 5;
 inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MIN = 1;
 inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MAX = 60;
