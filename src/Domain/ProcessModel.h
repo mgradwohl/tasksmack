@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/GPUTypes.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
@@ -15,6 +16,9 @@
 
 namespace Domain
 {
+
+// Forward declaration
+class GPUModel;
 
 /// Owns a process probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshots() returns the latest computed data.
@@ -57,8 +61,16 @@ class ProcessModel
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::ProcessCapabilities& capabilities() const;
 
+    /// Set GPU model for per-process GPU data.
+    /// When set, refresh() automatically queries GPU counters and merges them.
+    void setGPUModel(std::shared_ptr<GPUModel> gpuModel)
+    {
+        m_GPUModel = std::move(gpuModel);
+    }
+
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
+    std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
     Platform::ProcessCapabilities m_Capabilities;
 
     // Previous counters for delta calculation (keyed by uniqueKey)
@@ -133,6 +145,8 @@ class ProcessModel
 
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
+
+    void mergeGPUData(); // Merge GPU counters from m_GPUModel into m_Snapshots
 
     [[nodiscard]] static ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
                                                          const Platform::ProcessCounters* previous,

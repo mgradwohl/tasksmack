@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include <spdlog/spdlog.h>
+
 // clang-format off
 // Windows headers
 #ifndef WIN32_LEAN_AND_MEAN
@@ -273,6 +275,8 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
     // Enumerate all processes
     auto pids = Impl::enumerateProcessIds();
 
+    spdlog::debug("D3DKMTGPUProbe: Querying {} processes across {} adapters", pids.size(), m_Impl->adapters.size());
+
     // Query each process for GPU usage across all adapters
     for (const auto pid : pids)
     {
@@ -282,15 +286,22 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
             continue;
         }
 
+        // Open process handle with query permissions
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast) - Windows HANDLE required
+        HANDLE hProcess =
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        if (hProcess == nullptr)
+        {
+            continue; // No permission to query this process
+        }
+
         for (const auto& adapter : m_Impl->adapters)
         {
             // Query process statistics for this adapter
             D3DKMT_QUERYSTATISTICS queryStats{};
             queryStats.Type = D3DKMT_QUERYSTATISTICS_TYPE::D3DKMT_QUERYSTATISTICS_PROCESS;
             queryStats.AdapterLuid = adapter.adapterLuid;
-            // D3DKMT requires HANDLE from PID via cast - standard Windows pattern
-            // NOLINTNEXTLINE(performance-no-int-to-ptr)
-            queryStats.hProcess = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(pid));
+            queryStats.hProcess = hProcess;
             // Union access required by D3DKMT API structure
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
             queryStats.QueryProcessStatistics.ProcessId = pid;
@@ -326,6 +337,13 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
 
             allCounters.push_back(std::move(counters));
         }
+
+        CloseHandle(hProcess);
+    }
+
+    if (!allCounters.empty())
+    {
+        spdlog::debug("D3DKMTGPUProbe: Found {} per-process GPU entries", allCounters.size());
     }
 
     return allCounters;

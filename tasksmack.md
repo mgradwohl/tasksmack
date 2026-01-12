@@ -168,13 +168,13 @@ Rules:
 - Processes and CPU: `NtQuerySystemInformation` (SystemProcessInformation).
 - Disk and network: begin with simpler APIs, plan for ETW kernel providers for fidelity.
 - Services: SCM APIs and registry queries.
-- GPU (optional): DXGI queries plus NVML for NVIDIA.
+- GPU: DXGI for enumeration, NVML for NVIDIA GPU metrics; per-process GPU memory and utilization via NVML's `DeviceGetComputeRunningProcesses`/`DeviceGetGraphicsRunningProcesses` (NVIDIA) with D3DKMT fallback for non-NVIDIA GPUs.
 
 ### Linux
 - Processes and CPU: `/proc/stat`, `/proc/[pid]/stat`, `/proc/[pid]/io`, `/proc/meminfo`.
 - Networking: `/proc/net/*` for a baseline; Netlink (`NETLINK_INET_DIAG`) for high-fidelity connections.
 - Services: systemd D-Bus if parity with Windows services is desired.
-- GPU: DRM/sysfs for temperatures, NVML for NVIDIA hardware.
+- GPU: DRM/sysfs for temperatures, NVML for NVIDIA hardware, ROCm SMI for AMD GPUs.
 
 Each platform implements the same probe interfaces; automated tests ensure contract compliance.
 

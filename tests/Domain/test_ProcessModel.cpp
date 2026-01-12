@@ -1441,3 +1441,135 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
     ASSERT_EQ(snaps2.size(), 1);
     EXPECT_EQ(snaps2[0].peakMemoryBytes, 5 * 1024 * 1024); // Peak should reset for new process
 }
+
+// =============================================================================
+// GPU Data Merging Tests
+// =============================================================================
+
+#include "Domain/GPUModel.h"
+#include "Mocks/MockGPUProbe.h"
+
+using TestMocks::MockGPUProbe;
+
+TEST(ProcessModelTest, MergeGPUDataUpdatesProcessSnapshots)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor")
+        .withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+
+    // Set GPU model (shared ownership)
+    processModel.setGPUModel(gpuModel);
+
+    // GPUModel needs to be refreshed first to have process counters available
+    gpuModel->refresh();
+
+    // ProcessModel refresh will automatically merge GPU data
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 512ULL * 1024 * 1024);
+}
+
+TEST(ProcessModelTest, MergeGPUDataMultipleProcesses)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "proc1", 'R', 1000, 500), makeCounter(200, "proc2", 'R', 2000, 1000)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor")
+        .withProcessGPU(100, "GPU0", 256ULL * 1024 * 1024)
+        .withProcessGPU(200, "GPU0", 128ULL * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+
+    // Find process 100
+    auto it1 = std::find_if(snaps.begin(), snaps.end(), [](const auto& s) { return s.pid == 100; });
+    ASSERT_NE(it1, snaps.end());
+    EXPECT_EQ(it1->gpuMemoryBytes, 256ULL * 1024 * 1024);
+
+    // Find process 200
+    auto it2 = std::find_if(snaps.begin(), snaps.end(), [](const auto& s) { return s.pid == 200; });
+    ASSERT_NE(it2, snaps.end());
+    EXPECT_EQ(it2->gpuMemoryBytes, 128ULL * 1024 * 1024);
+}
+
+TEST(ProcessModelTest, MergeGPUDataAggregatesMultiGPU)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "multi_gpu_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "GPU 0", "Vendor")
+        .withGPU("GPU1", "GPU 1", "Vendor")
+        .withProcessGPU(100, "GPU0", 256ULL * 1024 * 1024)
+        .withProcessGPU(100, "GPU1", 512ULL * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // Memory should be summed across GPUs
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, (256 + 512) * 1024ULL * 1024);
+}
+
+TEST(ProcessModelTest, MergeGPUDataWithNoGPUModel)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "no_gpu_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    // No GPU model set
+
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 0); // No GPU data
+}
+
+TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "NVIDIA RTX 3080", "NVIDIA").withProcessGPU(100, "GPU0", 1ULL * 1024 * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // gpuDevices should contain the GPU name
+    EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}

@@ -42,6 +42,12 @@ void ShellLayer::onAttach()
     if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
     {
         m_SystemMetricsPanel.setProcessModel(processModel);
+
+        // Share GPU model with ProcessModel for per-process GPU data
+        if (auto gpuModel = m_SystemMetricsPanel.gpuModel(); gpuModel != nullptr)
+        {
+            processModel->setGPUModel(gpuModel);
+        }
     }
 
     spdlog::info("Panels initialized");
@@ -125,6 +131,12 @@ void ShellLayer::onUpdate(float deltaTime)
             {
                 cachedSnapshot = snap;
                 selectedSnapshot = &cachedSnapshot;
+                // Debug: Log if GPU data is present
+                if (!snap.gpuDevices.empty() || snap.gpuMemoryBytes > 0)
+                {
+                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}", 
+                                  selectedPid, snap.gpuDevices, snap.gpuMemoryBytes);
+                }
                 break;
             }
         }

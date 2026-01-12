@@ -67,9 +67,12 @@ class NVMLGPUProbe : public IGPUProbe
         nvmlReturn_t (*DeviceGetMaxClockInfo)(nvmlDevice_t, int, unsigned int*);
         nvmlReturn_t (*DeviceGetUtilizationRates)(nvmlDevice_t, void*);
         nvmlReturn_t (*DeviceGetPcieThroughput)(nvmlDevice_t, int, unsigned int*);
-        nvmlReturn_t (*DeviceGetDriverVersion)(char*, unsigned int);
+        nvmlReturn_t (*SystemGetDriverVersion)(char*, unsigned int);
         nvmlReturn_t (*DeviceGetVbiosVersion)(nvmlDevice_t, char*, unsigned int);
         nvmlReturn_t (*DeviceGetFanSpeed)(nvmlDevice_t, unsigned int*);
+        // Per-process GPU functions
+        nvmlReturn_t (*DeviceGetComputeRunningProcesses)(nvmlDevice_t, unsigned int*, void*);
+        nvmlReturn_t (*DeviceGetGraphicsRunningProcesses)(nvmlDevice_t, unsigned int*, void*);
     };
 
     void* m_NVMLHandle{nullptr};

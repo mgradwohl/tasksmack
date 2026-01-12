@@ -7,10 +7,77 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cctype>
 #include <ranges>
 
 namespace Platform
 {
+
+namespace
+{
+
+// Normalize GPU name for comparison (trim whitespace, lowercase, remove prefixes)
+std::string normalizeGPUName(const std::string& name)
+{
+    std::string normalized;
+    normalized.reserve(name.size());
+
+    // Convert to lowercase and remove extra whitespace
+    bool lastWasSpace = true;  // Skip leading spaces
+    for (char c : name)
+    {
+        if (std::isspace(static_cast<unsigned char>(c)))
+        {
+            if (!lastWasSpace)
+            {
+                normalized += ' ';
+                lastWasSpace = true;
+            }
+        }
+        else
+        {
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            lastWasSpace = false;
+        }
+    }
+
+    // Remove trailing space
+    if (!normalized.empty() && normalized.back() == ' ')
+    {
+        normalized.pop_back();
+    }
+
+    return normalized;
+}
+
+// Check if two GPU names match (handles DXGI vs NVML name differences)
+bool gpuNamesMatch(const std::string& name1, const std::string& name2)
+{
+    // First try exact match
+    if (name1 == name2)
+    {
+        return true;
+    }
+
+    // Try normalized comparison
+    const std::string norm1 = normalizeGPUName(name1);
+    const std::string norm2 = normalizeGPUName(name2);
+
+    if (norm1 == norm2)
+    {
+        return true;
+    }
+
+    // Check if one contains the other (handles "NVIDIA GeForce..." vs "GeForce...")
+    if (norm1.contains(norm2) || norm2.contains(norm1))
+    {
+        return true;
+    }
+
+    return false;
+}
+
+}  // namespace
 
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
@@ -42,12 +109,14 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         if (m_NVMLProbe && m_NVMLProbe->isAvailable())
         {
             auto nvmlGPUs = m_NVMLProbe->enumerateGPUs();
+            spdlog::debug("WindowsGPUProbe: Found {} DXGI GPUs and {} NVML GPUs", gpus.size(), nvmlGPUs.size());
 
             // Build mapping between DXGI and NVML GPUs (match by name)
             m_DXGIToNVMLMap.clear();
             for (std::size_t dxgiIdx = 0; dxgiIdx < gpus.size(); ++dxgiIdx)
             {
                 const auto& dxgiGPU = gpus[dxgiIdx];
+                spdlog::debug("WindowsGPUProbe: DXGI GPU {}: '{}' (vendor: {})", dxgiIdx, dxgiGPU.name, dxgiGPU.vendor);
 
                 // Only try to match NVIDIA GPUs
                 if (dxgiGPU.vendor != "NVIDIA")
@@ -56,19 +125,34 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
                 }
 
                 // Find matching NVML GPU by name
+                bool matched = false;
                 for (std::size_t nvmlIdx = 0; nvmlIdx < nvmlGPUs.size(); ++nvmlIdx)
                 {
                     const auto& nvmlGPU = nvmlGPUs[nvmlIdx];
+                    spdlog::debug("WindowsGPUProbe: Comparing DXGI '{}' with NVML '{}'", dxgiGPU.name, nvmlGPU.name);
 
-                    // Match by name (DXGI and NVML should report same name for same GPU)
-                    if (dxgiGPU.name == nvmlGPU.name)
+                    // Match by name using robust comparison
+                    if (gpuNamesMatch(dxgiGPU.name, nvmlGPU.name))
                     {
                         m_DXGIToNVMLMap[static_cast<uint32_t>(dxgiIdx)] = static_cast<uint32_t>(nvmlIdx);
-                        spdlog::debug("WindowsGPUProbe: Mapped DXGI GPU {} to NVML GPU {} ({})", dxgiIdx, nvmlIdx, dxgiGPU.name);
+                        spdlog::info("WindowsGPUProbe: Mapped DXGI GPU {} to NVML GPU {} ('{}' <-> '{}')",
+                                     dxgiIdx, nvmlIdx, dxgiGPU.name, nvmlGPU.name);
+                        matched = true;
                         break;
                     }
                 }
+
+                if (!matched)
+                {
+                    spdlog::warn("WindowsGPUProbe: Failed to match DXGI GPU '{}' with any NVML GPU", dxgiGPU.name);
+                }
             }
+
+            spdlog::info("WindowsGPUProbe: Created {} DXGI-to-NVML mappings", m_DXGIToNVMLMap.size());
+        }
+        else
+        {
+            spdlog::debug("WindowsGPUProbe: NVML not available for NVIDIA GPU enhancement");
         }
 
         return gpus;
@@ -100,6 +184,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
+        spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: NVML not available, skipping merge");
         return;
     }
 
@@ -107,8 +192,14 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
     auto nvmlCounters = m_NVMLProbe->readGPUCounters();
     if (nvmlCounters.empty())
     {
+        spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: NVML returned no counters");
         return;
     }
+
+    spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: Have {} DXGI counters and {} NVML counters, {} mappings",
+                  dxgiCounters.size(),
+                  nvmlCounters.size(),
+                  m_DXGIToNVMLMap.size());
 
     // Merge NVML data into DXGI counters based on mapping
     for (std::size_t dxgiIdx = 0; dxgiIdx < dxgiCounters.size(); ++dxgiIdx)
@@ -116,6 +207,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         auto mapIt = m_DXGIToNVMLMap.find(static_cast<uint32_t>(dxgiIdx));
         if (mapIt == m_DXGIToNVMLMap.end())
         {
+            spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: No NVML mapping for DXGI GPU {}", dxgiIdx);
             continue; // No NVML mapping for this GPU (not NVIDIA or not matched)
         }
 
@@ -136,11 +228,12 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
         dxgiCounter.fanSpeedRPMPercent = nvmlCounter.fanSpeedRPMPercent;
 
-        // Use NVML GPU utilization if available (may be more accurate)
-        if (nvmlCounter.utilizationPercent > 0.0)
-        {
-            dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
-        }
+        // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't)
+        // Always use NVML utilization when available, even if it's 0 (which is valid at idle)
+        dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+        spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: GPU {} utilization = {}%",
+                      dxgiIdx,
+                      nvmlCounter.utilizationPercent);
 
         // Prefer NVML memory metrics (more accurate)
         if (nvmlCounter.memoryTotalBytes > 0)
@@ -153,12 +246,31 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
 
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
 {
-    // Phase 3: Use D3DKMT for per-process GPU metrics (works for all vendors)
-    if (m_D3DKMTProbe)
+    std::vector<ProcessGPUCounters> allCounters;
+
+    // Get per-process data from NVML (NVIDIA-specific, high-quality data)
+    if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        return m_D3DKMTProbe->readProcessGPUCounters();
+        auto nvmlCounters = m_NVMLProbe->readProcessGPUCounters();
+        if (!nvmlCounters.empty())
+        {
+            spdlog::debug("WindowsGPUProbe: Got {} per-process GPU counters from NVML", nvmlCounters.size());
+            allCounters = std::move(nvmlCounters);
+        }
     }
-    return {};
+
+    // Fall back to D3DKMT if NVML didn't provide data (works for all vendors)
+    if (allCounters.empty() && m_D3DKMTProbe)
+    {
+        auto d3dkmtCounters = m_D3DKMTProbe->readProcessGPUCounters();
+        if (!d3dkmtCounters.empty())
+        {
+            spdlog::debug("WindowsGPUProbe: Got {} per-process GPU counters from D3DKMT", d3dkmtCounters.size());
+            allCounters = std::move(d3dkmtCounters);
+        }
+    }
+
+    return allCounters;
 }
 
 GPUCapabilities WindowsGPUProbe::capabilities() const

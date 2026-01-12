@@ -148,7 +148,7 @@ void SystemMetricsPanel::onAttach()
     m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_GPUModel = std::make_unique<Domain::GPUModel>(Platform::makeGPUProbe());
+    m_GPUModel = std::make_shared<Domain::GPUModel>(Platform::makeGPUProbe());
 
     // Initial refresh to seed histories
     m_Model->refresh();

@@ -790,4 +790,91 @@ TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
     EXPECT_FALSE(hadError.load());
 }
 
+// =============================================================================
+// Per-Process GPU Counter Tests
+// =============================================================================
+
+TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor")
+        .withProcessGPU(1234, "GPU0", 512ULL * 1024 * 1024)
+        .withProcessGPU(5678, "GPU0", 256ULL * 1024 * 1024);
+
+    Domain::GPUModel model(std::move(probe));
+
+    auto counters = model.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 2);
+
+    // Verify first process
+    auto it1 = std::find_if(counters.begin(), counters.end(), [](const auto& c) { return c.pid == 1234; });
+    ASSERT_NE(it1, counters.end());
+    EXPECT_EQ(it1->gpuId, "GPU0");
+    EXPECT_EQ(it1->gpuMemoryBytes, 512ULL * 1024 * 1024);
+
+    // Verify second process
+    auto it2 = std::find_if(counters.begin(), counters.end(), [](const auto& c) { return c.pid == 5678; });
+    ASSERT_NE(it2, counters.end());
+    EXPECT_EQ(it2->gpuId, "GPU0");
+    EXPECT_EQ(it2->gpuMemoryBytes, 256ULL * 1024 * 1024);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "GPU 0", "Vendor")
+        .withGPU("GPU1", "GPU 1", "Vendor")
+        .withProcessGPU(1000, "GPU0", 100ULL * 1024 * 1024)
+        .withProcessGPU(1000, "GPU1", 200ULL * 1024 * 1024) // Same process, different GPU
+        .withProcessGPU(2000, "GPU1", 300ULL * 1024 * 1024);
+
+    Domain::GPUModel model(std::move(probe));
+
+    auto counters = model.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 3);
+
+    // Find entries for PID 1000
+    int pid1000Count = 0;
+    for (const auto& c : counters)
+    {
+        if (c.pid == 1000)
+        {
+            ++pid1000Count;
+        }
+    }
+    EXPECT_EQ(pid1000Count, 2);
+
+    // Find entry for PID 2000
+    auto it = std::find_if(counters.begin(), counters.end(), [](const auto& c) { return c.pid == 2000; });
+    ASSERT_NE(it, counters.end());
+    EXPECT_EQ(it->gpuId, "GPU1");
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersWithNullProbe)
+{
+    Domain::GPUModel model(nullptr);
+
+    auto counters = model.readProcessGPUCounters();
+    EXPECT_TRUE(counters.empty());
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    probe->withGPU("GPU0", "Test GPU", "Vendor").withProcessGPU(100, "GPU0", 50ULL * 1024 * 1024);
+
+    Domain::GPUModel model(std::move(probe));
+
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0);
+
+    auto counters1 = model.readProcessGPUCounters();
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1);
+    EXPECT_EQ(counters1.size(), 1);
+
+    auto counters2 = model.readProcessGPUCounters();
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 2);
+    EXPECT_EQ(counters2.size(), 1);
+}
+
 } // namespace

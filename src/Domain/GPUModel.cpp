@@ -173,6 +173,15 @@ Platform::GPUCapabilities GPUModel::capabilities() const
     return m_Probe->capabilities();
 }
 
+std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
+{
+    if (!m_Probe)
+    {
+        return {};
+    }
+    return m_Probe->readProcessGPUCounters();
+}
+
 GPUSnapshot
 GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const
 {
