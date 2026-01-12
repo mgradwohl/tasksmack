@@ -101,6 +101,10 @@ using Detail::PRIORITY_BADGE_HEIGHT;
 using Detail::PRIORITY_GRADIENT_SEGMENTS;
 using Detail::PRIORITY_LABEL_PADDING;
 using Detail::PRIORITY_SLIDER_CORNER_RADIUS;
+using Detail::PRIORITY_SLIDER_HEIGHT;
+using Detail::PRIORITY_SLIDER_WIDTH;
+using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
+
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
@@ -108,11 +112,7 @@ ProcessDetailsPanel::ProcessDetailsPanel()
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
 {
 }
-using Detail::PRIORITY_SLIDER_HEIGHT;
-using Detail::PRIORITY_SLIDER_WIDTH;
-using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 
-/// Context structure for priority slider rendering
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext
 {

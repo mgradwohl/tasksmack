@@ -2,8 +2,6 @@
 
 #include "Core/Layer.h"
 
-#include <functional>
-
 namespace App
 {
 

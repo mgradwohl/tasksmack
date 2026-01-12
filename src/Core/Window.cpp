@@ -64,6 +64,8 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 void setWindowIconFromResource(SDL_Window* window)
 {
     // Get the native Win32 handle from SDL
+    // SDL_GetPointerProperty returns void* but we know SDL sets SDL_PROP_WINDOW_WIN32_HWND_POINTER
+    // to point to the actual HWND value. The cast is safe because SDL guarantees this contract.
     HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
     if (hwnd == nullptr)
     {
@@ -315,10 +317,12 @@ void Window::maximize()
                 m_IsMaximizedBorderless = true;
                 return;
             }
+            // If SDL_GetDisplayUsableBounds fails, fall through to SDL_MaximizeWindow
+            spdlog::warn("Failed to get display usable bounds for borderless maximize");
         }
     }
 
-    // Fall back to SDL's built-in maximize for non-borderless windows
+    // Fall back to SDL's built-in maximize for non-borderless windows or on error
     SDL_MaximizeWindow(m_Handle);
 }
 
