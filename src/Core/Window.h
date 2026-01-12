@@ -32,6 +32,7 @@ class Window
 
     [[nodiscard]] bool shouldClose() const noexcept;
     void requestClose() noexcept;
+    void clearCloseRequest() noexcept; // Reset close flag after handling WindowCloseEvent
 
     [[nodiscard]] int getWidth() const noexcept
     {

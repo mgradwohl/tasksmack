@@ -226,6 +226,11 @@ void Window::requestClose() noexcept
     m_ShouldClose = true;
 }
 
+void Window::clearCloseRequest() noexcept
+{
+    m_ShouldClose = false;
+}
+
 void Window::setPosition(int x, int y) const
 {
     if (m_Handle == nullptr)

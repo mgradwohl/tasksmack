@@ -182,12 +182,36 @@ void TitleBarLayer::onAttach()
     if (data != nullptr)
     {
         glGenTextures(1, &m_IconTexture);
-        glBindTexture(GL_TEXTURE_2D, m_IconTexture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_IconWidth, m_IconHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        stbi_image_free(data);
-        spdlog::info("Loaded title bar icon: {}x{}", m_IconWidth, m_IconHeight);
+        if (m_IconTexture == 0U)
+        {
+            spdlog::error("Failed to create OpenGL texture for title bar icon (glGenTextures returned 0)");
+            stbi_image_free(data);
+            m_IconWidth = 0;
+            m_IconHeight = 0;
+        }
+        else
+        {
+            glBindTexture(GL_TEXTURE_2D, m_IconTexture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_IconWidth, m_IconHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+
+            const GLenum error = glGetError();
+            if (error != GL_NO_ERROR)
+            {
+                spdlog::error("OpenGL error {} while uploading title bar icon texture", static_cast<unsigned int>(error));
+                glDeleteTextures(1, &m_IconTexture);
+                m_IconTexture = 0U;
+                m_IconWidth = 0;
+                m_IconHeight = 0;
+            }
+            else
+            {
+                spdlog::info("Loaded title bar icon: {}x{}", m_IconWidth, m_IconHeight);
+            }
+
+            stbi_image_free(data);
+        }
     }
     else
     {
