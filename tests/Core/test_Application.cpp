@@ -21,7 +21,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
-#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>

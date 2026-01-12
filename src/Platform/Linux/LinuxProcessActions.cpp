@@ -36,16 +36,19 @@ ProcessActionResult LinuxProcessActions::terminate(int32_t pid)
 
 ProcessActionResult LinuxProcessActions::kill(int32_t pid)
 {
+    // NOLINTNEXTLINE(misc-include-cleaner) - SIGKILL is provided by <signal.h>
     return sendSignal(pid, SIGKILL, "SIGKILL");
 }
 
 ProcessActionResult LinuxProcessActions::stop(int32_t pid)
 {
+    // NOLINTNEXTLINE(misc-include-cleaner) - SIGSTOP is provided by <signal.h>
     return sendSignal(pid, SIGSTOP, "SIGSTOP");
 }
 
 ProcessActionResult LinuxProcessActions::resume(int32_t pid)
 {
+    // NOLINTNEXTLINE(misc-include-cleaner) - SIGCONT is provided by <signal.h>
     return sendSignal(pid, SIGCONT, "SIGCONT");
 }
 

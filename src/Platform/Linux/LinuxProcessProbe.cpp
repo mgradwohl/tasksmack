@@ -482,6 +482,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
     // Use sched_getaffinity to read CPU affinity mask for the process
     // This returns which CPU cores the process is allowed to run on
 
+    // NOLINTNEXTLINE(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
     cpu_set_t cpuSet;
     CPU_ZERO(&cpuSet);
 

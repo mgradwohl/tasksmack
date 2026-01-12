@@ -316,10 +316,10 @@ class Theme
 // Helper to convert hex color to ImVec4 (compile-time friendly)
 constexpr ImVec4 hexToImVec4(std::uint32_t hex)
 {
-    return ImVec4(static_cast<float>((hex >> 16) & 0xFF) / 255.0F,
-                  static_cast<float>((hex >> 8) & 0xFF) / 255.0F,
-                  static_cast<float>(hex & 0xFF) / 255.0F,
-                  1.0F);
+    return {static_cast<float>((hex >> 16) & 0xFF) / 255.0F,
+            static_cast<float>((hex >> 8) & 0xFF) / 255.0F,
+            static_cast<float>(hex & 0xFF) / 255.0F,
+            1.0F};
 }
 
 } // namespace UI

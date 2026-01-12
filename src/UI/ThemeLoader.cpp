@@ -31,7 +31,7 @@ namespace
 /// circular dependencies when loading a new theme
 [[nodiscard]] constexpr auto errorColor() -> ImVec4
 {
-    return ImVec4(1.0F, 0.0F, 1.0F, 1.0F); // Bright magenta
+    return {1.0F, 0.0F, 1.0F, 1.0F}; // Bright magenta
 }
 
 } // namespace
@@ -82,10 +82,10 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     }
 
     constexpr float INV_MAX_COMPONENT = 1.0F / 255.0F;
-    return ImVec4(UI::Format::toFloatNarrow(r) * INV_MAX_COMPONENT,
-                  UI::Format::toFloatNarrow(g) * INV_MAX_COMPONENT,
-                  UI::Format::toFloatNarrow(b) * INV_MAX_COMPONENT,
-                  UI::Format::toFloatNarrow(a) * INV_MAX_COMPONENT);
+    return {UI::Format::toFloatNarrow(r) * INV_MAX_COMPONENT,
+            UI::Format::toFloatNarrow(g) * INV_MAX_COMPONENT,
+            UI::Format::toFloatNarrow(b) * INV_MAX_COMPONENT,
+            UI::Format::toFloatNarrow(a) * INV_MAX_COMPONENT};
 }
 
 namespace
@@ -114,7 +114,7 @@ auto parseColorNode(const toml::node& node) -> ImVec4
             const float g = arr->get(1)->value_or(0.0F);
             const float b = arr->get(2)->value_or(0.0F);
             const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-            return ImVec4(r, g, b, a);
+            return {r, g, b, a};
         }
     }
 
@@ -146,7 +146,7 @@ auto parseColorView(toml::node_view<const toml::node> view) -> ImVec4
                 const float g = arr->get(1)->value_or(0.0F);
                 const float b = arr->get(2)->value_or(0.0F);
                 const float a = (arr->size() >= 4) ? arr->get(3)->value_or(1.0F) : 1.0F;
-                return ImVec4(r, g, b, a);
+                return {r, g, b, a};
             }
         }
     }

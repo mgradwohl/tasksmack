@@ -45,7 +45,7 @@ class Texture
     /// Returns (0, 0) if the texture is invalid.
     [[nodiscard]] ImVec2 size() const noexcept
     {
-        return ImVec2(static_cast<float>(m_Width), static_cast<float>(m_Height));
+        return {static_cast<float>(m_Width), static_cast<float>(m_Height)};
     }
 
   private:
