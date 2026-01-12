@@ -137,8 +137,16 @@ void renderNetworkSection(RenderContext& ctx)
         }
     }
 
+    // Calculate dropdown width based on longest interface name
+    float dropdownWidth = ImGui::CalcTextSize("Total (All Interfaces)").x + 20.0F;
+    for (size_t i = 0; i <= interfaceCount; ++i)
+    {
+        const float itemWidth = ImGui::CalcTextSize(interfaceNames[i].c_str()).x + 20.0F;
+        dropdownWidth = std::max(dropdownWidth, itemWidth);
+    }
+
     // Interface selector
-    ImGui::SetNextItemWidth(250.0F);
+    ImGui::SetNextItemWidth(dropdownWidth);
     // Index 0 is "Total", indices 1+ are interfaces. selectedInterface: -1 = Total, 0+ = interface index
     // Safe: selectedInterface is always >= -1, so selectedInterface + 1 is always >= 0
     const size_t comboIndex = (selectedInterface < 0) ? 0 : static_cast<size_t>(selectedInterface) + 1;
