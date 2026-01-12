@@ -5,9 +5,6 @@
 namespace App
 {
 
-/// Height of the custom title bar in pixels
-inline constexpr float TITLE_BAR_HEIGHT = 36.0F;
-
 /// Custom title bar layer - renders window chrome with icon, title, and controls
 /// This layer handles:
 /// - App icon display
@@ -32,11 +29,8 @@ class TitleBarLayer : public Core::Layer
     void onRender() override;
     void onSDLEvent(SDL_Event* event) override;
 
-    /// Get the title bar height (for content offset)
-    [[nodiscard]] static constexpr auto height() -> float
-    {
-        return TITLE_BAR_HEIGHT;
-    }
+    /// Get the title bar height (for content offset) - matches ImGui tab bar height
+    [[nodiscard]] static auto height() -> float;
 
     // Cached button bounds for hit testing (public for hit test callback)
     struct ButtonBounds

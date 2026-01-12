@@ -35,12 +35,6 @@ class ShellLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    /// Set Y offset for content (to account for custom title bar)
-    void setContentYOffset(float offset)
-    {
-        m_ContentYOffset = offset;
-    }
-
   private:
     void renderTabBar();
     void renderStatusBar() const;
@@ -58,9 +52,6 @@ class ShellLayer : public Core::Layer
     float m_FrameTimeAccumulator = 0.0F;
     int m_FrameCount = 0;
     float m_DisplayedFps = 0.0F;
-
-    // Content offset for custom title bar
-    float m_ContentYOffset = 0.0F;
 };
 
 } // namespace App

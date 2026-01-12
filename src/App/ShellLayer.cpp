@@ -5,6 +5,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
+#include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
@@ -149,12 +150,15 @@ void ShellLayer::onRender()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
+    // Get dynamic title bar height (matches tab bars)
+    const float titleBarHeight = TitleBarLayer::height();
+
     // Calculate status bar height
     const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
 
     // Create fullscreen window that covers the viewport minus title bar and status bar
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + m_ContentYOffset));
-    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight - m_ContentYOffset));
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + titleBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - statusBarHeight - titleBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |

@@ -16,8 +16,25 @@
 
 #include <stb_image.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace App
 {
+
+// Height matches the tab bar row height in ShellLayer
+// Tab bar uses FramePadding(16, 10) + TOP_EDGE_PADDING(4) = GetFrameHeight() + 24px
+auto TitleBarLayer::height() -> float
+{
+    // Match ShellLayer tab bar: base frame height + vertical padding (10*2) + top edge padding (4)
+    constexpr float TAB_BAR_VERTICAL_PADDING = 10.0F * 2.0F; // FramePadding.y * 2
+    constexpr float TAB_BAR_TOP_PADDING = 4.0F;              // TOP_EDGE_PADDING
+    return ImGui::GetFrameHeight() + TAB_BAR_VERTICAL_PADDING + TAB_BAR_TOP_PADDING;
+}
 
 namespace
 {
@@ -49,7 +66,7 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     const auto y = static_cast<float>(area->y);
 
     // Title bar height is in logical coordinates
-    const float titleBarHeight = TITLE_BAR_HEIGHT;
+    const float titleBarHeight = TitleBarLayer::height();
 
     // Get window size in LOGICAL coordinates for consistency
     int windowWidth = 0;
@@ -155,23 +172,24 @@ void TitleBarLayer::onAttach()
 
     constexpr float buttonWidth = 46.0F;
     const float rightX = static_cast<float>(windowWidth);
+    const float titleBarHeight = height();
 
     // Right to left: Close, Maximize, Minimize, (gap), Settings, Help
     float buttonX = rightX - buttonWidth;
-    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = TITLE_BAR_HEIGHT};
+    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     buttonX -= buttonWidth;
-    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = TITLE_BAR_HEIGHT};
+    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     buttonX -= buttonWidth;
-    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = TITLE_BAR_HEIGHT};
+    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     buttonX -= 16.0F; // Separator gap
     buttonX -= buttonWidth;
-    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = TITLE_BAR_HEIGHT};
+    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     buttonX -= buttonWidth;
-    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = TITLE_BAR_HEIGHT};
+    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     // Load icon texture
     auto exeDir = []
@@ -318,9 +336,10 @@ void TitleBarLayer::renderTitleBar()
     auto& window = Core::Application::get().getWindow();
     const auto [windowWidth, windowHeight] = window.getSize();
 
+    const float titleBarHeight = height();
     // Set up window for title bar - no padding, no scrolling, fixed position
     ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(windowWidth), TITLE_BAR_HEIGHT));
+    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(windowWidth), titleBarHeight));
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
@@ -333,8 +352,10 @@ void TitleBarLayer::renderTitleBar()
     ImGui::Begin("##TitleBar", nullptr, flags);
 
     // Icon (left side) - clickable for system menu
-    constexpr float ICON_SIZE = 24.0F;
-    const float iconY = (TITLE_BAR_HEIGHT - ICON_SIZE) * 0.5F;
+    // Size: title bar height minus 2px border on top and bottom
+    const float ICON_SIZE = titleBarHeight - 4.0F;
+    const float centerY = titleBarHeight * 0.5F;
+    const float iconY = centerY - (ICON_SIZE * 0.5F);
     constexpr float iconX = 8.0F;
 
     if (m_IconTexture != 0)
@@ -347,7 +368,33 @@ void TitleBarLayer::renderTitleBar()
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
         if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
         {
+#ifdef _WIN32
+            // Show native Windows system menu
+            auto* sdlWindow = Core::Application::get().getWindow().getHandle();
+            SDL_PropertiesID props = SDL_GetWindowProperties(sdlWindow);
+            auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+
+            if (hwnd != nullptr)
+            {
+                HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
+                if (systemMenu != nullptr)
+                {
+                    // Get cursor position for menu display
+                    POINT pt;
+                    GetCursorPos(&pt);
+
+                    // Track the menu command
+                    int cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+                    if (cmd != 0)
+                    {
+                        PostMessage(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
+                    }
+                }
+            }
+#else
+            // Use custom system menu on Linux
             m_ShowSystemMenu = true;
+#endif
         }
         ImGui::PopStyleColor(3);
 
@@ -362,17 +409,24 @@ void TitleBarLayer::renderTitleBar()
         m_IconBounds = {.minX = iconX, .maxX = iconX + ICON_SIZE, .minY = iconY, .maxY = iconY + ICON_SIZE};
     }
 
-    // Title text using Sixtyfour font
+    // Title text using Sixtyfour font - centered vertically
     ImGui::SameLine();
     ImGui::SetCursorPosX(8 + ICON_SIZE + 12);
-    ImGui::SetCursorPosY((TITLE_BAR_HEIGHT - ImGui::GetFontSize()) * 0.5F);
 
+    // Get the font to use and center the text vertically
     ImFont* titleFont = UI::Theme::get().titleFont();
     if (titleFont != nullptr)
     {
         ImGui::PushFont(titleFont);
     }
+
+    // Now get the font size after pushing (ImGui::GetFontSize() returns current font size)
+    const float fontSize = ImGui::GetFontSize();
+    const float titleY = centerY - (fontSize * 0.5F);
+    ImGui::SetCursorPosY(titleY);
+
     ImGui::TextColored(scheme.textPrimary, "TaskSmack");
+
     if (titleFont != nullptr)
     {
         ImGui::PopFont();
@@ -380,7 +434,7 @@ void TitleBarLayer::renderTitleBar()
 
     // Right side buttons
     constexpr float BUTTON_WIDTH = 46.0F;
-    constexpr float BUTTON_HEIGHT = TITLE_BAR_HEIGHT;
+    const float BUTTON_HEIGHT = titleBarHeight;
     const float rightX = static_cast<float>(windowWidth);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
@@ -480,7 +534,8 @@ void TitleBarLayer::renderSystemMenu()
     const bool isMaximized = window.isMaximized();
 
     // Set position for the popup (below the icon)
-    ImGui::SetNextWindowPos(ImVec2(8.0F, TITLE_BAR_HEIGHT), ImGuiCond_Appearing);
+    const float titleBarHeight = height();
+    ImGui::SetNextWindowPos(ImVec2(8.0F, titleBarHeight), ImGuiCond_Appearing);
 
     if (ImGui::BeginPopup("##SystemMenu"))
     {

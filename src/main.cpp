@@ -168,16 +168,13 @@ auto runApp() -> int
     app.pushLayer<App::TitleBarLayer>();
 
     // Push shell layer (docking workspace with panels)
-    auto& shell = app.pushLayer<App::ShellLayer>();
+    app.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
     app.pushLayer<App::AboutLayer>();
 
     // Settings dialog layer (modal overlay)
     app.pushLayer<App::SettingsLayer>();
-
-    // Tell shell layer the title bar height for content offset
-    shell.setContentYOffset(App::TITLE_BAR_HEIGHT);
 
     // Run the application
     app.run();
