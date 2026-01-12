@@ -236,14 +236,6 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         // Check keyboard state for the key that wasn't just pressed
         const bool* keyboardState = SDL_GetKeyboardState(nullptr);
         const bool spaceHeld = keyboardState != nullptr && keyboardState[SDL_SCANCODE_SPACE];
-        const bool altHeld = keyboardState != nullptr && (keyboardState[SDL_SCANCODE_LALT] || keyboardState[SDL_SCANCODE_RALT]);
-
-        // Debug logging
-        spdlog::debug("Key pressed: key={}, mod={:#x}, spaceHeld={}, altHeld={}",
-                      static_cast<int>(keyEvent.key),
-                      static_cast<unsigned>(keyEvent.mod),
-                      spaceHeld,
-                      altHeld);
 
         const bool ctrlPressed = (keyEvent.mod & (SDL_KMOD_LCTRL | SDL_KMOD_RCTRL)) != 0;
 

@@ -58,15 +58,18 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     SendMessage(hwnd,
                 WM_SETICON,
                 iconType,
-                reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+                reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
 }
 
 void setWindowIconFromResource(SDL_Window* window)
 {
     // Get the native Win32 handle from SDL
-    // SDL_GetPointerProperty returns void* but we know SDL sets SDL_PROP_WINDOW_WIN32_HWND_POINTER
-    // to point to the actual HWND value. The cast is safe because SDL guarantees this contract.
-    HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    // SDL_GetPointerProperty returns the HWND directly as a void* pointer (not a pointer to HWND)
+    // We use reinterpret_cast to convert the void* directly to HWND
+    // NOLINT: This is a void*-to-HWND conversion required by SDL's API contract
+    HWND hwnd = reinterpret_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                                              SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                                                              nullptr)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     if (hwnd == nullptr)
     {
         spdlog::warn("Failed to get Win32 window handle for icon");
