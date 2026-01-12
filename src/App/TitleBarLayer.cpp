@@ -210,6 +210,8 @@ void TitleBarLayer::onAttach()
                 spdlog::info("Loaded title bar icon: {}x{}", m_IconWidth, m_IconHeight);
             }
 
+            // Unbind texture to avoid dangling OpenGL state
+            glBindTexture(GL_TEXTURE_2D, 0);
             stbi_image_free(data);
         }
     }

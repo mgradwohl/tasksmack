@@ -308,9 +308,13 @@ void Window::maximize()
     // usable display bounds (excluding taskbar/dock).
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
-        // Save current position and size for restore
-        SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
-        SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
+        // Only save restore dimensions if not already maximized
+        // This prevents saving maximized dimensions as the restore target
+        if (!m_IsMaximizedBorderless)
+        {
+            SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
+            SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
+        }
 
         const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
         if (displayID != 0)
