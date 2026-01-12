@@ -173,6 +173,8 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     if (version == 0)
     {
         spdlog::critical("Failed to initialize GLAD");
+        SDL_GL_DestroyContext(m_GLContext);
+        SDL_DestroyWindow(m_Handle);
         throw std::runtime_error("Failed to initialize GLAD");
     }
 
