@@ -317,7 +317,7 @@ void TitleBarLayer::renderTitleBar()
 
         // Draw icon over the invisible button
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
-        ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(m_IconTexture)), ImVec2(ICON_SIZE, ICON_SIZE));
+        ImGui::Image(reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(m_IconTexture)), ImVec2(ICON_SIZE, ICON_SIZE)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 
         // Track icon bounds for right-click detection
         m_IconBounds = {.minX = iconX, .maxX = iconX + ICON_SIZE, .minY = iconY, .maxY = iconY + ICON_SIZE};
