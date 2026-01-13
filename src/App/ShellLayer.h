@@ -49,6 +49,10 @@ class ShellLayer : public Core::Layer
 
     // Frame timing
     float m_FrameTime = 0.0F;
+
+    // GPU debug logging throttling
+    std::int32_t m_LastGpuLogPid = -1;
+    bool m_LastGpuLogHasData = false;
     float m_FrameTimeAccumulator = 0.0F;
     int m_FrameCount = 0;
     float m_DisplayedFps = 0.0F;

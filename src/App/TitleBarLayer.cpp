@@ -443,11 +443,11 @@ void TitleBarLayer::renderTitleBar()
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 
-    // Close button
+    // Close button (red hover/active colors for common UI pattern)
     float buttonX = rightX - BUTTON_WIDTH;
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
     if (ImGui::Button(ICON_FA_XMARK "##Close", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
     {
         window.requestClose();

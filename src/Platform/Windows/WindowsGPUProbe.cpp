@@ -266,9 +266,10 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
             break;
         }
     }
+    // Skip PDH if all GPUs already have NVML utilization data
     if (!dxgiCounters.empty() && allHaveUtilization)
     {
-        return; // All GPUs have utilization data already
+        return;
     }
 
     // Read per-process GPU data from PDH
@@ -306,6 +307,10 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
                 // utilizations across ALL GPUs and assign that total to EACH GPU without NVML data.
                 // Ideally we'd sum per-GPU using the LUID info from PDH, but that requires more
                 // complex matching logic. For single-GPU or NVML-only systems, this works correctly.
+                //
+                // WARNING: This limitation means multi-GPU systems without NVML may show inflated
+                // per-GPU utilization percentages. Consider this when displaying in the UI or add
+                // tooltips to inform users that per-GPU accuracy requires NVML on multi-GPU systems.
                 dxgiCounter.utilizationPercent = totalUtilization;
                 spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (summed from {} processes)",
                               dxgiCounter.gpuId,

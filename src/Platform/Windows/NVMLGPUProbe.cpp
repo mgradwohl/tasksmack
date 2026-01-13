@@ -72,7 +72,14 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC(DeviceGetMaxClockInfo)
     LOAD_NVML_FUNC(DeviceGetUtilizationRates)
     LOAD_NVML_FUNC(DeviceGetPcieThroughput)
-    LOAD_NVML_FUNC(SystemGetDriverVersion)
+    // Note: SystemGetDriverVersion (not DeviceGet*) - system-wide, not per-device
+    m_NVML.SystemGetDriverVersion = reinterpret_cast<decltype(m_NVML.SystemGetDriverVersion)>(
+        GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlSystemGetDriverVersion"));
+    if (m_NVML.SystemGetDriverVersion == nullptr)
+    {
+        spdlog::warn("NVMLGPUProbe: Failed to load nvmlSystemGetDriverVersion");
+        return false;
+    }
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)
     LOAD_NVML_FUNC(DeviceGetFanSpeed)
 
@@ -451,6 +458,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     const std::uint64_t memBytes = hasValidMemory ? proc.usedGpuMemory : 0;
 
                     // Check if we already have this process from compute list
+                    // Note: std::cmp_equal (C++20) handles signedness differences safely
                     auto it = std::ranges::find_if(allCounters,
                                                    [&proc, &gpuId](const ProcessGPUCounters& c)
                                                    { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });

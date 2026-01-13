@@ -8,7 +8,9 @@
 /// - Unique key generation for PID reuse handling
 /// - Thread-safe operations
 
+#include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/ProcessTypes.h"
 
@@ -1445,9 +1447,6 @@ TEST(ProcessModelTest, PeakRssResetForNewProcess)
 // =============================================================================
 // GPU Data Merging Tests
 // =============================================================================
-
-#include "Domain/GPUModel.h"
-#include "Mocks/MockGPUProbe.h"
 
 using TestMocks::MockGPUProbe;
 

@@ -209,6 +209,11 @@ struct PDHGPUProbe::Impl
     // ProcessModel discovers all processes via OS APIs, while PDH discovers specifically which
     // processes are actively using GPU resources via Performance Counters.
     //
+    // NOTE: GPU discovery has a ~5-second detection delay. A process may appear in the
+    // process list before its GPU usage is detected. This is because PDH instance enumeration
+    // runs on a 5-second interval to balance freshness vs. CPU overhead. Users should be
+    // aware that GPU metrics lag behind process discovery.
+    //
     // Trade-off: Shorter intervals = faster detection of new GPU-using processes but more
     // CPU overhead from PdhEnumObjectItems calls. Default 5s is a reasonable balance.
     // Configurable via sampling.pdh_instance_refresh_seconds in user config.

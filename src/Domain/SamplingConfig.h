@@ -7,34 +7,19 @@ namespace Domain::Sampling
 {
 
 // =============================================================================
-// CACHING ARCHITECTURE OVERVIEW
+// SAMPLING / CACHING CONSTANTS (SUMMARY)
 // =============================================================================
 //
-// TaskSmack uses a layered caching strategy to balance data freshness against
-// CPU/IO cost. There are three categories of timing constants:
+// This header centralizes sampling guardrails used across Domain and UI:
+//   1) User-configurable refresh interval (ms)
+//   2) Platform-level optimization cache TTLs
+//   3) Instance-enumeration intervals/TTLs (e.g., GPU, socket stats)
 //
-// 1. USER-CONFIGURABLE REFRESH INTERVAL (refreshIntervalMs)
-//    - Controls how often Domain models poll Platform probes for new data
-//    - Set by user in config.toml [sampling] section
-//    - All panels and models honor this single interval for consistent cadence
-//    - Default: 1000ms, Range: 100-5000ms
+// Detailed rationale and architecture notes live in the docs
+// (see tasksmack.md and related sampling documentation).
+// The comments below are intentionally brief to keep this header lightweight.
 //
-// 2. PLATFORM-LEVEL OPTIMIZATION CACHES (internal, not user-facing)
-//    - Prevent redundant expensive operations WITHIN a single refresh cycle
-//    - Examples:
-//      a) Link speed cache (60s TTL): Network interface link speed rarely changes;
-//         no need to query sysfs every refresh
-//      b) Socket stats cache (configurable): Netlink kernel queries are expensive;
-//         cache results if multiple processes query within the same refresh
-//    - These caches operate independently of the user's refresh interval
-//
-// 3. INSTANCE ENUMERATION CACHES (configurable via TOML)
-//    - Control how often we discover NEW entities (not refresh existing ones)
-//    - Examples:
-//      a) PDH GPU instance refresh: Discovers which processes use GPU
-//      b) Socket stats cache TTL: Controls Netlink query frequency
-//    - Separate from main refresh because discovery is often more expensive
-//      than updating known entities
+// =============================================================================
 //
 // IMPORTANT: Panels drive data polling via their onUpdate() methods using the
 // user's refresh interval. Some panels (e.g., ProcessesPanel, SystemMetricsPanel)

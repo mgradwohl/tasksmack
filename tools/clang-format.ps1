@@ -6,14 +6,20 @@
     Uses .clang-format configuration from project root.
 .PARAMETER ShowDetails
     Show per-file progress
+.PARAMETER ChangedOnly
+    Only format files that have been modified according to git
 .EXAMPLE
     .\clang-format.ps1
 .EXAMPLE
     .\clang-format.ps1 -ShowDetails
+.EXAMPLE
+    .\clang-format.ps1 -ChangedOnly
 #>
 [CmdletBinding()]
 param(
-    [switch]$ShowDetails
+    [switch]$ShowDetails,
+
+    [switch]$ChangedOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,9 +43,33 @@ if (-not $ClangFormat) {
     exit 1
 }
 
-# Find all source files
-$files = Get-ChildItem -Path (Join-Path $ProjectRoot "src"), (Join-Path $ProjectRoot "tests") -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
-         Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
+# Find source files
+if ($ChangedOnly) {
+    # Get changed files from git
+    if ($ShowDetails) {
+        Write-Host "Getting changed files from git..."
+    }
+    $gitOutput = & git diff --name-only HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to get changed files from git. Falling back to all files."
+        $ChangedOnly = $false
+    } else {
+        $files = $gitOutput |
+            Where-Object { $_ -match '\.(cpp|h)$' } |
+            ForEach-Object { Get-Item (Join-Path $ProjectRoot $_) -ErrorAction SilentlyContinue } |
+            Where-Object { $null -ne $_ }
+        if ($files.Count -eq 0) {
+            Write-Host "No changed C++ files found."
+            exit 0
+        }
+    }
+}
+
+if (-not $ChangedOnly) {
+    # Find all source files
+    $files = Get-ChildItem -Path (Join-Path $ProjectRoot "src"), (Join-Path $ProjectRoot "tests") -Recurse -Include "*.cpp", "*.h" -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch "\\build\\" -and $_.FullName -notmatch "\\.git\\" }
+}
 
 $fileCount = ($files | Measure-Object).Count
 $checkedCount = 0

@@ -289,6 +289,7 @@ void ProcessDetailsPanel::renderContent()
         if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
         {
             const auto& proc = m_CachedSnapshot;
+            // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
             if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
             {
                 ImGui::TextUnformatted("No GPU usage detected for this process");

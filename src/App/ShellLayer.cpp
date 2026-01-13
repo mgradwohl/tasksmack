@@ -134,15 +134,9 @@ void ShellLayer::onUpdate(float deltaTime)
 
                 // Debug: Log when GPU data becomes available for the selected PID.
                 // This avoids spamming logs every frame while a GPU-using process is selected.
-                // Using atomic for thread safety (though this is primarily called from UI thread)
                 const bool hasGpuData = (!snap.gpuDevices.empty() || (snap.gpuMemoryBytes > 0));
-                static std::atomic<std::int32_t> s_lastGpuLogPid{-1};
-                static std::atomic<bool> s_lastGpuLogHasData{false};
 
-                const auto prevPid = s_lastGpuLogPid.load(std::memory_order_relaxed);
-                const auto prevHasData = s_lastGpuLogHasData.load(std::memory_order_relaxed);
-
-                if ((selectedPid != prevPid) || !prevHasData)
+                if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
                 {
                     if (hasGpuData)
                     {
@@ -152,8 +146,8 @@ void ShellLayer::onUpdate(float deltaTime)
                                       snap.gpuMemoryBytes);
                     }
 
-                    s_lastGpuLogPid.store(selectedPid, std::memory_order_relaxed);
-                    s_lastGpuLogHasData.store(hasGpuData, std::memory_order_relaxed);
+                    m_LastGpuLogPid = selectedPid;
+                    m_LastGpuLogHasData = hasGpuData;
                 }
                 break;
             }
