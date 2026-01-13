@@ -366,31 +366,27 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
-        // GPU tab - show if GPUs are available
+        // GPU tab - always available; content handles missing GPUs gracefully
         if (m_GPUModel)
         {
-            const auto gpuInfos = m_GPUModel->gpuInfo();
-            if (!gpuInfos.empty())
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
             {
-                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
-                {
-                    // Build context for GpuSection render function
-                    GpuSection::RenderContext gpuCtx{
-                        .gpuModel = m_GPUModel.get(),
-                        .maxHistorySeconds = m_MaxHistorySeconds,
-                        .historyScrollSeconds = m_HistoryScrollSeconds,
-                        .lastDeltaSeconds = m_LastDeltaSeconds,
-                        .refreshInterval = m_RefreshInterval,
-                        .smoothedGPUs = &m_SmoothedGPUs,
-                    };
-                    GpuSection::renderGpuSection(gpuCtx);
-                    ImGui::EndTabItem();
-                }
+                // Build context for GpuSection render function
+                GpuSection::RenderContext gpuCtx{
+                    .gpuModel = m_GPUModel.get(),
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .historyScrollSeconds = m_HistoryScrollSeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedGPUs = &m_SmoothedGPUs,
+                };
+                GpuSection::renderGpuSection(gpuCtx);
+                ImGui::EndTabItem();
             }
         }
 
-        // Network and I/O tab - always available; content handles capability gaps gracefully
-        if (m_Model != nullptr)
+        // Network and I/O tab - show if network counters are available
+        if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
         {
             if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
             {
