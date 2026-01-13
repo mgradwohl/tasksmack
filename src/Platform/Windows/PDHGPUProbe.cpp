@@ -222,6 +222,7 @@ struct PDHGPUProbe::Impl
 
     // Cache of last valid results - returned during warm-up to avoid data gaps
     std::vector<ProcessGPUCounters> lastValidResults;
+    std::chrono::steady_clock::time_point lastValidTimestamp{};
 
     // Cache of counter handles per instance
     struct CounterInfo
@@ -578,6 +579,13 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     if (m_Impl->counters.empty())
     {
         // Return cached results if available
+        if (m_Impl->lastValidTimestamp.time_since_epoch().count() > 0)
+        {
+            const auto ageMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_Impl->lastValidTimestamp)
+                    .count();
+            spdlog::debug("PDHGPUProbe: Returning cached results (stale {} ms)", ageMs);
+        }
         return m_Impl->lastValidResults;
     }
 
@@ -587,6 +595,13 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     {
         spdlog::debug("PDHGPUProbe: PdhCollectQueryData failed: 0x{:x}", static_cast<unsigned>(status));
         // Return cached results on failure
+        if (m_Impl->lastValidTimestamp.time_since_epoch().count() > 0)
+        {
+            const auto ageMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_Impl->lastValidTimestamp)
+                    .count();
+            spdlog::debug("PDHGPUProbe: Returning cached results (stale {} ms)", ageMs);
+        }
         return m_Impl->lastValidResults;
     }
 
@@ -597,6 +612,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         m_Impl->warmedUp = true;
         spdlog::debug("PDHGPUProbe: Warm-up sample collected, returning cached results");
         // Return cached results during warm-up to avoid UI gaps
+        m_Impl->lastValidTimestamp = std::chrono::steady_clock::now();
         return m_Impl->lastValidResults;
     }
 
@@ -702,8 +718,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     if (!result.empty())
     {
         spdlog::debug("PDHGPUProbe: Got {} per-process GPU entries (util + memory)", result.size());
-        // Cache valid results for use during warm-up periods
+        // Cache valid results for use during warm-up periods and for staleness checks
         m_Impl->lastValidResults = result;
+        m_Impl->lastValidTimestamp = std::chrono::steady_clock::now();
     }
 
     return result;

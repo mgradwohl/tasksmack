@@ -49,7 +49,7 @@ namespace
 /// PDH instance names use this format for GPU identification
 [[nodiscard]] std::string luidToPdhFormat(const LUID& luid)
 {
-    return std::format("GPU_0x{:08X}_0x{:08X}", static_cast<unsigned int>(luid.HighPart), static_cast<unsigned int>(luid.LowPart));
+    return std::format("GPU_0x{:08X}_0x{:08X}", static_cast<std::uint32_t>(luid.HighPart), static_cast<std::uint32_t>(luid.LowPart));
 }
 
 } // namespace

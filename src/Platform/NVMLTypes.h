@@ -19,7 +19,9 @@ using nvmlDevice_t = void*;
 
 // NVML return codes
 // These enums must match NVML's ABI exactly (C-style enums, unsigned int).
-// Using enum class would break dynamic loading compatibility.
+// Using enum class would break dynamic loading compatibility. The
+// performance-enum-size suppression is intentional to keep the ABI-aligned
+// underlying size that NVML expects.
 // NOLINTBEGIN(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
 enum nvmlReturn_t : unsigned int
 {
