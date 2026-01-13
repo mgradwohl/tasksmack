@@ -193,7 +193,8 @@ void UserConfig::load()
 
         if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
         {
-            const int64_t bytes = (*val) * 1024 * 1024;
+            // Use explicit cast and LL suffix to prevent overflow on large values
+            const int64_t bytes = static_cast<int64_t>(*val) * 1024LL * 1024LL;
             m_Settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
         }
 
@@ -223,6 +224,16 @@ void UserConfig::load()
         if (auto val = config["ui"]["progress_color_high_threshold"].value<double>())
         {
             m_Settings.progressColorHighThreshold = Domain::Sampling::clampProgressColorHighThreshold(*val);
+        }
+
+        // Validate that low <= high threshold
+        if (m_Settings.progressColorLowThreshold > m_Settings.progressColorHighThreshold)
+        {
+            spdlog::warn("User config: progress_color_low_threshold ({}) > progress_color_high_threshold ({}); "
+                         "swapping to maintain low <= high.",
+                         m_Settings.progressColorLowThreshold,
+                         m_Settings.progressColorHighThreshold);
+            std::swap(m_Settings.progressColorLowThreshold, m_Settings.progressColorHighThreshold);
         }
 
         // Theme

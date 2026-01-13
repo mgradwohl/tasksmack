@@ -1,6 +1,5 @@
 #include "WindowsGPUProbe.h"
 
-#include "D3DKMTGPUProbe.h"
 #include "DXGIGPUProbe.h"
 #include "NVMLGPUProbe.h"
 #include "PDHGPUProbe.h"
@@ -82,17 +81,12 @@ bool gpuNamesMatch(const std::string& name1, const std::string& name2)
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
-      m_D3DKMTProbe(std::make_unique<D3DKMTGPUProbe>()),
       m_PDHProbe(std::make_unique<PDHGPUProbe>())
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
     {
         probeSummary += " + NVML";
-    }
-    if (m_D3DKMTProbe->capabilities().hasPerProcessMetrics)
-    {
-        probeSummary += " + D3DKMT";
     }
     if (m_PDHProbe->isAvailable())
     {
@@ -272,7 +266,7 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
             break;
         }
     }
-    if (allHaveUtilization && !dxgiCounters.empty())
+    if (!dxgiCounters.empty() && allHaveUtilization)
     {
         return; // All GPUs have utilization data already
     }
@@ -284,9 +278,9 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         return;
     }
 
-    // Simple approach: Calculate average GPU utilization across all processes
+    // Sum GPU utilization across all processes to get system-wide total
     // PDH returns per-process GPU utilization which is additive across engines
-    // System-wide utilization = average of all per-process utilizations
+    // System-wide utilization = sum of all per-process utilizations (capped at 100%)
     double totalUtilization = 0.0;
     int processCount = 0;
     for (const auto& procCounter : processCounters)
@@ -300,21 +294,18 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
 
     if (processCount > 0)
     {
-        // Calculate average utilization
-        double avgUtilization = totalUtilization / static_cast<double>(processCount);
-
-        // Clamp to 0-100 range (shouldn't exceed 100, but just in case of measurement artifacts)
-        avgUtilization = std::min(100.0, avgUtilization);
+        // Clamp to 0-100 range (utilization is percentage of single GPU capacity)
+        totalUtilization = std::min(100.0, totalUtilization);
 
         // Assign to all GPUs that don't have utilization data
         for (auto& dxgiCounter : dxgiCounters)
         {
             if (dxgiCounter.utilizationPercent == 0.0)
             {
-                dxgiCounter.utilizationPercent = avgUtilization;
-                spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (average from {} processes)",
+                dxgiCounter.utilizationPercent = totalUtilization;
+                spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (summed from {} processes)",
                               dxgiCounter.gpuId,
-                              avgUtilization,
+                              totalUtilization,
                               processCount);
             }
         }

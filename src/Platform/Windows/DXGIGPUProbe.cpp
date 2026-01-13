@@ -298,7 +298,8 @@ std::vector<GPUCounters> DXGIGPUProbe::readGPUCounters()
 std::vector<ProcessGPUCounters> DXGIGPUProbe::readProcessGPUCounters()
 {
     // DXGI does not provide per-process GPU metrics
-    // This will be implemented in D3DKMTGPUProbe (Phase 3)
+    // Per-process GPU utilization requires PDH Performance Counters (GPU Engine)
+    // or vendor-specific APIs (NVML for NVIDIA)
     return {};
 }
 

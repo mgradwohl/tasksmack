@@ -168,7 +168,7 @@ Rules:
 - Processes and CPU: `NtQuerySystemInformation` (SystemProcessInformation).
 - Disk and network: begin with simpler APIs, plan for ETW kernel providers for fidelity.
 - Services: SCM APIs and registry queries.
-- GPU: DXGI for enumeration, NVML for NVIDIA GPU metrics; per-process GPU memory and utilization via NVML's `DeviceGetComputeRunningProcesses`/`DeviceGetGraphicsRunningProcesses` (NVIDIA) with D3DKMT fallback for non-NVIDIA GPUs.
+- GPU: DXGI for enumeration, NVML for NVIDIA GPU metrics; per-process GPU memory and utilization via NVML's `DeviceGetComputeRunningProcesses`/`DeviceGetGraphicsRunningProcesses` (NVIDIA) or PDH Performance Counters (all vendors).
 
 ### Linux
 - Processes and CPU: `/proc/stat`, `/proc/[pid]/stat`, `/proc/[pid]/io`, `/proc/meminfo`.

@@ -1,5 +1,7 @@
 #include "Platform/Windows/PDHGPUProbe.h"
 
+#include "Platform/Windows/WinString.h"
+
 #include <spdlog/spdlog.h>
 
 // Windows headers
@@ -47,6 +49,30 @@ const std::vector<EngineTypeInfo> KNOWN_ENGINE_TYPES = {
     EngineTypeInfo{.suffix = "Graphics_0", .displayName = "3D"},
     EngineTypeInfo{.suffix = "Graphics_1", .displayName = "3D"},
 };
+
+/// @brief Convert wstring to UTF-8 string using WinString helper
+/// Note: PDH counter instance names are typically ASCII-safe (PIDs, engine types),
+/// but proper UTF-8 conversion is used for robustness and consistency.
+/// If conversion fails, falls back to truncation with data loss warning.
+std::string wideToUtf8Fallback(const std::wstring& wide)
+{
+    try
+    {
+        return Platform::WinString::wideToUtf8(wide);
+    }
+    catch (const std::exception& e)
+    {
+        // Fallback: truncate non-ASCII (data loss but prevents crash)
+        spdlog::warn("PDHGPUProbe: Failed to convert wide string to UTF-8, truncating non-ASCII: {}", e.what());
+        std::string result;
+        result.reserve(wide.size());
+        for (const wchar_t wc : wide)
+        {
+            result.push_back(static_cast<char>(wc));
+        }
+        return result;
+    }
+}
 
 /// @brief Parse a GPU Engine or GPU Process Memory instance name to extract PID and engine type
 /// GPU Engine format: pid_1234_luid_0x00000000_0x0000D3A0_phys_0_eng_0_engtype_3D
@@ -352,12 +378,7 @@ struct PDHGPUProbe::Impl
         // Add a counter for each instance
         for (const auto& instance : instances)
         {
-            std::string narrowInstance;
-            narrowInstance.reserve(instance.size());
-            for (const wchar_t wc : instance)
-            {
-                narrowInstance.push_back(static_cast<char>(wc));
-            }
+            const std::string narrowInstance = wideToUtf8Fallback(instance);
 
             auto parsed = parseInstanceName(narrowInstance);
             if (!parsed.valid || parsed.pid <= 0)
@@ -438,12 +459,7 @@ struct PDHGPUProbe::Impl
         // Counter names: "Dedicated Usage", "Shared Usage", "Total Committed"
         for (const auto& instance : instances)
         {
-            std::string narrowInstance;
-            narrowInstance.reserve(instance.size());
-            for (const wchar_t wc : instance)
-            {
-                narrowInstance.push_back(static_cast<char>(wc));
-            }
+            const std::string narrowInstance = wideToUtf8Fallback(instance);
 
             auto parsed = parseInstanceName(narrowInstance);
             if (!parsed.valid || parsed.pid <= 0)
@@ -630,6 +646,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         if (ci.isMemoryCounter)
         {
             // Memory counter - aggregate by type
+            // Verify we're using the correct union member for PDH_FMT_LARGE format
             if (ci.engineType == "DedicatedMemory")
             {
                 // NOLINT(cppcoreguidelines-pro-type-union-access)
@@ -643,7 +660,7 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         }
         else
         {
-            // Utilization counter
+            // Utilization counter - verify we're using the correct union member for PDH_FMT_DOUBLE format
             // NOLINT(cppcoreguidelines-pro-type-union-access)
             agg.totalUtilization += value.doubleValue;
 

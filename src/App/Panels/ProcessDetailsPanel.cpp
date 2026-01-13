@@ -288,7 +288,15 @@ void ProcessDetailsPanel::renderContent()
         // 2. GPU (always show, with message if data unavailable)
         if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
         {
-            renderGpuUsage(m_CachedSnapshot);
+            const auto& proc = m_CachedSnapshot;
+            if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+            {
+                ImGui::TextUnformatted("No GPU usage detected for this process");
+            }
+            else
+            {
+                renderGpuUsage(m_CachedSnapshot);
+            }
             ImGui::EndTabItem();
         }
 
@@ -1224,13 +1232,19 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
     // Throttle debug logging to avoid per-frame spam
     // Only log when GPU data changes or on first render of a new process
-    if (m_CachedSnapshot.pid != proc.pid || m_CachedSnapshot.gpuMemoryBytes != proc.gpuMemoryBytes)
+    static std::int32_t lastLoggedPid = -1;
+    static std::uint64_t lastLoggedGpuMemoryBytes = std::numeric_limits<std::uint64_t>::max();
+
+    if (proc.pid != lastLoggedPid || proc.gpuMemoryBytes != lastLoggedGpuMemoryBytes)
     {
         spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'",
                       proc.pid,
                       proc.gpuUtilPercent,
                       proc.gpuMemoryBytes,
                       proc.gpuDevices);
+
+        lastLoggedPid = proc.pid;
+        lastLoggedGpuMemoryBytes = proc.gpuMemoryBytes;
     }
 
     // Show GPU info

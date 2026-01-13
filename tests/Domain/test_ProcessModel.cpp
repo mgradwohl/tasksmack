@@ -1572,3 +1572,81 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     // gpuDevices should contain the GPU name
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
 }
+// Edge case: GPU counters with empty list (no GPUs found)
+TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    // Don't add any GPU data - empty counters
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Should have zero GPU data
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 0);
+    EXPECT_EQ(snaps[0].gpuUtilPercent, 0.0);
+    EXPECT_TRUE(snaps[0].gpuDevices.empty());
+}
+
+// Edge case: GPU name lookup fails (ID doesn't match any known GPU)
+TEST(ProcessModelTest, MergeGPUDataWithUnknownGPUId)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "Known GPU", "TestVendor");
+    // Add process GPU data with mismatched GPU ID
+    gpuProbe->withProcessGPU(100, "GPU99", 512ULL * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Should have GPU memory, and gpuDevices falls back to GPU ID when name lookup fails
+    EXPECT_GT(snaps[0].gpuMemoryBytes, 0);
+    EXPECT_EQ(snaps[0].gpuDevices, "GPU99"); // Falls back to GPU ID when name not found
+}
+
+// Edge case: Multiple GPU entries with same PID but different GPU IDs (multi-GPU aggregation)
+TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withGPU("GPU0", "GPU 0", "Vendor").withGPU("GPU1", "GPU 1", "Vendor");
+    // Same PID using two different GPUs
+    gpuProbe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    gpuProbe->withProcessGPU(100, "GPU1", 256ULL * 1024 * 1024);
+
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+
+    gpuModel->refresh();
+    processModel.refresh();
+
+    auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    // Should aggregate memory from both GPUs
+    EXPECT_EQ(snaps[0].gpuMemoryBytes, 768ULL * 1024 * 1024); // 512 + 256 MB
+    // Should include both GPU names
+    EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}

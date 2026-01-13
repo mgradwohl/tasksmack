@@ -18,7 +18,9 @@
 #include <utility>
 #include <vector>
 
+// NOLINTBEGIN(misc-include-cleaner) - toml::parse_error and toml::parse_file provided by toml++/toml.hpp
 #include <toml++/toml.hpp>
+// NOLINTEND(misc-include-cleaner)
 
 namespace UI
 {

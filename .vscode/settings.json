@@ -36,11 +36,12 @@
         ]
     },
     // Ensure Linux tasks also use Copilot bash rcfile
+    // Note: Update ~/.bashrc.copilot path for your system
     "terminal.integrated.automationProfile.linux": {
         "path": "/bin/bash",
         "args": [
             "--rcfile",
-            "/home/mattg/.bashrc.copilot"
+            "${userHome}/.bashrc.copilot"
         ]
     },
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json

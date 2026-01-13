@@ -401,8 +401,9 @@ void ProcessModel::mergeGPUData()
         if (it != pidToGPU.end())
         {
             ++mergedCount;
-            const auto& agg = it->second;
-            snapshot.gpuUtilPercent = agg.totalUtilPercent;
+            const auto& agg = it->second; // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs)
+            // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute            snapshot.gpuUtilPercent =
+            // agg.totalUtilPercent;
             snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
             snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
             snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
