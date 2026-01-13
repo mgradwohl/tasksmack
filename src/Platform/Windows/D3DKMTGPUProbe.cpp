@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <utility>
 
 // clang-format off
@@ -315,7 +316,8 @@ std::vector<ProcessGPUCounters> D3DKMTGPUProbe::readProcessGPUCounters()
             if (status != STATUS_SUCCESS)
             {
                 // Log status for first few failures to diagnose
-                static int failCount = 0;
+                // Using atomic to ensure thread-safe counter even if called from multiple threads
+                static std::atomic<int> failCount = 0;
                 if (failCount++ < 5)
                 {
                     spdlog::debug("D3DKMTGPUProbe: QueryStatistics failed for PID {} status=0x{:x}", pid, static_cast<unsigned>(status));

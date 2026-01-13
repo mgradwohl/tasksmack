@@ -1222,8 +1222,16 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 {
     auto& theme = UI::Theme::get();
 
-    spdlog::debug(
-        "renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'", proc.pid, proc.gpuUtilPercent, proc.gpuMemoryBytes, proc.gpuDevices);
+    // Throttle debug logging to avoid per-frame spam
+    // Only log when GPU data changes or on first render of a new process
+    if (m_CachedSnapshot.pid != proc.pid || m_CachedSnapshot.gpuMemoryBytes != proc.gpuMemoryBytes)
+    {
+        spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'",
+                      proc.pid,
+                      proc.gpuUtilPercent,
+                      proc.gpuMemoryBytes,
+                      proc.gpuDevices);
+    }
 
     // Show GPU info
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");

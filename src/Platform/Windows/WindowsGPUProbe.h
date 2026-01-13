@@ -40,6 +40,7 @@ class WindowsGPUProbe : public IGPUProbe
 
   private:
     void mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
+    void mergePDHSystemWideUtilization(std::vector<GPUCounters>& dxgiCounters);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;

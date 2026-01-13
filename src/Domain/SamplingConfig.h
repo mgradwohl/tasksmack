@@ -36,10 +36,10 @@ namespace Domain::Sampling
 //    - Separate from main refresh because discovery is often more expensive
 //      than updating known entities
 //
-// IMPORTANT: The BackgroundSampler class exists but is NOT currently used in
-// production. All data polling is driven by panel onUpdate() using the user's
-// refresh interval. BackgroundSampler is retained for potential future use
-// (e.g., offloading sampling to a dedicated thread).
+// IMPORTANT: Panels drive data polling via their onUpdate() methods using the
+// user's refresh interval. Some panels (e.g., ProcessesPanel, SystemMetricsPanel)
+// use the BackgroundSampler class to offload sampling to a background thread,
+// while others poll directly on the UI thread depending on their needs.
 //
 // =============================================================================
 

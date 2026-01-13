@@ -131,13 +131,25 @@ void ShellLayer::onUpdate(float deltaTime)
             {
                 cachedSnapshot = snap;
                 selectedSnapshot = &cachedSnapshot;
-                // Debug: Log if GPU data is present
-                if (!snap.gpuDevices.empty() || snap.gpuMemoryBytes > 0)
+
+                // Debug: Log when GPU data becomes available for the selected PID.
+                // This avoids spamming logs every frame while a GPU-using process is selected.
+                const bool hasGpuData = (!snap.gpuDevices.empty() || (snap.gpuMemoryBytes > 0));
+                static std::int32_t s_lastGpuLogPid = -1;
+                static bool s_lastGpuLogHasData = false;
+
+                if ((selectedPid != s_lastGpuLogPid) || !s_lastGpuLogHasData)
                 {
-                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
-                                  selectedPid,
-                                  snap.gpuDevices,
-                                  snap.gpuMemoryBytes);
+                    if (hasGpuData)
+                    {
+                        spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
+                                      selectedPid,
+                                      snap.gpuDevices,
+                                      snap.gpuMemoryBytes);
+                    }
+
+                    s_lastGpuLogPid = selectedPid;
+                    s_lastGpuLogHasData = hasGpuData;
                 }
                 break;
             }

@@ -7,6 +7,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cctype>
 
 namespace Platform
@@ -184,6 +185,9 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         mergeNVMLEnhancements(counters);
     }
 
+    // For GPUs without NVML, merge PDH system-wide utilization data
+    mergePDHSystemWideUtilization(counters);
+
     return counters;
 }
 
@@ -245,6 +249,74 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         {
             dxgiCounter.memoryUsedBytes = nvmlCounter.memoryUsedBytes;
             dxgiCounter.memoryTotalBytes = nvmlCounter.memoryTotalBytes;
+        }
+    }
+}
+
+void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dxgiCounters)
+{
+    // Skip if no PDH or if all GPUs already have utilization data (from NVML)
+    if (!m_PDHProbe || !m_PDHProbe->isAvailable())
+    {
+        return;
+    }
+
+    // Check if we need PDH at all - if all GPUs have non-zero utilization, skip
+    // (they likely came from NVML or another source)
+    bool allHaveUtilization = true;
+    for (const auto& counter : dxgiCounters)
+    {
+        if (counter.utilizationPercent == 0.0)
+        {
+            allHaveUtilization = false;
+            break;
+        }
+    }
+    if (allHaveUtilization && !dxgiCounters.empty())
+    {
+        return; // All GPUs have utilization data already
+    }
+
+    // Read per-process GPU data from PDH
+    auto processCounters = m_PDHProbe->readProcessGPUCounters();
+    if (processCounters.empty())
+    {
+        return;
+    }
+
+    // Simple approach: Calculate average GPU utilization across all processes
+    // PDH returns per-process GPU utilization which is additive across engines
+    // System-wide utilization = average of all per-process utilizations
+    double totalUtilization = 0.0;
+    int processCount = 0;
+    for (const auto& procCounter : processCounters)
+    {
+        if (procCounter.gpuUtilPercent > 0.0)
+        {
+            totalUtilization += procCounter.gpuUtilPercent;
+            processCount += 1;
+        }
+    }
+
+    if (processCount > 0)
+    {
+        // Calculate average utilization
+        double avgUtilization = totalUtilization / static_cast<double>(processCount);
+
+        // Clamp to 0-100 range (shouldn't exceed 100, but just in case of measurement artifacts)
+        avgUtilization = std::min(100.0, avgUtilization);
+
+        // Assign to all GPUs that don't have utilization data
+        for (auto& dxgiCounter : dxgiCounters)
+        {
+            if (dxgiCounter.utilizationPercent == 0.0)
+            {
+                dxgiCounter.utilizationPercent = avgUtilization;
+                spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (average from {} processes)",
+                              dxgiCounter.gpuId,
+                              avgUtilization,
+                              processCount);
+            }
         }
     }
 }

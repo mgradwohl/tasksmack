@@ -1,5 +1,6 @@
 #include "ProcessModel.h"
 
+#include "GPUModel.h"
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
