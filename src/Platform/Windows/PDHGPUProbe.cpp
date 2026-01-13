@@ -589,7 +589,8 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         return m_Impl->lastValidResults;
     }
 
-    // Collect query data
+    // Collect query data BEFORE checking warm-up to avoid race with refreshCounters()
+    // This ensures we always have fresh data when warmedUp is checked
     PDH_STATUS status = m_Impl->pdhCollectQueryData(m_Impl->query);
     if (status != ERROR_SUCCESS)
     {

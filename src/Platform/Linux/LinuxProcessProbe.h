@@ -8,6 +8,7 @@
 #endif
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 
 namespace Platform

@@ -8,6 +8,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -193,8 +194,10 @@ void UserConfig::load()
 
         if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
         {
-            // Use explicit cast and LL suffix to prevent overflow on large values
-            const int64_t bytes = static_cast<int64_t>(*val) * 1024LL * 1024LL;
+            // Check for overflow before MB-to-bytes conversion
+            constexpr int64_t MAX_MB_BEFORE_OVERFLOW = std::numeric_limits<int64_t>::max() / (1024LL * 1024LL);
+            const int64_t mb = std::clamp(*val, 0LL, MAX_MB_BEFORE_OVERFLOW);
+            const int64_t bytes = mb * 1024LL * 1024LL;
             m_Settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
         }
 

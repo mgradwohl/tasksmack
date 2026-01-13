@@ -164,6 +164,9 @@ inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT = 80.0;
 inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MIN = 0.0;
 inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MAX = 100.0;
 
+static_assert(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT,
+              "PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT must be <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT");
+
 template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(REFRESH_INTERVAL_MIN_MS), static_cast<T>(REFRESH_INTERVAL_MAX_MS));
