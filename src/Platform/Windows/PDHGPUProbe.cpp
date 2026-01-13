@@ -683,7 +683,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 
         ProcessGPUCounters counter;
         counter.pid = key.pid;
-        // Map LUID to GPU ID format matching DXGI (GPU0, GPU1, etc.) - will be mapped later
+        // gpuLuid already contains format like "0x00000000_0x0000F78E" from instance name.
+        // Prepend "GPU_" to match DXGI's luidId format ("GPU_0x00000000_0x0000F78E").
+        // ProcessModel will match this against the gpuIdToName map (which includes both gpuId and luidId).
         counter.gpuId = "GPU_" + key.gpuLuid;
         counter.gpuUtilPercent = agg.totalUtilization;
         counter.gpuMemoryBytes = agg.dedicatedMemory + agg.sharedMemory;

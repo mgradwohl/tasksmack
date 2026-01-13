@@ -302,6 +302,10 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         {
             if (dxgiCounter.utilizationPercent == 0.0)
             {
+                // NOTE: This approach has a limitation in multi-GPU scenarios: we sum per-process
+                // utilizations across ALL GPUs and assign that total to EACH GPU without NVML data.
+                // Ideally we'd sum per-GPU using the LUID info from PDH, but that requires more
+                // complex matching logic. For single-GPU or NVML-only systems, this works correctly.
                 dxgiCounter.utilizationPercent = totalUtilization;
                 spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (summed from {} processes)",
                               dxgiCounter.gpuId,
