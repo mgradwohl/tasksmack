@@ -389,8 +389,8 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
-        // Network and I/O tab - show if network counters are available
-        if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
+        // Network and I/O tab - always available; content handles capability gaps gracefully
+        if (m_Model != nullptr)
         {
             if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
             {
