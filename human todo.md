@@ -7,7 +7,7 @@ Add documentation comments to clarify the caching architecture
 Make the Linux socket stats cache TTL configurable (like PDH instance refresh)
 
 Sweep the code for other constants that would be appropriate in the config
-Moce the actions tab on the process panel to be the last tab
+Move the actions tab on the process panel to be the last tab
 
 PS D:\source\tasksmack> cmake --build --preset win-debug
 ninja: warning: premature end of file; recovering
