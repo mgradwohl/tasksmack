@@ -69,3 +69,4 @@ imgui.ini
 cast-audit.md
 build.log
 build-logs/
+*.Zone.Identifier
