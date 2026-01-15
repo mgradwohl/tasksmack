@@ -436,10 +436,10 @@ void TitleBarLayer::renderTitleBar()
     const float rightX = static_cast<float>(windowWidth);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
-    // Use theme colors for button hover (except close which is red)
+    // Use transparent background for buttons; only show colors on hover/active states
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, scheme.button);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 

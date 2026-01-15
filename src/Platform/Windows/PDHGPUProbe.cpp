@@ -21,6 +21,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <ranges>
 #include <string>
 #include <unordered_map>
@@ -639,9 +640,10 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             // Hash the string and combine with PID hash using bit mixing
             constexpr std::size_t PRIME = 0x9e3779b9;
             std::size_t h1 = std::hash<std::int32_t>{}(k.pid);
-            std::size_t h2 = std::hash<std::string>{}(k.gpuLuid);
+            const std::size_t h2 = std::hash<std::string>{}(k.gpuLuid);
             // Mix h1 and h2 using seed-xor pattern for better distribution
-            return h1 ^ (h2 + PRIME + (h1 << 6) + (h1 >> 2));
+            h1 ^= h2 + PRIME + (h1 << 6) + (h1 >> 2);
+            return h1;
         }
     };
     struct AggData

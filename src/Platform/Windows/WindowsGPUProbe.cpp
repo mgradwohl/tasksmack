@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string>
 
 namespace Platform
 {
@@ -23,7 +24,7 @@ std::string normalizeGPUName(const std::string& name)
 
     // Convert to lowercase and remove extra whitespace
     bool lastWasSpace = true; // Skip leading spaces
-    for (char c : name)
+    for (const char c : name)
     {
         if (std::isspace(static_cast<unsigned char>(c)) != 0)
         {

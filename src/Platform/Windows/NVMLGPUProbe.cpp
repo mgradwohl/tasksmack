@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <format>
+#include <limits>
 #include <utility>
 
 // Import NVML types from shared header
@@ -460,8 +462,8 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                     // Check if we already have this process from compute list
                     // Note: std::cmp_equal (C++20) handles signedness differences safely
                     auto it = std::ranges::find_if(allCounters,
-                                                   [&proc, &gpuId](const ProcessGPUCounters& c)
-                                                   { return std::cmp_equal(c.pid, proc.pid) && c.gpuId == gpuId; });
+                                                   [procPid = proc.pid, &gpuId](const ProcessGPUCounters& c)
+                                                   { return std::cmp_equal(c.pid, procPid) && c.gpuId == gpuId; });
 
                     if (it != allCounters.end())
                     {

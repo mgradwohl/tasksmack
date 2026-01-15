@@ -165,9 +165,24 @@ inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MIN = 0.0;
 inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MAX = 100.0;
 
 // Note: If low == high threshold, the "medium" color range (yellow) disappears and utilization
-// is either low (green) or high (red). UserConfig::load() swaps them if low > high at runtime.
+// is either low (green) or high (red).
+//
+// The static_assert below only verifies the relationship between the *default* constants.
+// At runtime, user-configurable thresholds loaded from config.toml are validated and, if needed,
+// normalized (e.g., swapped when low > high) by UserConfig::load(). See that implementation
+// for the full runtime validation/clamping rules.
 static_assert(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT,
               "PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT must be <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT");
+
+// Clamp helpers
+// -------------
+// These functions provide common guardrails for numeric sampling settings that are directly
+// represented as min/max constants in this header (e.g., refresh interval, history window).
+//
+// Progress bar color thresholds are also user-configurable, but their runtime validation and
+// normalization (including the low > high swap described above) are handled in UserConfig::load()
+// rather than via a dedicated clamp helper here. This keeps all progress-color-specific logic
+// centralized in the configuration layer while documenting the guardrails in this header.
 
 template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noexcept
 {

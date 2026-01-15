@@ -861,6 +861,7 @@ TEST(GPUModelTest, ReadProcessGPUCountersWithNullProbe)
 TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    // rawProbe remains valid after std::move(probe) because GPUModel stores the unique_ptr
     auto* rawProbe = probe.get();
     probe->withGPU("GPU0", "Test GPU", "Vendor").withProcessGPU(100, "GPU0", 50ULL * 1024 * 1024);
 
