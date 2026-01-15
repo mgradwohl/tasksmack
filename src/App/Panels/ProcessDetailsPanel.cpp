@@ -1233,10 +1233,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
     // Throttle debug logging to avoid per-frame spam
     // Only log when GPU data changes or on first render of a new process
-    static std::int32_t lastLoggedPid = -1;
-    static std::uint64_t lastLoggedGpuMemoryBytes = std::numeric_limits<std::uint64_t>::max();
-
-    if (proc.pid != lastLoggedPid || proc.gpuMemoryBytes != lastLoggedGpuMemoryBytes)
+    // Using member variables ensures per-panel state tracking (not static)
+    if (proc.pid != m_LastGpuLogPid || proc.gpuMemoryBytes != m_LastGpuLogMemoryBytes)
     {
         spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'",
                       proc.pid,
@@ -1244,8 +1242,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                       proc.gpuMemoryBytes,
                       proc.gpuDevices);
 
-        lastLoggedPid = proc.pid;
-        lastLoggedGpuMemoryBytes = proc.gpuMemoryBytes;
+        m_LastGpuLogPid = proc.pid;
+        m_LastGpuLogMemoryBytes = proc.gpuMemoryBytes;
     }
 
     // Show GPU info

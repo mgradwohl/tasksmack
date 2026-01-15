@@ -139,6 +139,10 @@ class ProcessDetailsPanel : public Panel
         double gpuMemoryBytes = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
+
+    // GPU logging throttle state (per-panel tracking)
+    std::int32_t m_LastGpuLogPid = -1;
+    std::uint64_t m_LastGpuLogMemoryBytes = std::numeric_limits<std::uint64_t>::max();
 };
 
 } // namespace App
