@@ -1402,11 +1402,11 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
         const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
+        // Extract only what we need for the graphs
         const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
-        std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
-        std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
+        const std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
+        const std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
 
-        // Build time axis using the same helpers as other charts
         const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
         std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 

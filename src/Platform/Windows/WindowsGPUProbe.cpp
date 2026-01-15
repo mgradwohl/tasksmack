@@ -283,17 +283,15 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
     // PDH returns per-process GPU utilization which is additive across engines
     // System-wide utilization = sum of all per-process utilizations (capped at 100%)
     double totalUtilization = 0.0;
-    int processCount = 0;
     for (const auto& procCounter : processCounters)
     {
         if (procCounter.gpuUtilPercent > 0.0)
         {
             totalUtilization += procCounter.gpuUtilPercent;
-            processCount += 1;
         }
     }
 
-    if (processCount > 0)
+    if (totalUtilization > 0.0)
     {
         // Clamp to 0-100 range (utilization is percentage of single GPU capacity)
         totalUtilization = std::min(100.0, totalUtilization);
@@ -316,10 +314,8 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
                 //
                 // TODO: Parse PDH LUID strings and match to DXGI adapter LUIDs for true per-GPU breakdown.
                 dxgiCounter.utilizationPercent = totalUtilization;
-                spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (summed from {} processes)",
-                              dxgiCounter.gpuId,
-                              totalUtilization,
-                              processCount);
+                spdlog::debug(
+                    "WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}%", dxgiCounter.gpuId, totalUtilization);
             }
         }
     }
