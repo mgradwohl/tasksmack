@@ -164,6 +164,8 @@ inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT = 80.0;
 inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MIN = 0.0;
 inline constexpr double PROGRESS_COLOR_HIGH_THRESHOLD_MAX = 100.0;
 
+// Note: If low == high threshold, the "medium" color range (yellow) disappears and utilization
+// is either low (green) or high (red). UserConfig::load() swaps them if low > high at runtime.
 static_assert(PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT,
               "PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT must be <= PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT");
 

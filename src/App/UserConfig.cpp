@@ -196,7 +196,7 @@ void UserConfig::load()
         {
             // Check for overflow before MB-to-bytes conversion
             constexpr int64_t MAX_MB_BEFORE_OVERFLOW = std::numeric_limits<int64_t>::max() / (1024LL * 1024LL);
-            const int64_t mb = std::clamp(*val, 0LL, MAX_MB_BEFORE_OVERFLOW);
+            const int64_t mb = std::clamp(*val, static_cast<int64_t>(0), MAX_MB_BEFORE_OVERFLOW);
             const int64_t bytes = mb * 1024LL * 1024LL;
             m_Settings.integratedGpuVramThresholdBytes = Domain::Sampling::clampIntegratedGpuVramThresholdBytes(bytes);
         }

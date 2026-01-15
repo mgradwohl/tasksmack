@@ -361,7 +361,7 @@ void TitleBarLayer::renderTitleBar()
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
         // Make icon clickable with invisible button
-        ImGui::PushStyleColor(ImGuiCol_Button, scheme.button);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
         if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))

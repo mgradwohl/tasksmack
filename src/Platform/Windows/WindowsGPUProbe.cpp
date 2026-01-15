@@ -303,14 +303,18 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         {
             if (dxgiCounter.utilizationPercent == 0.0)
             {
-                // NOTE: This approach has a limitation in multi-GPU scenarios: we sum per-process
-                // utilizations across ALL GPUs and assign that total to EACH GPU without NVML data.
-                // Ideally we'd sum per-GPU using the LUID info from PDH, but that requires more
-                // complex matching logic. For single-GPU or NVML-only systems, this works correctly.
+                // NOTE: Multi-GPU limitation without NVML: We sum per-process GPU utilization
+                // across ALL GPUs (from PDH system-wide counters) and assign that TOTAL to EACH
+                // GPU. This means if process uses 50% GPU0 + 30% GPU1, we'll show 80% on BOTH GPUs.
                 //
-                // WARNING: This limitation means multi-GPU systems without NVML may show inflated
-                // per-GPU utilization percentages. Consider this when displaying in the UI or add
-                // tooltips to inform users that per-GPU accuracy requires NVML on multi-GPU systems.
+                // Why: PDH "GPU Engine" counters don't directly map to specific physical GPUs
+                // (they use LUIDs which require complex DXGI matching). For now, we assign the
+                // system-wide total to each GPU as a conservative "worst case" estimate.
+                //
+                // Impact: Multi-GPU systems without NVML show inflated per-GPU percentages.
+                // Single-GPU systems or NVML-enabled multi-GPU systems are accurate.
+                //
+                // TODO: Parse PDH LUID strings and match to DXGI adapter LUIDs for true per-GPU breakdown.
                 dxgiCounter.utilizationPercent = totalUtilization;
                 spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}% (summed from {} processes)",
                               dxgiCounter.gpuId,
