@@ -635,7 +635,11 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     {
         std::size_t operator()(const AggKey& k) const
         {
-            return std::hash<std::int32_t>{}(k.pid) ^ (std::hash<std::string>{}(k.gpuLuid) << 1);
+            // Combine hashes with better distribution using FNV-like mixing
+            std::size_t h1 = std::hash<std::int32_t>{}(k.pid);
+            std::size_t h2 = std::hash<std::string>{}(k.gpuLuid);
+            h1 ^= h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2);
+            return h1;
         }
     };
     struct AggData

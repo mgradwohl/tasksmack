@@ -412,14 +412,25 @@ void ProcessModel::mergeGPUData()
             snapshot.perGpuUsage = agg.perGpuBreakdown;
 
             // Build comma-separated GPU device string (friendly names)
+            // Pre-allocate to avoid multiple reallocations
             std::string gpuDevices;
-            for (size_t i = 0; i < agg.gpuNames.size(); ++i)
+            if (!agg.gpuNames.empty())
             {
-                if (i > 0)
+                size_t totalLength = 0;
+                for (const auto& name : agg.gpuNames)
                 {
-                    gpuDevices += ", ";
+                    totalLength += name.length() + 2; // +2 for ", "
                 }
-                gpuDevices += agg.gpuNames[i];
+                gpuDevices.reserve(totalLength);
+
+                for (size_t i = 0; i < agg.gpuNames.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        gpuDevices += ", ";
+                    }
+                    gpuDevices += agg.gpuNames[i];
+                }
             }
             snapshot.gpuDevices = std::move(gpuDevices);
 
