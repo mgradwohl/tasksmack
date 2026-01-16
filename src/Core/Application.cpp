@@ -74,10 +74,11 @@ Application::~Application()
         g_StackApplicationInstance.reset();
     }
 
-    // Note: No need to reset s_Instance here - it's either being destroyed by the unique_ptr
-    // that owns us (and will be nulled after this destructor returns), or we're stack-allocated
-    // (in which case s_Instance doesn't point to us). Attempting to reset s_Instance.get() == this
-    // would cause infinite recursion.
+    // Note: No need to reset s_Instance here - it's either:
+    //   1. Being destroyed by the unique_ptr that owns us (will be nulled after this returns)
+    //   2. We're stack-allocated (s_Instance doesn't point to us)
+    //   3. Being explicitly cleared via setInstance(nullptr) (already null)
+    // Attempting to check s_Instance.get() == this would cause issues in case 1.
 }
 
 void Application::run()
@@ -172,6 +173,8 @@ void Application::raiseEvent(Event& event)
 Application& Application::get()
 {
     // Support both unique_ptr-managed (via setInstance) and stack-allocated (tests) instances
+    // Check s_Instance first (set via setInstance()).
+    // Note: setInstance() clears g_StackApplicationInstance, so at most one is set.
     if (s_Instance)
     {
         return *s_Instance;
@@ -197,6 +200,9 @@ float Application::getTime()
 /// before any other threads access Application::get(). No synchronization is performed.
 void Application::setInstance(std::unique_ptr<Application> app)
 {
+    // Prevent overwriting an existing instance (programming error)
+    assert((!s_Instance || app == nullptr) &&
+           "setInstance() called when an instance already exists. Call setInstance(nullptr) first to clear.");
     // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
     // Assert that no stack-allocated instance exists or equals the one being set.
     assert((!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() == app.get()) &&

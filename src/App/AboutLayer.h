@@ -3,7 +3,6 @@
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 
-#include <memory>
 #include <string>
 
 namespace App

@@ -1,6 +1,6 @@
 name: "TaskSmack CodeQL Config"
 
-# Only scan our source code
+# Scan application source and test code
 paths:
   - src
   - tests

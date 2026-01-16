@@ -595,7 +595,12 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         // Should be able to push layers after setting instance
         Core::Application::get().pushLayer<TestLayer>("AfterSetting");
 
-        // Layer 1 should still be in the stack
+        // Layer 1 should still be in the stack.
+        // NOTE: layer1 is owned by the Application's internal layer stack, not by the
+        // local std::unique_ptr<Core::Application> that was moved into setInstance().
+        // setInstance(std::move(app)) transfers ownership of the same Application
+        // instance into the singleton without moving the Application object itself,
+        // so the TestLayer object and this reference remain valid here.
         EXPECT_TRUE(layer1.attachCalled);
 
         Core::Application::setInstance(nullptr);
@@ -656,15 +661,15 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             auto app = std::make_unique<Core::Application>(spec);
             Core::Application::setInstance(std::move(app));
 
-            // Instance should be accessible within scope
-            [[maybe_unused]] Core::Application& ref1 = Core::Application::get();
+            // Instance should be accessible within scope (verify get() works)
+            EXPECT_NO_THROW(Core::Application::get());
         }
-        // After scope ends, s_Instance still owns the Application. Reset explicitly to
-        // destroy the instance and ensure the singleton is cleared.
+        // After scope ends, local 'app' is destroyed (but it's moved-from, so nothing happens).
+        // The Application is still alive, owned by s_Instance. Reset explicitly to destroy it.
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
-        EXPECT_THROW({ (void) Core::Application::get(); }, std::runtime_error);
+        EXPECT_THROW(Core::Application::get(), std::runtime_error);
     }
     catch (const std::exception& e)
     {
