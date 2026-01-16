@@ -3,6 +3,7 @@
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 
+#include <memory>
 #include <string>
 
 namespace App
@@ -29,6 +30,7 @@ class AboutLayer : public Core::Layer
     void onEvent(Core::Event& event) override;
 
     static auto instance() -> AboutLayer*;
+    static void setInstance(std::unique_ptr<AboutLayer> layer);
     void requestOpen();
 
   private:
@@ -39,7 +41,11 @@ class AboutLayer : public Core::Layer
     bool m_OpenRequested = false;
     UI::Texture m_Icon;
 
-    static AboutLayer* s_Instance;
+    // Singleton instance managed by std::unique_ptr (set by setAboutLayerInstance)
+    // Note: Using a global instead of static member allows proper cleanup with RAII semantics
+    static std::unique_ptr<AboutLayer> s_Instance;
 };
 
 } // namespace App
+
+/// Set the global

@@ -17,12 +17,21 @@
 namespace Core
 {
 
-Application* Application::s_Instance = nullptr;
+std::unique_ptr<Application> Application::s_Instance = nullptr;
+
+// Track stack-allocated Application for tests and fallback access.
+// When setInstance() is called, this stays null (s_Instance owns the instance).
+// When Application is created on the stack (tests), this points to it.
+thread_local Application* g_StackApplicationInstance = nullptr;
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
-    assert(s_Instance == nullptr && "Application already exists!");
-    s_Instance = this;
+    // For stack-allocated instances (tests), track in thread-local.
+    // setInstance() will populate s_Instance instead and set g_StackApplicationInstance = nullptr.
+    if (!s_Instance && !g_StackApplicationInstance)
+    {
+        g_StackApplicationInstance = this;
+    }
 
     spdlog::info("Initializing {} application", m_Spec.Name);
 
@@ -57,7 +66,12 @@ Application::~Application()
 
     SDL_Quit();
 
-    s_Instance = nullptr;
+    // Clear thread-local pointer if this was a stack-allocated instance
+    if (g_StackApplicationInstance == this)
+    {
+        g_StackApplicationInstance = nullptr;
+    }
+    // s_Instance will be reset by unique_ptr destructor; no manual reset needed
 }
 
 void Application::run()
@@ -151,8 +165,18 @@ void Application::raiseEvent(Event& event)
 
 Application& Application::get()
 {
-    assert(s_Instance != nullptr && "Application does not exist!");
-    return *s_Instance;
+    // Support both unique_ptr-managed (via setInstance) and stack-allocated (tests) instances
+    if (s_Instance)
+    {
+        return *s_Instance;
+    }
+    if (g_StackApplicationInstance)
+    {
+        return *g_StackApplicationInstance;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) - Only occurs in assertion
+    assert(false && "Application does not exist!");
+    throw std::runtime_error("Application does not exist!");
 }
 
 float Application::getTime()
@@ -160,4 +184,14 @@ float Application::getTime()
     // SDL_GetTicks returns milliseconds as Uint64
     return static_cast<float>(SDL_GetTicks()) / 1000.0F;
 }
+
+/// Set the global application instance (called from main()).
+/// This ensures the Application is managed by std::unique_ptr with proper RAII cleanup.
+void Application::setInstance(std::unique_ptr<Application> app)
+{
+    // Clear any stack-allocated instance pointer when taking unique_ptr ownership
+    g_StackApplicationInstance = nullptr;
+    Application::s_Instance = std::move(app);
+}
+
 } // namespace Core

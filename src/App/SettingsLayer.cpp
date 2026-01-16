@@ -153,7 +153,7 @@ namespace
 
 } // namespace
 
-SettingsLayer* SettingsLayer::s_Instance = nullptr;
+std::unique_ptr<SettingsLayer> SettingsLayer::s_Instance = nullptr;
 
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {
@@ -161,30 +161,17 @@ SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 
 SettingsLayer::~SettingsLayer()
 {
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
+    // Instance will be cleaned up by unique_ptr destructor; no manual reset needed
 }
 
 void SettingsLayer::onAttach()
 {
-    // Runtime check in addition to assert - logs error in release builds where assert is stripped
-    if (s_Instance != nullptr && s_Instance != this)
-    {
-        spdlog::error("SettingsLayer::onAttach called while another instance is already attached");
-        return;
-    }
-    assert((s_Instance == nullptr || s_Instance == this) && "SettingsLayer instance already exists!");
-    s_Instance = this;
+    // Note: s_Instance is set by setSettingsLayerInstance(); not in constructor
 }
 
 void SettingsLayer::onDetach()
 {
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
+    // No-op; unique_ptr handles cleanup
 }
 
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -212,7 +199,7 @@ void SettingsLayer::onEvent(Core::Event& event)
 
 auto SettingsLayer::instance() -> SettingsLayer*
 {
-    return s_Instance;
+    return s_Instance.get();
 }
 
 void SettingsLayer::requestOpen()
@@ -539,6 +526,13 @@ void SettingsLayer::renderSettingsDialog()
 
         ImGui::EndPopup();
     }
+}
+
+/// Set the global SettingsLayer instance.
+/// This ensures SettingsLayer is managed by std::unique_ptr with proper RAII cleanup.
+void SettingsLayer::setInstance(std::unique_ptr<SettingsLayer> layer)
+{
+    SettingsLayer::s_Instance = std::move(layer);
 }
 
 } // namespace App

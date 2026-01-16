@@ -64,7 +64,7 @@ namespace
 namespace App
 {
 
-AboutLayer* AboutLayer::s_Instance = nullptr;
+std::unique_ptr<AboutLayer> AboutLayer::s_Instance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {
@@ -72,27 +72,19 @@ AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 
 AboutLayer::~AboutLayer()
 {
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
+    // Instance will be cleaned up by unique_ptr destructor; no manual reset needed
 }
 
 void AboutLayer::onAttach()
 {
     // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // Enforce single instance with assertion rather than atomic operations.
-    assert(s_Instance == nullptr && "AboutLayer instance already exists!");
-    s_Instance = this;
+    // Note: s_Instance is set by setAboutLayerInstance(); not in constructor
     loadIcon();
 }
 
 void AboutLayer::onDetach()
 {
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
+    // No-op; unique_ptr handles cleanup
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -120,7 +112,7 @@ void AboutLayer::onEvent(Core::Event& event)
 
 auto AboutLayer::instance() -> AboutLayer*
 {
-    return s_Instance;
+    return s_Instance.get();
 }
 
 void AboutLayer::requestOpen()
@@ -302,6 +294,13 @@ void AboutLayer::openUrl(const std::string& url)
         spdlog::warn("Failed to launch xdg-open for URL: {}", url);
     }
 #endif
+}
+
+/// Set the global AboutLayer instance.
+/// This ensures AboutLayer is managed by std::unique_ptr with proper RAII cleanup.
+void AboutLayer::setInstance(std::unique_ptr<AboutLayer> layer)
+{
+    AboutLayer::s_Instance = std::move(layer);
 }
 
 } // namespace App

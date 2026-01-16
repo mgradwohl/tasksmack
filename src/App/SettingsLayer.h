@@ -3,6 +3,7 @@
 #include "Core/Layer.h"
 #include "UI/Theme.h"
 
+#include <memory>
 #include <vector>
 
 namespace App
@@ -29,6 +30,7 @@ class SettingsLayer : public Core::Layer
     void onEvent(Core::Event& event) override;
 
     static auto instance() -> SettingsLayer*;
+    static void setInstance(std::unique_ptr<SettingsLayer> layer);
     void requestOpen();
 
   private:
@@ -48,7 +50,10 @@ class SettingsLayer : public Core::Layer
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;
 
-    static SettingsLayer* s_Instance;
+  private:
+    // Singleton instance managed by std::unique_ptr (set by setInstance)
+    // Note: Using a global instead of static member allows proper cleanup with RAII semantics
+    static std::unique_ptr<SettingsLayer> s_Instance;
 };
 
 } // namespace App

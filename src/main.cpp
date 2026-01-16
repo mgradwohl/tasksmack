@@ -141,43 +141,53 @@ auto runApp() -> int
     userConfig.load();
     const auto& settings = userConfig.settings();
 
-    // Create application
+    // Create application and transfer ownership to the singleton
     Core::ApplicationSpecification appSpec;
     appSpec.Name = "TaskSmack";
     appSpec.Width = std::clamp(settings.windowWidth, 200, 16'384);
     appSpec.Height = std::clamp(settings.windowHeight, 200, 16'384);
     appSpec.VSync = true;
 
-    Core::Application app(appSpec);
+    auto app = std::make_unique<Core::Application>(appSpec);
+    Core::Application::setInstance(std::move(app));
+
+    // Get reference to the application for further setup
+    Core::Application& appRef = Core::Application::get();
 
     // Apply saved position/maximized state after the window exists.
     // Ordering: set restore geometry first, then maximize.
     if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
     {
-        app.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
+        appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
     }
     if (settings.windowMaximized)
     {
-        app.getWindow().maximize();
+        appRef.getWindow().maximize();
     }
 
     // Push UI layer (initializes ImGui/ImPlot backends)
-    app.pushLayer<UI::UILayer>();
+    appRef.pushLayer<UI::UILayer>();
 
     // Push title bar layer (custom window chrome)
-    app.pushLayer<App::TitleBarLayer>();
+    appRef.pushLayer<App::TitleBarLayer>();
 
     // Push shell layer (docking workspace with panels)
-    app.pushLayer<App::ShellLayer>();
+    appRef.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
-    app.pushLayer<App::AboutLayer>();
+    // Manage singleton with unique_ptr for RAII cleanup
+    auto aboutLayer = std::make_unique<App::AboutLayer>();
+    App::AboutLayer::setInstance(std::move(aboutLayer));
+    appRef.pushLayer<App::AboutLayer>();
 
     // Settings dialog layer (modal overlay)
-    app.pushLayer<App::SettingsLayer>();
+    // Manage singleton with unique_ptr for RAII cleanup
+    auto settingsLayer = std::make_unique<App::SettingsLayer>();
+    App::SettingsLayer::setInstance(std::move(settingsLayer));
+    appRef.pushLayer<App::SettingsLayer>();
 
     // Run the application
-    app.run();
+    appRef.run();
 
     return 0;
 }
