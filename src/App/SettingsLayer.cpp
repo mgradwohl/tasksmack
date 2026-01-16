@@ -160,13 +160,7 @@ SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {
 }
 
-SettingsLayer::~SettingsLayer()
-{
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
+SettingsLayer::~SettingsLayer() = default;
 
 void SettingsLayer::onAttach()
 {
@@ -535,8 +529,8 @@ void SettingsLayer::renderSettingsDialog()
 /// Set the global SettingsLayer instance (non-owning; used when layer is owned by the layer stack)
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
-    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
     s_Instance = &layer;
+    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
 }
 
 /// Set the global SettingsLayer instance and take ownership

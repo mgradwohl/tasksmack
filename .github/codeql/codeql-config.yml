@@ -20,3 +20,4 @@ paths-ignore:
   - 'dist/**'             # Distribution packages
   - 'coverage/**'         # Coverage reports
   - 'benchmarks/**'       # Benchmark code
+  - 'assets/**'           # Assets and resources
