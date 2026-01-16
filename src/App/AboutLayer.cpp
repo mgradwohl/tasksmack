@@ -77,8 +77,8 @@ void AboutLayer::onAttach()
 {
     // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
     // Note: s_Instance is set by setInstance(); not in constructor
-    assert((s_Instance != nullptr) && "AboutLayer::setInstance() must be called before onAttach()");
-    assert((s_Instance == this) && "AboutLayer::s_Instance must point to this layer instance");
+    assert((s_Instance == this) &&
+           "AboutLayer::setInstance() must be called before onAttach() and s_Instance must point to this layer instance");
     loadIcon();
 }
 
@@ -300,8 +300,10 @@ void AboutLayer::openUrl(const std::string& url)
 /// THREAD-SAFETY: Must only be called from main thread during initialization.
 void AboutLayer::setInstance(AboutLayer& layer)
 {
+    // Enforce that we are not silently destroying an owned instance when switching to non-owning mode.
+    assert(s_OwnedInstance == nullptr && "AboutLayer::setInstance(non-owning) called while an owned instance exists");
+
     s_Instance = &layer;
-    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
 }
 
 /// Set the global AboutLayer instance and take ownership

@@ -165,8 +165,8 @@ SettingsLayer::~SettingsLayer() = default;
 void SettingsLayer::onAttach()
 {
     // Note: s_Instance is set by setInstance(); not in constructor
-    assert((s_Instance != nullptr) && "SettingsLayer::setInstance() must be called before onAttach()");
-    assert((s_Instance == this) && "SettingsLayer::s_Instance must point to this layer instance");
+    assert((s_Instance == this) &&
+           "SettingsLayer::setInstance() must be called before onAttach() and s_Instance must point to this layer instance");
 }
 
 void SettingsLayer::onDetach()
@@ -532,8 +532,10 @@ void SettingsLayer::renderSettingsDialog()
 /// THREAD-SAFETY: Must only be called from main thread during initialization.
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
+    // Enforce that we are not silently destroying an owned instance when switching to non-owning mode.
+    assert(s_OwnedInstance == nullptr && "SettingsLayer::setInstance(non-owning) called while an owned instance exists");
+
     s_Instance = &layer;
-    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
 }
 
 /// Set the global SettingsLayer instance and take ownership
