@@ -153,7 +153,8 @@ namespace
 
 } // namespace
 
-std::unique_ptr<SettingsLayer> SettingsLayer::s_Instance = nullptr;
+SettingsLayer* SettingsLayer::s_Instance = nullptr;
+std::unique_ptr<SettingsLayer> SettingsLayer::s_OwnedInstance = nullptr;
 
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {
@@ -161,12 +162,15 @@ SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 
 SettingsLayer::~SettingsLayer()
 {
-    // Instance will be cleaned up by unique_ptr destructor; no manual reset needed
+    if (s_Instance == this)
+    {
+        s_Instance = nullptr;
+    }
 }
 
 void SettingsLayer::onAttach()
 {
-    // Note: s_Instance is set by setSettingsLayerInstance(); not in constructor
+    // Note: s_Instance is set by setInstance(); not in constructor
 }
 
 void SettingsLayer::onDetach()
@@ -199,7 +203,7 @@ void SettingsLayer::onEvent(Core::Event& event)
 
 auto SettingsLayer::instance() -> SettingsLayer*
 {
-    return s_Instance.get();
+    return s_Instance;
 }
 
 void SettingsLayer::requestOpen()
@@ -528,11 +532,17 @@ void SettingsLayer::renderSettingsDialog()
     }
 }
 
-/// Set the global SettingsLayer instance.
-/// This ensures SettingsLayer is managed by std::unique_ptr with proper RAII cleanup.
+/// Set the global SettingsLayer instance (non-owning; used when layer is owned by the layer stack)
+void SettingsLayer::setInstance(SettingsLayer& layer)
+{
+    s_Instance = &layer;
+}
+
+/// Set the global SettingsLayer instance and take ownership
 void SettingsLayer::setInstance(std::unique_ptr<SettingsLayer> layer)
 {
-    SettingsLayer::s_Instance = std::move(layer);
+    s_OwnedInstance = std::move(layer);
+    s_Instance = s_OwnedInstance.get();
 }
 
 } // namespace App

@@ -30,6 +30,9 @@ class AboutLayer : public Core::Layer
     void onEvent(Core::Event& event) override;
 
     static auto instance() -> AboutLayer*;
+    // Set singleton without taking ownership (use when layer is in layer stack)
+    static void setInstance(AboutLayer& layer);
+    // Set singleton and take ownership (managed lifetime)
     static void setInstance(std::unique_ptr<AboutLayer> layer);
     void requestOpen();
 
@@ -41,11 +44,12 @@ class AboutLayer : public Core::Layer
     bool m_OpenRequested = false;
     UI::Texture m_Icon;
 
-    // Singleton instance managed by std::unique_ptr (set by setAboutLayerInstance)
-    // Note: Using a global instead of static member allows proper cleanup with RAII semantics
-    static std::unique_ptr<AboutLayer> s_Instance;
+    // Non-owning singleton pointer; may point to a layer owned by the layer stack
+    static AboutLayer* s_Instance;
+    // Optional owner when setInstance(std::unique_ptr<...>) is used
+    static std::unique_ptr<AboutLayer> s_OwnedInstance;
 };
 
 } // namespace App
 
-/// Set the global
+//

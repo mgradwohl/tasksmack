@@ -175,16 +175,13 @@ auto runApp() -> int
     appRef.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
-    // Manage singleton with unique_ptr for RAII cleanup
-    auto aboutLayer = std::make_unique<App::AboutLayer>();
-    App::AboutLayer::setInstance(std::move(aboutLayer));
-    appRef.pushLayer<App::AboutLayer>();
+    // Create once via layer stack and register singleton as non-owning reference
+    auto& about = appRef.pushLayer<App::AboutLayer>();
+    App::AboutLayer::setInstance(about);
 
     // Settings dialog layer (modal overlay)
-    // Manage singleton with unique_ptr for RAII cleanup
-    auto settingsLayer = std::make_unique<App::SettingsLayer>();
-    App::SettingsLayer::setInstance(std::move(settingsLayer));
-    appRef.pushLayer<App::SettingsLayer>();
+    auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
+    App::SettingsLayer::setInstance(settingsLayerRef);
 
     // Run the application
     appRef.run();

@@ -64,7 +64,8 @@ namespace
 namespace App
 {
 
-std::unique_ptr<AboutLayer> AboutLayer::s_Instance = nullptr;
+AboutLayer* AboutLayer::s_Instance = nullptr;
+std::unique_ptr<AboutLayer> AboutLayer::s_OwnedInstance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {
@@ -72,13 +73,16 @@ AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 
 AboutLayer::~AboutLayer()
 {
-    // Instance will be cleaned up by unique_ptr destructor; no manual reset needed
+    if (s_Instance == this)
+    {
+        s_Instance = nullptr;
+    }
 }
 
 void AboutLayer::onAttach()
 {
     // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // Note: s_Instance is set by setAboutLayerInstance(); not in constructor
+    // Note: s_Instance is set by setInstance(); not in constructor
     loadIcon();
 }
 
@@ -112,7 +116,7 @@ void AboutLayer::onEvent(Core::Event& event)
 
 auto AboutLayer::instance() -> AboutLayer*
 {
-    return s_Instance.get();
+    return s_Instance;
 }
 
 void AboutLayer::requestOpen()
@@ -296,11 +300,17 @@ void AboutLayer::openUrl(const std::string& url)
 #endif
 }
 
-/// Set the global AboutLayer instance.
-/// This ensures AboutLayer is managed by std::unique_ptr with proper RAII cleanup.
+/// Set the global AboutLayer instance (non-owning; used when layer is owned by the layer stack)
+void AboutLayer::setInstance(AboutLayer& layer)
+{
+    s_Instance = &layer;
+}
+
+/// Set the global AboutLayer instance and take ownership
 void AboutLayer::setInstance(std::unique_ptr<AboutLayer> layer)
 {
-    AboutLayer::s_Instance = std::move(layer);
+    s_OwnedInstance = std::move(layer);
+    s_Instance = s_OwnedInstance.get();
 }
 
 } // namespace App

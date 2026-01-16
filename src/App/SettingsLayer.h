@@ -30,6 +30,9 @@ class SettingsLayer : public Core::Layer
     void onEvent(Core::Event& event) override;
 
     static auto instance() -> SettingsLayer*;
+    // Set singleton without taking ownership (use when layer is in layer stack)
+    static void setInstance(SettingsLayer& layer);
+    // Set singleton and take ownership (managed lifetime)
     static void setInstance(std::unique_ptr<SettingsLayer> layer);
     void requestOpen();
 
@@ -50,10 +53,10 @@ class SettingsLayer : public Core::Layer
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;
 
-  private:
-    // Singleton instance managed by std::unique_ptr (set by setInstance)
-    // Note: Using a global instead of static member allows proper cleanup with RAII semantics
-    static std::unique_ptr<SettingsLayer> s_Instance;
+    // Non-owning singleton pointer; may point to a layer owned by the layer stack
+    static SettingsLayer* s_Instance;
+    // Optional owner when setInstance(std::unique_ptr<...>) is used
+    static std::unique_ptr<SettingsLayer> s_OwnedInstance;
 };
 
 } // namespace App
