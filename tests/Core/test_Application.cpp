@@ -660,13 +660,14 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
         {
             auto app = std::make_unique<Core::Application>(spec);
             Core::Application::setInstance(std::move(app));
-
-            // Instance should be accessible within scope (verify get() works)
-            EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
         }
+
         // After scope ends, the moved-from unique_ptr 'app' is destroyed. It no longer owns
         // the Application object, so its destruction is a no-op. The Application itself
-        // remains alive and is owned by s_Instance until we reset it explicitly here.
+        // remains alive and is owned by s_Instance until we reset it explicitly below.
+
+        // Instance should still be accessible after scope exit (verify get() works)
+        EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
