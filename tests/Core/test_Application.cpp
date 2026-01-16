@@ -662,14 +662,14 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             Core::Application::setInstance(std::move(app));
 
             // Instance should be accessible within scope (verify get() works)
-            EXPECT_NO_THROW(Core::Application::get());
+            EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
         }
         // After scope ends, local 'app' is destroyed (but it's moved-from, so nothing happens).
         // The Application is still alive, owned by s_Instance. Reset explicitly to destroy it.
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
-        EXPECT_THROW(Core::Application::get(), std::runtime_error);
+        EXPECT_THROW([[maybe_unused]] auto& ref = Core::Application::get(), std::runtime_error);
     }
     catch (const std::exception& e)
     {
