@@ -596,11 +596,8 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         auto& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
 
         // Layer 1 should still be in the stack.
-        // NOTE: layer1 is owned by the Application's internal layer stack, not by the
-        // local std::unique_ptr<Core::Application> that was moved into setInstance().
-        // setInstance(std::move(app)) transfers ownership of the same Application
-        // instance into the singleton without moving the Application object itself,
-        // so the TestLayer object and this reference remain valid here.
+        // NOTE: layer1 reference remains valid because setInstance() transfers
+        // ownership without moving the Application object itself.
         EXPECT_TRUE(layer1.attachCalled);
 
         // The second layer pushed after setInstance() should also be properly attached.
