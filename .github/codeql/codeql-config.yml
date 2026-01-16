@@ -13,9 +13,9 @@ paths-ignore:
   - '**/vendor'
   - '**/third_party'
   - '**/external'
-  - '**/build/**'
+  - '**/build/**'  # Exclude all files in build directories
   - '**/tools'
-  - '**/.cache/**'
+  - '**/.cache/**'  # Exclude all files in cache directories
   - '**/gladsources/**'   # Generated OpenGL loader
   - 'dist/**'             # Distribution packages
   - 'coverage/**'         # Coverage reports

@@ -644,7 +644,6 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             Core::Application::setInstance(std::move(app));
 
             // Instance should be accessible within scope
-            // NOLINTNEXTLINE(clang-diagnostic-unused-result) - get() result is used within scope
             [[maybe_unused]] auto& refInScope = Core::Application::get();
         }
 

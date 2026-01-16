@@ -192,7 +192,10 @@ float Application::getTime()
 /// before any other threads access Application::get(). No synchronization is performed.
 void Application::setInstance(std::unique_ptr<Application> app)
 {
-    // Clear any stack-allocated instance pointer when taking unique_ptr ownership
+    // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
+    // Assert that no stack-allocated instance exists or equals the one being set.
+    assert((g_StackApplicationInstance == nullptr || g_StackApplicationInstance == app.get()) &&
+           "setInstance() called while a different stack-allocated Application instance exists");
     g_StackApplicationInstance = nullptr;
     Application::s_Instance = std::move(app);
 }
