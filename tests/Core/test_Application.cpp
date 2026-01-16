@@ -674,17 +674,19 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
-        bool gotExpectedException = false;
+        bool exceptionThrown = false;
+        std::string exceptionMessage;
         try
         {
             [[maybe_unused]] auto& ref = Core::Application::get();
         }
         catch (const std::runtime_error& e)
         {
-            EXPECT_STREQ(e.what(), "Application does not exist!");
-            gotExpectedException = true;
+            exceptionThrown = true;
+            exceptionMessage = e.what();
         }
-        EXPECT_TRUE(gotExpectedException) << "Expected std::runtime_error with message 'Application does not exist!'";
+        EXPECT_TRUE(exceptionThrown);
+        EXPECT_STREQ(exceptionMessage.c_str(), "Application does not exist!");
 
         // Verify complete state reset: setInstance() should accept a new instance after cleanup
         auto newApp = std::make_unique<Core::Application>(spec);

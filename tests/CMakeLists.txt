@@ -133,6 +133,7 @@ add_executable(TaskSmackTests
     App/test_PriorityHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
+    App/test_SingletonLayers.cpp
     ${PLATFORM_TEST_SOURCES}
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
