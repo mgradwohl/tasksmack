@@ -645,7 +645,7 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
     }
 }
 
-TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
+TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
 {
     if (!hasDisplay())
     {
@@ -653,7 +653,7 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
     }
 
     Core::ApplicationSpecification spec;
-    spec.Name = "DestructorClearTest";
+    spec.Name = "OwnershipTransferTest";
 
     try
     {

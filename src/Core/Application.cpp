@@ -193,8 +193,9 @@ float Application::getTime()
     return static_cast<float>(SDL_GetTicks()) / 1000.0F;
 }
 
-/// Set the global application instance (called from main()).
+/// Set the global application instance for initialization or cleanup.
 /// This ensures the Application is managed by std::unique_ptr with proper RAII cleanup.
+/// Called from main() during initialization, and with nullptr from tests for cleanup/reset.
 ///
 /// THREAD-SAFETY: This method MUST ONLY be called from the main thread during initialization,
 /// before any other threads access Application::get(). No synchronization is performed.
