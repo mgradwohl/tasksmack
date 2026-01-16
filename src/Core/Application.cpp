@@ -201,24 +201,29 @@ float Application::getTime()
 /// before any other threads access Application::get(). No synchronization is performed.
 void Application::setInstance(std::unique_ptr<Application> app)
 {
-    // Prevent overwriting an existing instance (programming error)
+    // Prevent overwriting an existing s_Instance (programming error)
     if (s_Instance && app != nullptr)
     {
         throw std::logic_error("setInstance() called when an instance already exists. Call setInstance(nullptr) first to clear.");
     }
-    // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
-    // Verify that no stack-allocated instance exists or equals the one being set.
+
+    // When taking ownership via unique_ptr, verify no *different* stack instance exists.
+    // If a stack-allocated instance exists and matches this app, that's OK (e.g., from constructor).
+    // If it's different, that's a programming error - we can't safely manage both.
     if (app != nullptr)
     {
         if (g_StackApplicationInstance.has_value() && &g_StackApplicationInstance->get() != app.get())
         {
             throw std::logic_error("setInstance() called while a different stack-allocated Application instance exists");
         }
+        // Clear the stack-tracked instance since we're now taking unique_ptr ownership.
+        // This prevents dangling pointer access later if someone clears the singleton.
+        g_StackApplicationInstance.reset();
     }
-
-    // Clear stack-tracked instance when clearing the singleton.
-    if (app == nullptr)
+    else
     {
+        // When clearing (app == nullptr), also clear any stack-tracked instance.
+        // This ensures get() won't try to access a potentially dead stack instance.
         g_StackApplicationInstance.reset();
     }
 
