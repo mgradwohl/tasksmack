@@ -644,7 +644,7 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
 {
     if (!hasDisplay())
     {
-            (void) Core::Application::get();
+        (void) Core::Application::get();
     }
 
     Core::ApplicationSpecification spec;
