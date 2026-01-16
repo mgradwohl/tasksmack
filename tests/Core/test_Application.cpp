@@ -672,6 +672,12 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
 
         // After destruction, verify singleton is cleared by checking that get() throws
         EXPECT_THROW([[maybe_unused]] auto& ref = Core::Application::get(), std::runtime_error);
+
+        // Verify complete state reset: setInstance() should accept a new instance after cleanup
+        auto newApp = std::make_unique<Core::Application>(spec);
+        EXPECT_NO_THROW(Core::Application::setInstance(std::move(newApp)));
+        EXPECT_NO_THROW([[maybe_unused]] auto& newRef = Core::Application::get());
+        Core::Application::setInstance(nullptr); // Clean up after test
     }
     catch (const std::exception& e)
     {

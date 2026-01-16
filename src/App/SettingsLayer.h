@@ -28,7 +28,7 @@ class SettingsLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    static auto instance() -> SettingsLayer*;
+    [[nodiscard]] static auto instance() -> SettingsLayer*;
     // Set singleton without taking ownership (use when layer is in layer stack)
     static void setInstance(SettingsLayer& layer);
     void requestOpen();

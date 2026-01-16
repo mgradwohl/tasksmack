@@ -202,14 +202,18 @@ float Application::getTime()
 void Application::setInstance(std::unique_ptr<Application> app)
 {
     // Prevent overwriting an existing instance (programming error)
-    assert((!s_Instance || app == nullptr) &&
-           "setInstance() called when an instance already exists. Call setInstance(nullptr) first to clear.");
+    if (s_Instance && app != nullptr)
+    {
+        throw std::logic_error("setInstance() called when an instance already exists. Call setInstance(nullptr) first to clear.");
+    }
     // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
-    // Assert that no stack-allocated instance exists or equals the one being set.
+    // Verify that no stack-allocated instance exists or equals the one being set.
     if (app != nullptr)
     {
-        assert((!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() == app.get()) &&
-               "setInstance() called while a different stack-allocated Application instance exists");
+        if (g_StackApplicationInstance.has_value() && &g_StackApplicationInstance->get() != app.get())
+        {
+            throw std::logic_error("setInstance() called while a different stack-allocated Application instance exists");
+        }
     }
     g_StackApplicationInstance.reset();
     Application::s_Instance = std::move(app);
