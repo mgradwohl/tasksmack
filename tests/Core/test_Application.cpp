@@ -467,6 +467,9 @@ TEST(ApplicationTest, SetInstanceWithUniquePtr)
 
         // get() should return the same instance
         EXPECT_EQ(&Core::Application::get(), appPtr);
+
+        // Cleanup to avoid leaking singleton state across tests
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -474,7 +477,7 @@ TEST(ApplicationTest, SetInstanceWithUniquePtr)
     }
 }
 
-TEST(ApplicationTest, SetInstanceReplacesThreadLocalFallback)
+TEST(ApplicationTest, SetInstanceOverridesThreadLocalFallback)
 {
     if (!hasDisplay())
     {
@@ -493,11 +496,13 @@ TEST(ApplicationTest, SetInstanceReplacesThreadLocalFallback)
         // Before setInstance, get() should work via thread_local fallback
         EXPECT_EQ(&Core::Application::get(), appPtr);
 
-        // Now explicitly set instance with unique_ptr
+        // Now explicitly set instance with unique_ptr; subsequent get() calls come from s_Instance
         Core::Application::setInstance(std::move(app));
 
         // get() should still return correct instance (now via s_Instance)
         EXPECT_EQ(&Core::Application::get(), appPtr);
+
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -526,6 +531,8 @@ TEST(ApplicationTest, GetReturnsCorrectInstanceAfterSetInstance)
         EXPECT_EQ(&Core::Application::get(), expectedApp);
         EXPECT_EQ(&Core::Application::get(), expectedApp);
         EXPECT_EQ(&Core::Application::get(), expectedApp);
+
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -557,6 +564,8 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
         auto& instance = Core::Application::get();
         EXPECT_EQ(instance.getWindow().getWidth(), width);
         EXPECT_EQ(instance.getWindow().getHeight(), height);
+
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -588,6 +597,8 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
 
         // Layer 1 should still be in the stack
         EXPECT_TRUE(layer1.attachCalled);
+
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -620,6 +631,8 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
         EXPECT_EQ(&ref1, &ref2);
         EXPECT_EQ(&ref2, &ref3);
         EXPECT_EQ(&ref1, appPtr);
+
+        Core::Application::setInstance(nullptr);
     }
     catch (const std::exception& e)
     {
@@ -646,9 +659,8 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             // Instance should be accessible within scope
             [[maybe_unused]] auto& refInScope = Core::Application::get();
         }
-        // After scope ends, the Application object is destroyed, but s_Instance
-        // (static member) still holds a unique_ptr to deleted memory.
-        // Reset it explicitly to ensure singleton is properly cleared.
+        // After scope ends, s_Instance still owns the Application. Reset explicitly to
+        // destroy the instance and ensure the singleton is cleared.
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws

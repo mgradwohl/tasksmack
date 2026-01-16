@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -20,17 +22,16 @@ namespace Core
 std::unique_ptr<Application> Application::s_Instance = nullptr;
 
 // Track stack-allocated Application for tests and fallback access.
-// When setInstance() is called, s_Instance holds the instance (via unique_ptr).
-// When Application is created on the stack (tests), g_StackApplicationInstance points to it instead.
-static thread_local Application* g_StackApplicationInstance = nullptr;
+// Uses std::reference_wrapper to avoid storing a raw pointer; cleared in the destructor on the same thread.
+static thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicationInstance;
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
     // For stack-allocated instances (tests), track in thread-local.
     // Only set if neither ownership mechanism is already active.
-    if (!s_Instance && !g_StackApplicationInstance)
+    if (!s_Instance && !g_StackApplicationInstance.has_value())
     {
-        g_StackApplicationInstance = this;
+        g_StackApplicationInstance = std::ref(*this);
     }
 
     spdlog::info("Initializing {} application", m_Spec.Name);
@@ -68,9 +69,9 @@ Application::~Application()
 
     // Clear thread-local pointer if this was a stack-allocated instance
     // Note: Assumes Application is destroyed on the same thread it was created (SDL requirement)
-    if (g_StackApplicationInstance == this)
+    if (g_StackApplicationInstance.has_value() && &g_StackApplicationInstance->get() == this)
     {
-        g_StackApplicationInstance = nullptr;
+        g_StackApplicationInstance.reset();
     }
 
     // Note: No need to reset s_Instance here - it's either being destroyed by the unique_ptr
@@ -177,7 +178,7 @@ Application& Application::get()
     }
     if (g_StackApplicationInstance)
     {
-        return *g_StackApplicationInstance;
+        return g_StackApplicationInstance->get();
     }
     // No instance in either ownership model
     throw std::runtime_error("Application does not exist!");
@@ -198,9 +199,9 @@ void Application::setInstance(std::unique_ptr<Application> app)
 {
     // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
     // Assert that no stack-allocated instance exists or equals the one being set.
-    assert((g_StackApplicationInstance == nullptr || g_StackApplicationInstance == app.get()) &&
+    assert((!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() == app.get()) &&
            "setInstance() called while a different stack-allocated Application instance exists");
-    g_StackApplicationInstance = nullptr;
+    g_StackApplicationInstance.reset();
     Application::s_Instance = std::move(app);
 }
 
