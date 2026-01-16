@@ -75,11 +75,10 @@ AboutLayer::~AboutLayer() = default;
 void AboutLayer::onAttach()
 {
     // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // Note: s_Instance is set by setInstance() immediately after pushLayer().
-    // During onAttach(), s_Instance may be nullptr (if setInstance() hasn't been called yet)
-    // or may already equal this (if setInstance() was called before pushLayer()).
-    assert((s_Instance == nullptr || s_Instance == this) &&
-           "AboutLayer singleton must be unset or already point to this instance during onAttach()");
+    // s_Instance is set by setInstance() immediately after pushLayer() returns.
+    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
+    // or it already points to this instance (setInstance was called before pushLayer).
+    assert((s_Instance == nullptr || s_Instance == this) && "AboutLayer singleton must be nullptr or point to this instance");
     loadIcon();
 }
 

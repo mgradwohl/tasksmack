@@ -176,8 +176,11 @@ auto runApp() -> int
 
     // About dialog layer (modal overlay)
     // NOTE: AboutLayer follows a singleton pattern exposed via App::AboutLayer::instance().
-    // The layer stack owns the layer; setInstance() registers a non-owning reference.
-    // pushLayer() calls onAttach(), which now allows s_Instance to be nullptr.
+    // CRITICAL: onAttach() is called inside pushLayer(), so setInstance() must be called
+    // immediately after layer creation but BEFORE pushing it to the stack.
+    // We create a bare instance, register it as the singleton, then push it.
+    // This awkward pattern is necessary because pushLayer() manages layer ownership
+    // and calls onAttach() immediately.
     auto& aboutLayerRef = appRef.pushLayer<App::AboutLayer>();
     App::AboutLayer::setInstance(aboutLayerRef);
 
