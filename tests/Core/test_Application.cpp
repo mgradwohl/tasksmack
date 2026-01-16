@@ -593,7 +593,7 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         Core::Application::setInstance(std::move(app));
 
         // Should be able to push layers after setting instance
-        Core::Application::get().pushLayer<TestLayer>("AfterSetting");
+        auto& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
 
         // Layer 1 should still be in the stack.
         // NOTE: layer1 is owned by the Application's internal layer stack, not by the
@@ -602,6 +602,9 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         // instance into the singleton without moving the Application object itself,
         // so the TestLayer object and this reference remain valid here.
         EXPECT_TRUE(layer1.attachCalled);
+
+        // The second layer pushed after setInstance() should also be properly attached.
+        EXPECT_TRUE(layer2.attachCalled);
 
         Core::Application::setInstance(nullptr);
     }
@@ -672,6 +675,17 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
 
         // After destruction, verify singleton is cleared by checking that get() throws
         EXPECT_THROW([[maybe_unused]] auto& ref = Core::Application::get(), std::runtime_error);
+        bool gotExpectedException = false;
+        try
+        {
+            [[maybe_unused]] auto& ref = Core::Application::get();
+        }
+        catch (const std::runtime_error& e)
+        {
+            EXPECT_STREQ(e.what(), "Application does not exist!");
+            gotExpectedException = true;
+        }
+        EXPECT_TRUE(gotExpectedException) << "Expected std::runtime_error with message 'Application does not exist!'";
 
         // Verify complete state reset: setInstance() should accept a new instance after cleanup
         auto newApp = std::make_unique<Core::Application>(spec);

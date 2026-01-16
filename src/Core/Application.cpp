@@ -215,7 +215,14 @@ void Application::setInstance(std::unique_ptr<Application> app)
             throw std::logic_error("setInstance() called while a different stack-allocated Application instance exists");
         }
     }
-    g_StackApplicationInstance.reset();
+
+    // Only clear the stack-tracked instance if it does not match the instance being set.
+    // This preserves access to a valid stack instance when app.get() matches it.
+    if (!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() != app.get())
+    {
+        g_StackApplicationInstance.reset();
+    }
+
     Application::s_Instance = std::move(app);
 }
 

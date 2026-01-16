@@ -189,6 +189,10 @@ auto runApp() -> int
     // Run the application
     appRef.run();
 
+    // Explicitly destroy the Application singleton to ensure SDL_Quit()
+    // and other teardown happen before main()/WinMain() returns.
+    Core::Application::setInstance(nullptr);
+
     return 0;
 }
 
