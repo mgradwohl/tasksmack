@@ -596,8 +596,8 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         auto& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
 
         // Layer 1 should still be in the stack.
-        // NOTE: layer1 reference remains valid because setInstance() transfers
-        // ownership without moving the Application object itself.
+        // NOTE: layer1 reference remains valid for as long as the Application instance is alive,
+        // because setInstance() transfers ownership without moving the Application object itself.
         EXPECT_TRUE(layer1.attachCalled);
 
         // The second layer pushed after setInstance() should also be properly attached.
