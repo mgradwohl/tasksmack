@@ -17,6 +17,7 @@ escape_regex() {
 BUILD_TYPE="debug"
 VERBOSE=false
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+CHANGED_ONLY=false
 FILES=()
 
 usage() {
@@ -31,9 +32,10 @@ BUILD_TYPE:
   relwithdebinfo  Use relwithdebinfo build
 
 Options:
-  -v, --verbose   Show verbose output with per-file progress
-  -j, --jobs N    Number of parallel jobs (default: $JOBS)
-  -h, --help      Show this help
+  -v, --verbose     Show verbose output with per-file progress
+  -j, --jobs N      Number of parallel jobs (default: $JOBS)
+  -c, --changed-only Only analyze changed C++ files (uses git diff)
+  -h, --help        Show this help
 
 FILES:
   Optional list of specific files to analyze (default: all src/*.cpp)
@@ -41,6 +43,7 @@ FILES:
 Examples:
   $(basename "$0")                          # Analyze all files
   $(basename "$0") -v -j 8                  # Verbose with 8 jobs
+  $(basename "$0") --changed-only           # Only analyze changed files
   $(basename "$0") src/Domain/ProcessModel.cpp  # Analyze specific file
 EOF
     exit 0
@@ -51,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose) VERBOSE=true; shift ;;
         -j|--jobs) JOBS="$2"; shift 2 ;;
+        -c|--changed-only) CHANGED_ONLY=true; shift ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h) FILES+=("$1"); shift ;;
@@ -107,9 +111,26 @@ rm -f "${COMPILE_COMMANDS}.bak"
 
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
-    # Get all source files from project, excluding other-platform files
-    mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
-        ! -path "*/Platform/Windows/*" 2>/dev/null)
+    if [[ "$CHANGED_ONLY" == "true" ]]; then
+        # Get changed files from git
+        mapfile -t CHANGED_FILES < <(git diff --name-only HEAD 2>/dev/null | grep -E '\.(cpp|h)$' | grep -v 'Platform/Windows/' || true)
+        if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+            echo "No changed C++ files found."
+            exit 0
+        fi
+        # Convert to absolute paths
+        SOURCE_FILES=()
+        for f in "${CHANGED_FILES[@]}"; do
+            SOURCE_FILES+=("${PROJECT_ROOT}/$f")
+        done
+        if $VERBOSE; then
+            echo "Analyzing ${#SOURCE_FILES[@]} changed files..."
+        fi
+    else
+        # Get all source files from project, excluding other-platform files
+        mapfile -t SOURCE_FILES < <(find "${PROJECT_ROOT}/src" -name "*.cpp" -type f \
+            ! -path "*/Platform/Windows/*" 2>/dev/null)
+    fi
 else
     SOURCE_FILES=()
     for f in "${FILES[@]}"; do

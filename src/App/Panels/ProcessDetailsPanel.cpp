@@ -272,6 +272,7 @@ void ProcessDetailsPanel::renderContent()
 
     if (ImGui::BeginTabBar("DetailsTabs"))
     {
+        // 1. Overview
         if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
         {
             renderBasicInfo(m_CachedSnapshot);
@@ -284,13 +285,23 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
+        // 2. GPU (always show, with message if data unavailable)
+        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
         {
-            renderActions();
+            const auto& proc = m_CachedSnapshot;
+            // Show "no GPU" message only if ALL GPU fields are empty/zero (no GPU resources at all)
+            if ((proc.gpuMemoryBytes == 0U) && (proc.gpuUtilPercent == 0.0) && proc.gpuDevices.empty())
+            {
+                ImGui::TextUnformatted("No GPU usage detected for this process");
+            }
+            else
+            {
+                renderGpuUsage(m_CachedSnapshot);
+            }
             ImGui::EndTabItem();
         }
 
-        // Network and I/O tab - show if process has network or I/O data
+        // 3. Network and I/O - show if process has network or I/O data
         {
             const bool hasNetworkData = (m_CachedSnapshot.netSentBytesPerSec > 0.0 || m_CachedSnapshot.netReceivedBytesPerSec > 0.0 ||
                                          !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
@@ -309,14 +320,11 @@ void ProcessDetailsPanel::renderContent()
             }
         }
 
-        // GPU tab - show if process has GPU usage
-        if (m_CachedSnapshot.gpuUtilPercent > 0.0 || m_CachedSnapshot.gpuMemoryBytes > 0 || !m_CachedSnapshot.gpuDevices.empty())
+        // 4. Actions (last)
+        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
         {
-            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
-            {
-                renderGpuUsage(m_CachedSnapshot);
-                ImGui::EndTabItem();
-            }
+            renderActions();
+            ImGui::EndTabItem();
         }
 
         ImGui::EndTabBar();
@@ -1223,6 +1231,21 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 {
     auto& theme = UI::Theme::get();
 
+    // Throttle debug logging to avoid per-frame spam
+    // Only log when GPU data changes or on first render of a new process
+    // Using member variables ensures per-panel state tracking (not static)
+    if (proc.pid != m_LastGpuLogPid || proc.gpuMemoryBytes != m_LastGpuLogMemoryBytes)
+    {
+        spdlog::debug("renderGpuUsage: PID {} util={:.1f}%, mem={}, devices='{}'",
+                      proc.pid,
+                      proc.gpuUtilPercent,
+                      proc.gpuMemoryBytes,
+                      proc.gpuDevices);
+
+        m_LastGpuLogPid = proc.pid;
+        m_LastGpuLogMemoryBytes = proc.gpuMemoryBytes;
+    }
+
     // Show GPU info
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
     ImGui::Spacing();
@@ -1377,42 +1400,53 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     if (!m_GpuUtilHistory.empty() && !m_Timestamps.empty())
     {
         const size_t alignedCount = std::min(m_GpuUtilHistory.size(), m_Timestamps.size());
-        std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
-        std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
-        std::vector<double> timeVec = tailVector(m_Timestamps, alignedCount);
-        const auto* gpuUtilData = gpuUtilVec.data();
-        const auto* gpuMemData = gpuMemVec.data();
-        const auto* timeData = timeVec.data();
+        const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+        // Extract only what we need for the graphs
+        const std::vector<double> timestamps = tailVector(m_Timestamps, alignedCount);
+        const std::vector<double> gpuUtilVec = tailVector(m_GpuUtilHistory, alignedCount);
+        const std::vector<double> gpuMemVec = tailVector(m_GpuMemHistory, alignedCount);
+
+        const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
+        std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
+
+        const int plotCount = UI::Format::checkedCount(alignedCount);
 
         // GPU Utilization graph
         auto plotGpuUtil = [&]()
         {
-            if (ImPlot::BeginPlot("##GPUUtilPlot", ImVec2(-1, -1), UI::Widgets::PLOT_FLAGS_DEFAULT))
+            const UI::Widgets::PlotFontGuard fontGuard;
+            if (ImPlot::BeginPlot("##GPUUtilPlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
             {
-                ImPlot::SetupAxes("Time", "GPU %", UI::Widgets::X_AXIS_FLAGS_DEFAULT, UI::Widgets::Y_AXIS_FLAGS_DEFAULT);
+                setupLegendDefault();
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
                 ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
+                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
                 ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 100.0, ImPlotCond_Always);
 
-                if (alignedCount > 0)
+                if (plotCount > 0)
                 {
                     plotLineWithFill("GPU %",
-                                     timeData,
-                                     gpuUtilData,
-                                     static_cast<int>(alignedCount),
+                                     timeData.data(),
+                                     gpuUtilVec.data(),
+                                     plotCount,
                                      theme.scheme().gpuUtilization,
                                      theme.scheme().gpuUtilizationFill);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(gpuUtilVec, ImPlot::GetPlotMousePos().x);
-                        if (idxVal.has_value())
+                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                         {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
-                            ImGui::TextUnformatted(ageText.c_str());
-                            ImGui::TextColored(theme.scheme().textInfo, "GPU: %.1f%%", gpuUtilData[*idxVal]);
-                            ImGui::EndTooltip();
+                            if (*idxVal < alignedCount)
+                            {
+                                ImGui::BeginTooltip();
+                                const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                                ImGui::TextUnformatted(ageText.c_str());
+                                ImGui::TextColored(theme.scheme().gpuUtilization, "GPU: %.1f%%", gpuUtilVec[*idxVal]);
+                                ImGui::EndTooltip();
+                            }
                         }
                     }
                 }
@@ -1428,32 +1462,34 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         // GPU Memory graph
         auto plotGpuMem = [&]()
         {
-            if (ImPlot::BeginPlot("##GPUMemPlot", ImVec2(-1, -1), UI::Widgets::PLOT_FLAGS_DEFAULT))
+            const UI::Widgets::PlotFontGuard fontGuard;
+            if (ImPlot::BeginPlot("##GPUMemPlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
             {
-                ImPlot::SetupAxes("Time", "GPU Memory", UI::Widgets::X_AXIS_FLAGS_DEFAULT, UI::Widgets::Y_AXIS_FLAGS_DEFAULT);
+                setupLegendDefault();
+                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
                 ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
+                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-                if (alignedCount > 0)
+                if (plotCount > 0)
                 {
-                    plotLineWithFill("GPU Memory",
-                                     timeData,
-                                     gpuMemData,
-                                     static_cast<int>(alignedCount),
-                                     theme.scheme().gpuMemory,
-                                     theme.scheme().gpuMemoryFill);
+                    plotLineWithFill(
+                        "GPU Memory", timeData.data(), gpuMemVec.data(), plotCount, theme.scheme().gpuMemory, theme.scheme().gpuMemoryFill);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
                     {
-                        const auto idxVal = hoveredIndexFromPlotX(gpuMemVec, ImPlot::GetPlotMousePos().x);
-                        if (idxVal.has_value())
+                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                         {
-                            ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(timeData[*idxVal]);
-                            ImGui::TextUnformatted(ageText.c_str());
-                            const std::string memStr = UI::Format::formatBytes(static_cast<double>(gpuMemData[*idxVal]));
-                            ImGui::TextColored(theme.scheme().textInfo, "GPU Memory: %s", memStr.c_str());
-                            ImGui::EndTooltip();
+                            if (*idxVal < alignedCount)
+                            {
+                                ImGui::BeginTooltip();
+                                const auto ageText = formatAgeSeconds(timeData[*idxVal]);
+                                ImGui::TextUnformatted(ageText.c_str());
+                                const std::string memStr = UI::Format::formatBytes(gpuMemVec[*idxVal]);
+                                ImGui::TextColored(theme.scheme().gpuMemory, "GPU Memory: %s", memStr.c_str());
+                                ImGui::EndTooltip();
+                            }
                         }
                     }
                 }

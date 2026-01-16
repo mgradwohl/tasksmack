@@ -35,6 +35,15 @@
             "-NonInteractive"
         ]
     },
+    // Ensure Linux tasks also use Copilot bash rcfile
+    // Note: Update ~/.bashrc.copilot path for your system
+    "terminal.integrated.automationProfile.linux": {
+        "path": "/bin/bash",
+        "args": [
+            "--rcfile",
+            "${userHome}/.bashrc.copilot"
+        ]
+    },
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
     "cmake.generator": "Ninja",
@@ -111,7 +120,13 @@
     "cmake.ctest.testExplorerIntegrationEnabled": false,
     "chat.tools.terminal.autoApprove": {
         "cmake": true
-    }
+    },
+    // Shell Integration: Enable advanced terminal features (command decorations, run recent, command history)
+    "terminal.integrated.shellIntegration.enabled": true,
+    // Preserve environment variables when launching terminals
+    "terminal.integrated.inheritEnv": true,
+    "terminal.integrated.shellIntegration.decorationsEnabled": "both",
+    "terminal.integrated.shellIntegration.history": 100
     // "cmake.cmakePath": "/snap/bin/cmake",
     // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
     // "cmake.ctestPath": "/snap/bin/cmake"

@@ -34,6 +34,13 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    /// Set the socket stats cache TTL (Linux only)
+    /// @param ttlMs Time-to-live in milliseconds for cached socket stats
+    /// Use this to override the default cache TTL at runtime (e.g., from user config)
+    void setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs) override;
+#endif
+
   private:
     long m_TicksPerSecond;
     uint64_t m_PageSize;

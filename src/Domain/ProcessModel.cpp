@@ -1,5 +1,6 @@
 #include "ProcessModel.h"
 
+#include "GPUModel.h"
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
@@ -15,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -218,6 +220,12 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     m_Snapshots = std::move(newSnapshots);
     m_NetworkBaselines = std::move(newNetworkBaselines);
 
+    // Merge per-process GPU data if GPUModel is available
+    if (m_GPUModel != nullptr)
+    {
+        mergeGPUData();
+    }
+
     // Prune stale entries from tracking maps (dead processes) using modern C++23 idiom
     std::erase_if(m_PrevCounters, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
     std::erase_if(m_PeakRss, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
@@ -296,6 +304,149 @@ std::size_t ProcessModel::processCount() const
 const Platform::ProcessCapabilities& ProcessModel::capabilities() const
 {
     return m_Capabilities;
+}
+
+void ProcessModel::mergeGPUData()
+{
+    // Query per-process GPU counters from GPUModel
+    auto gpuCounters = m_GPUModel->readProcessGPUCounters();
+    if (gpuCounters.empty())
+    {
+        return;
+    }
+
+    // Build lookup maps: GPU ID -> friendly name
+    // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
+    // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
+    std::unordered_map<std::string, std::string> gpuIdToName;
+    auto gpuSnaps = m_GPUModel->snapshots();
+    spdlog::debug("ProcessModel::mergeGPUData: Got {} GPU snapshots for name lookup", gpuSnaps.size());
+    for (const auto& gpuSnap : gpuSnaps)
+    {
+        // Map both ID formats to the same name
+        gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
+        if (!gpuSnap.luidId.empty())
+        {
+            gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
+        }
+        spdlog::debug("ProcessModel::mergeGPUData: GPU ID '{}' / LUID '{}' -> name '{}'", gpuSnap.gpuId, gpuSnap.luidId, gpuSnap.name);
+    }
+
+    // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
+    // A process may use multiple GPUs, so we aggregate
+    struct AggregatedGPU
+    {
+        double totalUtilPercent = 0.0;
+        std::uint64_t totalMemoryBytes = 0;
+        double totalEncoderUtil = 0.0;
+        double totalDecoderUtil = 0.0;
+        std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
+        std::vector<std::string> allEngines;
+        std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
+    };
+    std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
+
+    // Log the first counter's GPU ID for debugging
+    if (!gpuCounters.empty())
+    {
+        spdlog::debug("ProcessModel::mergeGPUData: First per-process counter gpuId='{}'", gpuCounters[0].gpuId);
+    }
+
+    for (const auto& gc : gpuCounters)
+    {
+        auto& agg = pidToGPU[gc.pid];
+
+        // Look up friendly name for this GPU
+        std::string gpuName = gc.gpuId; // Default to ID if name not found
+        if (auto nameIt = gpuIdToName.find(gc.gpuId); nameIt != gpuIdToName.end())
+        {
+            gpuName = nameIt->second;
+        }
+
+        // Add per-GPU breakdown
+        ProcessSnapshot::PerGPUUsage perGpu;
+        perGpu.gpuId = gc.gpuId;
+        perGpu.gpuName = gpuName; // Store friendly name
+        perGpu.memoryBytes = gc.gpuMemoryBytes;
+        perGpu.utilPercent = gc.gpuUtilPercent;
+        perGpu.engines = gc.activeEngines;
+        agg.perGpuBreakdown.push_back(std::move(perGpu));
+
+        // Aggregate totals
+        agg.totalUtilPercent += gc.gpuUtilPercent;
+        agg.totalMemoryBytes += gc.gpuMemoryBytes;
+        agg.totalEncoderUtil += gc.encoderUtilPercent;
+        agg.totalDecoderUtil += gc.decoderUtilPercent;
+
+        // Collect unique GPU names (not IDs)
+        if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
+        {
+            agg.gpuNames.push_back(gpuName);
+        }
+
+        // Collect unique engines
+        for (const auto& engine : gc.activeEngines)
+        {
+            if (std::ranges::find(agg.allEngines, engine) == agg.allEngines.end())
+            {
+                agg.allEngines.push_back(engine);
+            }
+        }
+    }
+
+    // Merge into snapshots
+    int mergedCount = 0;
+    for (auto& snapshot : m_Snapshots)
+    {
+        auto it = pidToGPU.find(snapshot.pid);
+        if (it != pidToGPU.end())
+        {
+            ++mergedCount;
+            const auto& agg = it->second;
+            // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs).
+            // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute.
+            snapshot.gpuUtilPercent = agg.totalUtilPercent;
+            snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
+            snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
+            snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
+            snapshot.gpuEngines = agg.allEngines;
+            snapshot.perGpuUsage = agg.perGpuBreakdown;
+
+            // Build comma-separated GPU device string (friendly names)
+            // Pre-allocate to avoid multiple reallocations
+            std::string gpuDevices;
+            if (!agg.gpuNames.empty())
+            {
+                size_t totalLength = 0;
+                for (const auto& name : agg.gpuNames)
+                {
+                    totalLength += name.length() + 2; // +2 for ", "
+                }
+                gpuDevices.reserve(totalLength);
+
+                for (size_t i = 0; i < agg.gpuNames.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        gpuDevices += ", ";
+                    }
+                    gpuDevices += agg.gpuNames[i];
+                }
+            }
+            snapshot.gpuDevices = std::move(gpuDevices);
+
+            // Log GPU-using processes for debugging
+            spdlog::debug("ProcessModel: PID {} ({}) using GPU: {:.1f}%, {} bytes, devices='{}', engines={}",
+                          snapshot.pid,
+                          snapshot.name,
+                          snapshot.gpuUtilPercent,
+                          snapshot.gpuMemoryBytes,
+                          snapshot.gpuDevices,
+                          snapshot.gpuEngines.size());
+        }
+    }
+
+    spdlog::debug("ProcessModel: Merged GPU data for {} processes", mergedCount);
 }
 
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,

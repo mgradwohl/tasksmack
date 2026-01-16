@@ -148,7 +148,8 @@ void SystemMetricsPanel::onAttach()
     m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_GPUModel = std::make_unique<Domain::GPUModel>(Platform::makeGPUProbe());
+    m_GPUModel = std::make_shared<Domain::GPUModel>(Platform::makeGPUProbe());
+    m_GPUModel->setInstanceRefreshInterval(std::chrono::seconds{settings.pdhInstanceRefreshSeconds});
 
     // Initial refresh to seed histories
     m_Model->refresh();
@@ -365,26 +366,22 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
-        // GPU tab - show if GPUs are available
+        // GPU tab - always available; content handles missing GPUs gracefully
         if (m_GPUModel)
         {
-            const auto gpuInfos = m_GPUModel->gpuInfo();
-            if (!gpuInfos.empty())
+            if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
             {
-                if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
-                {
-                    // Build context for GpuSection render function
-                    GpuSection::RenderContext gpuCtx{
-                        .gpuModel = m_GPUModel.get(),
-                        .maxHistorySeconds = m_MaxHistorySeconds,
-                        .historyScrollSeconds = m_HistoryScrollSeconds,
-                        .lastDeltaSeconds = m_LastDeltaSeconds,
-                        .refreshInterval = m_RefreshInterval,
-                        .smoothedGPUs = &m_SmoothedGPUs,
-                    };
-                    GpuSection::renderGpuSection(gpuCtx);
-                    ImGui::EndTabItem();
-                }
+                // Build context for GpuSection render function
+                GpuSection::RenderContext gpuCtx{
+                    .gpuModel = m_GPUModel.get(),
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .historyScrollSeconds = m_HistoryScrollSeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedGPUs = &m_SmoothedGPUs,
+                };
+                GpuSection::renderGpuSection(gpuCtx);
+                ImGui::EndTabItem();
             }
         }
 

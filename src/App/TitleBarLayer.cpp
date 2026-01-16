@@ -12,8 +12,6 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <cstdint>
-
 #include <stb_image.h>
 
 #ifdef _WIN32
@@ -363,7 +361,7 @@ void TitleBarLayer::renderTitleBar()
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
         // Make icon clickable with invisible button
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
         if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
@@ -438,18 +436,18 @@ void TitleBarLayer::renderTitleBar()
     const float rightX = static_cast<float>(windowWidth);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
-    // Use theme colors for button hover (except close which is red)
+    // Use transparent background for buttons; only show colors on hover/active states
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 
-    // Close button (red hover - special case)
+    // Close button (red hover/active colors for common UI pattern)
     float buttonX = rightX - BUTTON_WIDTH;
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7F, 0.15F, 0.15F, 1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
     if (ImGui::Button(ICON_FA_XMARK "##Close", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
     {
         window.requestClose();

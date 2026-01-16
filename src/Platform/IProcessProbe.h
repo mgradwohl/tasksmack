@@ -2,6 +2,7 @@
 
 #include "ProcessTypes.h"
 
+#include <chrono>
 #include <vector>
 
 namespace Platform
@@ -37,6 +38,13 @@ class IProcessProbe
     /// Total system memory in bytes.
     /// Used for calculating per-process memory%.
     [[nodiscard]] virtual uint64_t systemTotalMemory() const = 0;
+
+    /// Set socket stats cache TTL (Linux only; no-op on Windows).
+    /// @param ttlMs Time-to-live in milliseconds for cached socket stats
+    /// @note This is a performance optimization cache, separate from the user's refresh interval.
+    virtual void setSocketStatsCacheTtl([[maybe_unused]] std::chrono::milliseconds ttlMs)
+    {
+    }
 };
 
 } // namespace Platform

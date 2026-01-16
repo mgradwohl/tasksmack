@@ -1,6 +1,7 @@
 #include "NVMLGPUProbe.h"
 
 #include "Platform/GPUTypes.h"
+#include "Platform/NVMLTypes.h"
 
 #include <spdlog/spdlog.h>
 
@@ -13,96 +14,8 @@
 
 #include <dlfcn.h>
 
-// NVML types and constants (for dynamic loading without requiring nvml.h)
-// These definitions match the NVML API but don't require the CUDA toolkit
-namespace
-{
-
-// NOLINTBEGIN(readability-identifier-naming) - these types mirror NVIDIA NVML C API naming
-using nvmlDevice_t = void*;
-// NOLINTEND(readability-identifier-naming)
-
-// These enums must match NVML's ABI exactly (C-style enums, unsigned int).
-// Using enum class would break dynamic loading compatibility.
-// NOLINTBEGIN(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
-enum nvmlReturn_t : unsigned int
-{
-    NVML_SUCCESS = 0,
-    NVML_ERROR_UNINITIALIZED = 1,
-    NVML_ERROR_INVALID_ARGUMENT = 2,
-    NVML_ERROR_NOT_SUPPORTED = 3,
-    NVML_ERROR_NO_PERMISSION = 4,
-    NVML_ERROR_ALREADY_INITIALIZED = 5,
-    NVML_ERROR_NOT_FOUND = 6,
-    NVML_ERROR_INSUFFICIENT_SIZE = 7,
-    NVML_ERROR_INSUFFICIENT_POWER = 8,
-    NVML_ERROR_DRIVER_NOT_LOADED = 9,
-    NVML_ERROR_TIMEOUT = 10,
-    NVML_ERROR_IRQ_ISSUE = 11,
-    NVML_ERROR_LIBRARY_NOT_FOUND = 12,
-    NVML_ERROR_FUNCTION_NOT_FOUND = 13,
-    NVML_ERROR_CORRUPTED_INFOROM = 14,
-    NVML_ERROR_GPU_IS_LOST = 15,
-    NVML_ERROR_RESET_REQUIRED = 16,
-    NVML_ERROR_OPERATING_SYSTEM = 17,
-    NVML_ERROR_LIB_RM_VERSION_MISMATCH = 18,
-    NVML_ERROR_IN_USE = 19,
-    NVML_ERROR_MEMORY = 20,
-    NVML_ERROR_NO_DATA = 21,
-    NVML_ERROR_VGPU_ECC_NOT_SUPPORTED = 22,
-    NVML_ERROR_INSUFFICIENT_RESOURCES = 23,
-    NVML_ERROR_UNKNOWN = 999
-};
-
-enum nvmlTemperatureSensors_t : unsigned int
-{
-    NVML_TEMPERATURE_GPU = 0
-};
-
-enum nvmlClockType_t : unsigned int
-{
-    NVML_CLOCK_GRAPHICS = 0,
-    NVML_CLOCK_SM = 1,
-    NVML_CLOCK_MEM = 2,
-    NVML_CLOCK_VIDEO = 3
-};
-
-enum nvmlPcieUtilCounter_t : unsigned int
-{
-    NVML_PCIE_UTIL_TX_BYTES = 0,
-    NVML_PCIE_UTIL_RX_BYTES = 1,
-    NVML_PCIE_UTIL_COUNT = 2
-};
-// NOLINTEND(performance-enum-size,cppcoreguidelines-use-enum-class,readability-identifier-naming)
-
-// NVML buffer size constants
-constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
-constexpr unsigned int NVML_DEVICE_UUID_BUFFER_SIZE = 80;
-
-// NOLINTBEGIN(readability-identifier-naming) - these structs mirror NVIDIA NVML C API naming
-struct nvmlMemory_t
-{
-    unsigned long long total;
-    unsigned long long free;
-    unsigned long long used;
-};
-
-struct nvmlUtilization_t
-{
-    unsigned int gpu;
-    unsigned int memory;
-};
-
-struct nvmlProcessInfo_t
-{
-    unsigned int pid;
-    unsigned long long usedGpuMemory;
-    unsigned int gpuInstanceId;
-    unsigned int computeInstanceId;
-};
-// NOLINTEND(readability-identifier-naming)
-
-} // anonymous namespace
+// Import NVML types from shared header
+using namespace Platform::NVML;
 
 namespace Platform
 {

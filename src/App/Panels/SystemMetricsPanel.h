@@ -70,13 +70,19 @@ class SystemMetricsPanel : public Panel
         return m_Hostname;
     }
 
+    /// Access the underlying GPU model for sharing with other components.
+    [[nodiscard]] std::shared_ptr<Domain::GPUModel> gpuModel() const
+    {
+        return m_GPUModel;
+    }
+
   private:
     void renderOverview();
     void renderCpuSection();
 
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
-    std::unique_ptr<Domain::GPUModel> m_GPUModel;
+    std::shared_ptr<Domain::GPUModel> m_GPUModel;
     Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
 
     double m_MaxHistorySeconds = 300.0;

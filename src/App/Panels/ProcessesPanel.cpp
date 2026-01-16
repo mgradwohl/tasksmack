@@ -289,7 +289,13 @@ void ProcessesPanel::onAttach()
     m_ForceRefresh = true;
 
     // Create process model with platform probe; refresh is driven by onUpdate().
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(Platform::makeProcessProbe());
+    auto processProbe = Platform::makeProcessProbe();
+
+    // Configure socket stats cache TTL (Linux only; no-op on Windows)
+    const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
+    processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
+
+    m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
 
     // Initial population - call refresh twice to seed history
     // First call sets up m_HasPrevSampleTime, second call populates history

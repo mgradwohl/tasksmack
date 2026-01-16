@@ -15,9 +15,9 @@ namespace Platform
 /// Default TTL for socket stats cache (500ms balances freshness vs. CPU cost)
 /// Network stats don't need to be as fresh as CPU/memory metrics.
 ///
-/// Note: This constant is defined in Platform (not Domain/SamplingConfig.h) to avoid
-/// Platform→Domain dependency, which would violate the layered architecture.
-/// Domain-layer code can pass a custom TTL to the constructor if needed.
+/// This default can be overridden at runtime via LinuxProcessProbe::setSocketStatsCacheTtl()
+/// or via user config [sampling] socket_stats_cache_ttl_ms setting.
+/// See Domain/SamplingConfig.h SOCKET_STATS_CACHE_TTL_MS_* constants.
 inline constexpr auto DEFAULT_SOCKET_STATS_CACHE_TTL = std::chrono::milliseconds(500);
 
 /// Per-socket network statistics from Netlink INET_DIAG

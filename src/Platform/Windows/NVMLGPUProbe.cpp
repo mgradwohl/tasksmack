@@ -1,5 +1,7 @@
 #include "NVMLGPUProbe.h"
 
+#include "Platform/NVMLTypes.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off
@@ -12,67 +14,18 @@
 #include <windows.h>
 // clang-format on
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <format>
+#include <limits>
+#include <utility>
+
+// Import NVML types from shared header
+using namespace Platform::NVML;
 
 namespace Platform
 {
-
-namespace
-{
-
-// NVML return codes
-constexpr int NVML_SUCCESS = 0;
-constexpr int NVML_ERROR_UNINITIALIZED = 1;
-constexpr int NVML_ERROR_INVALID_ARGUMENT = 2;
-constexpr int NVML_ERROR_NOT_SUPPORTED = 3;
-constexpr int NVML_ERROR_NO_PERMISSION = 4;
-constexpr int NVML_ERROR_ALREADY_INITIALIZED = 5;
-constexpr int NVML_ERROR_NOT_FOUND = 6;
-constexpr int NVML_ERROR_INSUFFICIENT_SIZE = 7;
-constexpr int NVML_ERROR_INSUFFICIENT_POWER = 8;
-constexpr int NVML_ERROR_DRIVER_NOT_LOADED = 9;
-constexpr int NVML_ERROR_TIMEOUT = 10;
-constexpr int NVML_ERROR_IRQ_ISSUE = 11;
-constexpr int NVML_ERROR_LIBRARY_NOT_FOUND = 12;
-constexpr int NVML_ERROR_FUNCTION_NOT_FOUND = 13;
-constexpr int NVML_ERROR_CORRUPTED_INFOROM = 14;
-constexpr int NVML_ERROR_GPU_IS_LOST = 15;
-
-// NVML temperature sensors
-constexpr int NVML_TEMPERATURE_GPU = 0;
-
-// NVML clock types
-constexpr int NVML_CLOCK_GRAPHICS = 0;
-[[maybe_unused]] constexpr int NVML_CLOCK_SM = 1;
-constexpr int NVML_CLOCK_MEM = 2;
-
-// NVML PCIe counter types
-[[maybe_unused]] constexpr int NVML_PCIE_UTIL_TX_BYTES = 0;
-[[maybe_unused]] constexpr int NVML_PCIE_UTIL_RX_BYTES = 1;
-
-// NVML constants
-constexpr unsigned int NVML_DEVICE_NAME_BUFFER_SIZE = 64;
-constexpr unsigned int NVML_DEVICE_UUID_BUFFER_SIZE = 80;
-constexpr unsigned int NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE = 80;
-constexpr unsigned int NVML_DEVICE_VBIOS_VERSION_BUFFER_SIZE = 32;
-
-// NVML memory info structure
-struct nvmlMemory_t
-{
-    uint64_t total;
-    uint64_t free;
-    uint64_t used;
-};
-
-// NVML utilization structure
-struct nvmlUtilization_t
-{
-    unsigned int gpu;
-    unsigned int memory;
-};
-
-} // namespace
 
 NVMLGPUProbe::NVMLGPUProbe() : m_Initialized(loadNVML() && initializeNVML())
 {
@@ -121,10 +74,30 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC(DeviceGetMaxClockInfo)
     LOAD_NVML_FUNC(DeviceGetUtilizationRates)
     LOAD_NVML_FUNC(DeviceGetPcieThroughput)
-    LOAD_NVML_FUNC(DeviceGetDriverVersion)
+    // Note: SystemGetDriverVersion (not DeviceGet*) - system-wide, not per-device
+    m_NVML.SystemGetDriverVersion = reinterpret_cast<decltype(m_NVML.SystemGetDriverVersion)>(
+        GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlSystemGetDriverVersion"));
+    if (m_NVML.SystemGetDriverVersion == nullptr)
+    {
+        spdlog::warn("NVMLGPUProbe: Failed to load nvmlSystemGetDriverVersion");
+        return false;
+    }
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)
     LOAD_NVML_FUNC(DeviceGetFanSpeed)
 
+    // Per-process functions (optional - may not be available in older NVML versions)
+    // Use a separate macro that doesn't fail on missing functions
+#define LOAD_NVML_FUNC_OPTIONAL(name)                                                                                                      \
+    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
+    if (m_NVML.name == nullptr)                                                                                                            \
+    {                                                                                                                                      \
+        spdlog::debug("NVMLGPUProbe: nvml" #name " not available (optional)");                                                             \
+    }
+
+    LOAD_NVML_FUNC_OPTIONAL(DeviceGetComputeRunningProcesses)
+    LOAD_NVML_FUNC_OPTIONAL(DeviceGetGraphicsRunningProcesses)
+
+#undef LOAD_NVML_FUNC_OPTIONAL
 #undef LOAD_NVML_FUNC
 
     spdlog::debug("NVMLGPUProbe: Successfully loaded nvml.dll");
@@ -157,7 +130,7 @@ bool NVMLGPUProbe::initializeNVML()
 
     // Get driver version
     std::array<char, NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE> driverVersion{};
-    result = m_NVML.DeviceGetDriverVersion(driverVersion.data(), NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE);
+    result = m_NVML.SystemGetDriverVersion(driverVersion.data(), NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE);
     if (result == NVML_SUCCESS)
     {
         spdlog::info("NVMLGPUProbe: Initialized with driver version: {}", driverVersion.data());
@@ -182,7 +155,7 @@ void NVMLGPUProbe::shutdownNVML()
     m_Initialized = false;
 }
 
-std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
+std::string NVMLGPUProbe::getNVMLErrorString(NVML::nvmlReturn_t result)
 {
     switch (result)
     {
@@ -219,7 +192,7 @@ std::string NVMLGPUProbe::getNVMLErrorString(nvmlReturn_t result)
     case NVML_ERROR_GPU_IS_LOST:
         return "GPU is lost";
     default:
-        return std::format("Unknown error ({})", result);
+        return std::format("Unknown error ({})", static_cast<unsigned int>(result));
     }
 }
 
@@ -407,10 +380,130 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
 std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 {
-    // Per-process GPU metrics via NVML will be implemented in Phase 3
-    // Windows: Use D3DKMT APIs for per-process metrics (all vendors)
-    // NVML can provide additional NVIDIA-specific per-process data
-    return {};
+    std::vector<ProcessGPUCounters> allCounters;
+
+    if (!m_Initialized)
+    {
+        return allCounters;
+    }
+
+    // Check if per-process functions are available
+    const bool hasComputeProcs = (m_NVML.DeviceGetComputeRunningProcesses != nullptr);
+    const bool hasGraphicsProcs = (m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);
+
+    if (!hasComputeProcs && !hasGraphicsProcs)
+    {
+        spdlog::debug("NVMLGPUProbe: Per-process GPU functions not available");
+        return allCounters;
+    }
+
+    for (const auto& [index, device] : m_DeviceHandles)
+    {
+        // Use index-based GPU ID to match WindowsGPUProbe (DXGI) format
+        // The NVML UUID is different from the DXGI LUID-based ID, so we use
+        // a consistent index-based format that aligns with the merged snapshots
+        std::string gpuId = std::format("GPU{}", index);
+
+        // Query compute processes (CUDA, OpenCL)
+        // NVML API pattern: first call with count=0 returns NVML_ERROR_INSUFFICIENT_SIZE and populates count
+        if (hasComputeProcs)
+        {
+            constexpr unsigned int MAX_PROCESSES = 256;
+            unsigned int computeCount = MAX_PROCESSES;
+            std::vector<nvmlProcessInfo_t> computeProcesses(MAX_PROCESSES);
+            nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
+            if (result == NVML_SUCCESS && computeCount > 0)
+            {
+                spdlog::debug("NVMLGPUProbe: Found {} compute processes on GPU {}", computeCount, index);
+                computeProcesses.resize(computeCount);
+                for (const auto& proc : computeProcesses)
+                {
+                    // NVML uses UINT64_MAX to indicate unavailable memory info
+                    constexpr auto NVML_MEMORY_NOT_AVAILABLE = std::numeric_limits<unsigned long long>::max();
+                    const bool hasValidMemory = (proc.usedGpuMemory != NVML_MEMORY_NOT_AVAILABLE);
+
+                    ProcessGPUCounters counter;
+                    counter.pid = static_cast<std::int32_t>(proc.pid);
+                    counter.gpuId = gpuId;
+                    counter.gpuMemoryBytes = hasValidMemory ? proc.usedGpuMemory : 0;
+                    counter.activeEngines.emplace_back("Compute");
+                    spdlog::debug("NVMLGPUProbe: Compute PID {} mem raw={} valid={} final={}",
+                                  counter.pid,
+                                  proc.usedGpuMemory,
+                                  hasValidMemory,
+                                  counter.gpuMemoryBytes);
+                    allCounters.push_back(std::move(counter));
+                }
+            }
+            else if (result != NVML_SUCCESS && result != NVML_ERROR_NOT_SUPPORTED)
+            {
+                spdlog::debug("NVMLGPUProbe: DeviceGetComputeRunningProcesses returned {}", static_cast<unsigned int>(result));
+            }
+        }
+
+        // Query graphics processes (DirectX, OpenGL, Vulkan)
+        if (hasGraphicsProcs)
+        {
+            constexpr unsigned int MAX_PROCESSES = 256;
+            unsigned int graphicsCount = MAX_PROCESSES;
+            std::vector<nvmlProcessInfo_t> graphicsProcesses(MAX_PROCESSES);
+            nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
+            if (result == NVML_SUCCESS && graphicsCount > 0)
+            {
+                spdlog::debug("NVMLGPUProbe: Found {} graphics processes on GPU {}", graphicsCount, index);
+                graphicsProcesses.resize(graphicsCount);
+                for (const auto& proc : graphicsProcesses)
+                {
+                    // NVML uses UINT64_MAX to indicate unavailable memory info
+                    constexpr auto NVML_MEMORY_NOT_AVAILABLE = std::numeric_limits<unsigned long long>::max();
+                    const bool hasValidMemory = (proc.usedGpuMemory != NVML_MEMORY_NOT_AVAILABLE);
+                    const std::uint64_t memBytes = hasValidMemory ? proc.usedGpuMemory : 0;
+
+                    // Check if we already have this process from compute list
+                    // Note: std::cmp_equal (C++20) handles signedness differences safely
+                    auto it = std::ranges::find_if(allCounters,
+                                                   [procPid = proc.pid, &gpuId](const ProcessGPUCounters& c)
+                                                   { return std::cmp_equal(c.pid, procPid) && c.gpuId == gpuId; });
+
+                    if (it != allCounters.end())
+                    {
+                        // Merge: add graphics engine, keep max valid memory
+                        it->activeEngines.emplace_back("3D");
+                        if (hasValidMemory)
+                        {
+                            it->gpuMemoryBytes = std::max(it->gpuMemoryBytes, memBytes);
+                        }
+                        spdlog::debug("NVMLGPUProbe: Graphics PID {} (merged) raw={} valid={} final={}",
+                                      proc.pid,
+                                      proc.usedGpuMemory,
+                                      hasValidMemory,
+                                      it->gpuMemoryBytes);
+                    }
+                    else
+                    {
+                        ProcessGPUCounters counter;
+                        counter.pid = static_cast<std::int32_t>(proc.pid);
+                        counter.gpuId = gpuId;
+                        counter.gpuMemoryBytes = memBytes;
+                        counter.activeEngines.emplace_back("3D");
+                        spdlog::debug("NVMLGPUProbe: Graphics PID {} (new) raw={} valid={} final={}",
+                                      counter.pid,
+                                      proc.usedGpuMemory,
+                                      hasValidMemory,
+                                      counter.gpuMemoryBytes);
+                        allCounters.push_back(std::move(counter));
+                    }
+                }
+            }
+            else if (result != NVML_SUCCESS && result != NVML_ERROR_NOT_SUPPORTED)
+            {
+                spdlog::debug("NVMLGPUProbe: DeviceGetGraphicsRunningProcesses returned {}", static_cast<unsigned int>(result));
+            }
+        }
+    }
+
+    spdlog::debug("NVMLGPUProbe: Found {} processes using GPU", allCounters.size());
+    return allCounters;
 }
 
 GPUCapabilities NVMLGPUProbe::capabilities() const
@@ -430,8 +523,9 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     caps.hasFanSpeed = true;
     caps.hasPCIeMetrics = true;
     caps.hasEngineUtilization = true;
-    caps.hasPerProcessMetrics = false; // Will be implemented via D3DKMT in Phase 3
-    caps.hasEncoderDecoder = false;    // Not implemented yet
+    // Per-process metrics available if we have the required functions
+    caps.hasPerProcessMetrics = (m_NVML.DeviceGetComputeRunningProcesses != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);
+    caps.hasEncoderDecoder = false; // Not implemented yet
     caps.supportsMultiGPU = true;
 
     return caps;

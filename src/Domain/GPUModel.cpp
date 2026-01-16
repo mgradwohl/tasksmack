@@ -14,7 +14,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
-// NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if is in <ranges>, libc++ provides fallback in <algorithm>
+// NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
 #include <ranges>
 #include <shared_mutex>
 #include <string>
@@ -173,6 +173,15 @@ Platform::GPUCapabilities GPUModel::capabilities() const
     return m_Probe->capabilities();
 }
 
+std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
+{
+    if (!m_Probe)
+    {
+        return {};
+    }
+    return m_Probe->readProcessGPUCounters();
+}
+
 GPUSnapshot
 GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const
 {
@@ -188,6 +197,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.name = infoIt->name;
         snapshot.vendor = infoIt->vendor;
         snapshot.isIntegrated = infoIt->isIntegrated;
+        snapshot.luidId = infoIt->luidId; // For PDH counter matching
     }
 
     // Copy instantaneous values
@@ -299,6 +309,14 @@ std::vector<double> GPUModel::historyTimestamps() const
 {
     const std::shared_lock lock(m_Mutex);
     return m_HistoryTimestamps;
+}
+
+void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)
+{
+    if (m_Probe)
+    {
+        m_Probe->setInstanceRefreshInterval(interval);
+    }
 }
 
 } // namespace Domain

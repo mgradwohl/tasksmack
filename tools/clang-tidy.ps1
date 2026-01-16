@@ -12,12 +12,16 @@
     Number of parallel jobs (default: number of CPU cores)
 .PARAMETER Files
     Specific files to analyze (default: all source files)
+.PARAMETER ChangedOnly
+    Only analyze files that have been modified according to git
 .EXAMPLE
     .\clang-tidy.ps1
 .EXAMPLE
     .\clang-tidy.ps1 -ShowDetails -Jobs 8
 .EXAMPLE
     .\clang-tidy.ps1 -Files src/Domain/ProcessModel.cpp
+.EXAMPLE
+    .\clang-tidy.ps1 -ChangedOnly
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +33,9 @@ param(
 
     [int]$Jobs = 0,
 
-    [string[]]$Files = @()
+    [string[]]$Files = @(),
+
+    [switch]$ChangedOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,22 +108,45 @@ $content = $content -replace '-fmodule-output=[^ ]*', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline
 
 # Determine files to analyze
-if ($Files.Count -eq 0) {
-    # Get all source files from project, excluding other-platform files
-    $SourceFiles = @()
-    $SourceDirs = @("src")
-    foreach ($dir in $SourceDirs) {
-        $fullDir = Join-Path $ProjectRoot $dir
-        if (Test-Path $fullDir) {
-            $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" |
-                Where-Object { $_.FullName -notmatch '\\Platform\\Linux\\' } |
-                Select-Object -ExpandProperty FullName
+if ($ChangedOnly) {
+    # Get changed files from git
+    if ($ShowDetails) {
+        Write-Host "Getting changed files from git..."
+    }
+    $gitOutput = & git diff --name-only HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Failed to get changed files from git. Falling back to all files."
+        $ChangedOnly = $false
+    } else {
+        $SourceFiles = $gitOutput |
+            Where-Object { $_ -match '\.(cpp|h)$' } |
+            Where-Object { $_ -notmatch 'Platform[/\\]Linux[/\\]' } |
+            ForEach-Object { Join-Path $ProjectRoot $_ }
+        if ($SourceFiles.Count -eq 0) {
+            Write-Host "No changed C++ files found."
+            exit 0
         }
     }
-} else {
-    $SourceFiles = $Files | ForEach-Object {
-        if ([System.IO.Path]::IsPathRooted($_)) { $_ }
-        else { Join-Path $ProjectRoot $_ }
+}
+
+if (-not $ChangedOnly) {
+    if ($Files.Count -eq 0) {
+        # Get all source files from project, excluding other-platform files
+        $SourceFiles = @()
+        $SourceDirs = @("src")
+        foreach ($dir in $SourceDirs) {
+            $fullDir = Join-Path $ProjectRoot $dir
+            if (Test-Path $fullDir) {
+                $SourceFiles += Get-ChildItem -Path $fullDir -Recurse -Include "*.cpp" |
+                    Where-Object { $_.FullName -notmatch '\\Platform\\Linux\\' } |
+                    Select-Object -ExpandProperty FullName
+            }
+        }
+    } else {
+        $SourceFiles = $Files | ForEach-Object {
+            if ([System.IO.Path]::IsPathRooted($_)) { $_ }
+            else { Join-Path $ProjectRoot $_ }
+        }
     }
 }
 

@@ -18,7 +18,10 @@
 #include <utility>
 #include <vector>
 
+// NOLINTBEGIN(misc-include-cleaner) - toml++ forward-declares parse_error/parse_file; suppress false
+// positives from include-cleaner when using toml++/toml.hpp
 #include <toml++/toml.hpp>
+// NOLINTEND(misc-include-cleaner)
 
 namespace UI
 {

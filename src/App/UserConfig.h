@@ -31,6 +31,41 @@ struct UserSettings
     // Controls how much timeline data is retained and shown in plots.
     int maxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
 
+    // PDH instance refresh interval (seconds) - Windows only
+    // Controls how often PDH refreshes GPU process instance names.
+    // Lower values detect new GPU-using processes faster but use more CPU.
+    int pdhInstanceRefreshSeconds = Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT;
+
+    // Socket stats cache TTL (milliseconds) - Linux only
+    // Controls how long per-process network stats are cached.
+    // Lower values = fresher data but more kernel queries.
+    int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
+
+    // Metrics Calculation Parameters
+    // Minimum time elapsed before computing network rates (seconds)
+    // Prevents large rate spikes early in process lifetime when few deltas exist.
+    double minTimeForRateSeconds = Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT;
+
+    // Maximum sanity check for network/IO rates (bytes per second)
+    // Rates above this threshold are treated as errors and clamped to 0.
+    double maxSaneRateBps = Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT;
+
+    // GPU integrated VRAM threshold (bytes) - Windows only
+    // Used to classify GPUs as integrated vs. discrete based on dedicated VRAM.
+    int64_t integratedGpuVramThresholdBytes = Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT;
+
+    // UI Behavior Parameters
+    // Exponential smoothing factor for charts (0.0 = no smoothing, 1.0 = full averaging)
+    double chartSmoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+
+    // Adaptive time constant range for chart smoothing (milliseconds)
+    int chartTauMsMin = Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT;
+    int chartTauMsMax = Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT;
+
+    // Progress bar color thresholds (percentage, 0-100)
+    double progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
+    double progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;
+
     // Window state
     int windowWidth = 1280;
     int windowHeight = 720;
