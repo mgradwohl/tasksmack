@@ -83,7 +83,11 @@ void AboutLayer::onAttach()
 
 void AboutLayer::onDetach()
 {
-    // No-op; AboutLayer lifetime is managed by the owning application/layer stack.
+    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
+    if (s_Instance == this)
+    {
+        s_Instance = nullptr;
+    }
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -295,7 +299,6 @@ void AboutLayer::openUrl(const std::string& url)
 #endif
 }
 
-/// Set the global AboutLayer instance (non-owning; used when layer is owned by the layer stack)
 /// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
 /// THREAD-SAFETY: Must only be called from main thread during initialization,
 /// before any code accesses instance().

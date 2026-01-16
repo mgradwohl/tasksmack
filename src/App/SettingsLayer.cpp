@@ -170,7 +170,11 @@ void SettingsLayer::onAttach()
 
 void SettingsLayer::onDetach()
 {
-    // No-op; SettingsLayer lifetime is managed by the Application layer stack or s_OwnedInstance
+    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
+    if (s_Instance == this)
+    {
+        s_Instance = nullptr;
+    }
 }
 
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
