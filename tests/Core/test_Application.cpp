@@ -664,8 +664,9 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             // Instance should be accessible within scope (verify get() works)
             EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
         }
-        // After scope ends, local 'app' is destroyed (but it's moved-from, so nothing happens).
-        // The Application is still alive, owned by s_Instance. Reset explicitly to destroy it.
+        // After scope ends, the moved-from unique_ptr 'app' is destroyed. It no longer owns
+        // the Application object, so its destruction is a no-op. The Application itself
+        // remains alive and is owned by s_Instance until we reset it explicitly here.
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws

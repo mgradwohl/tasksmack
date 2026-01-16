@@ -205,8 +205,11 @@ void Application::setInstance(std::unique_ptr<Application> app)
            "setInstance() called when an instance already exists. Call setInstance(nullptr) first to clear.");
     // Clear any stack-allocated instance pointer when taking unique_ptr ownership.
     // Assert that no stack-allocated instance exists or equals the one being set.
-    assert((!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() == app.get()) &&
-           "setInstance() called while a different stack-allocated Application instance exists");
+    if (app != nullptr)
+    {
+        assert((!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() == app.get()) &&
+               "setInstance() called while a different stack-allocated Application instance exists");
+    }
     g_StackApplicationInstance.reset();
     Application::s_Instance = std::move(app);
 }

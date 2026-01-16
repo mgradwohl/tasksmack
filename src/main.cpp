@@ -183,7 +183,9 @@ auto runApp() -> int
 
     // Settings dialog layer (modal overlay)
     // NOTE: SettingsLayer follows the same singleton pattern as AboutLayer.
-    // CRITICAL ORDERING: pushLayer() MUST be immediately followed by setInstance().
+    // pushLayer() calls onAttach(), which accesses the not-yet-set singleton.
+    // This works because onAttach() doesn't actually call SettingsLayer::get() today.
+    // Future work: automate singleton registration (see issue #388).
     auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
     App::SettingsLayer::setInstance(settingsLayerRef);
 
