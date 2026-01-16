@@ -178,15 +178,12 @@ auto runApp() -> int
     // NOTE: AboutLayer follows a singleton pattern exposed via App::AboutLayer::instance().
     // CRITICAL ORDERING: pushLayer() MUST be immediately followed by setInstance().
     // The layer stack owns the layer; setInstance() only registers a non-owning reference.
-    // Rationale: If this pattern becomes fragile (e.g., due to lazy initialization),
-    // consider automating singleton registration in onAttach() or via a factory method.
     auto& aboutLayerRef = appRef.pushLayer<App::AboutLayer>();
     App::AboutLayer::setInstance(aboutLayerRef);
 
     // Settings dialog layer (modal overlay)
     // NOTE: SettingsLayer follows the same singleton pattern as AboutLayer.
     // CRITICAL ORDERING: pushLayer() MUST be immediately followed by setInstance().
-    // See AboutLayer above for rationale.
     auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
     App::SettingsLayer::setInstance(settingsLayerRef);
 

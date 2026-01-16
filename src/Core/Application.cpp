@@ -72,7 +72,11 @@ Application::~Application()
     {
         g_StackApplicationInstance = nullptr;
     }
-    // s_Instance will be reset by unique_ptr destructor; no manual reset needed
+
+    // Note: No need to reset s_Instance here - it's either being destroyed by the unique_ptr
+    // that owns us (and will be nulled after this destructor returns), or we're stack-allocated
+    // (in which case s_Instance doesn't point to us). Attempting to reset s_Instance.get() == this
+    // would cause infinite recursion.
 }
 
 void Application::run()
