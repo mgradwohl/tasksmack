@@ -65,7 +65,6 @@ namespace App
 {
 
 AboutLayer* AboutLayer::s_Instance = nullptr;
-std::unique_ptr<AboutLayer> AboutLayer::s_OwnedInstance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {
@@ -297,22 +296,12 @@ void AboutLayer::openUrl(const std::string& url)
 }
 
 /// Set the global AboutLayer instance (non-owning; used when layer is owned by the layer stack)
-/// THREAD-SAFETY: Must only be called from main thread during initialization.
+/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
+/// THREAD-SAFETY: Must only be called from main thread during initialization,
+/// before any code accesses instance().
 void AboutLayer::setInstance(AboutLayer& layer)
 {
-    // Enforce that we are not silently destroying an owned instance when switching to non-owning mode.
-    assert(s_OwnedInstance == nullptr && "AboutLayer::setInstance(non-owning) called while an owned instance exists");
-
     s_Instance = &layer;
-}
-
-/// Set the global AboutLayer instance and take ownership
-/// THREAD-SAFETY: Must only be called from main thread during initialization.
-void AboutLayer::setInstance(std::unique_ptr<AboutLayer> layer)
-{
-    // Update instance pointer before reassigning owned instance to avoid dangling pointer
-    s_Instance = layer.get();
-    s_OwnedInstance = std::move(layer);
 }
 
 } // namespace App

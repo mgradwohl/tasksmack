@@ -20,14 +20,14 @@ namespace Core
 std::unique_ptr<Application> Application::s_Instance = nullptr;
 
 // Track stack-allocated Application for tests and fallback access.
-// When setInstance() is called, this stays null (s_Instance owns the instance).
-// When Application is created on the stack (tests), this points to it.
-thread_local Application* g_StackApplicationInstance = nullptr;
+// When setInstance() is called, s_Instance holds the instance (via unique_ptr).
+// When Application is created on the stack (tests), g_StackApplicationInstance points to it instead.
+static thread_local Application* g_StackApplicationInstance = nullptr;
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
     // For stack-allocated instances (tests), track in thread-local.
-    // setInstance() will populate s_Instance instead and set g_StackApplicationInstance = nullptr.
+    // Only set if neither ownership mechanism is already active.
     if (!s_Instance && !g_StackApplicationInstance)
     {
         g_StackApplicationInstance = this;
@@ -175,8 +175,7 @@ Application& Application::get()
     {
         return *g_StackApplicationInstance;
     }
-    // No Application instance found
-    assert((s_Instance != nullptr || g_StackApplicationInstance != nullptr) && "Application does not exist!");
+    // No instance in either ownership model
     throw std::runtime_error("Application does not exist!");
 }
 

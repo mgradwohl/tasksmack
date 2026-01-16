@@ -154,7 +154,6 @@ namespace
 } // namespace
 
 SettingsLayer* SettingsLayer::s_Instance = nullptr;
-std::unique_ptr<SettingsLayer> SettingsLayer::s_OwnedInstance = nullptr;
 
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
 {
@@ -528,23 +527,12 @@ void SettingsLayer::renderSettingsDialog()
     }
 }
 
-/// Set the global SettingsLayer instance (non-owning; used when layer is owned by the layer stack)
-/// THREAD-SAFETY: Must only be called from main thread during initialization.
+/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
+/// THREAD-SAFETY: Must only be called from main thread during initialization,
+/// before any code accesses instance().
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
-    // Enforce that we are not silently destroying an owned instance when switching to non-owning mode.
-    assert(s_OwnedInstance == nullptr && "SettingsLayer::setInstance(non-owning) called while an owned instance exists");
-
     s_Instance = &layer;
-}
-
-/// Set the global SettingsLayer instance and take ownership
-/// THREAD-SAFETY: Must only be called from main thread during initialization.
-void SettingsLayer::setInstance(std::unique_ptr<SettingsLayer> layer)
-{
-    // Update instance pointer before reassigning owned instance to avoid dangling pointer
-    s_Instance = layer.get();
-    s_OwnedInstance = std::move(layer);
 }
 
 } // namespace App
