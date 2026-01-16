@@ -67,7 +67,7 @@ Application::~Application()
 
     SDL_Quit();
 
-    // Clear thread-local pointer if this was a stack-allocated instance
+    // Clear thread-local reference if this was a stack-allocated instance
     // Note: Assumes Application is destroyed on the same thread it was created (SDL requirement)
     if (g_StackApplicationInstance.has_value() && &g_StackApplicationInstance->get() == this)
     {

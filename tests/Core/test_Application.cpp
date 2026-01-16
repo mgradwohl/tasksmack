@@ -644,7 +644,7 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
 {
     if (!hasDisplay())
     {
-        (void) Core::Application::get();
+        GTEST_SKIP() << "No display available (headless environment)";
     }
 
     Core::ApplicationSpecification spec;
