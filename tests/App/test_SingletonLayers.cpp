@@ -34,10 +34,10 @@ class MockLayer
         return s_Instance;
     }
 
-    // Non-owning singleton setter (pattern used by AboutLayer/SettingsLayer)
-    static void setInstance(MockLayer& layer)
+    // Non-owning singleton registration (pattern used by AboutLayer/SettingsLayer)
+    void registerInstance()
     {
-        s_Instance = &layer;
+        s_Instance = this;
     }
 
   private:
