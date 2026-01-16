@@ -165,6 +165,8 @@ SettingsLayer::~SettingsLayer() = default;
 void SettingsLayer::onAttach()
 {
     // Note: s_Instance is set by setInstance(); not in constructor
+    assert((s_Instance != nullptr) && "SettingsLayer::setInstance() must be called before onAttach()");
+    assert((s_Instance == this) && "SettingsLayer::s_Instance must point to this layer instance");
 }
 
 void SettingsLayer::onDetach()
@@ -527,6 +529,7 @@ void SettingsLayer::renderSettingsDialog()
 }
 
 /// Set the global SettingsLayer instance (non-owning; used when layer is owned by the layer stack)
+/// THREAD-SAFETY: Must only be called from main thread during initialization.
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
     s_Instance = &layer;
@@ -534,10 +537,12 @@ void SettingsLayer::setInstance(SettingsLayer& layer)
 }
 
 /// Set the global SettingsLayer instance and take ownership
+/// THREAD-SAFETY: Must only be called from main thread during initialization.
 void SettingsLayer::setInstance(std::unique_ptr<SettingsLayer> layer)
 {
+    // Update instance pointer before reassigning owned instance to avoid dangling pointer
+    s_Instance = layer.get();
     s_OwnedInstance = std::move(layer);
-    s_Instance = s_OwnedInstance.get();
 }
 
 } // namespace App

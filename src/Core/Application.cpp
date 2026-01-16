@@ -175,8 +175,8 @@ Application& Application::get()
     {
         return *g_StackApplicationInstance;
     }
-    // NOLINTNEXTLINE(clang-diagnostic-unreachable-code) - assert(false) used as hard debug guard; throw used in release builds
-    assert(false && "Application does not exist!");
+    // No Application instance found
+    assert((s_Instance != nullptr || g_StackApplicationInstance != nullptr) && "Application does not exist!");
     throw std::runtime_error("Application does not exist!");
 }
 
@@ -188,7 +188,9 @@ float Application::getTime()
 
 /// Set the global application instance (called from main()).
 /// This ensures the Application is managed by std::unique_ptr with proper RAII cleanup.
-/// TODO: Add explicit test coverage for this singleton initialization path
+///
+/// THREAD-SAFETY: This method MUST ONLY be called from the main thread during initialization,
+/// before any other threads access Application::get(). No synchronization is performed.
 void Application::setInstance(std::unique_ptr<Application> app)
 {
     // Clear any stack-allocated instance pointer when taking unique_ptr ownership
