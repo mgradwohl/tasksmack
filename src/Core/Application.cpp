@@ -216,9 +216,12 @@ void Application::setInstance(std::unique_ptr<Application> app)
         }
     }
 
-    // Only clear the stack-tracked instance if it does not match the instance being set.
-    // This preserves access to a valid stack instance when app.get() matches it.
-    if (!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() != app.get())
+    // Clear stack-tracked instance when clearing the singleton, or when replacing with a different instance.
+    if (app == nullptr)
+    {
+        g_StackApplicationInstance.reset();
+    }
+    else if (!g_StackApplicationInstance.has_value() || &g_StackApplicationInstance->get() != app.get())
     {
         g_StackApplicationInstance.reset();
     }

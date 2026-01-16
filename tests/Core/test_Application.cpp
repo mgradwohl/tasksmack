@@ -674,7 +674,6 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
-        EXPECT_THROW([[maybe_unused]] auto& ref = Core::Application::get(), std::runtime_error);
         bool gotExpectedException = false;
         try
         {
