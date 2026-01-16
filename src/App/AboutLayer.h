@@ -51,5 +51,3 @@ class AboutLayer : public Core::Layer
 };
 
 } // namespace App
-
-//

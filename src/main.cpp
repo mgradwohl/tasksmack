@@ -176,8 +176,8 @@ auto runApp() -> int
 
     // About dialog layer (modal overlay)
     // Create once via layer stack and register singleton as non-owning reference
-    auto& about = appRef.pushLayer<App::AboutLayer>();
-    App::AboutLayer::setInstance(about);
+    auto& aboutLayerRef = appRef.pushLayer<App::AboutLayer>();
+    App::AboutLayer::setInstance(aboutLayerRef);
 
     // Settings dialog layer (modal overlay)
     auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();

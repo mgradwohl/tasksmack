@@ -175,7 +175,7 @@ void SettingsLayer::onAttach()
 
 void SettingsLayer::onDetach()
 {
-    // No-op; unique_ptr handles cleanup
+    // No-op; SettingsLayer lifetime is managed by the Application layer stack or s_OwnedInstance
 }
 
 void SettingsLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -535,6 +535,7 @@ void SettingsLayer::renderSettingsDialog()
 /// Set the global SettingsLayer instance (non-owning; used when layer is owned by the layer stack)
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
+    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
     s_Instance = &layer;
 }
 

@@ -88,7 +88,7 @@ void AboutLayer::onAttach()
 
 void AboutLayer::onDetach()
 {
-    // No-op; unique_ptr handles cleanup
+    // No-op; AboutLayer lifetime is managed by the owning application/layer stack.
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -303,6 +303,7 @@ void AboutLayer::openUrl(const std::string& url)
 /// Set the global AboutLayer instance (non-owning; used when layer is owned by the layer stack)
 void AboutLayer::setInstance(AboutLayer& layer)
 {
+    s_OwnedInstance.reset(); // Clear owned instance to prevent mixed ownership
     s_Instance = &layer;
 }
 

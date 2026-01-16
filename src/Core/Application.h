@@ -68,8 +68,8 @@ class Application
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;
 
-    // Global application instance (managed via setApplicationInstance)
-    // Note: Using a global instead of static member allows main() to control initialization order
+    // Global application instance (managed via setInstance)
+    // Note: Using std::unique_ptr allows main() to control initialization order
     // and ensure proper cleanup with SDL_Quit
     static std::unique_ptr<Application> s_Instance;
 };
