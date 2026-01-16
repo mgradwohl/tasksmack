@@ -77,6 +77,9 @@ TEST_F(NonOwningSingletonTest, SetInstanceStoresNonOwningReference)
     MockLayer::setInstance(layer);
 
     EXPECT_EQ(MockLayer::instance(), &layer);
+
+    // Must call onDetach before layer goes out of scope to avoid dangling pointer
+    layer.onDetach();
 }
 
 TEST_F(NonOwningSingletonTest, OnDetachClearsSingleton)
