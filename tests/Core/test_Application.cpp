@@ -657,7 +657,7 @@ TEST(ApplicationTest, DestructorClearsInstanceAfterSetInstance)
             Core::Application::setInstance(std::move(app));
 
             // Instance should be accessible within scope
-            [[maybe_unused]] auto& refInScope = Core::Application::get();
+            Core::Application::get();
         }
         // After scope ends, s_Instance still owns the Application. Reset explicitly to
         // destroy the instance and ensure the singleton is cleared.
