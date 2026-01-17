@@ -1,5 +1,6 @@
 #include "ProcessModel.h"
 
+// NOLINTNEXTLINE(misc-include-cleaner-glob) - GPUModel.h used for m_GPUModel method calls
 #include "GPUModel.h"
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"

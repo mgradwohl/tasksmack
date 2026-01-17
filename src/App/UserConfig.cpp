@@ -17,7 +17,6 @@
 #include <fstream>
 #include <limits>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -87,8 +86,8 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 [[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate,
                                      const std::filesystem::path& fallback) -> std::filesystem::path
 {
-    const auto normalized = candidate.lexically_normal();
-    const bool hasTraversal = std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
+    auto normalized = candidate.lexically_normal();
+    const bool hasTraversal = std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; });
     if (!normalized.is_absolute() || hasTraversal)
     {
         spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());
