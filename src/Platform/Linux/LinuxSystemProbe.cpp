@@ -170,7 +170,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters)
 
         // Older kernels may not have all fields, that's OK
         // Just reset the stream and try with fewer fields
-        iss.clear();  // Reset error state for older kernels with fewer fields
+        iss.clear(); // Reset error state for older kernels with fewer fields
 
         if (label == "cpu")
         {

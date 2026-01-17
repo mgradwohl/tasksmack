@@ -83,8 +83,7 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     return std::string(value);
 }
 
-[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate,
-                                     const std::filesystem::path& fallback) -> std::filesystem::path
+[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate, const std::filesystem::path& fallback) -> std::filesystem::path
 {
     auto normalized = candidate.lexically_normal();
     const bool hasTraversal = std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });

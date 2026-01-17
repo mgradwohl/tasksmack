@@ -8,14 +8,14 @@
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
-
-#include <utility>
 #include "UI/UILayer.h"
 #include "version.h"
 
 #include <spdlog/common.h>
 #include <spdlog/logger.h>
 #include <spdlog/spdlog.h>
+
+#include <utility>
 
 #ifdef _WIN32
 #include <spdlog/sinks/basic_file_sink.h>

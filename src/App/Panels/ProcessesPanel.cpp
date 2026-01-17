@@ -461,12 +461,12 @@ void ProcessesPanel::renderContent()
     };
 
     ImGui::InputTextWithHint("##search",
-                              "Filter by name...",
-                              m_SearchBuffer.data(),
-                              m_SearchBuffer.capacity() + 1,
-                              ImGuiInputTextFlags_CallbackResize,
-                              resizeCallback,
-                              &m_SearchBuffer);
+                             "Filter by name...",
+                             m_SearchBuffer.data(),
+                             m_SearchBuffer.capacity() + 1,
+                             ImGuiInputTextFlags_CallbackResize,
+                             resizeCallback,
+                             &m_SearchBuffer);
     ImGui::PopStyleColor();
 
     // Clear button

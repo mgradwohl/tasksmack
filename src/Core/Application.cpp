@@ -27,7 +27,7 @@ namespace
 // Uses std::reference_wrapper to avoid storing a raw pointer; cleared in the destructor on the same thread.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - intentionally mutable for state tracking
 thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicationInstance;
-}  // namespace
+} // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
 {
