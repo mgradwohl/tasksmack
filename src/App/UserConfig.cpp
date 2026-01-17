@@ -82,6 +82,38 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     }
     return std::string(value);
 }
+
+[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate, const std::filesystem::path& fallback) -> std::filesystem::path
+{
+    auto normalized = candidate.lexically_normal();
+    const bool hasTraversal = std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
+    if (!normalized.is_absolute() || hasTraversal)
+    {
+        spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());
+        return fallback;
+    }
+
+    return normalized;
+}
+
+[[nodiscard]] auto resolveHomeConfigDir() -> std::filesystem::path
+{
+    if (auto homeEnv = readEnvVarString("HOME"))
+    {
+        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
+    }
+
+    // Last resort: use passwd entry (thread-safe version)
+    struct passwd pwBuf = {};
+    struct passwd* pwResult = nullptr;
+    std::array<char, 1024> buffer{};
+    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
+    {
+        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
+    }
+
+    return std::filesystem::current_path();
+}
 #endif
 
 } // namespace
@@ -113,27 +145,21 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     return std::filesystem::current_path();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config
+    // Ensure fallback is always safe; it comes from resolveHomeConfigDir() which returns absolute paths
+    const auto fallback = resolveHomeConfigDir();
+    if (!fallback.is_absolute())
+    {
+        spdlog::error("Fallback config directory is not absolute: {}", fallback.string());
+        return std::filesystem::current_path();
+    }
+
     if (auto xdgConfig = readEnvVarString("XDG_CONFIG_HOME"))
     {
-        return std::filesystem::path(*xdgConfig) / "tasksmack";
+        return sanitizeConfigDir(std::filesystem::path(*xdgConfig) / "tasksmack", fallback);
     }
 
-    // Fall back to ~/.config
-    if (auto homeEnv = readEnvVarString("HOME"))
-    {
-        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
-    }
-
-    // Last resort: use passwd entry (thread-safe version)
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    std::array<char, 1024> buffer{};
-    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
-    {
-        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
-    }
-
-    return std::filesystem::current_path();
+    // Fallback is guaranteed absolute, so just return it directly
+    return fallback;
 #endif
 }
 

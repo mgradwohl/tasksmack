@@ -465,8 +465,8 @@ makeInterfaceCounters(const std::string& name, uint64_t rxBytes = 0, uint64_t tx
 }
 
 /// Create a complete SystemCounters struct.
-inline Platform::SystemCounters makeSystemCounters(Platform::CpuCounters cpu,
-                                                   Platform::MemoryCounters memory,
+inline Platform::SystemCounters makeSystemCounters(const Platform::CpuCounters& cpu,
+                                                   const Platform::MemoryCounters& memory,
                                                    uint64_t uptime = 0,
                                                    std::vector<Platform::CpuCounters> perCore = {},
                                                    uint64_t netRxBytes = 0,

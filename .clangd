@@ -44,7 +44,7 @@ Diagnostics:
   # Let clangd run clang-tidy using your .clang-tidy config.
   # No Add/Remove here – .clang-tidy is the source of truth.
   ClangTidy: {}
-  UnusedIncludes: Strict
+  UnusedIncludes: None  # Disabled: causes false positives for template instantiations and stb_image.h
 
 Index:
   Background: Build

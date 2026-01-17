@@ -15,6 +15,8 @@
 #include <spdlog/logger.h>
 #include <spdlog/spdlog.h>
 
+#include <utility>
+
 #ifdef _WIN32
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/msvc_sink.h>
