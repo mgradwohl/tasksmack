@@ -332,7 +332,7 @@ void TitleBarLayer::renderTitleBar()
 {
     const auto& scheme = UI::Theme::get().scheme();
     auto& window = Core::Application::get().getWindow();
-    const auto [windowWidth, /*unused*/ _] = window.getSize();
+    const auto [windowWidth, _] = window.getSize();
 
     const float titleBarHeight = height();
     // Set up window for title bar - no padding, no scrolling, fixed position
