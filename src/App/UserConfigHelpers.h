@@ -1,7 +1,8 @@
 #pragma once
 
-#include <toml++/toml.hpp>
 #include "Domain/Numeric.h"
+
+#include <toml++/toml.hpp>
 
 namespace App::UserConfigHelpers
 {
@@ -15,12 +16,8 @@ inline void loadAndClamp(const toml::table& config, const char* section, const c
 }
 
 template<typename ClampFn>
-inline void loadAndNarrowInt64(const toml::table& config,
-                               const char* section,
-                               const char* key,
-                               int& destination,
-                               int defaultValue,
-                               ClampFn&& clampFn)
+inline void
+loadAndNarrowInt64(const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, ClampFn&& clampFn)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {
@@ -28,13 +25,8 @@ inline void loadAndNarrowInt64(const toml::table& config,
     }
 }
 
-inline void loadAndNarrowInt(const toml::table& config,
-                             const char* section,
-                             const char* key,
-                             int& destination,
-                             int defaultValue,
-                             int minVal,
-                             int maxVal)
+inline void loadAndNarrowInt(
+    const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, int minVal, int maxVal)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {
