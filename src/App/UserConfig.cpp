@@ -72,9 +72,9 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 // Behavior: if the TOML key exists and parses as `T`, the value is passed
 // to `clampFn` and the result stored in `destination`. If the key is
 // absent, `destination` is left unchanged (caller-supplied default preserved).
-// `clampFn` is a generic callable (function pointer, lambda, std::function, etc.).
-// We accept it as a forwarding reference to allow inlining and perfect
-// forwarding of stateful callables.
+// `clampFn` is a generic callable (lambda, function object, or function
+// pointer). We accept it as a forwarding reference to allow inlining and
+// perfect-forwarding of stateful callables.
 template<typename T, typename ClampFn>
 void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, ClampFn&& clampFn)
 {
@@ -84,43 +84,19 @@ void loadAndClamp(const toml::table& config, const char* section, const char* ke
     }
 }
 
-// Backwards-compatible overload: accept a plain function pointer (e.g., a
-// specialization of the `Domain::Sampling::clamp*` templates). This allows
-// callers to pass the template name (which can be deduced to a function
-// pointer in this context) without forcing them to wrap it.
-template<typename T> void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, T (*clampFn)(T))
-{
-    if (auto val = config[section][key].template value<T>())
-    {
-        destination = clampFn(*val);
-    }
-}
-
-// Overload for int64_t values that need narrow conversion + clamping
+// Overload for int64_t values that need narrow conversion + clamping.
 // Reads a 64-bit integer from TOML and narrows to `int` using
 // `Domain::Numeric::narrowOr<int>(value, defaultValue)` before applying
-// `clampFn`. If the key is absent, `destination` is unchanged.
-// Overload for int64_t values that need narrow conversion + clamping. `clampFn`
-// is a generic callable accepted as a forwarding reference to support lambdas
-// and function objects in addition to plain function pointers.
+// `clampFn`. `clampFn` is a generic callable accepted as a forwarding
+// reference (supports lambdas, function objects, and function pointers).
+// If the key is absent, `destination` is unchanged.
 template<typename ClampFn>
 void loadAndNarrowInt64(
-    const toml::table& config, const char* section, const char* key, int& destination, ClampFn&& clampFn, int defaultValue)
+    const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, ClampFn&& clampFn)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {
         destination = std::invoke(std::forward<ClampFn>(clampFn), Domain::Numeric::narrowOr<int>(*val, defaultValue));
-    }
-}
-
-// Backwards-compatible overload for plain function pointers (int (*)(int)).
-// This supports passing `Domain::Sampling::clampXXX` template names directly.
-void loadAndNarrowInt64(
-    const toml::table& config, const char* section, const char* key, int& destination, int (*clampFn)(int), int defaultValue)
-{
-    if (auto val = config[section][key].template value<std::int64_t>())
-    {
-        destination = clampFn(Domain::Numeric::narrowOr<int>(*val, defaultValue));
     }
 }
 
@@ -231,15 +207,15 @@ void UserConfig::load()
                            "sampling",
                            "interval_ms",
                            m_Settings.refreshIntervalMs,
-                           Domain::Sampling::clampRefreshInterval,
-                           Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+                           Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS,
+                           [](auto v) { return Domain::Sampling::clampRefreshInterval(v); });
 
         loadAndNarrowInt64(config,
                            "sampling",
                            "history_max_seconds",
                            m_Settings.maxHistorySeconds,
-                           Domain::Sampling::clampHistorySeconds,
-                           Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+                           Domain::Sampling::HISTORY_SECONDS_DEFAULT,
+                           [](auto v) { return Domain::Sampling::clampHistorySeconds(v); });
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
         // PDH instance refresh interval (Windows-only, controls how often PDH refreshes GPU process instances)
@@ -247,22 +223,29 @@ void UserConfig::load()
                            "sampling",
                            "pdh_instance_refresh_seconds",
                            m_Settings.pdhInstanceRefreshSeconds,
-                           Domain::Sampling::clampPdhInstanceRefreshSeconds,
-                           Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT);
+                           Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT,
+                           [](auto v) { return Domain::Sampling::clampPdhInstanceRefreshSeconds(v); });
 
         // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
         loadAndNarrowInt64(config,
                            "sampling",
                            "socket_stats_cache_ttl_ms",
                            m_Settings.socketStatsCacheTtlMs,
-                           Domain::Sampling::clampSocketStatsCacheTtlMs,
-                           Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT);
+                           Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
+                           [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
 
         // Metrics calculation parameters
-        loadAndClamp(
-            config, "metrics", "min_time_for_rate_seconds", m_Settings.minTimeForRateSeconds, Domain::Sampling::clampMinTimeForRateSeconds);
+        loadAndClamp(config,
+                     "metrics",
+                     "min_time_for_rate_seconds",
+                     m_Settings.minTimeForRateSeconds,
+                     [](auto v) { return Domain::Sampling::clampMinTimeForRateSeconds(v); });
 
-        loadAndClamp(config, "metrics", "max_sane_rate_bps", m_Settings.maxSaneRateBps, Domain::Sampling::clampMaxSaneRateBps);
+        loadAndClamp(config,
+                     "metrics",
+                     "max_sane_rate_bps",
+                     m_Settings.maxSaneRateBps,
+                     [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
 
         if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
         {
@@ -274,33 +257,37 @@ void UserConfig::load()
         }
 
         // UI behavior parameters
-        loadAndClamp(config, "ui", "chart_smooth_factor", m_Settings.chartSmoothFactor, Domain::Sampling::clampChartSmoothFactor);
+        loadAndClamp(config,
+                     "ui",
+                     "chart_smooth_factor",
+                     m_Settings.chartSmoothFactor,
+                     [](auto v) { return Domain::Sampling::clampChartSmoothFactor(v); });
 
         loadAndNarrowInt64(config,
                            "ui",
                            "chart_tau_ms_min",
                            m_Settings.chartTauMsMin,
-                           Domain::Sampling::clampChartTauMsMin,
-                           Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+                           Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
+                           [](auto v) { return Domain::Sampling::clampChartTauMsMin(v); });
 
         loadAndNarrowInt64(config,
                            "ui",
                            "chart_tau_ms_max",
                            m_Settings.chartTauMsMax,
-                           Domain::Sampling::clampChartTauMsMax,
-                           Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+                           Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT,
+                           [](auto v) { return Domain::Sampling::clampChartTauMsMax(v); });
 
         loadAndClamp(config,
                      "ui",
                      "progress_color_low_threshold",
                      m_Settings.progressColorLowThreshold,
-                     Domain::Sampling::clampProgressColorLowThreshold);
+                     [](auto v) { return Domain::Sampling::clampProgressColorLowThreshold(v); });
 
         loadAndClamp(config,
                      "ui",
                      "progress_color_high_threshold",
                      m_Settings.progressColorHighThreshold,
-                     Domain::Sampling::clampProgressColorHighThreshold);
+                     [](auto v) { return Domain::Sampling::clampProgressColorHighThreshold(v); });
 
         // Validate that low <= high threshold
         if (m_Settings.progressColorLowThreshold > m_Settings.progressColorHighThreshold)
