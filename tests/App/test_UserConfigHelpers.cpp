@@ -1,15 +1,19 @@
 #include "App/UserConfigHelpers.h"
+#include "Domain/SamplingConfig.h"
 
 #include <gtest/gtest.h>
+
 #include <toml++/toml.hpp>
 
 using namespace App;
 
 TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
 {
+    auto metrics = toml::table{};
+    metrics.insert_or_assign("max_sane_rate_bps", 12345);
+
     auto tbl = toml::table{};
-    tbl.insert_or_assign("metrics", toml::table{});
-    tbl["metrics"]["max_sane_rate_bps"] = 12345;
+    tbl.insert_or_assign("metrics", std::move(metrics));
 
     int dst = 0;
     UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
@@ -18,13 +22,16 @@ TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
 
 TEST(UserConfigHelpersTest, LoadAndNarrowInt64NarrowsAndClamps)
 {
+    auto sampling = toml::table{};
+    sampling.insert_or_assign("interval_ms", static_cast<std::int64_t>(5000));
+
     auto tbl = toml::table{};
-    tbl.insert_or_assign("sampling", toml::table{});
-    tbl["sampling"]["interval_ms"] = static_cast<std::int64_t>(5000);
+    tbl.insert_or_assign("sampling", std::move(sampling));
 
     int dst = 0;
-    UserConfigHelpers::loadAndNarrowInt64(tbl, "sampling", "interval_ms", dst, 1000, [](int v) { return Domain::Sampling::clampRefreshInterval(v); });
-    EXPECT_EQ(dst, Domain::Sampling::clampRefreshInterval(5000));
+    UserConfigHelpers::loadAndNarrowInt64(
+        tbl, "sampling", "interval_ms", dst, 1000, [](int v) { return Domain::Sampling::clampRefreshInterval(v); });
+    EXPECT_EQ(dst, static_cast<int>(Domain::Sampling::clampRefreshInterval(5000)));
 }
 
 TEST(UserConfigHelpersTest, LoadAndNarrowIntUsesDefaultWhenMissing)
