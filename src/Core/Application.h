@@ -45,7 +45,7 @@ class Application
     /// Example: auto& shell = app.pushLayer<ShellLayer>(); shell.setContentYOffset(height);
     template<typename T, typename... Args>
         requires std::is_base_of_v<Layer, T>
-    T& pushLayer(Args&&... args)
+    T& pushLayer(Args&&... args)  // NOLINT(cpp/unused-local-variable,cpp/unused-static-variable) - args used in std::forward pack expansion
     {
         auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         layer->onAttach();

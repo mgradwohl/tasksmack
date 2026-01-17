@@ -332,7 +332,7 @@ void TitleBarLayer::renderTitleBar()
 {
     const auto& scheme = UI::Theme::get().scheme();
     auto& window = Core::Application::get().getWindow();
-    const auto [windowWidth, windowHeight] = window.getSize();
+    const auto [windowWidth, /*unused*/ _] = window.getSize();
 
     const float titleBarHeight = height();
     // Set up window for title bar - no padding, no scrolling, fixed position
@@ -561,10 +561,8 @@ void TitleBarLayer::renderSystemMenu()
         }
         else
         {
-            if (ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move"))
-            {
-                // Move mode not implemented - would require special hit test mode
-            }
+            // Move mode not implemented - would require special hit test mode
+            static_cast<void>(ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move"));
         }
 
         // Size (disabled when maximized)
@@ -576,10 +574,8 @@ void TitleBarLayer::renderSystemMenu()
         }
         else
         {
-            if (ImGui::MenuItem(ICON_FA_EXPAND "  Size"))
-            {
-                // Size mode not implemented - would require special hit test mode
-            }
+            // Size mode not implemented - would require special hit test mode
+            static_cast<void>(ImGui::MenuItem(ICON_FA_EXPAND "  Size"));
         }
 
         // Minimize

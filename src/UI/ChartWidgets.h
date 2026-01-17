@@ -408,6 +408,11 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false)
 {
+    // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
+    // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
+    // reserves a fixed-width column sized to the larger of the provided bar count or minBarColumns,
+    // applying optional compact spacing for tight UI regions. Each bar can show a value label or a
+    // custom label; spacing mirrors ImGui style spacing to stay consistent with surrounding widgets.
     if (bars.empty())
     {
         plotFn();

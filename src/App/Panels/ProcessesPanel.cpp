@@ -460,16 +460,13 @@ void ProcessesPanel::renderContent()
         return 0;
     };
 
-    if (ImGui::InputTextWithHint("##search",
-                                 "Filter by name...",
-                                 m_SearchBuffer.data(),
-                                 m_SearchBuffer.capacity() + 1,
-                                 ImGuiInputTextFlags_CallbackResize,
-                                 resizeCallback,
-                                 &m_SearchBuffer))
-    {
-        // Input changed - filter will be applied below
-    }
+    ImGui::InputTextWithHint("##search",
+                              "Filter by name...",
+                              m_SearchBuffer.data(),
+                              m_SearchBuffer.capacity() + 1,
+                              ImGuiInputTextFlags_CallbackResize,
+                              resizeCallback,
+                              &m_SearchBuffer);
     ImGui::PopStyleColor();
 
     // Clear button

@@ -168,11 +168,9 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters)
         iss >> cpu.user >> cpu.nice >> cpu.system >> cpu.idle >> cpu.iowait >> cpu.irq >> cpu.softirq >> cpu.steal >> cpu.guest >>
             cpu.guestNice;
 
-        if (iss.fail())
-        {
-            // Older kernels may not have all fields, that's OK
-            // Just reset the stream and try with fewer fields
-        }
+        // Older kernels may not have all fields, that's OK
+        // Just reset the stream and try with fewer fields
+        iss.clear();  // Reset error state for older kernels with fewer fields
 
         if (label == "cpu")
         {

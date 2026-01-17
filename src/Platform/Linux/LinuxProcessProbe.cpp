@@ -14,6 +14,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -502,8 +503,9 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
     {
         // Convert cpu_set_t to a bitmask that fits in uint64_t
         // This limits us to 64 cores, which is reasonable for most systems
+        const int maxCpus = std::min(CPU_SETSIZE, 64);
         std::uint64_t mask = 0;
-        for (int cpu = 0; cpu < 64 && cpu < CPU_SETSIZE; ++cpu)
+        for (int cpu = 0; cpu < maxCpus; ++cpu)
         {
             if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
             {

@@ -17,6 +17,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -82,6 +83,39 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     }
     return std::string(value);
 }
+
+[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate,
+                                     const std::filesystem::path& fallback) -> std::filesystem::path
+{
+    const auto normalized = candidate.lexically_normal();
+    const bool hasTraversal = std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
+    if (!normalized.is_absolute() || hasTraversal)
+    {
+        spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());
+        return fallback;
+    }
+
+    return normalized;
+}
+
+[[nodiscard]] auto resolveHomeConfigDir() -> std::filesystem::path
+{
+    if (auto homeEnv = readEnvVarString("HOME"))
+    {
+        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
+    }
+
+    // Last resort: use passwd entry (thread-safe version)
+    struct passwd pwBuf = {};
+    struct passwd* pwResult = nullptr;
+    std::array<char, 1024> buffer{};
+    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
+    {
+        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
+    }
+
+    return std::filesystem::current_path();
+}
 #endif
 
 } // namespace
@@ -113,27 +147,14 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     return std::filesystem::current_path();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config
+    const auto fallback = resolveHomeConfigDir();
+
     if (auto xdgConfig = readEnvVarString("XDG_CONFIG_HOME"))
     {
-        return std::filesystem::path(*xdgConfig) / "tasksmack";
+        return sanitizeConfigDir(std::filesystem::path(*xdgConfig) / "tasksmack", fallback);
     }
 
-    // Fall back to ~/.config
-    if (auto homeEnv = readEnvVarString("HOME"))
-    {
-        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
-    }
-
-    // Last resort: use passwd entry (thread-safe version)
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    std::array<char, 1024> buffer{};
-    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
-    {
-        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
-    }
-
-    return std::filesystem::current_path();
+    return sanitizeConfigDir(fallback, fallback);
 #endif
 }
 

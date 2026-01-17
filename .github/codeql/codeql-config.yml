@@ -13,12 +13,12 @@ paths-ignore:
   - '**/vendor'
   - '**/third_party'
   - '**/external'
-  - '**/build/**'  # Exclude all files in build directories
+  - '**/build/**'  # Exclude all files in build directories (generated outputs trigger doc-only alerts like 912-915)
   - '**/CMakeFiles/**'       # CMake-generated scratch/try-compile files
   - '**/CMakeScratch/**'     # Additional guard for nested CMake scratch dirs
   - '**/tools'
   - '**/.cache/**'  # Exclude all files in cache directories
-  - '**/gladsources/**'   # Generated OpenGL loader
+  - '**/gladsources/**'   # Generated OpenGL loader (GLAD) – documented in upstream headers, skip cpp/poorly-documented-function
   - 'dist/**'             # Distribution packages
   - 'coverage/**'         # Coverage reports
   - 'benchmarks/**'       # Benchmark code
