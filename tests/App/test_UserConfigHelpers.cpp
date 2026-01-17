@@ -1,3 +1,5 @@
+// NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers, readability-magic-numbers)
+
 #include "App/UserConfigHelpers.h"
 #include "Domain/SamplingConfig.h"
 
@@ -5,7 +7,12 @@
 
 #include <toml++/toml.hpp>
 
-using namespace App;
+namespace App
+{
+namespace
+{
+
+// ========== Helper Function Tests ==========
 
 TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
 {
@@ -18,7 +25,7 @@ TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
         tbl.insert_or_assign("metrics", std::move(metrics));
 
         int dst = 0;
-        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        App::UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
         EXPECT_EQ(dst, 12345);
     }
 
@@ -31,7 +38,7 @@ TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
         tbl.insert_or_assign("metrics", std::move(metrics));
 
         int dst = 0;
-        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        App::UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
         EXPECT_EQ(dst, 0);
     }
 
@@ -44,7 +51,7 @@ TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
         tbl.insert_or_assign("metrics", std::move(metrics));
 
         int dst = 0;
-        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        App::UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
         EXPECT_EQ(dst, 20000);
     }
 }
@@ -58,16 +65,21 @@ TEST(UserConfigHelpersTest, LoadAndNarrowInt64NarrowsAndClamps)
     tbl.insert_or_assign("sampling", std::move(sampling));
 
     int dst = 0;
-    UserConfigHelpers::loadAndNarrowInt64(
+    App::UserConfigHelpers::loadAndNarrowInt64(
         tbl, "sampling", "interval_ms", dst, 1000, [](int v) { return Domain::Sampling::clampRefreshInterval(v); });
     EXPECT_EQ(dst, static_cast<int>(Domain::Sampling::clampRefreshInterval(5000)));
 }
 
-TEST(UserConfigHelpersTest, LoadAndNarrowIntUsesDefaultWhenMissing)
+TEST(UserConfigHelpersTest, LoadAndNarrowIntWithClampUsesDefaultWhenMissing)
 {
     auto tbl = toml::table{};
-    int dst = 0;
+    int dst = 999;
     // Key missing -> destination unchanged
-    UserConfigHelpers::loadAndNarrowInt(tbl, "window", "width", dst, 800, 200, 16000);
-    EXPECT_EQ(dst, 0);
+    App::UserConfigHelpers::loadAndNarrowIntWithClamp(tbl, "window", "width", dst, 800, 200, 16000);
+    EXPECT_EQ(dst, 999);
 }
+
+} // namespace
+} // namespace App
+
+// NOLINTEND(cppcoreguidelines-avoid-magic-numbers, readability-magic-numbers)

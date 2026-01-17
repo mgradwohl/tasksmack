@@ -15,7 +15,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -291,8 +290,8 @@ void UserConfig::load()
         // Note: panels visibility is no longer used (removed in favor of tabbed UI)
 
         // Window state
-        UserConfigHelpers::loadAndNarrowInt(config, "window", "width", m_Settings.windowWidth, 800, 200, 16'384);
-        UserConfigHelpers::loadAndNarrowInt(config, "window", "height", m_Settings.windowHeight, 600, 200, 16'384);
+        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "width", m_Settings.windowWidth, 800, 200, 16'384);
+        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "height", m_Settings.windowHeight, 600, 200, 16'384);
         if (auto val = config["window"]["x"].value<std::int64_t>())
         {
             // Use default x position of 100 if narrowOr fails
