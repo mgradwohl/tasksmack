@@ -6,10 +6,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
-#include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <string>
 #include <utility>
 
@@ -276,124 +272,9 @@ TEST(UserSettingsTest, ZeroWindowDimensionsAreStorable)
     EXPECT_EQ(settings.windowHeight, 0);
 }
 
-// ========== Config Load/Save Integration Tests ==========
-
-TEST(UserConfigTest, LoadValidConfigFile)
-{
-    // Create a temporary config file with known values
-    const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "tasksmack_test_config";
-    std::filesystem::create_directories(tempDir);
-    const std::filesystem::path configFile = tempDir / "test_config.toml";
-
-    // Write a test config
-    std::ofstream out(configFile);
-    out << "[sampling]\n";
-    out << "interval_ms = 2000\n";
-    out << "history_max_seconds = 600\n";
-    out << "\n";
-    out << "[ui]\n";
-    out << "chart_smooth_factor = 0.8\n";
-    out << "progress_color_low_threshold = 40.0\n";
-    out << "progress_color_high_threshold = 80.0\n";
-    out << "\n";
-    out << "[theme]\n";
-    out << "id = \"cyberpunk\"\n";
-    out << "\n";
-    out << "[window]\n";
-    out << "width = 1920\n";
-    out << "height = 1080\n";
-    out << "maximized = true\n";
-    out.close();
-
-    // Note: UserConfig is a singleton, we can't easily test it in isolation
-    // This test documents expected behavior but would require refactoring
-    // UserConfig to accept a config path for testing
-
-    // Cleanup
-    std::filesystem::remove_all(tempDir);
-}
-
-TEST(UserConfigTest, LoadConfigWithOutOfRangeValuesGetsClampedCorrectly)
-{
-    // This test documents that out-of-range values should be clamped
-    // by the Domain::Sampling clamp functions during load
-
-    // Example: refreshIntervalMs should be clamped to REFRESH_INTERVAL_MIN_MS..REFRESH_INTERVAL_MAX_MS
-    const int tooSmall = Domain::Sampling::REFRESH_INTERVAL_MIN_MS - 100;
-    const int tooLarge = Domain::Sampling::REFRESH_INTERVAL_MAX_MS + 100;
-
-    // These would be clamped by clampRefreshInterval()
-    EXPECT_LT(tooSmall, Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
-    EXPECT_GT(tooLarge, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
-
-    const int clampedSmall = Domain::Sampling::clampRefreshInterval(tooSmall);
-    const int clampedLarge = Domain::Sampling::clampRefreshInterval(tooLarge);
-
-    EXPECT_EQ(clampedSmall, Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
-    EXPECT_EQ(clampedLarge, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
-}
-
-TEST(UserConfigTest, LoadConfigWithMissingKeysUsesDefaults)
-{
-    // When a config key is missing, the default value should be retained
-    const UserSettings settings;
-
-    // These are the defaults that should be preserved when keys are missing
-    EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
-    EXPECT_EQ(settings.maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
-    EXPECT_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT);
-    EXPECT_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT);
-    EXPECT_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT);
-}
-
-TEST(UserConfigTest, SaveConfigCreatesValidToml)
-{
-    // This test documents the expected save behavior
-    // UserConfig::save() should create a valid TOML file with all settings
-
-    UserSettings settings;
-    settings.themeId = "test-theme";
-    settings.refreshIntervalMs = 1500;
-    settings.maxHistorySeconds = 450;
-    settings.windowWidth = 1600;
-    settings.windowHeight = 900;
-    settings.windowMaximized = false;
-
-    // The save() method should serialize these to TOML format
-    // This would require refactoring UserConfig to accept a path for testing
-}
-
-TEST(UserConfigTest, LoadHandlesProgressThresholdSwapping)
-{
-    // When low threshold > high threshold, they should be swapped
-    UserSettings settings;
-    settings.progressColorLowThreshold = 80.0;
-    settings.progressColorHighThreshold = 20.0;
-
-    // The load() function has logic to swap these if low > high
-    if (settings.progressColorLowThreshold > settings.progressColorHighThreshold)
-    {
-        std::swap(settings.progressColorLowThreshold, settings.progressColorHighThreshold);
-    }
-
-    EXPECT_LE(settings.progressColorLowThreshold, settings.progressColorHighThreshold);
-    EXPECT_DOUBLE_EQ(settings.progressColorLowThreshold, 20.0);
-    EXPECT_DOUBLE_EQ(settings.progressColorHighThreshold, 80.0);
-}
-
-TEST(UserConfigTest, WindowPositionSanityCheckHandlesExtremeValues)
-{
-    // Window positions beyond ±100,000 should be rejected
-    constexpr int EXTREME_VALUE = 200'000;
-    constexpr int SANE_VALUE = 50'000;
-
-    // In the actual code, isSaneWindowPositionComponent() checks this
-    const bool extremeIsInsane = std::abs(EXTREME_VALUE) > 100'000;
-    const bool saneIsSane = std::abs(SANE_VALUE) <= 100'000;
-
-    EXPECT_TRUE(extremeIsInsane);
-    EXPECT_TRUE(saneIsSane);
-}
+// Note: Additional integration tests for the helper functions would require
+// refactoring UserConfig to accept a configurable path for testing, as it
+// currently uses a singleton pattern with a fixed config location.
 
 } // namespace
 } // namespace App

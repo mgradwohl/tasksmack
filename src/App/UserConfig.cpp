@@ -64,8 +64,7 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 }
 
 // Helper templates for loading config values with clamping
-template<typename T>
-void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, auto (*clampFn)(T)->T)
+template<typename T> void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, T (*clampFn)(T))
 {
     if (auto val = config[section][key].template value<T>())
     {
