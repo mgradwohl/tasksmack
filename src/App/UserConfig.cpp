@@ -64,6 +64,13 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 }
 
 // Helper templates for loading config values with clamping
+// - `config`: parsed TOML table
+// - `section`/`key`: TOML lookup path
+// - `destination`: out-parameter to store the clamped value if key exists
+// - `clampFn`: callable that enforces valid range for the value
+// Behavior: if the TOML key exists and parses as `T`, the value is passed
+// to `clampFn` and the result stored in `destination`. If the key is
+// absent, `destination` is left unchanged (caller-supplied default preserved).
 template<typename T> void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, T (*clampFn)(T))
 {
     if (auto val = config[section][key].template value<T>())
@@ -73,8 +80,11 @@ template<typename T> void loadAndClamp(const toml::table& config, const char* se
 }
 
 // Overload for int64_t values that need narrow conversion + clamping
-void loadAndClampInt64(
-    const toml::table& config, const char* section, const char* key, int& destination, auto (*clampFn)(int)->int, int defaultValue)
+// Reads a 64-bit integer from TOML and narrows to `int` using
+// `Domain::Numeric::narrowOr<int>(value, defaultValue)` before applying
+// `clampFn`. If the key is absent, `destination` is unchanged.
+void loadAndNarrowInt64(
+    const toml::table& config, const char* section, const char* key, int& destination, int (*clampFn)(int), int defaultValue)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {
@@ -82,7 +92,9 @@ void loadAndClampInt64(
     }
 }
 
-// Overload for simple int64_t to int narrow conversion with std::clamp
+// Overload for simple int64_t to int narrow conversion with `std::clamp`.
+// Reads an integer and narrows to `int` with `defaultValue` fallback,
+// then clamps the result to `[minVal, maxVal]` before storing in `destination`.
 void loadAndNarrowInt(
     const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, int minVal, int maxVal)
 {
@@ -183,36 +195,36 @@ void UserConfig::load()
         auto config = toml::parse_file(m_ConfigPath.string());
 
         // Sampling / refresh interval
-        loadAndClampInt64(config,
-                          "sampling",
-                          "interval_ms",
-                          m_Settings.refreshIntervalMs,
-                          Domain::Sampling::clampRefreshInterval,
-                          Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+        loadAndNarrowInt64(config,
+                  "sampling",
+                  "interval_ms",
+                  m_Settings.refreshIntervalMs,
+                  Domain::Sampling::clampRefreshInterval,
+                  Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
 
-        loadAndClampInt64(config,
-                          "sampling",
-                          "history_max_seconds",
-                          m_Settings.maxHistorySeconds,
-                          Domain::Sampling::clampHistorySeconds,
-                          Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+        loadAndNarrowInt64(config,
+                  "sampling",
+                  "history_max_seconds",
+                  m_Settings.maxHistorySeconds,
+                  Domain::Sampling::clampHistorySeconds,
+                  Domain::Sampling::HISTORY_SECONDS_DEFAULT);
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
         // PDH instance refresh interval (Windows-only, controls how often PDH refreshes GPU process instances)
-        loadAndClampInt64(config,
-                          "sampling",
-                          "pdh_instance_refresh_seconds",
-                          m_Settings.pdhInstanceRefreshSeconds,
-                          Domain::Sampling::clampPdhInstanceRefreshSeconds,
-                          Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT);
+        loadAndNarrowInt64(config,
+                  "sampling",
+                  "pdh_instance_refresh_seconds",
+                  m_Settings.pdhInstanceRefreshSeconds,
+                  Domain::Sampling::clampPdhInstanceRefreshSeconds,
+                  Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT);
 
         // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
-        loadAndClampInt64(config,
-                          "sampling",
-                          "socket_stats_cache_ttl_ms",
-                          m_Settings.socketStatsCacheTtlMs,
-                          Domain::Sampling::clampSocketStatsCacheTtlMs,
-                          Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT);
+        loadAndNarrowInt64(config,
+                  "sampling",
+                  "socket_stats_cache_ttl_ms",
+                  m_Settings.socketStatsCacheTtlMs,
+                  Domain::Sampling::clampSocketStatsCacheTtlMs,
+                  Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT);
 
         // Metrics calculation parameters
         loadAndClamp(
@@ -232,19 +244,19 @@ void UserConfig::load()
         // UI behavior parameters
         loadAndClamp(config, "ui", "chart_smooth_factor", m_Settings.chartSmoothFactor, Domain::Sampling::clampChartSmoothFactor);
 
-        loadAndClampInt64(config,
-                          "ui",
-                          "chart_tau_ms_min",
-                          m_Settings.chartTauMsMin,
-                          Domain::Sampling::clampChartTauMsMin,
-                          Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
+        loadAndNarrowInt64(config,
+                  "ui",
+                  "chart_tau_ms_min",
+                  m_Settings.chartTauMsMin,
+                  Domain::Sampling::clampChartTauMsMin,
+                  Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT);
 
-        loadAndClampInt64(config,
-                          "ui",
-                          "chart_tau_ms_max",
-                          m_Settings.chartTauMsMax,
-                          Domain::Sampling::clampChartTauMsMax,
-                          Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
+        loadAndNarrowInt64(config,
+                  "ui",
+                  "chart_tau_ms_max",
+                  m_Settings.chartTauMsMax,
+                  Domain::Sampling::clampChartTauMsMax,
+                  Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT);
 
         loadAndClamp(config,
                      "ui",
