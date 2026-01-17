@@ -14,6 +14,8 @@ paths-ignore:
   - '**/third_party'
   - '**/external'
   - '**/build/**'  # Exclude all files in build directories
+  - '**/CMakeFiles/**'       # CMake-generated scratch/try-compile files
+  - '**/CMakeScratch/**'     # Additional guard for nested CMake scratch dirs
   - '**/tools'
   - '**/.cache/**'  # Exclude all files in cache directories
   - '**/gladsources/**'   # Generated OpenGL loader
