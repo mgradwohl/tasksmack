@@ -223,7 +223,7 @@ struct PDHGPUProbe::Impl
 
     // Cache of last valid results - returned during warm-up to avoid data gaps
     std::vector<ProcessGPUCounters> lastValidResults;
-    std::chrono::steady_clock::time_point lastValidTimestamp{};
+    std::chrono::steady_clock::time_point lastValidTimestamp;
 
     // Cache of counter handles per instance
     struct CounterInfo
@@ -679,19 +679,19 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
             // Verify we're using the correct union member for PDH_FMT_LARGE format
             if (ci.engineType == "DedicatedMemory")
             {
-                // NOLINT(cppcoreguidelines-pro-type-union-access)
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
                 agg.dedicatedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
             else if (ci.engineType == "SharedMemory")
             {
-                // NOLINT(cppcoreguidelines-pro-type-union-access)
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
                 agg.sharedMemory += static_cast<std::uint64_t>(value.largeValue);
             }
         }
         else
         {
             // Utilization counter - verify we're using the correct union member for PDH_FMT_DOUBLE format
-            // NOLINT(cppcoreguidelines-pro-type-union-access)
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
             agg.totalUtilization += value.doubleValue;
 
             // Add engine type if not already present
