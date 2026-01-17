@@ -146,7 +146,7 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config
     // Ensure fallback is always safe; it comes from resolveHomeConfigDir() which returns absolute paths
-    const auto fallback = resolveHomeConfigDir();
+    auto fallback = resolveHomeConfigDir();
     if (!fallback.is_absolute())
     {
         spdlog::error("Fallback config directory is not absolute: {}", fallback.string());

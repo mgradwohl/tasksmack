@@ -194,6 +194,12 @@ auto runApp() -> int
     // Run the application
     appRef.run();
 
+    // CRITICAL: Manually detach all layers BEFORE clearing the Application singleton.
+    // Reason: Layer onDetach() methods may call Application::get() to save state.
+    // If we let ~Application() run during setInstance(nullptr), those calls will fail.
+    // This ensures layers can still access the Application during cleanup.
+    appRef.detachAllLayers();
+
     // Explicitly destroy the Application singleton to ensure SDL_Quit()
     // and other teardown happen before main()/WinMain() returns.
     Core::Application::setInstance(nullptr);

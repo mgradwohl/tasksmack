@@ -35,6 +35,11 @@ class Application
     void run();
     void stop();
 
+    /// Detach all layers in reverse order (topmost first).
+    /// This should be called before destroying the Application to allow layers
+    /// to access Application::get() during cleanup.
+    void detachAllLayers();
+
     /// Dispatch an event to all layers (in reverse order)
     /// Stops when a layer marks the event as handled
     void raiseEvent(Event& event);

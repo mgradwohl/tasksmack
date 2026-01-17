@@ -61,7 +61,10 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 
 Application::~Application()
 {
-    // Detach layers in reverse order
+    // Note: Layers should have been detached via detachAllLayers() before destruction.
+    // This cleanup is defensive - clear any remaining layers silently.
+    // If layers weren't properly detached, their onDetach() may fail trying to access
+    // the Application singleton (which is being destroyed).
     for (auto& layer : std::views::reverse(m_LayerStack))
     {
         layer->onDetach();
@@ -83,6 +86,16 @@ Application::~Application()
     //   2. We're stack-allocated (s_Instance doesn't point to us)
     //   3. Being explicitly cleared via setInstance(nullptr) (already null)
     // Attempting to check s_Instance.get() == this would cause issues in case 1.
+}
+
+void Application::detachAllLayers()
+{
+    // Detach layers in reverse order (topmost first)
+    for (auto& layer : std::views::reverse(m_LayerStack))
+    {
+        layer->onDetach();
+    }
+    m_LayerStack.clear();
 }
 
 void Application::run()

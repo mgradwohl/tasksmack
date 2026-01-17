@@ -116,6 +116,8 @@
     "C_Cpp.configurationWarnings": "disabled",
     "C_Cpp.default.intelliSenseMode": "clang-x64",
     "C_Cpp.clang_format_sortIncludes": false,
+    // Disable VS Code built-in markdown validator (too noisy on generated/third-party files)
+    "markdown.validate.enabled": false,
     // Disable CMake Tools test discovery - use CTest preset tasks instead
     "cmake.ctest.testExplorerIntegrationEnabled": false,
     "chat.tools.terminal.autoApprove": {
