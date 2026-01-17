@@ -2,6 +2,9 @@
 
 #include "Domain/Numeric.h"
 
+#include <algorithm>
+#include <functional>
+
 #include <toml++/toml.hpp>
 
 namespace App::UserConfigHelpers

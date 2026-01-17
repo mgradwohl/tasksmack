@@ -9,15 +9,44 @@ using namespace App;
 
 TEST(UserConfigHelpersTest, LoadAndClampAppliesClamp)
 {
-    auto metrics = toml::table{};
-    metrics.insert_or_assign("max_sane_rate_bps", 12345);
+    // In-range value should be preserved
+    {
+        auto metrics = toml::table{};
+        metrics.insert_or_assign("max_sane_rate_bps", 12345);
 
-    auto tbl = toml::table{};
-    tbl.insert_or_assign("metrics", std::move(metrics));
+        auto tbl = toml::table{};
+        tbl.insert_or_assign("metrics", std::move(metrics));
 
-    int dst = 0;
-    UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
-    EXPECT_EQ(dst, 12345);
+        int dst = 0;
+        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        EXPECT_EQ(dst, 12345);
+    }
+
+    // Below-min should clamp to 0
+    {
+        auto metrics = toml::table{};
+        metrics.insert_or_assign("max_sane_rate_bps", -100);
+
+        auto tbl = toml::table{};
+        tbl.insert_or_assign("metrics", std::move(metrics));
+
+        int dst = 0;
+        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        EXPECT_EQ(dst, 0);
+    }
+
+    // Above-max should clamp to 20000
+    {
+        auto metrics = toml::table{};
+        metrics.insert_or_assign("max_sane_rate_bps", 25000);
+
+        auto tbl = toml::table{};
+        tbl.insert_or_assign("metrics", std::move(metrics));
+
+        int dst = 0;
+        UserConfigHelpers::loadAndClamp<int>(tbl, "metrics", "max_sane_rate_bps", dst, [](int v) { return std::clamp(v, 0, 20000); });
+        EXPECT_EQ(dst, 20000);
+    }
 }
 
 TEST(UserConfigHelpersTest, LoadAndNarrowInt64NarrowsAndClamps)
