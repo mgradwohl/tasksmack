@@ -1,4 +1,3 @@
-// NOLINTNEXTLINE(misc-include-cleaner-glob) - stb_image.h macros generate scanner errors
 #include "UI/IconLoader.h"
 
 #include <glad/gl.h>
@@ -14,6 +13,7 @@
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
+// NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h macros generate scanner errors
 #include <stb_image.h>
 
 #ifdef __clang__
