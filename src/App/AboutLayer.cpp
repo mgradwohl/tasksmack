@@ -70,25 +70,21 @@ AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
 {
 }
 
-AboutLayer::~AboutLayer()
-{
-    if (s_Instance == this)
-    {
-        s_Instance = nullptr;
-    }
-}
+AboutLayer::~AboutLayer() = default;
 
 void AboutLayer::onAttach()
 {
     // Layer lifecycle is guaranteed to be called from main thread only (SDL/ImGui requirement).
-    // Enforce single instance with assertion rather than atomic operations.
-    assert(s_Instance == nullptr && "AboutLayer instance already exists!");
-    s_Instance = this;
+    // s_Instance is set by setInstance() immediately after pushLayer() returns.
+    // During onAttach(), verify that either the singleton is not yet set (before setInstance),
+    // or it already points to this instance (setInstance was called before pushLayer).
+    assert((s_Instance == nullptr || s_Instance == this) && "AboutLayer singleton must be nullptr or point to this instance");
     loadIcon();
 }
 
 void AboutLayer::onDetach()
 {
+    // Clear singleton instance to avoid dangling pointer after this layer is destroyed.
     if (s_Instance == this)
     {
         s_Instance = nullptr;
@@ -302,6 +298,14 @@ void AboutLayer::openUrl(const std::string& url)
         spdlog::warn("Failed to launch xdg-open for URL: {}", url);
     }
 #endif
+}
+
+/// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
+/// THREAD-SAFETY: Must only be called from main thread during initialization,
+/// before any code accesses instance().
+void AboutLayer::setInstance(AboutLayer& layer)
+{
+    s_Instance = &layer;
 }
 
 } // namespace App

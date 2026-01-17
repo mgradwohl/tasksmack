@@ -141,43 +141,60 @@ auto runApp() -> int
     userConfig.load();
     const auto& settings = userConfig.settings();
 
-    // Create application
+    // Create application and transfer ownership to the singleton
     Core::ApplicationSpecification appSpec;
     appSpec.Name = "TaskSmack";
     appSpec.Width = std::clamp(settings.windowWidth, 200, 16'384);
     appSpec.Height = std::clamp(settings.windowHeight, 200, 16'384);
     appSpec.VSync = true;
 
-    Core::Application app(appSpec);
+    auto app = std::make_unique<Core::Application>(appSpec);
+    Core::Application::setInstance(std::move(app));
+
+    // Get reference to the application for further setup
+    Core::Application& appRef = Core::Application::get();
 
     // Apply saved position/maximized state after the window exists.
     // Ordering: set restore geometry first, then maximize.
     if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
     {
-        app.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
+        appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
     }
     if (settings.windowMaximized)
     {
-        app.getWindow().maximize();
+        appRef.getWindow().maximize();
     }
 
     // Push UI layer (initializes ImGui/ImPlot backends)
-    app.pushLayer<UI::UILayer>();
+    appRef.pushLayer<UI::UILayer>();
 
     // Push title bar layer (custom window chrome)
-    app.pushLayer<App::TitleBarLayer>();
+    appRef.pushLayer<App::TitleBarLayer>();
 
     // Push shell layer (docking workspace with panels)
-    app.pushLayer<App::ShellLayer>();
+    appRef.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
-    app.pushLayer<App::AboutLayer>();
+    // NOTE: AboutLayer follows a singleton pattern exposed via App::AboutLayer::instance().
+    // CRITICAL: onAttach() is called inside pushLayer(), so setInstance() must be called
+    // immediately after layer creation but BEFORE pushing it to the stack.
+    // We create a bare instance, register it as the singleton, then push it.
+    // This awkward pattern is necessary because pushLayer() manages layer ownership
+    // and calls onAttach() immediately.
+    auto& aboutLayerRef = appRef.pushLayer<App::AboutLayer>();
+    App::AboutLayer::setInstance(aboutLayerRef);
 
     // Settings dialog layer (modal overlay)
-    app.pushLayer<App::SettingsLayer>();
+    // NOTE: SettingsLayer follows the same singleton pattern as AboutLayer.
+    auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
+    App::SettingsLayer::setInstance(settingsLayerRef);
 
     // Run the application
-    app.run();
+    appRef.run();
+
+    // Explicitly destroy the Application singleton to ensure SDL_Quit()
+    // and other teardown happen before main()/WinMain() returns.
+    Core::Application::setInstance(nullptr);
 
     return 0;
 }

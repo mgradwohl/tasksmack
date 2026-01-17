@@ -28,7 +28,9 @@ class AboutLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    static auto instance() -> AboutLayer*;
+    [[nodiscard]] static auto instance() -> AboutLayer*;
+    // Set singleton without taking ownership (use when layer is in layer stack)
+    static void setInstance(AboutLayer& layer);
     void requestOpen();
 
   private:
@@ -39,6 +41,7 @@ class AboutLayer : public Core::Layer
     bool m_OpenRequested = false;
     UI::Texture m_Icon;
 
+    // Non-owning singleton pointer; points to a layer owned by the application's layer stack
     static AboutLayer* s_Instance;
 };
 

@@ -443,3 +443,255 @@ TEST(ApplicationTest, ApplicationIsNotMovable)
     EXPECT_FALSE(std::is_move_constructible_v<Core::Application>);
     EXPECT_FALSE(std::is_move_assignable_v<Core::Application>);
 }
+// =============================================================================
+// Singleton setInstance() Tests
+// =============================================================================
+
+TEST(ApplicationTest, SetInstanceWithUniquePtr)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "SetInstanceTest";
+
+    try
+    {
+        auto app = std::make_unique<Core::Application>(spec);
+        auto* appPtr = app.get();
+
+        // Explicitly set instance with unique_ptr ownership
+        Core::Application::setInstance(std::move(app));
+
+        // get() should return the same instance
+        EXPECT_EQ(&Core::Application::get(), appPtr);
+
+        // Cleanup to avoid leaking singleton state across tests
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SetInstanceOverridesThreadLocalFallback)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "ThreadLocalReplacementTest";
+
+    try
+    {
+        // Create app without setting instance - constructor sets thread_local fallback
+        auto app = std::make_unique<Core::Application>(spec);
+        auto* appPtr = app.get();
+
+        // Before setInstance, get() should work via thread_local fallback
+        EXPECT_EQ(&Core::Application::get(), appPtr);
+
+        // Now explicitly set instance with unique_ptr; subsequent get() calls come from s_Instance
+        Core::Application::setInstance(std::move(app));
+
+        // get() should still return correct instance (now via s_Instance)
+        EXPECT_EQ(&Core::Application::get(), appPtr);
+
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, GetReturnsCorrectInstanceAfterSetInstance)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "GetAfterSetTest";
+
+    try
+    {
+        auto app = std::make_unique<Core::Application>(spec);
+        auto* expectedApp = app.get();
+
+        Core::Application::setInstance(std::move(app));
+
+        // Multiple calls to get() should return the same instance
+        EXPECT_EQ(&Core::Application::get(), expectedApp);
+        EXPECT_EQ(&Core::Application::get(), expectedApp);
+        EXPECT_EQ(&Core::Application::get(), expectedApp);
+
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SetInstancePreservesWindowState)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "WindowPreservationTest";
+    spec.Width = 1024;
+    spec.Height = 768;
+
+    try
+    {
+        auto app = std::make_unique<Core::Application>(spec);
+        const int width = app->getWindow().getWidth();
+        const int height = app->getWindow().getHeight();
+
+        Core::Application::setInstance(std::move(app));
+
+        // Window properties should be preserved
+        auto& instance = Core::Application::get();
+        EXPECT_EQ(instance.getWindow().getWidth(), width);
+        EXPECT_EQ(instance.getWindow().getHeight(), height);
+
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "LayerOperationsTest";
+
+    try
+    {
+        auto app = std::make_unique<Core::Application>(spec);
+
+        // Push layers before setting instance
+        auto& layer1 = app->pushLayer<TestLayer>("BeforeSetting");
+
+        Core::Application::setInstance(std::move(app));
+
+        // Should be able to push layers after setting instance
+        auto& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
+
+        // Layer 1 should still be in the stack.
+        // NOTE: layer1 reference remains valid for as long as the Application instance is alive,
+        // because setInstance() transfers ownership without moving the Application object itself.
+        EXPECT_TRUE(layer1.attachCalled);
+
+        // The second layer pushed after setInstance() should also be properly attached.
+        EXPECT_TRUE(layer2.attachCalled);
+
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "SingletonSemanticsTest";
+
+    try
+    {
+        auto app = std::make_unique<Core::Application>(spec);
+        auto* appPtr = app.get();
+
+        Core::Application::setInstance(std::move(app));
+
+        // Calling get() multiple times should always return the same instance
+        Core::Application& ref1 = Core::Application::get();
+        Core::Application& ref2 = Core::Application::get();
+        Core::Application& ref3 = Core::Application::get();
+
+        EXPECT_EQ(&ref1, &ref2);
+        EXPECT_EQ(&ref2, &ref3);
+        EXPECT_EQ(&ref1, appPtr);
+
+        Core::Application::setInstance(nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "OwnershipTransferTest";
+
+    try
+    {
+        {
+            auto app = std::make_unique<Core::Application>(spec);
+            Core::Application::setInstance(std::move(app));
+        }
+
+        // After scope ends, the moved-from unique_ptr 'app' is destroyed. It no longer owns
+        // the Application object, so its destruction is a no-op. The Application itself
+        // remains alive and is owned by s_Instance until we reset it explicitly below.
+
+        // Instance should still be accessible after scope exit (verify get() works)
+        EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
+        Core::Application::setInstance(nullptr);
+
+        // After destruction, verify singleton is cleared by checking that get() throws
+        bool exceptionThrown = false;
+        std::string exceptionMessage;
+        try
+        {
+            [[maybe_unused]] auto& ref = Core::Application::get();
+        }
+        catch (const std::runtime_error& e)
+        {
+            exceptionThrown = true;
+            exceptionMessage = e.what();
+        }
+        EXPECT_TRUE(exceptionThrown);
+        EXPECT_STREQ(exceptionMessage.c_str(), "Application does not exist!");
+
+        // Note: We do NOT create a new Application here because SDL_Quit() was called
+        // in the destructor above, and re-initializing SDL within the same test process
+        // can cause undefined behavior on some platforms. Each test should have its own
+        // SDL lifecycle scope.
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}

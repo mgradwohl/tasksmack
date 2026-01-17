@@ -28,7 +28,9 @@ class SettingsLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    static auto instance() -> SettingsLayer*;
+    [[nodiscard]] static auto instance() -> SettingsLayer*;
+    // Set singleton without taking ownership (use when layer is in layer stack)
+    static void setInstance(SettingsLayer& layer);
     void requestOpen();
 
   private:
@@ -48,6 +50,7 @@ class SettingsLayer : public Core::Layer
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;
 
+    // Non-owning singleton pointer; points to a layer owned by the application's layer stack
     static SettingsLayer* s_Instance;
 };
 

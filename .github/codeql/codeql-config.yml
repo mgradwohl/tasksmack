@@ -1,10 +1,11 @@
-name: "CodeQL Config"
+name: "TaskSmack CodeQL Config"
 
+# Scan application source and test code
 paths:
   - src
   - tests
-  - assets
 
+# Exclude third-party dependencies and build artifacts
 paths-ignore:
   - '**/deps'
   - '**/dependencies'
@@ -12,6 +13,11 @@ paths-ignore:
   - '**/vendor'
   - '**/third_party'
   - '**/external'
-  - '**/build'
+  - '**/build/**'  # Exclude all files in build directories
   - '**/tools'
-  - '**/.cache'
+  - '**/.cache/**'  # Exclude all files in cache directories
+  - '**/gladsources/**'   # Generated OpenGL loader
+  - 'dist/**'             # Distribution packages
+  - 'coverage/**'         # Coverage reports
+  - 'benchmarks/**'       # Benchmark code
+  - 'assets/**'           # Assets and resources
