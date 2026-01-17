@@ -207,4 +207,12 @@ if(TASKSMACK_ENABLE_PCH)
     target_precompile_headers(TaskSmackTests PRIVATE ${TASKSMACK_TEST_PCH_HEADERS})
 endif()
 
-gtest_discover_tests(TaskSmackTests)
+# Increase test discovery timeout on Windows runners to avoid spurious timeouts
+# when the test executable links many platform libraries and starts slowly.
+if(WIN32)
+    gtest_discover_tests(TaskSmackTests
+        DISCOVERY_TIMEOUT 30
+    )
+else()
+    gtest_discover_tests(TaskSmackTests)
+endif()
