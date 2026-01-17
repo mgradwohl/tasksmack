@@ -87,7 +87,7 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
                                      const std::filesystem::path& fallback) -> std::filesystem::path
 {
     auto normalized = candidate.lexically_normal();
-    const bool hasTraversal = std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; });
+    const bool hasTraversal = std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
     if (!normalized.is_absolute() || hasTraversal)
     {
         spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());

@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <cstdio>

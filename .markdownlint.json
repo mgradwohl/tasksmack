@@ -1,0 +1,12 @@
+{
+  "extends": "markdownlint/style/relaxed",
+  "rules": {
+    "line-length": false,
+    "no-hard-tabs": false,
+    "heading-increment": false,
+    "emphasis-markers": false,
+    "list-marker-space": false,
+    "no-inline-html": false,
+    "no-bare-urls": false
+  }
+}
