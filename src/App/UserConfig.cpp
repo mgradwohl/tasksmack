@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/UserConfigHelpers.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "ProcessColumnConfig.h"
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -61,6 +63,8 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
 {
     return std::abs(value) <= WINDOW_POS_ABS_MAX;
 }
+
+// Helper functions moved to a testable header: App/UserConfigHelpers.h
 
 #ifndef _WIN32
 /// Read an environment variable as a string.
@@ -152,45 +156,49 @@ void UserConfig::load()
         auto config = toml::parse_file(m_ConfigPath.string());
 
         // Sampling / refresh interval
-        if (auto val = config["sampling"]["interval_ms"].value<std::int64_t>())
-        {
-            // Clamp function will handle out-of-range values; use default if narrowOr fails
-            m_Settings.refreshIntervalMs =
-                Domain::Sampling::clampRefreshInterval(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "sampling",
+                                              "interval_ms",
+                                              m_Settings.refreshIntervalMs,
+                                              Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS,
+                                              [](auto v) { return Domain::Sampling::clampRefreshInterval(v); });
 
-        if (auto val = config["sampling"]["history_max_seconds"].value<std::int64_t>())
-        {
-            // Clamp function will handle out-of-range values; use default if narrowOr fails
-            m_Settings.maxHistorySeconds =
-                Domain::Sampling::clampHistorySeconds(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "sampling",
+                                              "history_max_seconds",
+                                              m_Settings.maxHistorySeconds,
+                                              Domain::Sampling::HISTORY_SECONDS_DEFAULT,
+                                              [](auto v) { return Domain::Sampling::clampHistorySeconds(v); });
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
         // PDH instance refresh interval (Windows-only, controls how often PDH refreshes GPU process instances)
-        if (auto val = config["sampling"]["pdh_instance_refresh_seconds"].value<std::int64_t>())
-        {
-            m_Settings.pdhInstanceRefreshSeconds = Domain::Sampling::clampPdhInstanceRefreshSeconds(
-                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "sampling",
+                                              "pdh_instance_refresh_seconds",
+                                              m_Settings.pdhInstanceRefreshSeconds,
+                                              Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT,
+                                              [](auto v) { return Domain::Sampling::clampPdhInstanceRefreshSeconds(v); });
 
         // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
-        if (auto val = config["sampling"]["socket_stats_cache_ttl_ms"].value<std::int64_t>())
-        {
-            m_Settings.socketStatsCacheTtlMs = Domain::Sampling::clampSocketStatsCacheTtlMs(
-                Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "sampling",
+                                              "socket_stats_cache_ttl_ms",
+                                              m_Settings.socketStatsCacheTtlMs,
+                                              Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
+                                              [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
 
         // Metrics calculation parameters
-        if (auto val = config["metrics"]["min_time_for_rate_seconds"].value<double>())
-        {
-            m_Settings.minTimeForRateSeconds = Domain::Sampling::clampMinTimeForRateSeconds(*val);
-        }
+        UserConfigHelpers::loadAndClamp(config,
+                                        "metrics",
+                                        "min_time_for_rate_seconds",
+                                        m_Settings.minTimeForRateSeconds,
+                                        [](auto v) { return Domain::Sampling::clampMinTimeForRateSeconds(v); });
 
-        if (auto val = config["metrics"]["max_sane_rate_bps"].value<double>())
-        {
-            m_Settings.maxSaneRateBps = Domain::Sampling::clampMaxSaneRateBps(*val);
-        }
+        UserConfigHelpers::loadAndClamp(config,
+                                        "metrics",
+                                        "max_sane_rate_bps",
+                                        m_Settings.maxSaneRateBps,
+                                        [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
 
         if (auto val = config["metrics"]["integrated_gpu_vram_threshold_mb"].value<std::int64_t>())
         {
@@ -202,32 +210,37 @@ void UserConfig::load()
         }
 
         // UI behavior parameters
-        if (auto val = config["ui"]["chart_smooth_factor"].value<double>())
-        {
-            m_Settings.chartSmoothFactor = Domain::Sampling::clampChartSmoothFactor(*val);
-        }
+        UserConfigHelpers::loadAndClamp(config,
+                                        "ui",
+                                        "chart_smooth_factor",
+                                        m_Settings.chartSmoothFactor,
+                                        [](auto v) { return Domain::Sampling::clampChartSmoothFactor(v); });
 
-        if (auto val = config["ui"]["chart_tau_ms_min"].value<std::int64_t>())
-        {
-            m_Settings.chartTauMsMin =
-                Domain::Sampling::clampChartTauMsMin(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "ui",
+                                              "chart_tau_ms_min",
+                                              m_Settings.chartTauMsMin,
+                                              Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT,
+                                              [](auto v) { return Domain::Sampling::clampChartTauMsMin(v); });
 
-        if (auto val = config["ui"]["chart_tau_ms_max"].value<std::int64_t>())
-        {
-            m_Settings.chartTauMsMax =
-                Domain::Sampling::clampChartTauMsMax(Domain::Numeric::narrowOr<int>(*val, Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT));
-        }
+        UserConfigHelpers::loadAndNarrowInt64(config,
+                                              "ui",
+                                              "chart_tau_ms_max",
+                                              m_Settings.chartTauMsMax,
+                                              Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT,
+                                              [](auto v) { return Domain::Sampling::clampChartTauMsMax(v); });
 
-        if (auto val = config["ui"]["progress_color_low_threshold"].value<double>())
-        {
-            m_Settings.progressColorLowThreshold = Domain::Sampling::clampProgressColorLowThreshold(*val);
-        }
+        UserConfigHelpers::loadAndClamp(config,
+                                        "ui",
+                                        "progress_color_low_threshold",
+                                        m_Settings.progressColorLowThreshold,
+                                        [](auto v) { return Domain::Sampling::clampProgressColorLowThreshold(v); });
 
-        if (auto val = config["ui"]["progress_color_high_threshold"].value<double>())
-        {
-            m_Settings.progressColorHighThreshold = Domain::Sampling::clampProgressColorHighThreshold(*val);
-        }
+        UserConfigHelpers::loadAndClamp(config,
+                                        "ui",
+                                        "progress_color_high_threshold",
+                                        m_Settings.progressColorHighThreshold,
+                                        [](auto v) { return Domain::Sampling::clampProgressColorHighThreshold(v); });
 
         // Validate that low <= high threshold
         if (m_Settings.progressColorLowThreshold > m_Settings.progressColorHighThreshold)
@@ -277,18 +290,8 @@ void UserConfig::load()
         // Note: panels visibility is no longer used (removed in favor of tabbed UI)
 
         // Window state
-        if (auto val = config["window"]["width"].value<std::int64_t>())
-        {
-            // Use default width of 800 if narrowOr fails; clamp will further constrain to valid range
-            const int width = Domain::Numeric::narrowOr<int>(*val, 800);
-            m_Settings.windowWidth = std::clamp(width, 200, 16'384);
-        }
-        if (auto val = config["window"]["height"].value<std::int64_t>())
-        {
-            // Use default height of 600 if narrowOr fails; clamp will further constrain to valid range
-            const int height = Domain::Numeric::narrowOr<int>(*val, 600);
-            m_Settings.windowHeight = std::clamp(height, 200, 16'384);
-        }
+        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "width", m_Settings.windowWidth, 800, 200, 16'384);
+        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "height", m_Settings.windowHeight, 600, 200, 16'384);
         if (auto val = config["window"]["x"].value<std::int64_t>())
         {
             // Use default x position of 100 if narrowOr fails

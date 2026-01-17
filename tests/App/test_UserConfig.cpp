@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -270,6 +271,10 @@ TEST(UserSettingsTest, ZeroWindowDimensionsAreStorable)
     EXPECT_EQ(settings.windowWidth, 0);
     EXPECT_EQ(settings.windowHeight, 0);
 }
+
+// Note: Additional integration tests for the helper functions would require
+// refactoring UserConfig to accept a configurable path for testing, as it
+// currently uses a singleton pattern with a fixed config location.
 
 } // namespace
 } // namespace App
