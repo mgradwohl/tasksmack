@@ -51,6 +51,15 @@ set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86
 
 # Compiler caching (ccache/sccache) - required for development
 if(TASKSMACK_ENABLE_CCACHE)
+    # Self-heal stale cache entries (common on Windows package upgrades)
+    # so find_program can re-discover valid launcher paths.
+    if(DEFINED CCACHE_PROGRAM AND CCACHE_PROGRAM AND NOT EXISTS "${CCACHE_PROGRAM}")
+        unset(CCACHE_PROGRAM CACHE)
+    endif()
+    if(DEFINED SCCACHE_PROGRAM AND SCCACHE_PROGRAM AND NOT EXISTS "${SCCACHE_PROGRAM}")
+        unset(SCCACHE_PROGRAM CACHE)
+    endif()
+
     find_program(CCACHE_PROGRAM ccache)
     find_program(SCCACHE_PROGRAM sccache)
     if(SCCACHE_PROGRAM)
