@@ -86,9 +86,10 @@
         "--pch-storage=memory",
         "--query-driver=**/clang++,**/clang,**/g++,**/gcc,**/cl.exe"
     ],
-    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-21/bin/clangd"
+    // Linux: "/usr/bin/clangd" or "/usr/lib/llvm-22/bin/clangd"
     // Windows: "C:\\Program Files\\LLVM\\bin\\clangd.exe"
-    "clang-format.executable": "",
+    "clangd.path": "C:\\Program Files\\LLVM\\bin\\clangd.exe",
+    "clang-format.executable": "C:\\Program Files\\LLVM\\bin\\clang-format.exe",
     "files.exclude": {
         "**/generated/**": true,
         "**/.cache/**": true

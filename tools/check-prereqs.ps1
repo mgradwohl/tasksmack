@@ -10,7 +10,7 @@
 param()
 
 # Required versions (minimum)
-$MIN_CMAKE_VERSION = [Version]"3.28"
+$MIN_CMAKE_VERSION = [Version]"3.29"
 $MIN_CLANG_VERSION = 21
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
 

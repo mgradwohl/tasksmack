@@ -1,4 +1,4 @@
-{
+﻿{
 	"version": "2.0.0",
 	"tasks": [
 		// -----------------------------
@@ -434,10 +434,12 @@
 			"dependsOn": "CMake: Build Debug",
 			"problemMatcher": [],
 			"presentation": {
-				"reveal": dedicated","clear": false,
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false,
 				"echo": true,
 				"focus": true,
-				"showReuseMessage: true,"focus": false
+				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"

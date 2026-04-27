@@ -3,6 +3,7 @@
 #include "Theme.h"
 #include "UI/Format.h"
 
+#include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -18,10 +19,10 @@
 #include <utility>
 #include <vector>
 
-// NOLINTBEGIN(misc-include-cleaner) - toml++ forward-declares parse_error/parse_file; suppress false
-// positives from include-cleaner when using toml++/toml.hpp
+// NOLINTBEGIN(misc-include-cleaner) - toml++ is an umbrella header; sub-header symbols (node,
+// node_view, table, parse_file, parse_error) cannot be included individually. Suppress false
+// positives at include and all usage sites throughout this file.
 #include <toml++/toml.hpp>
-// NOLINTEND(misc-include-cleaner)
 
 namespace UI
 {
@@ -428,4 +429,5 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
     }
 }
 
+// NOLINTEND(misc-include-cleaner)
 } // namespace UI

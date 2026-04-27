@@ -11,14 +11,17 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
+#include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
 // clang-format on
 
+#include <cstdint>
 #include <format>
+#include <utility>
 
 namespace Platform
 {
 
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
@@ -161,4 +164,5 @@ ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice
     return ProcessActionResult::ok();
 }
 
+// NOLINTEND(misc-include-cleaner)
 } // namespace Platform

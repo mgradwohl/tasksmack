@@ -4,6 +4,8 @@
 
 #include <spdlog/spdlog.h>
 
+// NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers; symbols come from implementation
+// sub-headers that cannot be included individually without breaking the required include order.
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -20,6 +22,7 @@
 #include <tlhelp32.h>
 #include <winternl.h>
 // clang-format on
+// NOLINTEND(misc-include-cleaner)
 
 #undef max
 #undef min
@@ -40,6 +43,7 @@
 namespace Platform
 {
 
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
 
@@ -140,7 +144,7 @@ namespace
     // Fallback to the actual array size constant (256) if conversion fails
     DWORD userNameLen = Domain::Numeric::narrowOr<DWORD>(userName.size(), DWORD{256});
     DWORD domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
-    SID_NAME_USE sidType{};
+    SID_NAME_USE sidType{SidTypeUnknown}; // LookupAccountSidW will overwrite this; SidTypeUnknown is the nearest valid zero-like sentinel
 
     if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
     {
@@ -849,4 +853,5 @@ void WindowsProcessProbe::applyNetworkCounters(std::vector<ProcessCounters>& pro
     }
 }
 
+// NOLINTEND(misc-include-cleaner)
 } // namespace Platform

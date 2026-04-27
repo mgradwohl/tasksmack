@@ -8,7 +8,7 @@ endif()
 # Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
 cmake_policy(SET CMP0169 OLD)
 
-project(TaskSmack VERSION 0.2.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.3.0 LANGUAGES C CXX)
 
 # Windows: Configure MSVC runtime library linkage for Clang
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
