@@ -141,8 +141,11 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                 const float peak = UI::Format::toFloatNarrow(peakMemPercent);
                 const std::array<float, 2> xLine = {UI::Format::toFloatNarrow(axisConfig.xMin), UI::Format::toFloatNarrow(axisConfig.xMax)};
                 const std::array<float, 2> yLine = {peak, peak};
-                ImPlot::SetNextLineStyle(theme.scheme().textWarning, 1.5F);
-                ImPlot::PlotLine("##MemPeak", xLine.data(), yLine.data(), 2);
+                ImPlot::PlotLine("##MemPeak",
+                                 xLine.data(),
+                                 yLine.data(),
+                                 2,
+                                 {ImPlotProp_LineColor, theme.scheme().textWarning, ImPlotProp_LineWeight, 1.5F});
             }
 
             // Tooltip on hover

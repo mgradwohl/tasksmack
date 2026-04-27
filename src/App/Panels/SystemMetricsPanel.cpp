@@ -560,16 +560,26 @@ void SystemMetricsPanel::renderOverview()
                     yIowaitTop[i] = ySystemTop[i] + cpuIowaitHist[i];
                 }
 
-                ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
-                ImPlot::PlotShaded("User", breakdownTimeData.data(), y0.data(), yUserTop.data(), UI::Format::checkedCount(breakdownCount));
+                ImPlot::PlotShaded("User",
+                                   breakdownTimeData.data(),
+                                   y0.data(),
+                                   yUserTop.data(),
+                                   UI::Format::checkedCount(breakdownCount),
+                                   {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
 
-                ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
-                ImPlot::PlotShaded(
-                    "System", breakdownTimeData.data(), yUserTop.data(), ySystemTop.data(), UI::Format::checkedCount(breakdownCount));
+                ImPlot::PlotShaded("System",
+                                   breakdownTimeData.data(),
+                                   yUserTop.data(),
+                                   ySystemTop.data(),
+                                   UI::Format::checkedCount(breakdownCount),
+                                   {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
 
-                ImPlot::SetNextFillStyle(theme.scheme().cpuIowaitFill);
-                ImPlot::PlotShaded(
-                    "I/O Wait", breakdownTimeData.data(), ySystemTop.data(), yIowaitTop.data(), UI::Format::checkedCount(breakdownCount));
+                ImPlot::PlotShaded("I/O Wait",
+                                   breakdownTimeData.data(),
+                                   ySystemTop.data(),
+                                   yIowaitTop.data(),
+                                   UI::Format::checkedCount(breakdownCount),
+                                   {ImPlotProp_FillColor, theme.scheme().cpuIowaitFill});
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -588,11 +598,18 @@ void SystemMetricsPanel::renderOverview()
             }
             else if (!cpuHist.empty())
             {
-                ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
-                ImPlot::PlotShaded("##CPUShaded", cpuTimeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()), 0.0);
+                ImPlot::PlotShaded("##CPUShaded",
+                                   cpuTimeData.data(),
+                                   cpuHist.data(),
+                                   UI::Format::checkedCount(cpuHist.size()),
+                                   0.0,
+                                   {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
-                ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                ImPlot::PlotLine("CPU", cpuTimeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()));
+                ImPlot::PlotLine("CPU",
+                                 cpuTimeData.data(),
+                                 cpuHist.data(),
+                                 UI::Format::checkedCount(cpuHist.size()),
+                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -1031,12 +1048,19 @@ void SystemMetricsPanel::renderCpuSection()
 
             if (!cpuHist.empty())
             {
-                ImPlot::SetNextFillStyle(theme.scheme().chartCpuFill);
-                ImPlot::PlotShaded("##CPUShaded", timeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()), 0.0);
+                ImPlot::PlotShaded("##CPUShaded",
+                                   timeData.data(),
+                                   cpuHist.data(),
+                                   UI::Format::checkedCount(cpuHist.size()),
+                                   0.0,
+                                   {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
                 // Draw the line on top of the shaded region.
-                ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                ImPlot::PlotLine("##CPU", timeData.data(), cpuHist.data(), UI::Format::checkedCount(cpuHist.size()));
+                ImPlot::PlotLine("##CPU",
+                                 timeData.data(),
+                                 cpuHist.data(),
+                                 UI::Format::checkedCount(cpuHist.size()),
+                                 {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
                 {

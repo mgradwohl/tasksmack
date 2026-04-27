@@ -687,20 +687,37 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                         ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
                     }
 
-                    ImPlot::SetNextFillStyle(theme.scheme().cpuUserFill);
-                    ImPlot::PlotShaded("##CpuUser", cpuTimeData.data(), y0.data(), yUserTop.data(), plotCount);
+                    ImPlot::PlotShaded("##CpuUser",
+                                       cpuTimeData.data(),
+                                       y0.data(),
+                                       yUserTop.data(),
+                                       plotCount,
+                                       {ImPlotProp_FillColor, theme.scheme().cpuUserFill});
 
-                    ImPlot::SetNextFillStyle(theme.scheme().cpuSystemFill);
-                    ImPlot::PlotShaded("##CpuSystem", cpuTimeData.data(), yUserTop.data(), ySystemTop.data(), plotCount);
+                    ImPlot::PlotShaded("##CpuSystem",
+                                       cpuTimeData.data(),
+                                       yUserTop.data(),
+                                       ySystemTop.data(),
+                                       plotCount,
+                                       {ImPlotProp_FillColor, theme.scheme().cpuSystemFill});
 
-                    ImPlot::SetNextLineStyle(theme.scheme().chartCpu, 2.0F);
-                    ImPlot::PlotLine("Total", cpuTimeData.data(), cpuData.data(), plotCount);
+                    ImPlot::PlotLine("Total",
+                                     cpuTimeData.data(),
+                                     cpuData.data(),
+                                     plotCount,
+                                     {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
-                    ImPlot::SetNextLineStyle(theme.scheme().cpuUser, 1.8F);
-                    ImPlot::PlotLine("User", cpuTimeData.data(), cpuUserData.data(), plotCount);
+                    ImPlot::PlotLine("User",
+                                     cpuTimeData.data(),
+                                     cpuUserData.data(),
+                                     plotCount,
+                                     {ImPlotProp_LineColor, theme.scheme().cpuUser, ImPlotProp_LineWeight, 1.8F});
 
-                    ImPlot::SetNextLineStyle(theme.scheme().cpuSystem, 1.8F);
-                    ImPlot::PlotLine("System", cpuTimeData.data(), cpuSystemData.data(), plotCount);
+                    ImPlot::PlotLine("System",
+                                     cpuTimeData.data(),
+                                     cpuSystemData.data(),
+                                     plotCount,
+                                     {ImPlotProp_LineColor, theme.scheme().cpuSystem, ImPlotProp_LineWeight, 1.8F});
 
                     if (ImPlot::IsPlotHovered())
                     {
@@ -793,14 +810,15 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryPercent > 0.0)
                     {
-                        // Use a dashed line style with a distinct color for the peak
-                        ImPlot::SetNextLineStyle(theme.scheme().chartPeakLine, 1.5F);
-
                         // Draw horizontal line at peak value across the entire X range
                         const double peakY = m_PeakMemoryPercent;
                         std::array<double, 2> peakX = {axisConfig.xMin, axisConfig.xMax};
                         std::array<double, 2> peakYVals = {peakY, peakY};
-                        ImPlot::PlotLine("Peak", peakX.data(), peakYVals.data(), 2);
+                        ImPlot::PlotLine("Peak",
+                                         peakX.data(),
+                                         peakYVals.data(),
+                                         2,
+                                         {ImPlotProp_LineColor, theme.scheme().chartPeakLine, ImPlotProp_LineWeight, 1.5F});
                     }
 
                     if (!usedData.empty())
