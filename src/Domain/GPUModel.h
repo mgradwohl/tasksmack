@@ -6,8 +6,10 @@
 #include "Platform/IGPUProbe.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <shared_mutex>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -16,6 +18,28 @@ namespace Domain
 
 // GPU history capacity: 5 minutes at 1 second intervals = 300 samples
 inline constexpr size_t GPU_HISTORY_CAPACITY = 300;
+
+struct TransparentStringHash
+{
+    // NOLINTNEXTLINE(readability-identifier-naming) - STL transparent hashing requires this exact alias name.
+    using is_transparent = void;
+
+    [[nodiscard]] std::size_t operator()(std::string_view value) const noexcept
+    {
+        return std::hash<std::string_view>{}(value);
+    }
+};
+
+struct TransparentStringEqual
+{
+    // NOLINTNEXTLINE(readability-identifier-naming) - STL transparent equality requires this exact alias name.
+    using is_transparent = void;
+
+    [[nodiscard]] bool operator()(std::string_view lhs, std::string_view rhs) const noexcept
+    {
+        return lhs == rhs;
+    }
+};
 
 class GPUModel
 {
@@ -35,17 +59,17 @@ class GPUModel
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
     // Get history for specific GPU (returns copy for thread safety)
-    [[nodiscard]] std::vector<GPUSnapshot> history(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<GPUSnapshot> history(std::string_view gpuId) const;
 
     // Get flattened history arrays for specific GPU (for chart plotting)
-    [[nodiscard]] std::vector<float> utilizationHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> memoryPercentHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> gpuClockHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> encoderHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> decoderHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> temperatureHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> powerHistory(const std::string& gpuId) const;
-    [[nodiscard]] std::vector<float> fanSpeedHistory(const std::string& gpuId) const;
+    [[nodiscard]] std::vector<float> utilizationHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> memoryPercentHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> gpuClockHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> encoderHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> decoderHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> temperatureHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> powerHistory(std::string_view gpuId) const;
+    [[nodiscard]] std::vector<float> fanSpeedHistory(std::string_view gpuId) const;
 
     // Get timestamps for GPU history
     [[nodiscard]] std::vector<double> historyTimestamps() const;
@@ -67,16 +91,21 @@ class GPUModel
     std::vector<Platform::GPUInfo> m_GPUInfo;
 
     // Current snapshots per GPU
-    std::unordered_map<std::string, GPUSnapshot> m_Snapshots;
+    using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
+    using HistoryMap =
+        std::unordered_map<std::string, History<GPUSnapshot, GPU_HISTORY_CAPACITY>, TransparentStringHash, TransparentStringEqual>;
+    using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
+
+    SnapshotMap m_Snapshots;
 
     // History buffers per GPU
-    std::unordered_map<std::string, History<GPUSnapshot, GPU_HISTORY_CAPACITY>> m_Histories;
+    HistoryMap m_Histories;
 
     // Timestamps for history data
     std::vector<double> m_HistoryTimestamps;
 
     // Previous counters for rate calculation
-    std::unordered_map<std::string, Platform::GPUCounters> m_PrevCounters;
+    CounterMap m_PrevCounters;
     std::chrono::steady_clock::time_point m_PrevSampleTime;
 
     // Thread safety
@@ -87,7 +116,7 @@ class GPUModel
     computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
 
     // Helper template: extract a field from GPU history and return as float vector
-    template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(const std::string& gpuId, FieldPtr field) const;
+    template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(std::string_view gpuId, FieldPtr field) const;
 };
 
 } // namespace Domain

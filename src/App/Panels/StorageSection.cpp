@@ -26,11 +26,11 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
@@ -47,16 +47,10 @@ void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTime
 
     const double alpha = computeAlpha(deltaTimeSeconds, ctx.refreshInterval);
 
-    if (!*ctx.smoothedInitialized)
-    {
-        *ctx.smoothedReadBytesPerSec = targetRead;
-        *ctx.smoothedWriteBytesPerSec = targetWrite;
-        *ctx.smoothedInitialized = true;
-        return;
-    }
-
-    *ctx.smoothedReadBytesPerSec = smoothTowards(*ctx.smoothedReadBytesPerSec, targetRead, alpha);
-    *ctx.smoothedWriteBytesPerSec = smoothTowards(*ctx.smoothedWriteBytesPerSec, targetWrite, alpha);
+    const bool initialized = *ctx.smoothedInitialized;
+    *ctx.smoothedReadBytesPerSec = initializeOrSmooth(*ctx.smoothedReadBytesPerSec, targetRead, alpha, initialized);
+    *ctx.smoothedWriteBytesPerSec = initializeOrSmooth(*ctx.smoothedWriteBytesPerSec, targetWrite, alpha, initialized);
+    *ctx.smoothedInitialized = true;
 }
 
 void renderStorageSection(RenderContext& ctx)

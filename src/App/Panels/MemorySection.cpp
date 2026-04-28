@@ -27,12 +27,12 @@ using UI::Widgets::cropFrontToSize;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
@@ -51,18 +51,11 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
     const double targetCached = clampPercent(snap.memoryCachedPercent);
     const double targetSwap = clampPercent(snap.swapUsedPercent);
 
-    if (!smoothed.initialized)
-    {
-        smoothed.usedPercent = targetMem;
-        smoothed.cachedPercent = targetCached;
-        smoothed.swapPercent = targetSwap;
-        smoothed.initialized = true;
-        return;
-    }
-
-    smoothed.usedPercent = clampPercent(smoothTowards(smoothed.usedPercent, targetMem, alpha));
-    smoothed.cachedPercent = clampPercent(smoothTowards(smoothed.cachedPercent, targetCached, alpha));
-    smoothed.swapPercent = clampPercent(smoothTowards(smoothed.swapPercent, targetSwap, alpha));
+    const bool initialized = smoothed.initialized;
+    smoothed.usedPercent = clampPercent(initializeOrSmooth(smoothed.usedPercent, targetMem, alpha, initialized));
+    smoothed.cachedPercent = clampPercent(initializeOrSmooth(smoothed.cachedPercent, targetCached, alpha, initialized));
+    smoothed.swapPercent = clampPercent(initializeOrSmooth(smoothed.swapPercent, targetSwap, alpha, initialized));
+    smoothed.initialized = true;
 }
 
 void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns)

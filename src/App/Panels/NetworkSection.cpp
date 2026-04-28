@@ -32,11 +32,11 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
@@ -50,16 +50,10 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
 
     const double alpha = computeAlpha(deltaTimeSeconds, ctx.refreshInterval);
 
-    if (!*ctx.smoothedNetInitialized)
-    {
-        *ctx.smoothedNetSentBytesPerSec = targetSent;
-        *ctx.smoothedNetRecvBytesPerSec = targetRecv;
-        *ctx.smoothedNetInitialized = true;
-        return;
-    }
-
-    *ctx.smoothedNetSentBytesPerSec = smoothTowards(*ctx.smoothedNetSentBytesPerSec, targetSent, alpha);
-    *ctx.smoothedNetRecvBytesPerSec = smoothTowards(*ctx.smoothedNetRecvBytesPerSec, targetRecv, alpha);
+    const bool initialized = *ctx.smoothedNetInitialized;
+    *ctx.smoothedNetSentBytesPerSec = initializeOrSmooth(*ctx.smoothedNetSentBytesPerSec, targetSent, alpha, initialized);
+    *ctx.smoothedNetRecvBytesPerSec = initializeOrSmooth(*ctx.smoothedNetRecvBytesPerSec, targetRecv, alpha, initialized);
+    *ctx.smoothedNetInitialized = true;
 }
 
 } // namespace

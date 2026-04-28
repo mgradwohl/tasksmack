@@ -2,6 +2,7 @@
 
 #include "ThemeLoader.h"
 
+#include <imgui.h>
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
@@ -261,7 +262,7 @@ auto Theme::applyPendingTheme() -> bool
     return true;
 }
 
-void Theme::setThemeById(const std::string& id)
+void Theme::setThemeById(std::string_view id)
 {
     for (std::size_t i = 0; i < m_DiscoveredThemes.size(); ++i)
     {

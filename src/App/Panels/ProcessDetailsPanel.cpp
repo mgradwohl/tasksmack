@@ -43,12 +43,12 @@ using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::setupLegendDefault;
-using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
@@ -422,43 +422,33 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
     const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
 
-    if (!m_SmoothedUsage.initialized || deltaTimeSeconds <= 0.0F)
-    {
-        m_SmoothedUsage.cpuPercent = targetCpu;
-        m_SmoothedUsage.residentBytes = targetResident;
-        m_SmoothedUsage.virtualBytes = targetVirtual;
-        m_SmoothedUsage.cpuUserPercent = targetCpuUser;
-        m_SmoothedUsage.cpuSystemPercent = targetCpuSystem;
-        m_SmoothedUsage.threadCount = targetThreads;
-        m_SmoothedUsage.handleCount = targetHandles;
-        m_SmoothedUsage.pageFaultsPerSec = targetFaults;
-        m_SmoothedUsage.ioReadBytesPerSec = targetIoRead;
-        m_SmoothedUsage.ioWriteBytesPerSec = targetIoWrite;
-        m_SmoothedUsage.netSentBytesPerSec = targetNetSent;
-        m_SmoothedUsage.netRecvBytesPerSec = targetNetRecv;
-        m_SmoothedUsage.powerWatts = targetPower;
-        m_SmoothedUsage.gpuUtilPercent = targetGpuUtil;
-        m_SmoothedUsage.gpuMemoryBytes = targetGpuMem;
-        m_SmoothedUsage.initialized = true;
-        return;
-    }
+    const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 
-    m_SmoothedUsage.cpuPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuPercent, targetCpu, alpha));
-    m_SmoothedUsage.residentBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.residentBytes, targetResident, alpha));
-    m_SmoothedUsage.virtualBytes = smoothTowards(m_SmoothedUsage.virtualBytes, targetVirtual, alpha);
+    m_SmoothedUsage.cpuPercent = UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuPercent, targetCpu, alpha, initialized));
+    m_SmoothedUsage.residentBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.residentBytes, targetResident, alpha, initialized));
+    m_SmoothedUsage.virtualBytes = initializeOrSmooth(m_SmoothedUsage.virtualBytes, targetVirtual, alpha, initialized);
     m_SmoothedUsage.virtualBytes = std::max(m_SmoothedUsage.virtualBytes, m_SmoothedUsage.residentBytes);
-    m_SmoothedUsage.cpuUserPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha));
-    m_SmoothedUsage.cpuSystemPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha));
-    m_SmoothedUsage.threadCount = std::max(0.0, smoothTowards(m_SmoothedUsage.threadCount, targetThreads, alpha));
-    m_SmoothedUsage.handleCount = std::max(0.0, smoothTowards(m_SmoothedUsage.handleCount, targetHandles, alpha));
-    m_SmoothedUsage.pageFaultsPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha));
-    m_SmoothedUsage.ioReadBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioReadBytesPerSec, targetIoRead, alpha));
-    m_SmoothedUsage.ioWriteBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.ioWriteBytesPerSec, targetIoWrite, alpha));
-    m_SmoothedUsage.netSentBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netSentBytesPerSec, targetNetSent, alpha));
-    m_SmoothedUsage.netRecvBytesPerSec = std::max(0.0, smoothTowards(m_SmoothedUsage.netRecvBytesPerSec, targetNetRecv, alpha));
-    m_SmoothedUsage.powerWatts = std::max(0.0, smoothTowards(m_SmoothedUsage.powerWatts, targetPower, alpha));
-    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(smoothTowards(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha));
-    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, smoothTowards(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha));
+    m_SmoothedUsage.cpuUserPercent =
+        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuUserPercent, targetCpuUser, alpha, initialized));
+    m_SmoothedUsage.cpuSystemPercent =
+        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.cpuSystemPercent, targetCpuSystem, alpha, initialized));
+    m_SmoothedUsage.threadCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.threadCount, targetThreads, alpha, initialized));
+    m_SmoothedUsage.handleCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.handleCount, targetHandles, alpha, initialized));
+    m_SmoothedUsage.pageFaultsPerSec =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.pageFaultsPerSec, targetFaults, alpha, initialized));
+    m_SmoothedUsage.ioReadBytesPerSec =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.ioReadBytesPerSec, targetIoRead, alpha, initialized));
+    m_SmoothedUsage.ioWriteBytesPerSec =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.ioWriteBytesPerSec, targetIoWrite, alpha, initialized));
+    m_SmoothedUsage.netSentBytesPerSec =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.netSentBytesPerSec, targetNetSent, alpha, initialized));
+    m_SmoothedUsage.netRecvBytesPerSec =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.netRecvBytesPerSec, targetNetRecv, alpha, initialized));
+    m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
+    m_SmoothedUsage.gpuUtilPercent =
+        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
+    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
+    m_SmoothedUsage.initialized = true;
 }
 
 void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
