@@ -5,8 +5,6 @@ if(POLICY CMP0069)
     cmake_policy(SET CMP0069 NEW)
 endif()
 
-# Allow FetchContent_Populate for dependencies without CMakeLists.txt (imgui, implot)
-cmake_policy(SET CMP0169 OLD)
 
 project(TaskSmack VERSION 0.3.0 LANGUAGES C CXX)
 
@@ -249,14 +247,10 @@ FetchContent_MakeAvailable(tomlplusplus)
 # stb (image loader for runtime textures)
 FetchContent_Declare(
     stb
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG f1c79c02822848a9bed4315b12c8c8f3761e1296  # Pinned to specific commit for supply-chain security
 )
-FetchContent_GetProperties(stb)
-if(NOT stb_POPULATED)
-    FetchContent_Populate(stb)
-endif()
+FetchContent_MakeAvailable(stb)
 
 # SDL3 for windowing, input, and custom title bar support
 FetchContent_Declare(
@@ -302,15 +296,12 @@ endif()
 # GLAD
 FetchContent_Declare(
     glad
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
-    URL https://github.com/Dav1dde/glad/archive/refs/tags/v2.0.8.zip
+    GIT_REPOSITORY https://github.com/Dav1dde/glad.git
+    GIT_TAG v2.0.8
 )
-FetchContent_GetProperties(glad)
-if(NOT glad_POPULATED)
-    FetchContent_Populate(glad)
-    add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
-    glad_add_library(glad_gl_core_33 REPRODUCIBLE EXCLUDE_FROM_ALL LOADER API gl:core=3.3)
-endif()
+FetchContent_MakeAvailable(glad)
+add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
+glad_add_library(glad_gl_core_33 REPRODUCIBLE EXCLUDE_FROM_ALL LOADER API gl:core=3.3)
 set_target_properties(glad_gl_core_33 PROPERTIES FOLDER "third_party")
 
 # Mark GLAD headers as SYSTEM to suppress warnings (e.g., -Wlanguage-extension-token from __int32)
@@ -345,11 +336,7 @@ set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
 
-FetchContent_GetProperties(freetype)
-if(NOT freetype_POPULATED)
-    FetchContent_Populate(freetype)
-    add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
-endif()
+FetchContent_MakeAvailable(freetype)
 
 set_target_properties(freetype PROPERTIES FOLDER "third_party")
 # Create an alias target to match find_package(Freetype) behavior
@@ -363,10 +350,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG v1.92.7-docking
 )
-FetchContent_GetProperties(imgui)
-if(NOT imgui_POPULATED)
-    FetchContent_Populate(imgui)
-endif()
+FetchContent_MakeAvailable(imgui)
 
 add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -399,10 +383,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/epezent/implot.git
     GIT_TAG v1.0
 )
-FetchContent_GetProperties(implot)
-if(NOT implot_POPULATED)
-    FetchContent_Populate(implot)
-endif()
+FetchContent_MakeAvailable(implot)
 
 add_library(implot_lib STATIC
     ${implot_SOURCE_DIR}/implot.cpp
