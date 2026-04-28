@@ -2,6 +2,7 @@
 
 #include "ThemeLoader.h"
 
+#include <imgui.h>
 #include <implot.h>
 #include <spdlog/spdlog.h>
 

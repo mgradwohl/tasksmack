@@ -3,12 +3,19 @@
 #include "DXGIGPUProbe.h"
 #include "NVMLGPUProbe.h"
 #include "PDHGPUProbe.h"
+#include "Platform/GPUTypes.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Platform
 {
