@@ -39,6 +39,34 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-CodeScanningAlerts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Owner,
+        [Parameter(Mandatory = $true)]
+        [string]$Repo
+    )
+
+    # Emit one JSON object per line so multi-page results remain parseable.
+    $rawLines = gh api -X GET "repos/$Owner/$Repo/code-scanning/alerts" --paginate --jq '.[] | @json' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $message = ($rawLines | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = "gh exited with code $LASTEXITCODE."
+        }
+        throw "Failed to fetch code-scanning alerts: $message"
+    }
+
+    $alerts = @()
+    foreach ($line in ($rawLines -split "`r?`n")) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            $alerts += ($line | ConvertFrom-Json)
+        }
+    }
+
+    return $alerts
+}
+
 function Test-PathPatternMatch {
     param(
         [Parameter(Mandatory = $true)]
@@ -62,13 +90,13 @@ if (-not $gh) {
 }
 
 Write-Host "Fetching CodeQL alerts for $Owner/$Repo ..."
-$alerts = gh api -X GET "repos/$Owner/$Repo/code-scanning/alerts" --paginate | ConvertFrom-Json
+$alerts = Get-CodeScanningAlerts -Owner $Owner -Repo $Repo
 
-$openAlerts = $alerts | Where-Object { $_.state -eq 'open' }
-$targets = $openAlerts | Where-Object {
+$openAlerts = @($alerts | Where-Object { $_.state -eq 'open' -and $_.tool.name -eq 'CodeQL' })
+$targets = @($openAlerts | Where-Object {
     $path = $_.most_recent_instance.location.path
     Test-PathPatternMatch -Path $path -Patterns $PathPatterns
-}
+})
 
 Write-Host "Open alerts total: $($openAlerts.Count)"
 Write-Host "Open alerts matching patterns: $($targets.Count)"
@@ -93,19 +121,29 @@ if ($DryRun) {
 $dismissed = 0
 foreach ($alert in $targets) {
     $number = $alert.number
-    gh api -X PATCH "repos/$Owner/$Repo/code-scanning/alerts/$number" `
+    $patchOutput = gh api -X PATCH "repos/$Owner/$Repo/code-scanning/alerts/$number" `
         -f "state=dismissed" `
         -f "dismissed_reason=$DismissedReason" `
-        -f "dismissed_comment=$DismissedComment" | Out-Null
+        -f "dismissed_comment=$DismissedComment" 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        $patchMessage = ($patchOutput | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($patchMessage)) {
+            $patchMessage = "gh exited with code $LASTEXITCODE."
+        }
+        throw "Failed to dismiss alert #${number}: $patchMessage"
+    }
 
     $dismissed++
     Write-Host "Dismissed alert #$number"
 }
 
-$alertsAfter = gh api -X GET "repos/$Owner/$Repo/code-scanning/alerts" --paginate | ConvertFrom-Json
-$remaining = ($alertsAfter | Where-Object {
-    $_.state -eq 'open' -and (Test-PathPatternMatch -Path $_.most_recent_instance.location.path -Patterns $PathPatterns)
-}).Count
+$alertsAfter = Get-CodeScanningAlerts -Owner $Owner -Repo $Repo
+$remaining = (@($alertsAfter | Where-Object {
+            $_.state -eq 'open' -and
+            $_.tool.name -eq 'CodeQL' -and
+            (Test-PathPatternMatch -Path $_.most_recent_instance.location.path -Patterns $PathPatterns)
+        })).Count
 
 Write-Host "Dismissed: $dismissed"
 Write-Host "Remaining matching open alerts: $remaining"
