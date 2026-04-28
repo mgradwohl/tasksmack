@@ -51,7 +51,7 @@ Platform::ProcessCounters makeCounter(int32_t pid,
 // Construction Tests
 // =============================================================================
 
-TEST(ProcessModelTest, ConstructWithValidProbe)
+TEST(ProcessModelTest, WhenConstructedWithValidProbe_ThenStartsEmpty)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::ProcessModel model(std::move(probe));
@@ -60,7 +60,7 @@ TEST(ProcessModelTest, ConstructWithValidProbe)
     EXPECT_TRUE(model.snapshots().empty());
 }
 
-TEST(ProcessModelTest, ConstructWithNullProbeDoesNotCrash)
+TEST(ProcessModelTest, WhenConstructedWithNullProbe_ThenDoesNotCrash)
 {
     Domain::ProcessModel model(nullptr);
     model.refresh(); // Should not crash
@@ -68,7 +68,7 @@ TEST(ProcessModelTest, ConstructWithNullProbeDoesNotCrash)
     EXPECT_EQ(model.processCount(), 0);
 }
 
-TEST(ProcessModelTest, CapabilitiesAreExposedFromProbe)
+TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCapabilities caps;
@@ -338,7 +338,7 @@ TEST(ProcessModelTest, UniqueKeyDiffersForPidReuse)
 // State Translation Tests
 // =============================================================================
 
-TEST(ProcessModelTest, StateTranslationRunning)
+TEST(ProcessModelTest, GivenRunningState_WhenRefreshed_ThenSnapshotStateIsRunning)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", 'R', 0, 0)});
@@ -351,7 +351,7 @@ TEST(ProcessModelTest, StateTranslationRunning)
     EXPECT_EQ(snaps[0].displayState, "Running");
 }
 
-TEST(ProcessModelTest, StateTranslationSleeping)
+TEST(ProcessModelTest, GivenSleepingState_WhenRefreshed_ThenSnapshotStateIsSleeping)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", 'S', 0, 0)});
@@ -364,7 +364,7 @@ TEST(ProcessModelTest, StateTranslationSleeping)
     EXPECT_EQ(snaps[0].displayState, "Sleeping");
 }
 
-TEST(ProcessModelTest, StateTranslationDiskSleep)
+TEST(ProcessModelTest, GivenDiskSleepState_WhenRefreshed_ThenSnapshotStateIsDiskSleep)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", 'D', 0, 0)});
@@ -377,7 +377,7 @@ TEST(ProcessModelTest, StateTranslationDiskSleep)
     EXPECT_EQ(snaps[0].displayState, "Disk Sleep");
 }
 
-TEST(ProcessModelTest, StateTranslationZombie)
+TEST(ProcessModelTest, GivenZombieState_WhenRefreshed_ThenSnapshotStateIsZombie)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", 'Z', 0, 0)});
@@ -390,7 +390,7 @@ TEST(ProcessModelTest, StateTranslationZombie)
     EXPECT_EQ(snaps[0].displayState, "Zombie");
 }
 
-TEST(ProcessModelTest, StateTranslationStopped)
+TEST(ProcessModelTest, GivenStoppedState_WhenRefreshed_ThenSnapshotStateIsStopped)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", 'T', 0, 0)});
@@ -403,7 +403,7 @@ TEST(ProcessModelTest, StateTranslationStopped)
     EXPECT_EQ(snaps[0].displayState, "Stopped");
 }
 
-TEST(ProcessModelTest, StateTranslationUnknown)
+TEST(ProcessModelTest, GivenUnknownState_WhenRefreshed_ThenSnapshotStateIsUnknown)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "test", '?', 0, 0)});
@@ -416,7 +416,7 @@ TEST(ProcessModelTest, StateTranslationUnknown)
     EXPECT_EQ(snaps[0].displayState, "Unknown");
 }
 
-TEST(ProcessModelTest, StateTranslationTracing)
+TEST(ProcessModelTest, GivenTracingState_WhenRefreshed_ThenSnapshotStateIsTracing)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "debugged_proc", 't', 0, 0)});
@@ -429,7 +429,7 @@ TEST(ProcessModelTest, StateTranslationTracing)
     EXPECT_EQ(snaps[0].displayState, "Tracing");
 }
 
-TEST(ProcessModelTest, StateTranslationDead)
+TEST(ProcessModelTest, GivenDeadState_WhenRefreshed_ThenSnapshotStateIsDead)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "dead_proc", 'X', 0, 0)});
@@ -442,7 +442,7 @@ TEST(ProcessModelTest, StateTranslationDead)
     EXPECT_EQ(snaps[0].displayState, "Dead");
 }
 
-TEST(ProcessModelTest, StateTranslationIdle)
+TEST(ProcessModelTest, GivenIdleState_WhenRefreshed_ThenSnapshotStateIsIdle)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setCounters({makeCounter(1, "idle_kernel_thread", 'I', 0, 0)});
