@@ -326,12 +326,6 @@ endif()
 # Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
 set(FETCHCONTENT_TRY_FIND_PACKAGE_freetype FALSE)
 
-# CMake 4.2 dropped compatibility for projects declaring cmake_minimum_required(<3.5).
-# FreeType 2.13.2 still requests 3.0. Temporarily raise the policy minimum while
-# configuring the FreeType subproject, then restore the previous value.
-set(_TS_OLD_POLICY_VERSION_MINIMUM ${CMAKE_POLICY_VERSION_MINIMUM})
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-
 FetchContent_Declare(
     freetype
     GIT_REPOSITORY https://github.com/freetype/freetype.git
@@ -351,44 +345,16 @@ set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
 
-# Prevent pkg-config warnings emitted by FreeType's optional detection; restore after
-set(_TS_OLD_PKGCONFIG_EXEC ${PKG_CONFIG_EXECUTABLE})
-set(PKG_CONFIG_EXECUTABLE ${CMAKE_COMMAND} CACHE FILEPATH "" FORCE)
-
-# Temporarily disable deprecation noise from FreeType's legacy CMake minimum; restore afterwards
-set(_TS_OLD_WARN_DEPRECATED ${CMAKE_WARN_DEPRECATED})
-set(CMAKE_WARN_DEPRECATED FALSE CACHE BOOL "" FORCE)
-
-# Ensure IPO policy defaults to NEW for third-party subdirs that touch IPO
-if(POLICY CMP0069)
-    set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
-endif()
-
 FetchContent_GetProperties(freetype)
 if(NOT freetype_POPULATED)
     FetchContent_Populate(freetype)
     add_subdirectory(${freetype_SOURCE_DIR} ${freetype_BINARY_DIR})
 endif()
 
-# Restore the user's policy minimum to avoid global side effects
-if(DEFINED _TS_OLD_POLICY_VERSION_MINIMUM)
-    set(CMAKE_POLICY_VERSION_MINIMUM ${_TS_OLD_POLICY_VERSION_MINIMUM})
-else()
-    unset(CMAKE_POLICY_VERSION_MINIMUM)
-endif()
-
 set_target_properties(freetype PROPERTIES FOLDER "third_party")
 # Create an alias target to match find_package(Freetype) behavior
 if(NOT TARGET Freetype::Freetype)
     add_library(Freetype::Freetype ALIAS freetype)
-endif()
-
-# Restore user-facing settings
-if(DEFINED _TS_OLD_WARN_DEPRECATED)
-    set(CMAKE_WARN_DEPRECATED ${_TS_OLD_WARN_DEPRECATED} CACHE BOOL "" FORCE)
-endif()
-if(DEFINED _TS_OLD_PKGCONFIG_EXEC)
-    set(PKG_CONFIG_EXECUTABLE ${_TS_OLD_PKGCONFIG_EXEC} CACHE FILEPATH "" FORCE)
 endif()
 
 # ImGui
