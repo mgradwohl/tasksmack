@@ -40,7 +40,7 @@ jobs:
           cpack -G "TGZ;DEB"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: dist/*
@@ -101,7 +101,7 @@ jobs:
           cpack -G "ZIP"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: windows-packages
           path: dist/*

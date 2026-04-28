@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.build_type }}-test-results
           path: build/${{ matrix.build_type }}/test-results.xml
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: windows-${{ matrix.build_type }}-test-results
           path: build/win-${{ matrix.build_type }}/test-results.xml
@@ -179,7 +179,7 @@ jobs:
 
       - name: Upload clang-tidy results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
@@ -305,7 +305,7 @@ jobs:
 
       - name: Upload IWYU results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: iwyu-results
           path: iwyu-output.txt
@@ -388,7 +388,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage/
@@ -555,7 +555,7 @@ jobs:
 
       - name: Upload sanitizer logs and reports
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.preset }}-report
           path: |
