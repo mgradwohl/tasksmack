@@ -6,6 +6,7 @@
 #include "Platform/IGPUProbe.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <shared_mutex>
 #include <string_view>

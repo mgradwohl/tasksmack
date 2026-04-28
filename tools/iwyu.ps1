@@ -23,6 +23,7 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $scriptDir 'iwyu.sh'
+$projectRoot = Split-Path -Parent $scriptDir
 
 if (-not (Test-Path $scriptPath)) {
     Write-Error "Missing script: $scriptPath"
@@ -68,7 +69,9 @@ if ($projectRootForBash -match '^([A-Za-z]):/(.*)$') {
 
 $commandLine = "cd '$projectRootForBash' && ./tools/iwyu.sh"
 foreach ($arg in $args) {
-    $commandLine += " $arg"
+    # Single-quote each arg to prevent word-splitting and shell metacharacter expansion.
+    $escaped = $arg -replace "'", "'\"'\"'"
+    $commandLine += " '$escaped'"
 }
 
 & $bashPath -lc $commandLine
