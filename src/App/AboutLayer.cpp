@@ -282,7 +282,20 @@ void AboutLayer::loadIcon()
 void AboutLayer::openUrl(const std::string& url)
 {
 #ifdef _WIN32
-    const std::wstring wideUrl(url.begin(), url.end());
+    // MultiByteToWideChar correctly converts UTF-8 to UTF-16;
+    // constructing wstring from url.begin()/url.end() only byte-widens and corrupts non-ASCII chars.
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), static_cast<int>(url.size()), nullptr, 0);
+    if (wlen <= 0)
+    {
+        spdlog::warn("Failed to convert URL to wide string: {}", url);
+        return;
+    }
+    std::wstring wideUrl(static_cast<std::size_t>(wlen), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, 0, url.c_str(), static_cast<int>(url.size()), wideUrl.data(), wlen) == 0)
+    {
+        spdlog::warn("Failed to convert URL to wide string: {}", url);
+        return;
+    }
     ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
     // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <format>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -29,14 +30,41 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisPercent;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
+using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
+
+/// Scale each sample to a 0–100 percentage relative to maxVal.
+[[nodiscard]] std::vector<float> normalizeToPercent(std::span<const float> hist, float maxVal)
+{
+    std::vector<float> result(hist.size());
+    std::ranges::transform(hist, result.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
+    return result;
+}
+
+/// Render a "Note: This system does not report GPU X, Y or Z" line in muted text.
+void renderUnavailableMetricsNote(std::span<const std::string> unavailable, ImVec4 textColor)
+{
+    if (unavailable.empty())
+    {
+        return;
+    }
+    std::string noteText = "Note: This system does not report GPU ";
+    for (std::size_t i = 0; i < unavailable.size(); ++i)
+    {
+        if (i > 0)
+        {
+            noteText += (i == unavailable.size() - 1) ? " or " : ", ";
+        }
+        noteText += unavailable[i];
+    }
+    ImGui::TextColored(textColor, "%s", noteText.c_str());
+}
 
 } // namespace
 
@@ -50,20 +78,12 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     const double alpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
 
     auto& smoothed = (*ctx.smoothedGPUs)[gpuId];
-    if (!smoothed.initialized)
-    {
-        smoothed.utilizationPercent = snap.utilizationPercent;
-        smoothed.memoryPercent = snap.memoryUsedPercent;
-        smoothed.temperatureC = static_cast<double>(snap.temperatureC);
-        smoothed.powerWatts = snap.powerDrawWatts;
-        smoothed.initialized = true;
-        return;
-    }
-
-    smoothed.utilizationPercent = smoothTowards(smoothed.utilizationPercent, snap.utilizationPercent, alpha);
-    smoothed.memoryPercent = smoothTowards(smoothed.memoryPercent, snap.memoryUsedPercent, alpha);
-    smoothed.temperatureC = smoothTowards(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha);
-    smoothed.powerWatts = smoothTowards(smoothed.powerWatts, snap.powerDrawWatts, alpha);
+    const bool initialized = smoothed.initialized;
+    smoothed.utilizationPercent = initializeOrSmooth(smoothed.utilizationPercent, snap.utilizationPercent, alpha, initialized);
+    smoothed.memoryPercent = initializeOrSmooth(smoothed.memoryPercent, snap.memoryUsedPercent, alpha, initialized);
+    smoothed.temperatureC = initializeOrSmooth(smoothed.temperatureC, static_cast<double>(snap.temperatureC), alpha, initialized);
+    smoothed.powerWatts = initializeOrSmooth(smoothed.powerWatts, snap.powerDrawWatts, alpha, initialized);
+    smoothed.initialized = true;
 }
 
 void renderGpuSection(RenderContext& ctx)
@@ -203,11 +223,7 @@ void renderGpuSection(RenderContext& ctx)
                 // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
                 if (caps.hasClockSpeeds && !clockHist.empty())
                 {
-                    std::vector<float> clockPercent(clockHist.size());
-                    for (size_t i = 0; i < clockHist.size(); ++i)
-                    {
-                        clockPercent[i] = (clockHist[i] / maxClockMHz) * 100.0F;
-                    }
+                    const auto clockPercent = normalizeToPercent(clockHist, maxClockMHz);
                     plotLineWithFill("Clock",
                                      timeData.data(),
                                      clockPercent.data(),
@@ -355,16 +371,7 @@ void renderGpuSection(RenderContext& ctx)
 
             if (!unavailableCoreNotes.empty())
             {
-                std::string noteText = "Note: This system does not report GPU ";
-                for (size_t i = 0; i < unavailableCoreNotes.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        noteText += (i == unavailableCoreNotes.size() - 1) ? " or " : ", ";
-                    }
-                    noteText += unavailableCoreNotes[i];
-                }
-                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
+                renderUnavailableMetricsNote(unavailableCoreNotes, theme.scheme().textMuted);
             }
         }
 
@@ -395,11 +402,7 @@ void renderGpuSection(RenderContext& ctx)
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempHist.empty())
                     {
-                        std::vector<float> tempPercent(tempHist.size());
-                        for (size_t i = 0; i < tempHist.size(); ++i)
-                        {
-                            tempPercent[i] = (tempHist[i] / maxTempC) * 100.0F;
-                        }
+                        const auto tempPercent = normalizeToPercent(tempHist, maxTempC);
                         plotLineWithFill("Temp",
                                          timeData.data(),
                                          tempPercent.data(),
@@ -410,11 +413,7 @@ void renderGpuSection(RenderContext& ctx)
                     // Power (normalized to power limit percentage)
                     if (caps.hasPowerMetrics && !powerHist.empty())
                     {
-                        std::vector<float> powerPercent(powerHist.size());
-                        for (size_t i = 0; i < powerHist.size(); ++i)
-                        {
-                            powerPercent[i] = (powerHist[i] / maxPowerW) * 100.0F;
-                        }
+                        const auto powerPercent = normalizeToPercent(powerHist, maxPowerW);
                         plotLineWithFill("Power",
                                          timeData.data(),
                                          powerPercent.data(),
@@ -490,16 +489,7 @@ void renderGpuSection(RenderContext& ctx)
 
             if (!unavailableNotes.empty())
             {
-                std::string noteText = "Note: This system does not report GPU ";
-                for (size_t i = 0; i < unavailableNotes.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        noteText += (i == unavailableNotes.size() - 1) ? " or " : ", ";
-                    }
-                    noteText += unavailableNotes[i];
-                }
-                ImGui::TextColored(theme.scheme().textMuted, "%s", noteText.c_str());
+                renderUnavailableMetricsNote(unavailableNotes, theme.scheme().textMuted);
             }
         }
 

@@ -17,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -80,6 +81,16 @@ inline double computeAlpha(float deltaTimeSeconds, std::chrono::milliseconds ref
 inline double smoothTowards(double current, double target, double alpha)
 {
     return current + (alpha * (target - current));
+}
+
+template<typename T> inline T initializeOrSmooth(T current, T target, double alpha, bool initialized)
+{
+    static_assert(std::is_arithmetic_v<T>, "initializeOrSmooth requires arithmetic types");
+    if (!initialized)
+    {
+        return target;
+    }
+    return static_cast<T>(smoothTowards(static_cast<double>(current), static_cast<double>(target), alpha));
 }
 
 inline std::string formatAgeSeconds(double relativeSeconds)

@@ -223,7 +223,7 @@ class Theme
     void setTheme(std::size_t index);
 
     /// Set current theme by ID (deferred to next frame)
-    void setThemeById(const std::string& id);
+    void setThemeById(std::string_view id);
 
     /// Apply current theme colors to ImGui style
     void applyImGuiStyle() const;
