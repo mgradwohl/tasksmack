@@ -217,7 +217,7 @@ set(SPDLOG_HEADER_ONLY ON CACHE BOOL "Build spdlog in header-only mode" FORCE)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.13.0
+    GIT_TAG v1.17.0
     SYSTEM  # Treat as system headers to suppress warnings from spdlog
 )
 
@@ -261,9 +261,8 @@ endif()
 # SDL3 for windowing, input, and custom title bar support
 FetchContent_Declare(
     SDL3
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
-    URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.4.0.tar.gz
-    URL_HASH SHA256=9614b9696abc4597ffce6b888829dc6537ae500423474c342ac4a67222c5654c
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-3.4.4
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
 )
 
@@ -335,9 +334,8 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 FetchContent_Declare(
     freetype
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
-    URL https://downloads.sourceforge.net/freetype/freetype-2.13.2.tar.gz
-    URL_HASH SHA256=1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5
+    GIT_REPOSITORY https://github.com/freetype/freetype.git
+    GIT_TAG VER-2-14-3
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
 )
 
@@ -396,8 +394,8 @@ endif()
 # ImGui
 FetchContent_Declare(
     imgui
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
-    URL https://github.com/ocornut/imgui/archive/refs/heads/docking.zip
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.7-docking
 )
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
@@ -429,11 +427,11 @@ target_compile_definitions(imgui_lib PUBLIC
 )
 set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 
-# ImPlot (master branch for compatibility with latest ImGui)
+# ImPlot v1.0 (requires ImGui docking branch)
 FetchContent_Declare(
     implot
-    DOWNLOAD_EXTRACT_TIMESTAMP OFF
-    URL https://github.com/epezent/implot/archive/refs/heads/master.zip
+    GIT_REPOSITORY https://github.com/epezent/implot.git
+    GIT_TAG v1.0
 )
 FetchContent_GetProperties(implot)
 if(NOT implot_POPULATED)
