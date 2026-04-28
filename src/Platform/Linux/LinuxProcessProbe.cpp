@@ -136,8 +136,9 @@ LinuxProcessProbe::LinuxProcessProbe()
 {
     if (m_TicksPerSecond <= 0)
     {
-        // 100 Hz is the standard scheduler tick rate on most x86_64 Linux distributions
-        // (CONFIG_HZ=100). See 'man 7 time' and 'man 5 proc' for details.
+        // /proc process times are typically reported in user-space clock ticks (USER_HZ),
+        // and 100 Hz is the conventional Linux fallback for CLK_TCK in that context.
+        // See 'man 7 time' and 'man 5 proc' for procfs/USER_HZ semantics.
         m_TicksPerSecond = 100;
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
     }

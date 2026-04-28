@@ -42,9 +42,9 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 
     // Validate window dimensions; fall back to a sensible default rather than
     // passing zero to the windowing system, which would produce undefined behavior.
-    constexpr uint32_t DEFAULT_WIDTH = 1280;
-    constexpr uint32_t DEFAULT_HEIGHT = 720;
-    if (m_Spec.Width == 0 || m_Spec.Height == 0)
+    constexpr int DEFAULT_WIDTH = 1280;
+    constexpr int DEFAULT_HEIGHT = 720;
+    if (m_Spec.Width <= 0 || m_Spec.Height <= 0)
     {
         spdlog::warn("Invalid window dimensions {}x{}, using defaults {}x{}", m_Spec.Width, m_Spec.Height, DEFAULT_WIDTH, DEFAULT_HEIGHT);
         m_Spec.Width = DEFAULT_WIDTH;
