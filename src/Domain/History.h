@@ -12,6 +12,8 @@ namespace Domain
 /// Provides efficient append and contiguous access for plotting.
 template<typename T, std::size_t Capacity> class History
 {
+    static_assert(Capacity > 0, "History capacity must be greater than zero");
+
   public:
     /// Add a new value, overwriting oldest if full.
     void push(T value) noexcept(std::is_nothrow_move_assignable_v<T>)

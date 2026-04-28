@@ -136,7 +136,9 @@ LinuxProcessProbe::LinuxProcessProbe()
 {
     if (m_TicksPerSecond <= 0)
     {
-        m_TicksPerSecond = 100; // Common default
+        // 100 Hz is the standard scheduler tick rate on most x86_64 Linux distributions
+        // (CONFIG_HZ=100). See 'man 7 time' and 'man 5 proc' for details.
+        m_TicksPerSecond = 100;
         spdlog::warn("Failed to get CLK_TCK, using default: {}", m_TicksPerSecond);
     }
 

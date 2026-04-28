@@ -43,31 +43,36 @@ void Theme::loadDefaultFallbackTheme()
     ColorScheme fallback;
     fallback.name = "Fallback";
 
-    // Basic gray/blue colors
+    // Named color constants to avoid repeating raw ImVec4 literals throughout this function
     const auto gray = ImVec4(0.5F, 0.5F, 0.5F, 1.0F);
     const auto blue = ImVec4(0.26F, 0.59F, 0.98F, 1.0F);
     const auto darkBg = ImVec4(0.1F, 0.1F, 0.1F, 1.0F);
+    const auto red = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
+    const auto green = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
+    const auto yellow = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
+    const auto orange = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
+    const auto transparent = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
 
     fallback.accents = {blue, blue, blue, blue, blue, blue, blue, blue};
     fallback.progressLow = blue;
     fallback.progressMedium = gray;
-    fallback.progressHigh = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
+    fallback.progressHigh = red;
 
     fallback.textPrimary = ImVec4(0.90F, 0.92F, 0.96F, 1.0F);
     fallback.textDisabled = ImVec4(0.65F, 0.68F, 0.72F, 1.0F);
     fallback.textMuted = gray;
-    fallback.textError = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
-    fallback.textWarning = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
-    fallback.textSuccess = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
+    fallback.textError = red;
+    fallback.textWarning = yellow;
+    fallback.textSuccess = green;
     fallback.textInfo = blue;
 
-    fallback.statusRunning = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
-    fallback.statusStopped = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
-    fallback.statusSleeping = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
+    fallback.statusRunning = green;
+    fallback.statusStopped = red;
+    fallback.statusSleeping = yellow;
 
     fallback.chartCpu = blue;
-    fallback.chartMemory = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
-    fallback.chartIo = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
+    fallback.chartMemory = green;
+    fallback.chartIo = orange;
 
     // Chart fill colors (semi-transparent versions)
     fallback.chartCpuFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
@@ -75,27 +80,27 @@ void Theme::loadDefaultFallbackTheme()
     fallback.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
 
     fallback.cpuUser = blue;
-    fallback.cpuSystem = ImVec4(1.0F, 0.5F, 0.0F, 1.0F);
-    fallback.cpuIowait = ImVec4(1.0F, 1.0F, 0.0F, 1.0F);
+    fallback.cpuSystem = orange;
+    fallback.cpuIowait = yellow;
     fallback.cpuIdle = gray;
 
     // CPU breakdown fill colors (semi-transparent versions)
     fallback.cpuUserFill = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
     fallback.cpuSystemFill = ImVec4(1.0F, 0.5F, 0.0F, 0.35F);
     fallback.cpuIowaitFill = ImVec4(1.0F, 1.0F, 0.0F, 0.35F);
-    fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F);
+    fallback.cpuIdleFill = ImVec4(0.5F, 0.5F, 0.5F, 0.20F); // semi-transparent gray
 
     fallback.windowBg = darkBg;
-    fallback.childBg = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+    fallback.childBg = transparent;
     fallback.popupBg = ImVec4(0.08F, 0.08F, 0.08F, 0.94F);
     fallback.border = ImVec4(0.43F, 0.43F, 0.50F, 0.50F);
-    fallback.borderShadow = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+    fallback.borderShadow = transparent;
     fallback.frameBg = ImVec4(0.16F, 0.29F, 0.48F, 0.54F);
     fallback.frameBgHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.40F);
     fallback.frameBgActive = ImVec4(0.26F, 0.59F, 0.98F, 0.67F);
     fallback.titleBg = ImVec4(0.04F, 0.04F, 0.04F, 1.0F);
     fallback.titleBgActive = ImVec4(0.16F, 0.29F, 0.48F, 1.0F);
-    fallback.titleBgCollapsed = ImVec4(0.0F, 0.0F, 0.0F, 0.51F);
+    fallback.titleBgCollapsed = ImVec4(0.0F, 0.0F, 0.0F, 0.51F); // near-transparent
     fallback.menuBarBg = ImVec4(0.14F, 0.14F, 0.14F, 1.0F);
     fallback.statusBarBg = ImVec4(0.14F, 0.14F, 0.14F, 1.0F);
     fallback.scrollbarBg = ImVec4(0.02F, 0.02F, 0.02F, 0.53F);
@@ -120,10 +125,10 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tab = ImVec4(0.18F, 0.35F, 0.58F, 0.86F);
     fallback.tabHovered = ImVec4(0.26F, 0.59F, 0.98F, 0.80F);
     fallback.tabSelected = ImVec4(0.20F, 0.41F, 0.68F, 1.0F);
-    fallback.tabSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F); // Transparent to disable
+    fallback.tabSelectedOverline = transparent; // Transparent to disable
     fallback.tabDimmed = ImVec4(0.07F, 0.10F, 0.15F, 0.97F);
     fallback.tabDimmedSelected = ImVec4(0.14F, 0.26F, 0.42F, 1.0F);
-    fallback.tabDimmedSelectedOverline = ImVec4(0.0F, 0.0F, 0.0F, 0.0F); // Transparent
+    fallback.tabDimmedSelectedOverline = transparent; // Transparent
     fallback.dockingPreview = ImVec4(0.26F, 0.59F, 0.98F, 0.70F);
     fallback.dockingEmptyBg = ImVec4(0.20F, 0.20F, 0.20F, 1.0F);
     fallback.plotLines = ImVec4(0.61F, 0.61F, 0.61F, 1.0F);
@@ -133,7 +138,7 @@ void Theme::loadDefaultFallbackTheme()
     fallback.tableHeaderBg = ImVec4(0.19F, 0.19F, 0.20F, 1.0F);
     fallback.tableBorderStrong = ImVec4(0.31F, 0.31F, 0.35F, 1.0F);
     fallback.tableBorderLight = ImVec4(0.23F, 0.23F, 0.25F, 1.0F);
-    fallback.tableRowBg = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+    fallback.tableRowBg = transparent;
     fallback.tableRowBgAlt = ImVec4(1.0F, 1.0F, 1.0F, 0.06F);
     fallback.textSelectedBg = ImVec4(0.26F, 0.59F, 0.98F, 0.35F);
     fallback.dragDropTarget = ImVec4(1.0F, 1.0F, 0.0F, 0.90F);
