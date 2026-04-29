@@ -33,9 +33,8 @@ void logSamplerLoopException(std::string_view message,
     {
         if (suppressedCount > 0)
         {
-            spdlog::error("BackgroundSampler: sampler loop exception repeated {} additional times; latest error: {}",
-                          suppressedCount,
-                          message);
+            spdlog::error(
+                "BackgroundSampler: sampler loop exception repeated {} additional times; latest error: {}", suppressedCount, message);
         }
         else
         {
