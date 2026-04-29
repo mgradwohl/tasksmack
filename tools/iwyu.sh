@@ -137,6 +137,25 @@ elif [[ -n "$IWYU" ]]; then
     fi
 fi
 
+# Version check: iwyu must be built against a compatible Clang major version.
+# Mismatched versions (e.g., iwyu built against Clang 17 vs. project Clang 22+)
+# cause assertion failures in iwyu_include_picker.
+# Check the Clang base version from the 'based on ... clang version X' line.
+MIN_IWYU_CLANG_MAJOR=22
+IWYU_BARE=$(command -v iwyu 2>/dev/null || command -v include-what-you-use 2>/dev/null || echo "")
+if [[ -n "${IWYU_BARE}" ]]; then
+    IWYU_VERSION_OUTPUT=$("${IWYU_BARE}" --version 2>&1 || true)
+    # Output format: "include-what-you-use 0.21 based on Ubuntu clang version 17.0.6 ..."
+    IWYU_CLANG_MAJOR=$(echo "${IWYU_VERSION_OUTPUT}" | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
+    if [[ -n "${IWYU_CLANG_MAJOR}" ]] && [[ "${IWYU_CLANG_MAJOR}" -lt "${MIN_IWYU_CLANG_MAJOR}" ]]; then
+        echo "Error: iwyu is built against Clang ${IWYU_CLANG_MAJOR}, but this project requires Clang ${MIN_IWYU_CLANG_MAJOR}+." >&2
+        echo "A mismatched iwyu produces assertion failures (duplicate header visibility)." >&2
+        echo "Build iwyu from source against Clang ${MIN_IWYU_CLANG_MAJOR}+:" >&2
+        echo "  https://github.com/include-what-you-use/include-what-you-use" >&2
+        exit 1
+    fi
+fi
+
 # Check for Python 3 (required for compile flag extraction)
 PYTHON3=$(command -v python3 2>/dev/null || echo "")
 if [[ -z "$PYTHON3" ]]; then

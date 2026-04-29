@@ -13,6 +13,10 @@ inputs:
     description: 'Install clang-tidy'
     required: false
     default: 'false'
+  install-clangd:
+    description: 'Install clangd'
+    required: false
+    default: 'true'
   install-coverage-tools:
     description: 'Install llvm-profdata and llvm-cov for coverage'
     required: false
@@ -52,6 +56,9 @@ runs:
         if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
           PACKAGES="$PACKAGES clang-tidy-${{ inputs.llvm-version }}"
         fi
+        if [[ "${{ inputs.install-clangd }}" == "true" ]]; then
+          PACKAGES="$PACKAGES clangd-${{ inputs.llvm-version }}"
+        fi
 
         # Install packages
         sudo apt-get update
@@ -84,6 +91,12 @@ runs:
           sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$VER
         fi
 
+        # Optional: clangd
+        if [[ "${{ inputs.install-clangd }}" == "true" ]] && [[ -x "/usr/bin/clangd-$VER" ]]; then
+          sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-$VER 100
+          sudo update-alternatives --set clangd /usr/bin/clangd-$VER
+        fi
+
         # Optional: coverage tools
         if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-$VER 100
@@ -103,6 +116,9 @@ runs:
         fi
         if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
           clang-tidy --version | head -1
+        fi
+        if [[ "${{ inputs.install-clangd }}" == "true" ]]; then
+          clangd --version | head -1
         fi
         if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
           llvm-profdata --version 2>&1 | head -1 || echo "llvm-profdata: $(which llvm-profdata || echo 'not found')"

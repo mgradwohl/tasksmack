@@ -27,6 +27,18 @@ Checks: >
   -readability-magic-numbers,
   -readability-use-concise-preprocessor-directives,
 
+# Disabled checks rationale:
+# - bugprone-easily-swappable-parameters: too noisy for constructors/adjacent same-type params.
+# - cppcoreguidelines-avoid-magic-numbers + readability-magic-numbers: intentional UI/layout literals.
+# - cppcoreguidelines/misc non-private-member-variables: snapshot structs use public members by design.
+# - cppcoreguidelines-pro-bounds-*: required by ImGui/SDL3/OS APIs and validated hot paths.
+# - cppcoreguidelines-pro-type-reinterpret-cast: required at OS API boundaries (GetProcAddress/dlsym/Netlink/DXGI).
+# - cppcoreguidelines-pro-type-vararg: noisy from fmt/spdlog internals.
+# - modernize-use-auto + modernize-use-trailing-return-type: project style preference.
+# - portability-avoid-pragma-once: project standard intentionally uses #pragma once.
+# - readability-function-cognitive-complexity + readability-identifier-length: too noisy for panel/render/math code.
+# - readability-use-concise-preprocessor-directives: project standard prefers #ifdef/#ifndef.
+
 WarningsAsErrors: ''
 SystemHeaders: false
 
