@@ -249,6 +249,33 @@ Recommended extensions:
 - CodeLLDB
 - CMake Tools
 
+Workspace settings resolve `clangd` and `clang-format` from `PATH` so the same `.vscode/settings.json` works across Linux/WSL/Windows. Ensure LLVM tools are on `PATH` (the prerequisite scripts validate this). Only use user-level VS Code overrides if your local install path is nonstandard.
+
+Before troubleshooting VS Code diagnostics, run the prerequisite check to confirm required tools are installed and discoverable on `PATH`:
+
+```bash
+./tools/check-prereqs.sh      # Linux
+pwsh tools/check-prereqs.ps1  # Windows
+```
+
+If this check passes, `clangd`/`clang-format` should be auto-discovered by the workspace settings.
+
+Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-22`), register unversioned commands system-wide with `update-alternatives`:
+
+```bash
+sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-22 220
+sudo update-alternatives --set clang-format /usr/bin/clang-format-22
+
+sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-22 220
+sudo update-alternatives --set clangd /usr/bin/clangd-22
+```
+
+Then re-run:
+
+```bash
+./tools/check-prereqs.sh
+```
+
 Build tasks are preconfigured:
 
 - `Ctrl+Shift+B` runs the default Debug build

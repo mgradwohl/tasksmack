@@ -32,11 +32,15 @@ CompileFlags:
   # Remove PCH, module, and MSVC-specific flags that clangd doesn't support
   Remove:
     - -Xclang
+    - -include
     - -emit-pch
     - -include-pch
     - -fpch-*
     - -Winvalid-pch
+    - '*cmake_pch.hxx*'
     - -fmodule-output=*
+    - -Werror
+    - -Werror=*
     - "@CMakeFiles*"
     - --dependent-lib=*
 

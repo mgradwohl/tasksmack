@@ -72,6 +72,18 @@ function Get-ClangVersion {
     return $null
 }
 
+# Get clangd version
+function Get-ClangdVersion {
+    try {
+        $output = (& clangd --version 2>&1) | Out-String
+        if ($output -match 'clangd version (\d+)') {
+            return [int]$Matches[1]
+        }
+    }
+    catch {}
+    return $null
+}
+
 # Get cmake version
 function Get-CMakeVersion {
     try {
@@ -277,6 +289,17 @@ else {
     $AllOK = $false
 }
 
+# Check clangd (required for VS Code workspace defaults)
+$clangdVer = Get-ClangdVersion
+$clangdPath = Get-ToolPath "clangd"
+if ($clangdVer -and $clangdVer -ge $MIN_CLANG_VERSION) {
+    Write-Status -Name "clangd" -Status "ok" -Version $clangdVer -Path $clangdPath -Required $MIN_CLANG_VERSION
+}
+else {
+    Write-Status -Name "clangd" -Status "fail" -Version $clangdVer -Path $clangdPath -Required $MIN_CLANG_VERSION
+    $AllOK = $false
+}
+
 # Check CMake
 $cmakeVer = Get-CMakeVersion
 $cmakePath = Get-ToolPath "cmake"
@@ -336,11 +359,11 @@ else {
 # Check clang-format
 $formatVer = Get-ClangFormatVersion
 $formatPath = Get-ToolPath "clang-format"
-if ($formatVer) {
-    Write-Status -Name "clang-format" -Status "ok" -Version $formatVer -Path $formatPath -Required ""
+if ($formatVer -and [int]$formatVer -ge $MIN_CLANG_VERSION) {
+    Write-Status -Name "clang-format" -Status "ok" -Version $formatVer -Path $formatPath -Required $MIN_CLANG_VERSION
 }
 else {
-    Write-Status -Name "clang-format" -Status "fail" -Version $null -Path $formatPath -Required ""
+    Write-Status -Name "clang-format" -Status "fail" -Version $formatVer -Path $formatPath -Required $MIN_CLANG_VERSION
     $AllOK = $false
 }
 

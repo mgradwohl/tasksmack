@@ -78,6 +78,15 @@ get_clang_version() {
     fi
 }
 
+# Get clangd version
+get_clangd_version() {
+    if command -v clangd &>/dev/null; then
+        clangd --version 2>/dev/null | grep -oE 'clangd version [0-9]+' | grep -oE '[0-9]+' | head -1
+    else
+        echo ""
+    fi
+}
+
 # Get cmake version
 get_cmake_version() {
     if command -v cmake &>/dev/null; then
@@ -138,6 +147,15 @@ get_clang_format_version() {
 get_llvm_profdata_version() {
     if command -v llvm-profdata &>/dev/null; then
         llvm-profdata show --version 2>/dev/null | grep -oE 'LLVM version [0-9]+' | grep -oE '[0-9]+' | head -1
+    else
+        echo ""
+    fi
+}
+
+# Get iwyu version
+get_iwyu_version() {
+    if command -v iwyu &>/dev/null; then
+        iwyu --version 2>&1 | grep -oE 'include-what-you-use [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
     else
         echo ""
     fi
@@ -239,6 +257,8 @@ main() {
     echo
 
     local all_ok=0
+    local missing_clangd=0
+    local missing_clang_format=0
 
     # CMake
     local cmake_ver
@@ -270,6 +290,42 @@ main() {
             echo -e "${GREEN}clang${NC}: ${clang_ver} (${clang_path})"
         else
             echo -e "${YELLOW}clang${NC}: ${clang_ver} (${clang_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # clangd (required for VS Code workspace defaults)
+    local clangd_ver
+    clangd_ver="$(get_clangd_version)"
+    if [[ -z "${clangd_ver}" ]]; then
+        echo -e "${RED}clangd${NC}: not found (required on PATH for VS Code diagnostics)"
+        all_ok=1
+        missing_clangd=1
+    else
+        local clangd_path
+        clangd_path="$(command -v clangd 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clangd_ver}"; then
+            echo -e "${GREEN}clangd${NC}: ${clangd_ver} (${clangd_path})"
+        else
+            echo -e "${YELLOW}clangd${NC}: ${clangd_ver} (${clangd_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # clang-format (required for VS Code/workflow defaults)
+    local clang_format_ver
+    clang_format_ver="$(get_clang_format_version)"
+    if [[ -z "${clang_format_ver}" ]]; then
+        echo -e "${RED}clang-format${NC}: not found (required on PATH for formatting)"
+        all_ok=1
+        missing_clang_format=1
+    else
+        local clang_format_path
+        clang_format_path="$(command -v clang-format 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clang_format_ver}"; then
+            echo -e "${GREEN}clang-format${NC}: ${clang_format_ver} (${clang_format_path})"
+        else
+            echo -e "${YELLOW}clang-format${NC}: ${clang_format_ver} (${clang_format_path}) - minimum recommended ${MIN_CLANG_VERSION}"
             all_ok=1
         fi
     fi
@@ -306,6 +362,18 @@ main() {
             echo -e "${YELLOW}git${NC}: ${git_ver} (${git_path}) - minimum required ${MIN_GIT_VERSION}"
             all_ok=1
         fi
+    fi
+
+    # iwyu (optional)
+    local iwyu_ver
+    iwyu_ver="$(get_iwyu_version)"
+    if [[ -z "${iwyu_ver}" ]]; then
+        echo -e "${YELLOW}iwyu${NC}: not found (optional; required only for ./tools/iwyu.sh)"
+        echo -e "  ${CYAN}Hint${NC}: sudo apt install iwyu"
+    else
+        local iwyu_path
+        iwyu_path="$(command -v iwyu 2>/dev/null || true)"
+        echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
     fi
 
     # llvm-cov (informational)
@@ -347,6 +415,20 @@ main() {
         return 0
     else
         echo -e "${RED}Some mandatory prerequisites are missing or out of date.${NC}"
+        if [[ "${missing_clangd}" -eq 1 ]]; then
+            local versioned_clangd
+            versioned_clangd="$(command -v "clangd-${MIN_CLANG_VERSION}" 2>/dev/null || true)"
+            if [[ -n "${versioned_clangd}" ]]; then
+                echo -e "${YELLOW}Hint${NC}: found ${versioned_clangd}. Add an unversioned 'clangd' on PATH (e.g., via update-alternatives)."
+            fi
+        fi
+        if [[ "${missing_clang_format}" -eq 1 ]]; then
+            local versioned_clang_format
+            versioned_clang_format="$(command -v "clang-format-${MIN_CLANG_VERSION}" 2>/dev/null || true)"
+            if [[ -n "${versioned_clang_format}" ]]; then
+                echo -e "${YELLOW}Hint${NC}: found ${versioned_clang_format}. Add an unversioned 'clang-format' on PATH (e.g., via update-alternatives)."
+            fi
+        fi
         return 1
     fi
 }
