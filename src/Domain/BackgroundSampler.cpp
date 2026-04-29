@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -17,6 +18,39 @@
 
 namespace Domain
 {
+
+namespace
+{
+
+constexpr auto EXCEPTION_LOG_THROTTLE = std::chrono::seconds(5);
+
+void logSamplerLoopException(std::string_view message,
+                             std::chrono::steady_clock::time_point now,
+                             std::chrono::steady_clock::time_point& nextLogTime,
+                             std::size_t& suppressedCount)
+{
+    if (now >= nextLogTime)
+    {
+        if (suppressedCount > 0)
+        {
+            spdlog::error("BackgroundSampler: sampler loop exception repeated {} additional times; latest error: {}",
+                          suppressedCount,
+                          message);
+        }
+        else
+        {
+            spdlog::error("BackgroundSampler: exception in sampler loop: {}", message);
+        }
+
+        nextLogTime = now + EXCEPTION_LOG_THROTTLE;
+        suppressedCount = 0;
+        return;
+    }
+
+    ++suppressedCount;
+}
+
+} // namespace
 
 BackgroundSampler::BackgroundSampler(std::unique_ptr<Platform::IProcessProbe> probe, SamplerConfig config)
     : m_Probe(std::move(probe)), m_Capabilities(m_Probe->capabilities()), m_Config(config)
@@ -104,6 +138,8 @@ void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
 void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 {
     spdlog::debug("BackgroundSampler: thread started");
+    auto nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
+    std::size_t suppressedExceptionCount = 0;
 
     while (!stopToken.stop_requested())
     {
@@ -123,14 +159,17 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
                     m_Callback(counters, totalCpuTime);
                 }
             }
+
+            nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
+            suppressedExceptionCount = 0;
         }
         catch (const std::exception& ex)
         {
-            spdlog::error("BackgroundSampler: exception in sampler loop: {}", ex.what());
+            logSamplerLoopException(ex.what(), startTime, nextExceptionLogTime, suppressedExceptionCount);
         }
         catch (...)
         {
-            spdlog::error("BackgroundSampler: unknown exception in sampler loop");
+            logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
         }
 
         // Clear refresh request
