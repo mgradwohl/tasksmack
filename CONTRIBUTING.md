@@ -9,11 +9,10 @@ This document is the single source of truth for developer setup and workflows (b
 To avoid duplication and doc drift, these are the canonical docs:
 
 - [README.md](README.md): user-facing features (with a small contributor pointer to this file)
+- [README.md](README.md): user-facing features (with a small contributor pointer to this file)
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
 - [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
 - [completed-features.md](completed-features.md): canonical shipped-features list
-- [docs/test-coverage-summary.md](docs/test-coverage-summary.md): test coverage analysis (executive summary)
-- [docs/test-coverage-analysis.md](docs/test-coverage-analysis.md): comprehensive test coverage review (full report)
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
 
 ## Quick Start
@@ -325,7 +324,7 @@ brew install include-what-you-use
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
-- **Version compatibility:** IWYU works best when built against the same clang version as your project, but minor version differences usually work. The system package (`apt install iwyu`) may produce warnings if versions mismatch. This is expected - rely on CI for accurate results.
+- **Version compatibility:** IWYU must be built against Clang 22+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 22+: https://github.com/include-what-you-use/include-what-you-use
 
 ### Formatting (required before PRs)
 

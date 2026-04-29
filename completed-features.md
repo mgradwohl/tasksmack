@@ -44,8 +44,9 @@ This file lists features that are already implemented in TaskSmack.
 | **VS Code integration** | Tasks and launch configs |
 | **Precompiled headers (PCH)** | Faster builds |
 | **Compiler caching support** | ccache/sccache |
-| **clang-tidy workflow** | Helper scripts and curated config |
+| **clang-tidy workflow** | Helper scripts, curated config with rationale comments, 0-warning baseline |
 | **CI on Linux + Windows** | Build, tests, format check, clang-tidy, coverage |
+| **CI clangd provisioning** | `setup-llvm` action provisions unversioned `clangd` symlink for all CI jobs |
 | **Coverage reporting** | llvm-cov HTML reports |
 | **CPack packaging** | ZIP/installer generation via CPack |
 | **Version header generation** | Auto-generate `version.h` during configure |
@@ -53,3 +54,5 @@ This file lists features that are already implemented in TaskSmack.
 | **Compiler warning configuration** | Tuned warnings and warnings-as-errors |
 | **`std::print` adoption** | Type-safe, format-string-based output |
 | **FreeType font rendering** | Sharper text rendering at small sizes using FreeType with LightHinting |
+| **pre-commit clang-format pin** | `mirrors-clang-format` pinned to v22.1.4 matching project Clang version |
+| **iwyu version gate** | `tools/iwyu.sh` fails fast if iwyu is built against wrong Clang version |
