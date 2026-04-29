@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <stop_token>
@@ -108,17 +109,28 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
     {
         auto startTime = std::chrono::steady_clock::now();
 
-        // Enumerate processes
-        auto counters = m_Probe->enumerate();
-        const std::uint64_t totalCpuTime = m_Probe->totalCpuTime();
-
-        // Invoke callback
+        try
         {
-            const std::scoped_lock lock(m_CallbackMutex);
-            if (m_Callback)
+            // Enumerate processes
+            auto counters = m_Probe->enumerate();
+            const std::uint64_t totalCpuTime = m_Probe->totalCpuTime();
+
+            // Invoke callback
             {
-                m_Callback(counters, totalCpuTime);
+                const std::scoped_lock lock(m_CallbackMutex);
+                if (m_Callback)
+                {
+                    m_Callback(counters, totalCpuTime);
+                }
             }
+        }
+        catch (const std::exception& ex)
+        {
+            spdlog::error("BackgroundSampler: exception in sampler loop: {}", ex.what());
+        }
+        catch (...)
+        {
+            spdlog::error("BackgroundSampler: unknown exception in sampler loop");
         }
 
         // Clear refresh request

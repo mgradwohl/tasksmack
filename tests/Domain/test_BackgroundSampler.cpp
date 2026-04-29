@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -537,4 +538,104 @@ TEST(BackgroundSamplerTest, ZeroIntervalHandledGracefully)
 
     // Should have been called many times with zero interval
     EXPECT_GT(callbackCount.load(), 5);
+}
+
+// =============================================================================
+// Exception Safety Tests
+// =============================================================================
+
+/// A process probe that throws std::runtime_error from enumerate() on every call.
+/// Used to verify the sampler loop handles probe exceptions gracefully.
+class ThrowingProcessProbe : public Platform::IProcessProbe
+{
+  public:
+    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    {
+        m_EnumerateCount.fetch_add(1);
+        throw std::runtime_error("simulated probe enumerate failure");
+    }
+
+    [[nodiscard]] uint64_t totalCpuTime() const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] uint64_t systemTotalMemory() const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+    [[nodiscard]] long ticksPerSecond() const override
+    {
+        return 100;
+    }
+
+    [[nodiscard]] int enumerateCount() const
+    {
+        return m_EnumerateCount.load();
+    }
+
+  private:
+    std::atomic<int> m_EnumerateCount{0};
+};
+
+TEST(BackgroundSamplerTest, ProbeEnumerateThrowingSamplerContinues)
+{
+    // Verify that if the probe's enumerate() throws, the sampler thread
+    // catches the exception and continues running rather than terminating.
+    auto probe = std::make_unique<ThrowingProcessProbe>();
+    ThrowingProcessProbe* rawProbe = probe.get(); // borrow raw pointer before move
+
+    Domain::SamplerConfig config;
+    config.interval = 10ms; // Fast interval to accumulate multiple exceptions quickly
+
+    Domain::BackgroundSampler sampler(std::move(probe), config);
+    sampler.start();
+
+    std::this_thread::sleep_for(100ms);
+
+    // Sampler should still be running despite repeated exceptions from the probe
+    EXPECT_TRUE(sampler.isRunning());
+
+    sampler.stop();
+
+    // Probe's enumerate should have been called multiple times (sampler kept looping)
+    EXPECT_GT(rawProbe->enumerateCount(), 1);
+}
+
+TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
+{
+    // Verify that if the registered callback throws, the sampler thread
+    // catches the exception and continues running.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(1, "test");
+
+    Domain::SamplerConfig config;
+    config.interval = 10ms;
+
+    Domain::BackgroundSampler sampler(std::move(probe), config);
+
+    std::atomic<int> callCount{0};
+    sampler.setCallback(
+        [&](const auto&, uint64_t)
+        {
+            callCount.fetch_add(1);
+            throw std::runtime_error("simulated callback failure");
+        });
+
+    sampler.start();
+    std::this_thread::sleep_for(100ms);
+
+    // Sampler should still be running despite repeated callback exceptions
+    EXPECT_TRUE(sampler.isRunning());
+
+    sampler.stop();
+
+    // Callback should have been called multiple times (sampler kept looping after each throw)
+    EXPECT_GT(callCount.load(), 1);
 }
