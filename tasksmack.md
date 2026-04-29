@@ -83,14 +83,14 @@ TaskSmack/
 ### src/Core
 
 - Owns the application loop and layer stack.
-- Creates and manages the GLFW window (and thereby the OpenGL context).
+- Creates and manages the SDL3 window (and thereby the OpenGL context).
 - Provides time utilities, logging bootstrap, and shutdown coordination.
 - Contains zero platform metrics code and only minimal OpenGL usage for context creation.
 
 ### src/UI
 
 - Configures Dear ImGui and ImPlot (contexts, styling, ini persistence).
-- Hooks the ImGui GLFW and OpenGL3 backends.
+- Hooks the ImGui SDL3 and OpenGL3 backends.
 - Hosts shared widgets, tables, and chart components.
 - Consumes immutable domain snapshots plus renderer-provided frame info.
 - Contains no direct OS calls outside the ImGui backends.
@@ -107,7 +107,7 @@ TaskSmack/
 - Implements history buffers with decimation (`History<T>` ring buffers).
 - Owns `ProcessModel`, `SystemModel`, and rate calculations derived from counter deltas.
 - Enforces a cross-platform metrics contract (CPU% semantics, PID reuse handling, delta-based rates).
-- Deterministic and unit-testable; no GLFW, OpenGL, or OS calls.
+- Deterministic and unit-testable; no SDL3, OpenGL, or OS calls.
 
 ### src/Platform
 
