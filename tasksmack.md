@@ -1,11 +1,11 @@
-# TaskSmack Architecture Overview (OpenGL + GLFW)
+# TaskSmack Architecture Overview
 
 TaskSmack is a cross-platform system monitor and task manager that delivers a fast, ImGui-driven UI on top of accurate, high-frequency system metrics.
 
 ## Goals
 
 - Immediate-mode UI built with Dear ImGui (docking + multi-viewport)
-- OpenGL rendering routed through GLFW windowing
+- OpenGL rendering via SDL3 windowing
 - Accurate metrics that stay responsive under load
 - Strict separation between platform probes, data modeling, UI, and rendering
 - Scalability to thousands of processes
@@ -30,14 +30,14 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
         |                         |                       v
      OS APIs               Data Modeling         OpenGL Renderer
                                                         |
-                                                     GLFW
+                                                     SDL3
 ```
 
 - Platform probes are stateless readers of OS counters.
 - Samplers (domain/app) poll probes on background threads and publish raw counters to models.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
-- OpenGL usage is confined to Core/UI (GLFW + ImGui backends).
+- OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
 
 ## Lessons from the Reference Architecture
 
@@ -55,10 +55,10 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
 
 ### Window Owns OS Events, Application Routes Them
 
-- GLFW receives native callbacks.
-- Core registers callbacks to update window state (e.g., framebuffer size) and relies on `glfwPollEvents()`.
-- Application polls GLFW each frame; layers/panels react via ImGui input state rather than a custom event bus.
-- **Takeaway:** keep GLFW-specific window/input plumbing inside Core; keep the rest of the system platform-agnostic.
+- SDL3 delivers events via `SDL_PollEvent()`.
+- Core processes SDL3 events each frame and passes them to ImGui via the SDL3 backend.
+- Layers/panels react via ImGui input state rather than a custom event bus.
+- **Takeaway:** keep SDL3-specific window/input plumbing inside Core; keep the rest of the system platform-agnostic.
 
 ## Repository Layout
 
@@ -83,14 +83,14 @@ TaskSmack/
 ### src/Core
 
 - Owns the application loop and layer stack.
-- Creates and manages the GLFW window (and thereby the OpenGL context).
+- Creates and manages the SDL3 window (and thereby the OpenGL context).
 - Provides time utilities, logging bootstrap, and shutdown coordination.
 - Contains zero platform metrics code and only minimal OpenGL usage for context creation.
 
 ### src/UI
 
 - Configures Dear ImGui and ImPlot (contexts, styling, ini persistence).
-- Hooks the ImGui GLFW and OpenGL3 backends.
+- Hooks the ImGui SDL3 and OpenGL3 backends.
 - Hosts shared widgets, tables, and chart components.
 - Consumes immutable domain snapshots plus renderer-provided frame info.
 - Contains no direct OS calls outside the ImGui backends.
@@ -107,7 +107,7 @@ TaskSmack/
 - Implements history buffers with decimation (`History<T>` ring buffers).
 - Owns `ProcessModel`, `SystemModel`, and rate calculations derived from counter deltas.
 - Enforces a cross-platform metrics contract (CPU% semantics, PID reuse handling, delta-based rates).
-- Deterministic and unit-testable; no GLFW, OpenGL, or OS calls.
+- Deterministic and unit-testable; no SDL3, OpenGL, or OS calls.
 
 ### src/Platform
 
@@ -155,12 +155,13 @@ Rules:
 - Build hierarchical process trees incrementally or during sampling, not every frame on the UI thread.
 - Perform sorting and filtering off the UI thread and publish ready-to-render view models.
 
-## OpenGL + GLFW Integration Details
+## OpenGL + SDL3 Integration Details
 
-- GLFW handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
-- OpenGL core profile (3.3+) is recommended; only the renderer and ImGui backend issue GL calls.
-- ImGui integrations: `imgui_impl_glfw` for events and `imgui_impl_opengl3` for rendering.
-- GLFW callbacks update window state; input is handled via ImGui input state.
+- SDL3 handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
+- OpenGL core profile (3.3+); only the renderer and ImGui backend issue GL calls.
+- GLAD provides the OpenGL function loader (generated at build time via Python + jinja2).
+- ImGui integrations: `imgui_impl_sdl3` for events and `imgui_impl_opengl3` for rendering.
+- SDL3 events are polled each frame; input is handled via ImGui input state.
 
 ## Platform Strategy
 
@@ -255,31 +256,24 @@ The UI uses these capabilities to:
 
 ## Feature Roadmap
 
-1. **Foundation**
-   - GLFW + ImGui docking shell
-   - Metrics contract implementation and sampler threads
-   - Basic CPU/memory metrics and process list on a single platform
-2. **Core Monitoring**
-   - Per-process CPU, memory, IO metrics with histories
-   - Network interface stats and secondary platform support
-3. **Controls and Polish**
-   - Process controls (kill, priority adjustments)
-   - GPU metrics (best effort per vendor)
-   - Config file integration (toml++) and theming
+Items 1–3 are shipped (see [completed-features.md](completed-features.md)). Remaining work:
+
 4. **Advanced Features**
    - Services and startup managers
    - Plugin system enablement
    - Remote API (read-only first)
    - Handle/DLL inspection
+   - Per-process GPU improvements (multi-GPU LUID matching)
+   - Windows per-process network tracking (GetPerTcpConnectionEStats / ETW)
 
-## Recommended Stack Recap
+## Stack
 
-- Windowing/rendering: GLFW + OpenGL + ImGui (docking) + ImPlot
-- Concurrency: `std::jthread` with `std::stop_token`; coroutines optional later
-- Data model: immutable snapshots with ring-buffer histories
-- Configuration: toml++ (or JSON if preferred)
+- Windowing/rendering: SDL3 + OpenGL (GLAD) + Dear ImGui (docking) + ImPlot
+- Concurrency: `std::jthread` with `std::stop_token`
+- Data model: immutable snapshots with deque-backed histories
+- Configuration: toml++
 - Logging: spdlog
-- Profiling: Tracy (optional but useful early)
+- Testing: Google Test
 
 This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
 

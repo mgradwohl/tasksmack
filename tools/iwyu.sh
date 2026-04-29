@@ -142,17 +142,30 @@ fi
 # cause assertion failures in iwyu_include_picker.
 # Check the Clang base version from the 'based on ... clang version X' line.
 MIN_IWYU_CLANG_MAJOR=22
-IWYU_BARE=$(command -v iwyu 2>/dev/null || command -v include-what-you-use 2>/dev/null || echo "")
-if [[ -n "${IWYU_BARE}" ]]; then
-    IWYU_VERSION_OUTPUT=$("${IWYU_BARE}" --version 2>&1 || true)
+# Use the already-selected binary so the version check matches what the script will actually run.
+IWYU_VERSION_BIN=""
+if [[ -n "${IWYU}" ]]; then
+    IWYU_VERSION_BIN="${IWYU}"
+elif [[ -n "${IWYU_TOOL}" ]]; then
+    IWYU_VERSION_BIN=$(command -v include-what-you-use 2>/dev/null || command -v iwyu 2>/dev/null || echo "")
+fi
+if [[ -n "${IWYU_VERSION_BIN}" ]]; then
+    IWYU_VERSION_OUTPUT=$("${IWYU_VERSION_BIN}" --version 2>&1 || true)
     # Output format: "include-what-you-use 0.21 based on Ubuntu clang version 17.0.6 ..."
     IWYU_CLANG_MAJOR=$(echo "${IWYU_VERSION_OUTPUT}" | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || echo "")
-    if [[ -n "${IWYU_CLANG_MAJOR}" ]] && [[ "${IWYU_CLANG_MAJOR}" -lt "${MIN_IWYU_CLANG_MAJOR}" ]]; then
-        echo "Error: iwyu is built against Clang ${IWYU_CLANG_MAJOR}, but this project requires Clang ${MIN_IWYU_CLANG_MAJOR}+." >&2
-        echo "A mismatched iwyu produces assertion failures (duplicate header visibility)." >&2
-        echo "Build iwyu from source against Clang ${MIN_IWYU_CLANG_MAJOR}+:" >&2
-        echo "  https://github.com/include-what-you-use/include-what-you-use" >&2
-        exit 1
+    if [[ "${IWYU_CLANG_MAJOR}" =~ ^[0-9]+$ ]] && [[ "${IWYU_CLANG_MAJOR}" -lt "${MIN_IWYU_CLANG_MAJOR}" ]]; then
+        # Fail hard in CI or when --fix is requested; warn-only for local dry runs.
+        if [[ -n "${CI:-}" ]] || [[ "${FIX}" == "true" ]]; then
+            echo "Error: iwyu is built against Clang ${IWYU_CLANG_MAJOR}, but this project requires Clang ${MIN_IWYU_CLANG_MAJOR}+." >&2
+            echo "A mismatched iwyu produces assertion failures (duplicate header visibility)." >&2
+            echo "Build iwyu from source against Clang ${MIN_IWYU_CLANG_MAJOR}+:" >&2
+            echo "  https://github.com/include-what-you-use/include-what-you-use" >&2
+            exit 1
+        else
+            echo "Warning: iwyu is built against Clang ${IWYU_CLANG_MAJOR}, but this project requires Clang ${MIN_IWYU_CLANG_MAJOR}+." >&2
+            echo "Results may include assertion failures. For reliable local runs, build iwyu from source:" >&2
+            echo "  https://github.com/include-what-you-use/include-what-you-use" >&2
+        fi
     fi
 fi
 

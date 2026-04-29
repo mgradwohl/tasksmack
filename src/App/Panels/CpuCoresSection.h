@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 
 #include <chrono>
@@ -25,7 +26,7 @@ struct RenderContext
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation
-    std::chrono::milliseconds refreshInterval{1000};
+    std::chrono::milliseconds refreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
 
     // Smoothed per-core CPU percentages (vector indexed by core ID)
     std::vector<double>* smoothedPerCore = nullptr;
