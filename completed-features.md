@@ -55,4 +55,4 @@ This file lists features that are already implemented in TaskSmack.
 | **`std::print` adoption** | Type-safe, format-string-based output |
 | **FreeType font rendering** | Sharper text rendering at small sizes using FreeType with LightHinting |
 | **pre-commit clang-format pin** | `mirrors-clang-format` pinned to v22.1.4 matching project Clang version |
-| **iwyu version gate** | `tools/iwyu.sh` fails fast if iwyu is built against wrong Clang version |
+| **iwyu version gate** | `tools/iwyu.sh` warns and continues for local dry runs when iwyu is built against the wrong Clang version, but fails hard in CI or with `--fix` |
