@@ -45,6 +45,7 @@ void StorageModel::sample()
     snapshot.hasIoTime = caps.hasIoTime;
 
     // Process each disk
+    snapshot.disks.reserve(counters.disks.size());
     for (const auto& diskCounters : counters.disks)
     {
         const std::string& deviceName = diskCounters.deviceName;

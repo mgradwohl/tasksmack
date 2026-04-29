@@ -1,11 +1,11 @@
-# TaskSmack Architecture Overview (OpenGL + SDL3)
+# TaskSmack Architecture Overview
 
 TaskSmack is a cross-platform system monitor and task manager that delivers a fast, ImGui-driven UI on top of accurate, high-frequency system metrics.
 
 ## Goals
 
 - Immediate-mode UI built with Dear ImGui (docking + multi-viewport)
-- OpenGL rendering routed through SDL3 windowing
+- OpenGL rendering via SDL3 windowing
 - Accurate metrics that stay responsive under load
 - Strict separation between platform probes, data modeling, UI, and rendering
 - Scalability to thousands of processes
@@ -56,8 +56,8 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
 ### Window Owns OS Events, Application Routes Them
 
 - SDL3 delivers events via `SDL_PollEvent()`.
-- Core processes SDL3 events to update window state (e.g., framebuffer size) and forwards them to ImGui.
-- Application polls SDL3 each frame; layers/panels react via ImGui input state rather than a custom event bus.
+- Core processes SDL3 events each frame and passes them to ImGui via the SDL3 backend.
+- Layers/panels react via ImGui input state rather than a custom event bus.
 - **Takeaway:** keep SDL3-specific window/input plumbing inside Core; keep the rest of the system platform-agnostic.
 
 ## Repository Layout
@@ -158,9 +158,10 @@ Rules:
 ## OpenGL + SDL3 Integration Details
 
 - SDL3 handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
-- OpenGL core profile (3.3+) is recommended; only the renderer and ImGui backend issue GL calls.
+- OpenGL core profile (3.3+); only the renderer and ImGui backend issue GL calls.
+- GLAD provides the OpenGL function loader (generated at build time via Python + jinja2).
 - ImGui integrations: `imgui_impl_sdl3` for events and `imgui_impl_opengl3` for rendering.
-- SDL3 events are polled each frame; input is forwarded to ImGui and handled via ImGui input state.
+- SDL3 events are polled each frame; input is handled via ImGui input state.
 
 ## Platform Strategy
 
@@ -266,20 +267,24 @@ The UI uses these capabilities to:
    - Process controls (kill, priority adjustments)
    - GPU metrics (best effort per vendor)
    - Config file integration (toml++) and theming
+Items 1–3 are shipped (see [completed-features.md](completed-features.md)). Remaining work:
+
 4. **Advanced Features**
    - Services and startup managers
    - Plugin system enablement
    - Remote API (read-only first)
    - Handle/DLL inspection
+   - Per-process GPU improvements (multi-GPU LUID matching)
+   - Windows per-process network tracking (GetPerTcpConnectionEStats / ETW)
 
-## Recommended Stack Recap
+## Stack
 
-- Windowing/rendering: SDL3 + OpenGL + ImGui (docking) + ImPlot
-- Concurrency: `std::jthread` with `std::stop_token`; coroutines optional later
-- Data model: immutable snapshots with ring-buffer histories
-- Configuration: toml++ (or JSON if preferred)
+- Windowing/rendering: SDL3 + OpenGL (GLAD) + Dear ImGui (docking) + ImPlot
+- Concurrency: `std::jthread` with `std::stop_token`
+- Data model: immutable snapshots with deque-backed histories
+- Configuration: toml++
 - Logging: spdlog
-- Profiling: Tracy (optional but useful early)
+- Testing: Google Test
 
 This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
 

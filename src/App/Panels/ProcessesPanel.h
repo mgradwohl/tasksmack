@@ -4,6 +4,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/SamplingConfig.h"
 
 #include <array>
 #include <chrono>
@@ -92,7 +93,7 @@ class ProcessesPanel : public Panel
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::int32_t m_SelectedPid = -1;
 
-    std::chrono::milliseconds m_RefreshInterval{1000};
+    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
