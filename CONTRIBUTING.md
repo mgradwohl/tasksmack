@@ -9,7 +9,6 @@ This document is the single source of truth for developer setup and workflows (b
 To avoid duplication and doc drift, these are the canonical docs:
 
 - [README.md](README.md): user-facing features (with a small contributor pointer to this file)
-- [README.md](README.md): user-facing features (with a small contributor pointer to this file)
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
 - [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
 - [completed-features.md](completed-features.md): canonical shipped-features list
