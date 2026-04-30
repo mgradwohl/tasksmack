@@ -46,9 +46,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
         run: cmake --preset ${{ matrix.build_type }}
@@ -105,9 +105,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
         shell: pwsh
@@ -134,21 +134,14 @@ jobs:
           path: build/win-${{ matrix.build_type }}/test-results.xml
           retention-days: 30
 
-  format-check:
+  docs-hygiene:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          install-clang-format: 'true'
-          install-ninja: 'false'
-          install-ccache: 'false'
-
-      - name: Check formatting
-        run: ./tools/check-format.sh
+      - name: Audit markdown links
+        run: ./tools/md-link-audit.sh
 
   static-analysis:
     runs-on: ubuntu-24.04
@@ -170,9 +163,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Run clang-tidy
         run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
@@ -209,9 +202,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure (debug preset)
         run: cmake --preset debug
@@ -331,9 +324,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Generate coverage report
         run: |
@@ -416,9 +409,9 @@ jobs:
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
-          path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-deps-
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}

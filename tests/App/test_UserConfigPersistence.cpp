@@ -3,11 +3,11 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <random>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -27,10 +27,23 @@ class UserConfigPersistenceTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        // Create unique temp directory for this test
-        m_TempDir = std::filesystem::temp_directory_path() / "tasksmack_test_config";
-        m_TempDir += std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        std::filesystem::create_directories(m_TempDir);
+        // Create unique temp directory for this test.
+        // Use std::random_device + a create_directory retry loop so we
+        // provably start with a fresh, exclusive directory. ctest runs each
+        // TEST_F in a separate process with -j$(nproc); a retry loop is the
+        // only reliable way to guarantee we never share state between tests.
+        const auto base = std::filesystem::temp_directory_path() / "tasksmack_test_config_";
+        std::random_device rd;
+        for (;;)
+        {
+            m_TempDir = base;
+            m_TempDir += std::to_string(rd());
+            std::error_code ec;
+            if (std::filesystem::create_directory(m_TempDir, ec) && !ec)
+            {
+                break; // created a fresh, exclusive directory
+            }
+        }
 
         m_ConfigPath = m_TempDir / "config.toml";
     }
