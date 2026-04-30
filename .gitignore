@@ -27,6 +27,7 @@ coverage-output.txt
 test-results.xml
 /sanitizer-logs/
 /sanitizer-reports/
+/*-report/
 clang-tidy-output.txt
 iwyu-output.txt
 

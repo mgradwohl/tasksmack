@@ -4,6 +4,7 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
@@ -920,18 +921,56 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         return;
     }
 
-    // Build inode-to-PID mapping by scanning /proc/[pid]/fd/*
-    // See https://github.com/mgradwohl/tasksmack/issues/460 for caching this mapping with a
-    //   TTL to reduce /proc scanning overhead on systems with many processes. Current approach
-    //   scans on each enumerate() call (~1Hz) which may add latency on systems with thousands
-    //   of processes.
-    const std::unordered_map<std::uint64_t, std::int32_t> inodeToPid = buildInodeToPidMap();
-    if (inodeToPid.empty())
+    // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
+    // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
+    // the initial lock, so only one thread rebuilds per TTL window while all others
+    // continue using the previous shared_ptr snapshot (see #460).
+    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
+    bool needsRebuild = false;
+    {
+        const std::scoped_lock lock{m_InodePidCacheMutex};
+        const auto now = std::chrono::steady_clock::now();
+        const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
+        needsRebuild = (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS);
+        if (needsRebuild)
+        {
+            // Claim the rebuild slot: advance the timestamp now so any other thread that
+            // checks while we are scanning /proc sees a fresh time and skips rebuilding.
+            m_InodeToPidCacheTime = now;
+        }
+        inodeToPidPtr = m_InodeToPidCache; // snapshot current (possibly stale) pointer
+    }
+    if (needsRebuild)
+    {
+        // Build the map outside the lock; concurrent threads keep using the old snapshot.
+        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
+        {
+            const std::scoped_lock lock{m_InodePidCacheMutex};
+            if (!rebuilt->empty())
+            {
+                m_InodeToPidCache = std::move(rebuilt);
+                m_InodeToPidCacheTime = std::chrono::steady_clock::now();
+                inodeToPidPtr = m_InodeToPidCache;
+            }
+            else
+            {
+                // Preserve the previous snapshot when procfs enumeration transiently
+                // produces no entries; allow a quick retry instead of waiting the full TTL.
+                constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
+                const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
+                const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
+                m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
+                // inodeToPidPtr already holds the previous (possibly non-empty) snapshot
+            }
+        }
+    }
+    if (!inodeToPidPtr || inodeToPidPtr->empty())
     {
         return;
     }
 
     // Aggregate socket bytes by PID
+    const auto& inodeToPid = *inodeToPidPtr;
     const auto pidStats = aggregateByPid(sockets, inodeToPid);
 
     // Apply network stats to processes
