@@ -18,7 +18,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <utility>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -197,7 +196,7 @@ void AboutLayer::renderAboutDialog()
         ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
         if (ImGui::Selectable(repoUrl, false, ImGuiSelectableFlags_DontClosePopups))
         {
-            std::ignore = App::PlatformOpen::openWithSystemHandler(std::string_view{repoUrl});
+            (void) App::PlatformOpen::openWithSystemHandler(std::string_view{repoUrl});
         }
         if (ImGui::IsItemHovered())
         {
