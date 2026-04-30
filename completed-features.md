@@ -39,6 +39,7 @@ This file lists features that are already implemented in TaskSmack.
 
 | Item | Notes |
 |------|-------|
+| **SBOM generation** | SPDX-JSON Software Bill of Materials generated from source tree via `anchore/sbom-action` (Syft); attached to every GitHub release as `tasksmack-<label>-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) for supply-chain transparency |
 | **CMake presets** | Presets for Debug/Release and platform variants |
 | **Legacy scripts deprecated** | Consolidated tooling scripts |
 | **VS Code integration** | Tasks and launch configs |
