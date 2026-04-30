@@ -13,11 +13,12 @@
 #include "Platform/Linux/LinuxPowerProbe.h"
 #include "Platform/PowerTypes.h"
 
-#include <chrono>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <thread>
+
+#include <unistd.h>
 
 namespace Platform
 {
@@ -153,9 +154,13 @@ class LinuxPowerProbeUnitTest : public ::testing::Test
 
     void SetUp() override
     {
-        auto base = std::filesystem::temp_directory_path() / "tasksmack_power_test";
-        auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
-        m_SysRoot = base / std::to_string(ts);
+        // Include PID and a per-process atomic counter so parallel test
+        // processes (gtest_discover_tests can run cases concurrently) never
+        // collide on the same temporary directory.
+        static std::atomic<int> s_counter{0};
+        const auto seq = s_counter.fetch_add(1, std::memory_order_relaxed);
+        const auto name = "tasksmack_power_test_" + std::to_string(getpid()) + "_" + std::to_string(seq);
+        m_SysRoot = std::filesystem::temp_directory_path() / name;
         std::filesystem::create_directories(m_SysRoot);
     }
 
