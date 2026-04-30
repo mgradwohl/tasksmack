@@ -684,7 +684,7 @@ For simple single-PR features, branch directly from `main` with a `feature/` pre
 - Aim to complete reviews within 2–3 business days.
 - Distinguish blocking concerns (must fix) from suggestions (nice to have) in comments.
 - Approve once all blocking issues are addressed; don't hold approval for minor nits.
-- Use the project's [architecture review quickref](docs/ARCHITECTURE_REVIEW_QUICKREF.md) when evaluating layer boundaries.
+- When evaluating layer boundaries, refer to the architecture section in [.github/copilot-instructions.md](.github/copilot-instructions.md).
 
 ### Merge criteria
 - All CI checks pass.
