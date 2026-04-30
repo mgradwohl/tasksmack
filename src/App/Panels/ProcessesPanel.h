@@ -119,7 +119,10 @@ class ProcessesPanel : public Panel
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
+    // m_CachedFilteredIndices is always in natural (snapshot) order; list view uses
+    // m_CachedSortedIndices so tree view never sees a sorted ordering.
     std::vector<std::size_t> m_CachedFilteredIndices;
+    std::vector<std::size_t> m_CachedSortedIndices;
     std::size_t m_CachedRunningCount = 0;
     std::uint64_t m_CachedFilterVersion = std::numeric_limits<std::uint64_t>::max();
     std::string m_CachedSearchTerm;

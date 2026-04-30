@@ -1711,3 +1711,47 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     // Should include both GPU names
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
 }
+
+// =============================================================================
+// Snapshot Version Tests
+// =============================================================================
+
+TEST(ProcessModelTest, WhenConstructed_ThenSnapshotVersionIsZero)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    EXPECT_EQ(model.snapshotVersion(), 0);
+}
+
+TEST(ProcessModelTest, WhenRefreshedOnce_ThenSnapshotVersionIsOne)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "proc", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_EQ(model.snapshotVersion(), 1);
+}
+
+TEST(ProcessModelTest, WhenRefreshedMultipleTimes_ThenSnapshotVersionMonotonicallyIncreases)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "proc", 'R', 1000, 500)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+
+    const std::uint64_t versionBefore = model.snapshotVersion();
+    model.refresh();
+    const std::uint64_t versionAfterFirst = model.snapshotVersion();
+    model.refresh();
+    const std::uint64_t versionAfterSecond = model.snapshotVersion();
+
+    EXPECT_LT(versionBefore, versionAfterFirst);
+    EXPECT_LT(versionAfterFirst, versionAfterSecond);
+}

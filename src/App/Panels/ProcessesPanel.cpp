@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -562,6 +563,10 @@ void ProcessesPanel::renderContent()
 
         m_CachedFilterVersion = currentVersion;
         m_CachedSearchTerm = std::string(searchTerm);
+
+        // Reset sorted indices to natural order so the next list-view sort starts from scratch.
+        // This keeps m_CachedFilteredIndices always in natural order for tree view.
+        m_CachedSortedIndices = m_CachedFilteredIndices;
     }
 
     // Process count with state summary (filtered/total)
@@ -703,7 +708,10 @@ void ProcessesPanel::renderContent()
 
                     const ProcessColumn sortCol = *sortColOpt;
 
-                    std::ranges::sort(m_CachedFilteredIndices,
+                    // Sort m_CachedSortedIndices (a copy of natural order) so that
+                    // m_CachedFilteredIndices remains in PID/natural order for tree view.
+                    m_CachedSortedIndices = m_CachedFilteredIndices;
+                    std::ranges::sort(m_CachedSortedIndices,
                                       [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                                       {
                                           const auto& procA = currentSnapshots[a];
@@ -805,12 +813,12 @@ void ProcessesPanel::renderContent()
             // Render flat list with clipper for performance
             // ImGuiListClipper only renders visible rows, skipping off-screen rows
             ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(m_CachedFilteredIndices.size()));
+            clipper.Begin(static_cast<int>(m_CachedSortedIndices.size()));
             while (clipper.Step())
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
                 {
-                    const auto& proc = currentSnapshots[m_CachedFilteredIndices[static_cast<size_t>(i)]];
+                    const auto& proc = currentSnapshots[m_CachedSortedIndices[static_cast<size_t>(i)]];
                     renderProcessRow(proc, 0, false, false);
                 }
             }
