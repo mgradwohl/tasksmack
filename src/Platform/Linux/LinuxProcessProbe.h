@@ -54,6 +54,11 @@ class LinuxProcessProbe : public IProcessProbe
     // Per-process network monitoring via Netlink INET_DIAG
     std::unique_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
+
+    // Inode-to-PID cache: rebuilt by buildInodeToPidMap() at most once per
+    // INODE_PID_CACHE_TTL_MS to avoid scanning /proc/[pid]/fd/* every enumerate().
+    mutable std::unordered_map<std::uint64_t, std::int32_t> m_InodeToPidCache;
+    mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
 #endif
 
     /// Parse /proc/[pid]/stat for a single process

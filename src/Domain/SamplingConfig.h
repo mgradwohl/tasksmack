@@ -61,6 +61,13 @@ inline constexpr int HISTORY_SECONDS_MAX = 1800; // 30 minutes
 // cache it for 60 seconds to avoid repeated sysfs reads.
 inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 
+// Cache TTL for inode-to-PID mapping (milliseconds) - Linux only
+// buildInodeToPidMap() scans /proc/[pid]/fd/* for all processes to resolve socket
+// inodes to owning PIDs. At 1Hz sampling this scan adds measurable latency on busy
+// systems. A 3-second TTL cuts rebuilds to ~once every 3 calls; short-lived staleness
+// is acceptable for network attribution since the mapping drifts slowly.
+inline constexpr int INODE_PID_CACHE_TTL_MS = 3000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
