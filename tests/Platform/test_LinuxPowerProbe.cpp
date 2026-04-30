@@ -346,8 +346,8 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_EnergyCounters_ParsedCorrectly)
     writeFile(batPath / "status", "Discharging");
     writeFile(batPath / "capacity", "60");
     // energy values in µWh
-    writeFile(batPath / "energy_now", "36000000");        // 36 Wh
-    writeFile(batPath / "energy_full", "60000000");       // 60 Wh
+    writeFile(batPath / "energy_now", "36000000");         // 36 Wh
+    writeFile(batPath / "energy_full", "60000000");        // 60 Wh
     writeFile(batPath / "energy_full_design", "65000000"); // 65 Wh design
 
     LinuxPowerProbe probe(m_SysRoot.string());
@@ -371,10 +371,10 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_ChargeCounters_ConvertedViaVoltage)
     writeFile(batPath / "status", "Discharging");
     writeFile(batPath / "capacity", "50");
     // charge-based (µAh) + voltage (µV), no energy_now
-    writeFile(batPath / "charge_now", "2000000");        // 2 Ah = 2000000 µAh
-    writeFile(batPath / "charge_full", "4000000");       // 4 Ah
+    writeFile(batPath / "charge_now", "2000000");         // 2 Ah = 2000000 µAh
+    writeFile(batPath / "charge_full", "4000000");        // 4 Ah
     writeFile(batPath / "charge_full_design", "4500000"); // 4.5 Ah
-    writeFile(batPath / "voltage_now", "11000000");      // 11 V = 11000000 µV
+    writeFile(batPath / "voltage_now", "11000000");       // 11 V = 11000000 µV
 
     LinuxPowerProbe probe(m_SysRoot.string());
 
@@ -429,7 +429,7 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_PowerNow_Discharging_PositiveRate)
     EXPECT_DOUBLE_EQ(counters.powerNowW, 12.0); // positive while discharging
     // time to empty ≈ 50 Wh / 12 W * 3600 ≈ 15000 s
     EXPECT_GT(counters.timeToEmptySec, 0ULL);
-    EXPECT_DOUBLE_EQ(counters.timeToFullSec, 0.0);
+    EXPECT_EQ(counters.timeToFullSec, 0ULL);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_PowerNow_Charging_NegativeRate)
@@ -437,8 +437,8 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_PowerNow_Charging_NegativeRate)
     const auto batPath = makeBatteryDevice("BAT0");
     writeFile(batPath / "status", "Charging");
     writeFile(batPath / "capacity", "80");
-    writeFile(batPath / "power_now", "15000000"); // 15 W in µW
-    writeFile(batPath / "energy_now", "56000000"); // 56 Wh
+    writeFile(batPath / "power_now", "15000000");   // 15 W in µW
+    writeFile(batPath / "energy_now", "56000000");  // 56 Wh
     writeFile(batPath / "energy_full", "70000000"); // 70 Wh
 
     LinuxPowerProbe probe(m_SysRoot.string());
@@ -448,7 +448,7 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_PowerNow_Charging_NegativeRate)
     EXPECT_DOUBLE_EQ(counters.powerNowW, -15.0);
     // time to full = (70-56) / 15 * 3600 = 3360 s
     EXPECT_GT(counters.timeToFullSec, 0ULL);
-    EXPECT_DOUBLE_EQ(counters.timeToEmptySec, 0.0);
+    EXPECT_EQ(counters.timeToEmptySec, 0ULL);
 }
 
 TEST_F(LinuxPowerProbeUnitTest, Battery_CurrentNow_UsesVoltageForPower)
@@ -457,7 +457,7 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_CurrentNow_UsesVoltageForPower)
     writeFile(batPath / "status", "Discharging");
     writeFile(batPath / "capacity", "50");
     // Use current_now (no power_now file)
-    writeFile(batPath / "current_now", "2000000"); // 2 A = 2000000 µA
+    writeFile(batPath / "current_now", "2000000");  // 2 A = 2000000 µA
     writeFile(batPath / "voltage_now", "12000000"); // 12 V = 12000000 µV
 
     LinuxPowerProbe probe(m_SysRoot.string());

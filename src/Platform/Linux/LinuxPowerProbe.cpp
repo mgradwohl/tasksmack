@@ -59,8 +59,7 @@ namespace
 
 } // namespace
 
-LinuxPowerProbe::LinuxPowerProbe(std::string powerSupplyRoot)
-    : m_PowerSupplyRoot(std::move(powerSupplyRoot))
+LinuxPowerProbe::LinuxPowerProbe(std::string powerSupplyRoot) : m_PowerSupplyRoot(std::move(powerSupplyRoot))
 {
     discoverBatteries();
     spdlog::debug("LinuxPowerProbe: found {} batteries", m_BatteryPaths.size());

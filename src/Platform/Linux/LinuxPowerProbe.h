@@ -15,7 +15,7 @@ namespace Platform
 class LinuxPowerProbe : public IPowerProbe
 {
   public:
-    explicit LinuxPowerProbe(std::string powerSupplyRoot = std::string("/sys/class/power_supply"));
+    explicit LinuxPowerProbe(std::string powerSupplyRoot = "/sys/class/power_supply");
     ~LinuxPowerProbe() override = default;
 
     LinuxPowerProbe(const LinuxPowerProbe&) = delete;
@@ -33,8 +33,8 @@ class LinuxPowerProbe : public IPowerProbe
     [[nodiscard]] static std::uint64_t readSysfsUInt64(const std::string& path, std::uint64_t fallback = 0);
     [[nodiscard]] static int readSysfsInt(const std::string& path, int fallback = -1);
 
-    std::vector<std::string> m_BatteryPaths;  // Paths like "/sys/class/power_supply/BAT0"
-    std::string m_PowerSupplyRoot;            // Root sysfs path (injectable for testing)
+    std::vector<std::string> m_BatteryPaths; // Paths like "/sys/class/power_supply/BAT0"
+    std::string m_PowerSupplyRoot;           // Root sysfs path (injectable for testing)
     PowerCapabilities m_Capabilities;
 };
 

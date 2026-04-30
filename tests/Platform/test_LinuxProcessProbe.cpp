@@ -24,7 +24,6 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <ranges>
 #include <thread>
 
 #include <unistd.h>
@@ -544,19 +543,16 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
 {
     // Zombie processes (state 'Z') may exist; the probe should enumerate them without crashing.
     LinuxProcessProbe probe;
-    auto processes = probe.enumerate();
 
-    // Enumerate succeeded; count how many zombies there are (usually 0, but that's fine).
-    const auto zombieCount = std::ranges::count_if(processes, [](const ProcessCounters& p) { return p.state == 'Z'; });
-
-    // Just verify counting didn't throw and the count is non-negative.
-    EXPECT_GE(zombieCount, 0);
+    EXPECT_NO_THROW({
+        auto processes = probe.enumerate();
+        EXPECT_GT(processes.size(), 0ULL) << "Enumeration should return at least one process";
+    });
 }
 
-TEST(LinuxProcessProbeTest, EnumerateHandlesProcessesWithSpacesInCmdline)
+TEST(LinuxProcessProbeTest, EnumerateOwnProcessHasNonEmptyName)
 {
-    // Our own process argv[0] and arguments may contain spaces (test harness).
-    // Verify the probe doesn't truncate or corrupt the name.
+    // Verify that our own process always has a non-empty name returned by the probe.
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
     const pid_t selfPid = getpid();
