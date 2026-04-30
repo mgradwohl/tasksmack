@@ -20,7 +20,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-release-package
           max-size: 500M
@@ -72,7 +72,7 @@ jobs:
         run: choco install llvm ninja ccache -y
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: windows-release-package
           max-size: 500M
