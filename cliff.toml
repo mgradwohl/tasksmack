@@ -2,7 +2,7 @@
 # https://git-cliff.org/docs/configuration
 #
 # Generates CHANGELOG.md following the Keep a Changelog format.
-# Triggered automatically by .github/workflows/changelog.yml on every v*.*.* tag.
+# Triggered automatically by .github/workflows/changelog.yml on every strict vMAJOR.MINOR.PATCH tag.
 
 [changelog]
 header = """# Changelog
