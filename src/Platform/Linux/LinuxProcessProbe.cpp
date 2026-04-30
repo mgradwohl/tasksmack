@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <limits>
@@ -307,7 +308,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const std::filesystem::path statPath = std::filesystem::path("/proc") / std::to_string(pid) / "stat";
+    const auto statPath = std::format("/proc/{}/stat", pid);
     std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
@@ -336,7 +337,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     // Parse fields after the name
     std::istringstream fieldStream(line.substr(nameEnd + 2)); // Skip ") "
 
-    std::string stateStr;
+    char stateChar = '?';
     int32_t parentPid = 0;
     int32_t pgrp = 0;
     int32_t session = 0;
@@ -360,7 +361,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     int64_t rss = 0;
 
     // clang-format off
-    fieldStream >> stateStr >> parentPid >> pgrp >> session >> ttyNr >> tpgid
+    fieldStream >> stateChar >> parentPid >> pgrp >> session >> ttyNr >> tpgid
                 >> flags >> minflt >> cminflt >> majflt >> cmajflt
                 >> utime >> stime >> cutime >> cstime >> priority >> nice
                 >> numThreads >> itrealvalue >> starttime >> vsize >> rss;
@@ -371,7 +372,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         return false;
     }
 
-    counters.state = stateStr.empty() ? '?' : stateStr[0];
+    counters.state = stateChar;
     counters.parentPid = parentPid;
     counters.userTime = utime;
     counters.systemTime = stime;
@@ -410,7 +411,7 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    const std::filesystem::path statmPath = std::filesystem::path("/proc") / std::to_string(pid) / "statm";
+    const auto statmPath = std::format("/proc/{}/statm", pid);
     std::ifstream statmFile(statmPath);
     if (!statmFile.is_open())
     {
@@ -436,7 +437,7 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     // Format is key:value pairs, one per line
     // We need: Uid: <real> <effective> <saved> <filesystem>
 
-    const std::filesystem::path statusPath = std::filesystem::path("/proc") / std::to_string(pid) / "status";
+    const auto statusPath = std::format("/proc/{}/status", pid);
     std::ifstream statusFile(statusPath);
     if (!statusFile.is_open())
     {
@@ -449,10 +450,15 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
         // Look for "Uid:" line
         if (line.starts_with("Uid:"))
         {
-            std::istringstream iss(line.substr(4)); // Skip "Uid:"
+            // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
+            const char* ptr = line.data() + 4;
+            const char* const pEnd = line.data() + line.size();
+            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            {
+                ++ptr;
+            }
             uid_t realUid = 0;
-            iss >> realUid;
-            if (!iss.fail())
+            if (std::from_chars(ptr, pEnd, realUid).ec == std::errc{})
             {
                 counters.user = getUsername(realUid);
             }
@@ -466,7 +472,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by null bytes
 
-    const std::filesystem::path cmdlinePath = std::filesystem::path("/proc") / std::to_string(pid) / "cmdline";
+    const auto cmdlinePath = std::format("/proc/{}/cmdline", pid);
     std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
     if (!cmdlineFile.is_open())
     {
@@ -543,7 +549,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
     // or being the owner of the process. If we can't read it, we silently skip
     // (capabilities() already reports hasIoCounters = false by default).
 
-    const std::filesystem::path ioPath = std::filesystem::path("/proc") / std::to_string(pid) / "io";
+    const auto ioPath = std::format("/proc/{}/io", pid);
     std::ifstream ioFile(ioPath);
     if (!ioFile.is_open())
     {
@@ -559,20 +565,29 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
 
         if (line.starts_with(readPrefix))
         {
-            std::istringstream iss(line.substr(readPrefix.length()));
+            // Parse value with from_chars: no substr alloc, no istringstream alloc
+            const char* ptr = line.data() + readPrefix.size();
+            const char* const pEnd = line.data() + line.size();
+            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            {
+                ++ptr;
+            }
             uint64_t readBytes = 0;
-            iss >> readBytes;
-            if (!iss.fail())
+            if (std::from_chars(ptr, pEnd, readBytes).ec == std::errc{})
             {
                 counters.readBytes = readBytes;
             }
         }
         else if (line.starts_with(writePrefix))
         {
-            std::istringstream iss(line.substr(writePrefix.length()));
+            const char* ptr = line.data() + writePrefix.size();
+            const char* const pEnd = line.data() + line.size();
+            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            {
+                ++ptr;
+            }
             uint64_t writeBytes = 0;
-            iss >> writeBytes;
-            if (!iss.fail())
+            if (std::from_chars(ptr, pEnd, writeBytes).ec == std::errc{})
             {
                 counters.writeBytes = writeBytes;
             }
@@ -586,7 +601,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
     // Each entry is a symlink to an open file descriptor.
     // Note: May fail due to permissions (needs same user or root).
 
-    const std::filesystem::path fdPath = std::filesystem::path("/proc") / std::to_string(pid) / "fd";
+    const auto fdPath = std::format("/proc/{}/fd", pid);
 
     int32_t count = 0;
     try
@@ -604,7 +619,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
     catch (const std::exception& ex)
     {
         // Permission errors and other exceptional situations - leave handleCount at 0
-        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath, ex.what());
     }
 }
 
@@ -620,7 +635,7 @@ bool LinuxProcessProbe::checkIoCountersAvailability()
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
 {
     // Try cgroup v2 first: freezer.state
-    const std::filesystem::path cgroupV2FreezerPath = std::filesystem::path("/sys/fs/cgroup") / std::to_string(pid) / "freezer.state";
+    const auto cgroupV2FreezerPath = std::format("/sys/fs/cgroup/{}/freezer.state", pid);
     std::ifstream freezerStateV2(cgroupV2FreezerPath);
     if (freezerStateV2.is_open())
     {
@@ -634,7 +649,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
 
     // Fallback to cgroup v1 freezer hierarchy
     // /proc/[pid]/cgroup lists all cgroups for the process
-    const std::filesystem::path cgroupPath = std::filesystem::path("/proc") / std::to_string(pid) / "cgroup";
+    const auto cgroupPath = std::format("/proc/{}/cgroup", pid);
     std::ifstream cgroupFile(cgroupPath);
     if (cgroupFile.is_open())
     {
@@ -646,8 +661,8 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
             const auto secondColon = line.find(':', firstColon + 1);
             if (firstColon != std::string::npos && secondColon != std::string::npos)
             {
-                const std::string controllers = line.substr(firstColon + 1, secondColon - firstColon - 1);
-                const std::string cgroupSubPath = line.substr(secondColon + 1);
+                const std::string_view controllers{line.data() + firstColon + 1, secondColon - firstColon - 1};
+                const std::string_view cgroupSubPath{line.data() + secondColon + 1};
 
                 // Check if this line has the freezer controller
                 if (controllers.contains("freezer"))
@@ -906,9 +921,10 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
     }
 
     // Build inode-to-PID mapping by scanning /proc/[pid]/fd/*
-    // TODO: Consider caching this mapping with a TTL to reduce /proc scanning overhead
-    //       on systems with many processes. Current approach scans on each enumerate()
-    //       call (~1Hz) which may add latency on systems with thousands of processes.
+    // See https://github.com/mgradwohl/tasksmack/issues/460 for caching this mapping with a
+    //   TTL to reduce /proc scanning overhead on systems with many processes. Current approach
+    //   scans on each enumerate() call (~1Hz) which may add latency on systems with thousands
+    //   of processes.
     const std::unordered_map<std::uint64_t, std::int32_t> inodeToPid = buildInodeToPidMap();
     if (inodeToPid.empty())
     {

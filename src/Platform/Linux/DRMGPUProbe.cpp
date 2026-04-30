@@ -249,7 +249,8 @@ GPUInfo DRMGPUProbe::cardToGPUInfo(const DRMCard& card) const
     // Determine if integrated or discrete
     // Intel integrated GPUs typically don't have dedicated memory reported via lspci
     // For now, mark all as integrated (most common case)
-    // TODO: More sophisticated detection using PCI class/subclass
+    // See https://github.com/mgradwohl/tasksmack/issues/461 for more sophisticated detection
+    // using PCI class/subclass.
     info.isIntegrated = true;
 
     // Read memory info from driver-specific files
