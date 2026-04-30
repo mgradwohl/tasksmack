@@ -609,12 +609,13 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 
 GitHub Actions builds on Linux (Ubuntu 24.04) and Windows and runs:
 
-- Build + tests
-- Build + tests for debug and release configurations
-- Sanitizers (Linux)
-- clang-format check
-- clang-tidy
-- Coverage (coverage preset)
+- Build + tests (debug and release)
+- Sanitizers (Linux: ASan+UBSan, TSan)
+- clang-format (via the `pre-commit` workflow — runs all pre-commit hooks)
+- clang-tidy (`static-analysis` job)
+- Markdown link audit (`docs-hygiene` job)
+- Coverage (`coverage` job)
+- Include analysis (`include-analysis` job — manual-only via workflow_dispatch)
 
 Dependabot updates GitHub Actions dependencies weekly.
 

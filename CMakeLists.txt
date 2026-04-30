@@ -33,6 +33,7 @@ if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     )
 endif()
 
+set(TASKSMACK_LLVM_VERSION "22" CACHE STRING "Canonical LLVM toolchain version used for tool discovery hints")
 option(TASKSMACK_ENABLE_IPO "Enable interprocedural optimization" ON)
 option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
 option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
@@ -151,7 +152,7 @@ endfunction()
 
 find_program(CLANG_TIDY_EXE NAMES clang-tidy
     HINTS
-        "/usr/lib/llvm-21/bin"
+        "/usr/lib/llvm-${TASKSMACK_LLVM_VERSION}/bin"
         "$ENV{LLVM_ROOT}/bin"
         "$ENV{ProgramFiles}/LLVM/bin"
         "C:/Program Files/LLVM/bin"
@@ -159,7 +160,7 @@ find_program(CLANG_TIDY_EXE NAMES clang-tidy
 
 find_program(CLANG_FORMAT_EXE NAMES clang-format
     HINTS
-        "/usr/lib/llvm-21/bin"
+        "/usr/lib/llvm-${TASKSMACK_LLVM_VERSION}/bin"
         "$ENV{LLVM_ROOT}/bin"
         "$ENV{ProgramFiles}/LLVM/bin"
         "C:/Program Files/LLVM/bin"
