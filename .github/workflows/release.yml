@@ -117,6 +117,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Derive safe version label
+        id: version
+        run: |
+          label="${{ github.ref_name }}"
+          label="${label//\//-}"
+          echo "label=${label}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0.20.0
+        with:
+          path: .
+          output-file: sbom.spdx.json
+          format: spdx-json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Download Linux packages
         uses: actions/download-artifact@v8
         with:
@@ -129,21 +145,8 @@ jobs:
           name: windows-packages
           path: dist/
 
-      - name: Derive safe version label
-        id: version
-        run: |
-          label="${{ github.ref_name }}"
-          label="${label//\//-}"
-          echo "label=${label}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0.20.0
-        with:
-          path: .
-          output-file: dist/tasksmack-${{ steps.version.outputs.label }}-sbom.spdx.json
-          format: spdx-json
-          upload-artifact: false
-          upload-release-assets: false
+      - name: Stage SBOM into dist
+        run: mv sbom.spdx.json dist/tasksmack-${{ steps.version.outputs.label }}-sbom.spdx.json
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
