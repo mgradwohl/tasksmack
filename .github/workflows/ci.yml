@@ -38,7 +38,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-${{ matrix.build_type }}
           max-size: 500M
@@ -97,7 +97,7 @@ jobs:
         run: choco install llvm ninja ccache -y
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: windows-${{ matrix.build_type }}
           max-size: 500M
@@ -155,7 +155,7 @@ jobs:
           install-clang-tidy: 'true'
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-tidy
           max-size: 500M
@@ -194,7 +194,7 @@ jobs:
           sudo apt-get install -y iwyu
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-iwyu
           max-size: 500M
@@ -316,7 +316,7 @@ jobs:
           install-coverage-tools: 'true'
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-coverage
           max-size: 500M
@@ -401,7 +401,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: linux-${{ matrix.preset }}
           max-size: 500M
