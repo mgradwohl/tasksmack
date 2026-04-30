@@ -21,6 +21,148 @@ void expectColorNear(const ImVec4& actual, const ImVec4& expected, float toleran
     EXPECT_NEAR(actual.w, expected.w, tolerance) << "Alpha channel mismatch";
 }
 
+// Shared minimal-valid theme body (all required sections, no [meta]).
+// Used by tests that need a complete theme without a meta section, or that
+// prepend their own [meta] block on top of this body.
+constexpr const char* k_FullThemeTomlBody = R"(
+[accents]
+colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
+
+[progress]
+low = "#00FF00"
+medium = "#FFFF00"
+high = "#FF0000"
+
+[semantic]
+text_primary = "#FFFFFF"
+text_disabled = "#808080"
+text_muted = "#CCCCCC"
+text_error = "#FF0000"
+text_warning = "#FFA500"
+text_success = "#00FF00"
+text_info = "#00FFFF"
+
+[status]
+running = "#00FF00"
+sleeping = "#0000FF"
+disk_sleep = "#FFA500"
+zombie = "#FF0000"
+stopped = "#FF00FF"
+idle = "#808080"
+
+[charts]
+cpu = "#0078D4"
+memory = "#10893E"
+io = "#E74856"
+io_write = "#F7630C"
+
+[cpu_breakdown]
+user = "#0078D4"
+system = "#E74856"
+iowait = "#FFB900"
+idle = "#808080"
+
+[charts.gpu]
+utilization = "#0078D4"
+memory = "#10893E"
+temperature = "#E74856"
+power = "#FFB900"
+encoder = "#00B7C3"
+decoder = "#8E8CD8"
+clock = "#E3008C"
+fan = "#808080"
+
+[buttons.success]
+normal = "#10893E"
+hovered = "#2AA84E"
+active = "#0A6B2E"
+
+[ui.window]
+background = "#1E1E1E"
+child_background = "#252526"
+popup_background = "#2D2D30"
+border = "#3F3F46"
+
+[ui.frame]
+background = "#333337"
+background_hovered = "#3E3E42"
+background_active = "#0078D4"
+
+[ui.title]
+background = "#2D2D30"
+background_active = "#0078D4"
+background_collapsed = "#3F3F46"
+
+[ui.bars]
+menu = "#2D2D30"
+status = "#2D2D30"
+
+[ui.scrollbar]
+background = "#1E1E1E"
+grab = "#5A5A5A"
+grab_hovered = "#808080"
+grab_active = "#0078D4"
+
+[ui.controls]
+check_mark = "#FFFFFF"
+slider_grab = "#5A5A5A"
+slider_grab_active = "#0078D4"
+
+[ui.button]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.header]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.separator]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.resize_grip]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.tab]
+normal = "#2D2D30"
+hovered = "#3E3E42"
+active = "#0078D4"
+active_overline = "#FFFFFF"
+unfocused = "#252526"
+unfocused_active = "#3F3F46"
+unfocused_active_overline = "#808080"
+
+[ui.docking]
+preview = "#0078D480"
+empty_background = "#1E1E1E"
+
+[ui.plot]
+lines = "#0078D4"
+lines_hovered = "#60CDFF"
+histogram = "#10893E"
+histogram_hovered = "#6CCB5F"
+
+[ui.table]
+header_background = "#333337"
+border_strong = "#3F3F46"
+border_light = "#2D2D30"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF0D"
+
+[ui.misc]
+text_selected_background = "#0078D480"
+drag_drop_target = "#FFB900"
+nav_highlight = "#0078D4"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#0000004D"
+modal_window_dim_background = "#0000004D"
+)";
+
 // ========== hexToImVec4 Tests ==========
 
 TEST(ThemeLoaderTest, HexToImVec4_ValidSixDigit)
@@ -700,6 +842,263 @@ modal_window_dim_background = "#0000004D"
 
     // Verify accent colors from the array
     expectColorNear(theme->accents[0], ImVec4(0x00 / 255.0F, 0x78 / 255.0F, 0xD4 / 255.0F, 1.0F)); // Windows Blue
+}
+
+// ========== Missing Meta Section Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingMetaSection_NameIsEmpty)
+{
+    // k_FullThemeTomlBody has all required sections but no [meta] section.
+    // scheme.name should remain empty (default) since the meta block is absent.
+    createThemeFile("no-meta-theme.toml", k_FullThemeTomlBody);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "no-meta-theme.toml");
+    ASSERT_TRUE(theme.has_value());
+    // No [meta] section → name stays default-constructed (empty)
+    EXPECT_TRUE(theme->name.empty());
+    // Colors should still parse correctly from the rest of the file
+    expectColorNear(theme->progressLow, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));
+}
+
+// ========== Missing Required Color Keys Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingRequiredColors_FallsBackToErrorColor)
+{
+    // A TOML file with [meta] and [charts] but missing required progress/semantic/status/etc.
+    // Missing required keys (those without explicit C++ fallbacks) → errorColor (magenta).
+    createThemeFile("sparse-theme.toml", R"(
+[meta]
+name = "Sparse Theme"
+
+[accents]
+colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
+
+[charts]
+cpu = "#0078D4"
+memory = "#10893E"
+io = "#E74856"
+# io_write intentionally absent — falls back to chartMemory (#10893E)
+
+[cpu_breakdown]
+user = "#0078D4"
+system = "#E74856"
+iowait = "#FFB900"
+idle = "#808080"
+)");
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "sparse-theme.toml");
+    ASSERT_TRUE(theme.has_value());
+    EXPECT_EQ(theme->name, "Sparse Theme");
+
+    // Required colors that are absent without a default should be errorColor (magenta)
+    const ImVec4 magenta{1.0F, 0.0F, 1.0F, 1.0F};
+    expectColorNear(theme->progressLow, magenta);
+    expectColorNear(theme->progressMedium, magenta);
+    expectColorNear(theme->progressHigh, magenta);
+
+    // Optional colors with explicit C++ defaults should NOT be magenta
+    // io_write falls back to chartMemory (#10893E = 16/255, 137/255, 62/255)
+    expectColorNear(theme->chartIoWrite, theme->chartMemory);
+}
+
+// ========== Invalid Color Values Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_InvalidColorValue_FallsBackToErrorColor)
+{
+    // A theme file where one required color has an invalid hex string.
+    // The invalid entry should produce magenta; valid entries should parse normally.
+    createThemeFile("invalid-color-theme.toml", R"(
+[meta]
+name = "Invalid Color Theme"
+
+[accents]
+colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
+
+[progress]
+low = "not-a-color"
+medium = "#FFFF00"
+high = "#FF0000"
+
+[semantic]
+text_primary = "#FFFFFF"
+text_disabled = "#808080"
+text_muted = "#CCCCCC"
+text_error = "#FF0000"
+text_warning = "#FFA500"
+text_success = "#00FF00"
+text_info = "#00FFFF"
+
+[status]
+running = "#00FF00"
+sleeping = "#0000FF"
+disk_sleep = "#FFA500"
+zombie = "#FF0000"
+stopped = "#FF00FF"
+idle = "#808080"
+
+[charts]
+cpu = "#0078D4"
+memory = "#10893E"
+io = "#E74856"
+io_write = "#F7630C"
+
+[cpu_breakdown]
+user = "#0078D4"
+system = "#E74856"
+iowait = "#FFB900"
+idle = "#808080"
+
+[charts.gpu]
+utilization = "#0078D4"
+memory = "#10893E"
+temperature = "#E74856"
+power = "#FFB900"
+encoder = "#00B7C3"
+decoder = "#8E8CD8"
+clock = "#E3008C"
+fan = "#808080"
+
+[buttons.success]
+normal = "#10893E"
+hovered = "#2AA84E"
+active = "#0A6B2E"
+
+[ui.window]
+background = "#1E1E1E"
+child_background = "#252526"
+popup_background = "#2D2D30"
+border = "#3F3F46"
+
+[ui.frame]
+background = "#333337"
+background_hovered = "#3E3E42"
+background_active = "#0078D4"
+
+[ui.title]
+background = "#2D2D30"
+background_active = "#0078D4"
+background_collapsed = "#3F3F46"
+
+[ui.bars]
+menu = "#2D2D30"
+status = "#2D2D30"
+
+[ui.scrollbar]
+background = "#1E1E1E"
+grab = "#5A5A5A"
+grab_hovered = "#808080"
+grab_active = "#0078D4"
+
+[ui.controls]
+check_mark = "#FFFFFF"
+slider_grab = "#5A5A5A"
+slider_grab_active = "#0078D4"
+
+[ui.button]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.header]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.separator]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.resize_grip]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.tab]
+normal = "#2D2D30"
+hovered = "#3E3E42"
+active = "#0078D4"
+active_overline = "#FFFFFF"
+unfocused = "#252526"
+unfocused_active = "#3F3F46"
+unfocused_active_overline = "#808080"
+
+[ui.docking]
+preview = "#0078D480"
+empty_background = "#1E1E1E"
+
+[ui.plot]
+lines = "#0078D4"
+lines_hovered = "#60CDFF"
+histogram = "#10893E"
+histogram_hovered = "#6CCB5F"
+
+[ui.table]
+header_background = "#333337"
+border_strong = "#3F3F46"
+border_light = "#2D2D30"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF0D"
+
+[ui.misc]
+text_selected_background = "#0078D480"
+drag_drop_target = "#FFB900"
+nav_highlight = "#0078D4"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#0000004D"
+modal_window_dim_background = "#0000004D"
+)");
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "invalid-color-theme.toml");
+    ASSERT_TRUE(theme.has_value());
+    EXPECT_EQ(theme->name, "Invalid Color Theme");
+
+    // The invalid color "not-a-color" should produce magenta error color
+    expectColorNear(theme->progressLow, ImVec4(1.0F, 0.0F, 1.0F, 1.0F));
+
+    // Valid entries should parse correctly
+    expectColorNear(theme->progressMedium, ImVec4(1.0F, 1.0F, 0.0F, 1.0F)); // #FFFF00
+    expectColorNear(theme->progressHigh, ImVec4(1.0F, 0.0F, 0.0F, 1.0F));   // #FF0000
+}
+
+// ========== Duplicate Theme Names Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, DiscoverThemes_DuplicateNames_BothReturned)
+{
+    // Two theme files with the same display name but different filenames.
+    // discoverThemes should find and return both.
+    createThemeFile("theme-a.toml", R"(
+[meta]
+name = "Same Name"
+description = "First theme"
+)");
+
+    createThemeFile("theme-b.toml", R"(
+[meta]
+name = "Same Name"
+description = "Second theme"
+)");
+
+    auto themes = ThemeLoader::discoverThemes(m_TempDir);
+    EXPECT_EQ(themes.size(), 2U);
+
+    // Both IDs are distinct even though names are the same
+    bool foundA = false;
+    bool foundB = false;
+    for (const auto& t : themes)
+    {
+        EXPECT_EQ(t.name, "Same Name");
+        if (t.id == "theme-a")
+        {
+            foundA = true;
+        }
+        if (t.id == "theme-b")
+        {
+            foundB = true;
+        }
+    }
+    EXPECT_TRUE(foundA);
+    EXPECT_TRUE(foundB);
 }
 
 // ========== I/O Write Color Tests ==========

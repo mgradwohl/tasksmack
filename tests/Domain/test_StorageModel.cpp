@@ -676,5 +676,226 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     EXPECT_DOUBLE_EQ(it->writeBytesPerSec.front(), 0.0);
 }
 
+// =============================================================================
+// Null Probe Tests
+// =============================================================================
+
+TEST(StorageModelTest, SampleWithNullProbe_DoesNotCrash)
+{
+    // Constructing with nullptr should not crash on sample()
+    StorageModel model(nullptr);
+    EXPECT_NO_THROW({ model.sample(); });
+
+    // Snapshot should remain empty
+    auto snap = model.latestSnapshot();
+    EXPECT_TRUE(snap.disks.empty());
+}
+
+TEST(StorageModelTest, CapabilitiesWithNullProbe_ReturnsDefault)
+{
+    StorageModel model(nullptr);
+    auto caps = model.capabilities();
+
+    // All capabilities should be false when there is no probe
+    EXPECT_FALSE(caps.hasDiskStats);
+    EXPECT_FALSE(caps.hasReadWriteBytes);
+    EXPECT_FALSE(caps.hasIoTime);
+}
+
+// =============================================================================
+// Counter Wrap Tests
+// =============================================================================
+
+TEST(StorageModelTest, CounterWrapProducesZeroRate)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // First sample: high counter values
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 1000;
+    disk.readSectors = 10000;
+    disk.writesCompleted = 500;
+    disk.writeSectors = 5000;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Second sample: counters wrapped (current < prev)
+    disk.readsCompleted = 100; // wrapped below previous 1000
+    disk.readSectors = 100;    // wrapped below previous 10000
+    disk.writesCompleted = 50; // wrapped below previous 500
+    disk.writeSectors = 50;    // wrapped below previous 5000
+    counters.disks.clear();
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    ASSERT_EQ(snap.disks.size(), 1ULL);
+    // Wrapped counters should be clamped to zero — no negative rates
+    EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.disks[0].writeBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.disks[0].readOpsPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.disks[0].writeOpsPerSec, 0.0);
+}
+
+// =============================================================================
+// I/O Time Tests
+// =============================================================================
+
+TEST(StorageModelTest, AverageIoTimesCalculatedFromDeltas)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // First sample
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.writesCompleted = 50;
+    disk.writeSectors = 500;
+    disk.readTimeMs = 200;  // 200ms total read time for 100 ops = 2ms/op
+    disk.writeTimeMs = 100; // 100ms total write time for 50 ops = 2ms/op
+    disk.ioTimeMs = 300;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Second sample: 100 new reads took 200ms, 50 new writes took 100ms
+    disk.readsCompleted = 200;
+    disk.readSectors = 2000;
+    disk.writesCompleted = 100;
+    disk.writeSectors = 1000;
+    disk.readTimeMs = 400;  // delta = 200ms for 100 new ops = 2ms/op
+    disk.writeTimeMs = 200; // delta = 100ms for 50 new ops = 2ms/op
+    disk.ioTimeMs = 600;
+    counters.disks.clear();
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    ASSERT_EQ(snap.disks.size(), 1ULL);
+
+    // avgReadTimeMs = deltaReadTime / deltaReadOps = 200 / 100 = 2.0 ms
+    EXPECT_NEAR(snap.disks[0].avgReadTimeMs, 2.0, 0.001);
+    // avgWriteTimeMs = deltaWriteTime / deltaWriteOps = 100 / 50 = 2.0 ms
+    EXPECT_NEAR(snap.disks[0].avgWriteTimeMs, 2.0, 0.001);
+    // utilizationPercent > 0 since ioTimeMs increased
+    EXPECT_GT(snap.disks[0].utilizationPercent, 0.0);
+    EXPECT_LE(snap.disks[0].utilizationPercent, 100.0);
+}
+
+TEST(StorageModelTest, AverageIoTimesZeroWhenNoOps)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // First sample with some ops
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters disk;
+    disk.deviceName = "sda";
+    disk.readsCompleted = 100;
+    disk.readSectors = 1000;
+    disk.writesCompleted = 50;
+    disk.writeSectors = 500;
+    disk.readTimeMs = 200;
+    disk.writeTimeMs = 100;
+    disk.sectorSize = 512;
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Second sample: no new ops (idle disk)
+    // (same counters — no delta in ops)
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    ASSERT_EQ(snap.disks.size(), 1ULL);
+    // No new ops → avgReadTimeMs and avgWriteTimeMs stay at their default 0.0
+    EXPECT_DOUBLE_EQ(snap.disks[0].avgReadTimeMs, 0.0);
+    EXPECT_DOUBLE_EQ(snap.disks[0].avgWriteTimeMs, 0.0);
+}
+
+// =============================================================================
+// Multi-Disk Aggregation Tests
+// =============================================================================
+
+TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // First sample: two disks
+    Platform::SystemDiskCounters counters;
+    for (int i = 0; i < 2; ++i)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = "sd" + std::string(1, static_cast<char>('a' + i));
+        disk.readsCompleted = 100;
+        disk.readSectors = 1000;
+        disk.writesCompleted = 50;
+        disk.writeSectors = 500;
+        disk.sectorSize = 512;
+        counters.disks.push_back(disk);
+    }
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Second sample: both disks show activity
+    counters.disks.clear();
+    for (int i = 0; i < 2; ++i)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = "sd" + std::string(1, static_cast<char>('a' + i));
+        disk.readsCompleted = 200;
+        disk.readSectors = 2000; // 1000 new sectors = 512000 bytes
+        disk.writesCompleted = 100;
+        disk.writeSectors = 1000; // 500 new sectors = 256000 bytes
+        disk.sectorSize = 512;
+        counters.disks.push_back(disk);
+    }
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    auto snap = model.latestSnapshot();
+    ASSERT_EQ(snap.disks.size(), 2ULL);
+
+    // Total rates should be the sum of individual disk rates
+    const double expectedTotal = snap.disks[0].readBytesPerSec + snap.disks[1].readBytesPerSec;
+    EXPECT_DOUBLE_EQ(snap.totalReadBytesPerSec, expectedTotal);
+
+    const double expectedWriteTotal = snap.disks[0].writeBytesPerSec + snap.disks[1].writeBytesPerSec;
+    EXPECT_DOUBLE_EQ(snap.totalWriteBytesPerSec, expectedWriteTotal);
+
+    // Both disks had activity, so totals must be positive
+    EXPECT_GT(snap.totalReadBytesPerSec, 0.0);
+    EXPECT_GT(snap.totalWriteBytesPerSec, 0.0);
+}
+
 } // namespace
 } // namespace Domain

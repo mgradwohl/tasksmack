@@ -94,6 +94,60 @@ TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
     EXPECT_GT(result.errorMessage.size(), 0ULL);
 }
 
+TEST(LinuxProcessActionsTest, TerminateInvalidPid)
+{
+    LinuxProcessActions actions;
+
+    // pid=0 is invalid (sendSignal() guards pid <= 0)
+    auto resultZero = actions.terminate(0);
+    EXPECT_FALSE(resultZero.success);
+    EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
+
+    // Negative pid is also invalid
+    auto resultNeg = actions.terminate(-1);
+    EXPECT_FALSE(resultNeg.success);
+    EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
+}
+
+TEST(LinuxProcessActionsTest, KillInvalidPid)
+{
+    LinuxProcessActions actions;
+
+    auto resultZero = actions.kill(0);
+    EXPECT_FALSE(resultZero.success);
+    EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
+
+    auto resultNeg = actions.kill(-1);
+    EXPECT_FALSE(resultNeg.success);
+    EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
+}
+
+TEST(LinuxProcessActionsTest, StopInvalidPid)
+{
+    LinuxProcessActions actions;
+
+    auto resultZero = actions.stop(0);
+    EXPECT_FALSE(resultZero.success);
+    EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
+
+    auto resultNeg = actions.stop(-1);
+    EXPECT_FALSE(resultNeg.success);
+    EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
+}
+
+TEST(LinuxProcessActionsTest, ResumeInvalidPid)
+{
+    LinuxProcessActions actions;
+
+    auto resultZero = actions.resume(0);
+    EXPECT_FALSE(resultZero.success);
+    EXPECT_GT(resultZero.errorMessage.size(), 0ULL);
+
+    auto resultNeg = actions.resume(-1);
+    EXPECT_FALSE(resultNeg.success);
+    EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
+}
+
 // =============================================================================
 // Priority Adjustment Tests
 // =============================================================================
