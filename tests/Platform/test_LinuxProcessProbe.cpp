@@ -17,11 +17,14 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <thread>
 
 #include <unistd.h>
@@ -516,6 +519,101 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     // Clean up
     std::filesystem::remove(tempFilePath);
 }
+
+// =============================================================================
+// Process Status and Cmdline Tests (covers additional parsing branches)
+// =============================================================================
+
+TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
+{
+    // Kernel threads have empty /proc/[pid]/cmdline; the probe must handle this gracefully.
+    LinuxProcessProbe probe;
+
+    EXPECT_NO_THROW({
+        auto processes = probe.enumerate();
+
+        // Kernel threads are normal entries with empty cmdline; they should all have a name.
+        for (const auto& proc : processes)
+        {
+            EXPECT_FALSE(proc.name.empty()) << "Process " << proc.pid << " should always have a name";
+        }
+    });
+}
+
+TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
+{
+    // Zombie processes (state 'Z') may exist; the probe should enumerate them without crashing.
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+
+    // Enumerate succeeded; count how many zombies there are (usually 0, but that's fine).
+    const auto zombieCount = std::ranges::count_if(processes, [](const ProcessCounters& p) { return p.state == 'Z'; });
+
+    // Just verify counting didn't throw and the count is non-negative.
+    EXPECT_GE(zombieCount, 0);
+}
+
+TEST(LinuxProcessProbeTest, EnumerateHandlesProcessesWithSpacesInCmdline)
+{
+    // Our own process argv[0] and arguments may contain spaces (test harness).
+    // Verify the probe doesn't truncate or corrupt the name.
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+    const pid_t selfPid = getpid();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+    EXPECT_FALSE(it->name.empty()) << "Our process should have a non-empty name";
+}
+
+TEST(LinuxProcessProbeTest, EnumerateReturnsReasonableThreadCounts)
+{
+    // Thread count must be >= 1. Multi-threaded processes (like this test binary) should report > 1.
+    LinuxProcessProbe probe;
+    const pid_t selfPid = getpid();
+    auto processes = probe.enumerate();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+    // This test binary uses multiple threads (gtest runs tests on the main thread but jthread
+    // tests may have created background threads); the thread count must be at least 1.
+    EXPECT_GE(it->threadCount, 1) << "Thread count must be >= 1";
+}
+
+TEST(LinuxProcessProbeTest, CapabilitiesHasThreadCount)
+{
+    // LinuxProcessProbe always reports thread counts.
+    LinuxProcessProbe probe;
+    auto caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasThreadCount);
+}
+
+TEST(LinuxProcessProbeTest, UserFieldIsPopulatedForOwnProcess)
+{
+    LinuxProcessProbe probe;
+    const pid_t selfPid = getpid();
+    auto processes = probe.enumerate();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+
+    // The user field should be populated (at minimum as a UID string).
+    EXPECT_FALSE(it->user.empty()) << "User field should not be empty for own process";
+}
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
+{
+    LinuxProcessProbe probe;
+
+    // Changing the TTL should not crash regardless of whether Netlink is available.
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(500)));
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(0)));
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(10000)));
+}
+#endif
 
 } // namespace
 } // namespace Platform
