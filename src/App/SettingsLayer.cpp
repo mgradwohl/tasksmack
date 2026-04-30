@@ -18,8 +18,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
-#include <tuple>
-#include <utility>
 
 namespace App
 {
@@ -369,13 +367,13 @@ void SettingsLayer::renderSettingsDialog()
         if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-            std::ignore = App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
+            (void) App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
         }
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-            std::ignore = App::PlatformOpen::openWithSystemHandler(getThemesDir());
+            (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
         }
         ImGui::PopStyleColor();
 

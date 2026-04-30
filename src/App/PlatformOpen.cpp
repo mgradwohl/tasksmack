@@ -77,7 +77,8 @@ namespace App::PlatformOpen
         if (grandchild == 0)
         {
             // Grandchild: exec xdg-open (will be adopted by init when first child exits)
-            ::execlp("xdg-open", "xdg-open", targetStr.c_str(), nullptr);
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): execlp varargs require a typed null char* terminator
+            ::execlp("xdg-open", "xdg-open", targetStr.c_str(), static_cast<char*>(nullptr));
             _exit(127); // execlp only returns on error
         }
         // First child exits immediately (grandchild will be adopted by init)
