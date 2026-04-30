@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include <toml++/toml.hpp>
 
 namespace App
@@ -83,12 +85,15 @@ TEST(UserConfigHelpersTest, LoadAndNarrowIntWithClampUsesDefaultWhenMissing)
 
 TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePath)
 {
-    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/home/user/.config/tasksmack")));
+    // Build a platform-native absolute path: C:\home\user\... on Windows, /home/user/... on POSIX.
+    const auto absPath = std::filesystem::current_path().root_path() / "home" / "user" / ".config" / "tasksmack";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(absPath));
 }
 
 TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePathWithoutTraversal)
 {
-    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/tmp/tasksmack")));
+    const auto absPath = std::filesystem::current_path().root_path() / "tmp" / "tasksmack";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(absPath));
 }
 
 TEST(UserConfigHelpersTest, IsValidConfigDirRejectsRelativePath)
@@ -104,11 +109,13 @@ TEST(UserConfigHelpersTest, IsValidConfigDirRejectsDotDotTraversal)
 
 TEST(UserConfigHelpersTest, IsValidConfigDirNormalizesAbsoluteTraversal)
 {
-    // An absolute path with ".." is lexically normalized (e.g. /home/user/../../etc/passwd → /etc/passwd).
-    // The normalized form is still an absolute path with no ".." components, so it is accepted.
-    // Restricting WHICH absolute paths are allowed is a caller responsibility (e.g. checking the path
-    // is under the expected config root).
-    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/home/user/../../etc/passwd")));
+    // An absolute path with ".." that normalizes away all traversal components is accepted.
+    // e.g. on POSIX: root/"home"/"user"/".."/../"etc" → /etc (absolute, no "..").
+    // Restricting WHICH absolute paths are allowed is a caller responsibility (e.g. checking
+    // the resolved path is under the expected config root).
+    const auto root = std::filesystem::current_path().root_path();
+    const auto pathWithTraversal = root / "home" / "user" / ".." / ".." / "etc";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(pathWithTraversal));
 }
 
 TEST(UserConfigHelpersTest, IsValidConfigDirRejectsBareTraversal)
@@ -118,7 +125,8 @@ TEST(UserConfigHelpersTest, IsValidConfigDirRejectsBareTraversal)
 
 TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsRootPath)
 {
-    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/")));
+    // root_path() returns "/" on POSIX and e.g. "C:\" on Windows — always absolute.
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::current_path().root_path()));
 }
 
 TEST(UserConfigHelpersTest, IsValidConfigDirRejectsEmptyPath)
