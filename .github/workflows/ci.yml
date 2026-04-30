@@ -85,9 +85,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Pin the Python that will be used for GLAD (and install jinja2 into it).
-      # Must match the Python version pre-installed on the runner that GLAD's cmake
-      # subdirectory finds via its own python3 discovery (independent of setup-python).
+      # Pin the Python used for GLAD and install jinja2 into that interpreter.
+      # The configure step passes Python3_EXECUTABLE to CMake so GLAD uses the
+      # setup-python interpreter rather than relying on unrelated runner discovery.
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
