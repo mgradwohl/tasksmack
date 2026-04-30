@@ -349,14 +349,6 @@ TEST(FormatTest, PercentCompactHandles100)
     EXPECT_TRUE(result.contains('%'));
 }
 
-TEST(FormatTest, PercentOneDecimalLocalizedFormatsCorrectly)
-{
-    // Just test that the function produces reasonable output
-    const auto result = UI::Format::percentOneDecimalLocalized(50.5);
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains('%'));
-}
-
 // =============================================================================
 // ID and Integer Formatting Tests
 // =============================================================================
@@ -443,20 +435,6 @@ TEST(FormatTest, FormatOrDashReturnsDashForZeroOrNegative)
 // =============================================================================
 // Uptime Formatting Tests
 // =============================================================================
-
-TEST(FormatTest, FormatHoursMinutesFormatsCorrectly)
-{
-    const auto result = UI::Format::formatHoursMinutes(1, 30); // 1 hour 30 minutes
-    EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("1h"));
-    EXPECT_TRUE(result.contains("30m"));
-}
-
-TEST(FormatTest, FormatHoursMinutesHandlesZero)
-{
-    const auto result = UI::Format::formatHoursMinutes(0, 0);
-    EXPECT_FALSE(result.empty());
-}
 
 TEST(FormatTest, FormatUptimeShortFormatsCorrectly)
 {

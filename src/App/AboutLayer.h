@@ -36,7 +36,6 @@ class AboutLayer : public Core::Layer
   private:
     void renderAboutDialog();
     void loadIcon();
-    static void openUrl(const std::string& url);
 
     bool m_OpenRequested = false;
     UI::Texture m_Icon;

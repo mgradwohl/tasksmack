@@ -281,7 +281,7 @@ void ProcessDetailsPanel::renderContent()
             ImGui::Separator();
             renderPowerUsage(m_CachedSnapshot);
             ImGui::Separator();
-            renderThreadAndFaultHistory(m_CachedSnapshot);
+            renderThreadAndFaultHistory();
             ImGui::EndTabItem();
         }
 
@@ -889,7 +889,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 // Renders the thread/handle/page-fault history plot plus matching "now" bars.
 // Aligns history buffers by their shared tail, smooths the latest sample for the
 // bars, and returns early when no aligned data is available.
-void ProcessDetailsPanel::renderThreadAndFaultHistory([[maybe_unused]] const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderThreadAndFaultHistory()
 {
     if (m_Timestamps.empty() || (m_ThreadHistory.empty() && m_HandleHistory.empty() && m_PageFaultHistory.empty()))
     {
