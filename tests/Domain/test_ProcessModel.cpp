@@ -1340,6 +1340,68 @@ TEST(ProcessModelTest, SystemThreadCountHistoryIsEmptyInitially)
     EXPECT_TRUE(history.empty());
 }
 
+TEST(ProcessModelTest, SystemHandleCountHistoryIsEmptyInitially)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Domain::ProcessModel model(std::move(probe));
+
+    auto history = model.systemHandleCountHistory();
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+
+    auto* rawProbe = probe.get();
+    Domain::ProcessModel model{std::move(probe)};
+
+    // First sample — no history entry yet (needs two samples for a delta)
+    auto c1 = makeCounter(100, "proc_a", 'R', 1000, 500);
+    c1.handleCount = 10;
+    auto c2 = makeCounter(200, "proc_b", 'R', 2000, 1000);
+    c2.handleCount = 25;
+    rawProbe->setCounters({c1, c2});
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    c1.userTime += 100;
+    c2.userTime += 100;
+    rawProbe->setCounters({c1, c2});
+    model.refresh();
+
+    const auto history = model.systemHandleCountHistory();
+    ASSERT_FALSE(history.empty());
+    // Aggregated handle count should be the sum: 10 + 25 = 35
+    EXPECT_DOUBLE_EQ(history.back(), 35.0);
+}
+
+TEST(ProcessModelTest, SystemHandleCountHistoryAlignedWithTimestamps)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+
+    auto* rawProbe = probe.get();
+    Domain::ProcessModel model{std::move(probe)};
+
+    auto counter = makeCounter(100, "proc_a", 'R', 1000, 500);
+    counter.handleCount = 5;
+    rawProbe->setCounters({counter});
+    model.refresh();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    counter.userTime += 100;
+    rawProbe->setCounters({counter});
+    model.refresh();
+
+    const auto timestamps = model.historyTimestamps();
+    const auto handleHistory = model.systemHandleCountHistory();
+    EXPECT_EQ(timestamps.size(), handleHistory.size());
+}
+
 TEST(ProcessModelTest, SystemPowerHistoryIsEmptyInitially)
 {
     auto probe = std::make_unique<MockProcessProbe>();

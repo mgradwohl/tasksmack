@@ -114,6 +114,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     double aggNetRecv = 0.0;
     double aggPageFaults = 0.0;
     double aggThreads = 0.0;
+    double aggHandles = 0.0;
     double aggPower = 0.0;
 
     for (const auto& current : counters)
@@ -213,6 +214,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         aggNetRecv += snapRef.netReceivedBytesPerSec;
         aggPageFaults += snapRef.pageFaultsPerSec;
         aggThreads += static_cast<double>(snapRef.threadCount);
+        aggHandles += static_cast<double>(snapRef.handleCount);
         aggPower += snapRef.powerWatts;
 
         m_PrevCounters[key] = current;
@@ -242,6 +244,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         m_SystemNetRecvHistory.push_back(aggNetRecv);
         m_SystemPageFaultsHistory.push_back(aggPageFaults);
         m_SystemThreadCountHistory.push_back(aggThreads);
+        m_SystemHandleCountHistory.push_back(aggHandles);
         m_SystemPowerHistory.push_back(aggPower);
         trimHistory();
     }
@@ -275,6 +278,12 @@ std::vector<double> ProcessModel::systemThreadCountHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return {m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end()};
+}
+
+std::vector<double> ProcessModel::systemHandleCountHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return {m_SystemHandleCountHistory.begin(), m_SystemHandleCountHistory.end()};
 }
 
 std::vector<double> ProcessModel::systemPowerHistory() const
@@ -590,6 +599,7 @@ void ProcessModel::trimHistory()
     trimFront(m_SystemNetRecvHistory);
     trimFront(m_SystemPageFaultsHistory);
     trimFront(m_SystemThreadCountHistory);
+    trimFront(m_SystemHandleCountHistory);
     trimFront(m_SystemPowerHistory);
 }
 

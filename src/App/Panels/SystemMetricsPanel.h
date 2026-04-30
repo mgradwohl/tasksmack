@@ -128,6 +128,7 @@ class SystemMetricsPanel : public Panel
     {
         double threads = 0.0;
         double pageFaults = 0.0;
+        double handles = 0.0;
         bool initialized = false;
     } m_SmoothedThreadsFaults;
 
@@ -168,7 +169,7 @@ class SystemMetricsPanel : public Panel
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedDiskIO(const Domain::StorageSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds);
-    void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds);
+    void updateSmoothedThreadsFaults(double targetThreads, double targetFaults, double targetHandles, float deltaTimeSeconds);
 };
 
 } // namespace App

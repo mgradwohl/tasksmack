@@ -924,7 +924,8 @@ void SystemMetricsPanel::renderOverview()
         const auto procTimestamps = m_ProcessModel->historyTimestamps();
         const auto pageFaultHist = m_ProcessModel->systemPageFaultsHistory();
         const auto threadHist = m_ProcessModel->systemThreadCountHistory();
-        const size_t alignedCount = std::min({procTimestamps.size(), pageFaultHist.size(), threadHist.size()});
+        const auto handleHist = m_ProcessModel->systemHandleCountHistory();
+        const size_t alignedCount = std::min({procTimestamps.size(), pageFaultHist.size(), threadHist.size(), handleHist.size()});
 
         // Always use default axis config even with no data
         const auto axis = alignedCount > 0 ? makeTimeAxisConfig(procTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
@@ -933,17 +934,20 @@ void SystemMetricsPanel::renderOverview()
         std::vector<float> timeData;
         std::vector<float> faultData;
         std::vector<float> threadData;
+        std::vector<float> handleData;
 
         if (alignedCount > 0)
         {
             timeData = buildTimeAxis(procTimestamps, alignedCount, nowSeconds);
             faultData.assign(pageFaultHist.end() - static_cast<std::ptrdiff_t>(alignedCount), pageFaultHist.end());
             threadData.assign(threadHist.end() - static_cast<std::ptrdiff_t>(alignedCount), threadHist.end());
+            handleData.assign(handleHist.end() - static_cast<std::ptrdiff_t>(alignedCount), handleHist.end());
 
             // Update smoothed values
             const double targetThreads = static_cast<double>(threadData.back());
             const double targetFaults = static_cast<double>(faultData.back());
-            updateSmoothedThreadsFaults(targetThreads, targetFaults, m_LastDeltaSeconds);
+            const double targetHandles = static_cast<double>(handleData.back());
+            updateSmoothedThreadsFaults(targetThreads, targetFaults, targetHandles, m_LastDeltaSeconds);
         }
 
         const double threadMax = threadData.empty()
@@ -952,6 +956,15 @@ void SystemMetricsPanel::renderOverview()
         const double faultMax = faultData.empty()
                                   ? 1.0
                                   : std::max(m_SmoothedThreadsFaults.pageFaults, static_cast<double>(*std::ranges::max_element(faultData)));
+        const double handleMax = handleData.empty()
+                                   ? 1.0
+                                   : std::max(m_SmoothedThreadsFaults.handles, static_cast<double>(*std::ranges::max_element(handleData)));
+
+#ifdef _WIN32
+        constexpr const char* handleLabel = "Handles";
+#else
+        constexpr const char* handleLabel = "FDs";
+#endif
 
         const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedThreadsFaults.threads), "threads"),
                                 .label = "Threads",
@@ -961,6 +974,10 @@ void SystemMetricsPanel::renderOverview()
                                .label = "Page Faults",
                                .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.pageFaults / faultMax, 0.0, 1.0) : 0.0,
                                .color = theme.accentColor(3)};
+        const NowBar handlesBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedThreadsFaults.handles), handleLabel),
+                                .label = handleLabel,
+                                .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedThreadsFaults.handles / handleMax, 0.0, 1.0) : 0.0,
+                                .color = theme.scheme().chartMemory};
 
         auto plot = [&]()
         {
@@ -975,6 +992,7 @@ void SystemMetricsPanel::renderOverview()
                 const int count = UI::Format::checkedCount(alignedCount);
                 plotLineWithFill("Threads", timeData.data(), threadData.data(), count, theme.scheme().chartCpu);
                 plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), count, theme.accentColor(3));
+                plotLineWithFill(handleLabel, timeData.data(), handleData.data(), count, theme.scheme().chartMemory);
 
                 if (ImPlot::IsPlotHovered())
                 {
@@ -993,6 +1011,10 @@ void SystemMetricsPanel::renderOverview()
                             ImGui::TextColored(theme.accentColor(3),
                                                "Page Faults: %s",
                                                UI::Format::formatCountPerSecond(static_cast<double>(faultData[*idxVal])).c_str());
+                            ImGui::TextColored(theme.scheme().chartMemory,
+                                               "%s: %s",
+                                               handleLabel,
+                                               UI::Format::formatIntLocalized(std::llround(handleData[*idxVal])).c_str());
                             ImGui::EndTooltip();
                         }
                     }
@@ -1003,8 +1025,12 @@ void SystemMetricsPanel::renderOverview()
         };
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Threads & Page Faults (%zu samples)", alignedCount);
-        renderHistoryWithNowBars(
-            "ThreadsFaultsHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, faultsBar}, false, OVERVIEW_NOW_BAR_COLUMNS);
+        renderHistoryWithNowBars("ThreadsFaultsHistoryLayout",
+                                 HISTORY_PLOT_HEIGHT_DEFAULT,
+                                 plot,
+                                 {threadsBar, faultsBar, handlesBar},
+                                 false,
+                                 OVERVIEW_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
 }
@@ -1225,7 +1251,10 @@ void SystemMetricsPanel::updateSmoothedPower(float targetWatts, float targetBatt
     m_SmoothedPower.batteryChargePercent = smoothTowards(m_SmoothedPower.batteryChargePercent, targetB, alpha);
 }
 
-void SystemMetricsPanel::updateSmoothedThreadsFaults(double targetThreads, double targetFaults, float deltaTimeSeconds)
+void SystemMetricsPanel::updateSmoothedThreadsFaults(double targetThreads,
+                                                     double targetFaults,
+                                                     double targetHandles,
+                                                     float deltaTimeSeconds)
 {
     const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
 
@@ -1233,12 +1262,14 @@ void SystemMetricsPanel::updateSmoothedThreadsFaults(double targetThreads, doubl
     {
         m_SmoothedThreadsFaults.threads = targetThreads;
         m_SmoothedThreadsFaults.pageFaults = targetFaults;
+        m_SmoothedThreadsFaults.handles = targetHandles;
         m_SmoothedThreadsFaults.initialized = true;
         return;
     }
 
     m_SmoothedThreadsFaults.threads = smoothTowards(m_SmoothedThreadsFaults.threads, targetThreads, alpha);
     m_SmoothedThreadsFaults.pageFaults = smoothTowards(m_SmoothedThreadsFaults.pageFaults, targetFaults, alpha);
+    m_SmoothedThreadsFaults.handles = smoothTowards(m_SmoothedThreadsFaults.handles, targetHandles, alpha);
 }
 
 } // namespace App
