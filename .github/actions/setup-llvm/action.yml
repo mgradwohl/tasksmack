@@ -33,6 +33,19 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Remove stale Microsoft apt sources
+      shell: bash
+      run: |
+        # Ubuntu 24.04 GitHub runners ship Microsoft apt repos that intermittently
+        # return 403 Forbidden, causing apt-get update (called by llvm.sh internally
+        # via add-apt-repository) to exit non-zero and abort the step. Remove them
+        # before any apt operations so only the repos we need are active.
+        sudo rm -f \
+          /etc/apt/sources.list.d/azure-cli.list \
+          /etc/apt/sources.list.d/microsoft-prod.list \
+          /etc/apt/sources.list.d/packages-microsoft-prod.list
+        sudo find /etc/apt/sources.list.d/ -name '*microsoft*' -delete 2>/dev/null || true
+
     - name: Install LLVM ${{ inputs.llvm-version }}
       shell: bash
       run: |
