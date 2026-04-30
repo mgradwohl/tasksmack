@@ -73,11 +73,13 @@ void Theme::loadDefaultFallbackTheme()
     fallback.chartCpu = blue;
     fallback.chartMemory = green;
     fallback.chartIo = orange;
+    fallback.chartIoWrite = red;
 
     // Chart fill colors (semi-transparent versions)
     fallback.chartCpuFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
     fallback.chartMemoryFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
     fallback.chartIoFill = ImVec4(1.0F, 0.5F, 0.0F, 0.3F);
+    fallback.chartIoWriteFill = ImVec4(1.0F, 0.0F, 0.0F, 0.3F);
 
     fallback.cpuUser = blue;
     fallback.cpuSystem = orange;
