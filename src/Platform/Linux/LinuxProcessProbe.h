@@ -5,6 +5,9 @@
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
+
+#include <chrono>
+#include <unordered_map>
 #endif
 
 #include <atomic>
@@ -57,6 +60,8 @@ class LinuxProcessProbe : public IProcessProbe
 
     // Inode-to-PID cache: rebuilt by buildInodeToPidMap() at most once per
     // INODE_PID_CACHE_TTL_MS to avoid scanning /proc/[pid]/fd/* every enumerate().
+    // m_InodePidCacheMutex guards both cache members against concurrent enumerate() calls.
+    mutable std::mutex m_InodePidCacheMutex;
     mutable std::unordered_map<std::uint64_t, std::int32_t> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
 #endif

@@ -921,18 +921,22 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         return;
     }
 
-    // Rebuild inode-to-PID map at most once per INODE_PID_CACHE_TTL_MS (3 s).
+    // Rebuild inode-to-PID map at most once per INODE_PID_CACHE_TTL_MS.
     // buildInodeToPidMap() scans /proc/[pid]/fd/* for every process — expensive at scale.
-    // Caching reduces that cost by ~67% at the default 1Hz refresh rate with negligible
-    // staleness for network attribution purposes (closes #460).
-    const auto now = std::chrono::steady_clock::now();
-    const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-    if (m_InodeToPidCache.empty() || cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
+    // Caching reduces rebuilds; copy under lock to avoid races on the mutable cache members
+    // when enumerate() is called concurrently from multiple threads (see #460).
+    std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
     {
-        m_InodeToPidCache = buildInodeToPidMap();
-        m_InodeToPidCacheTime = now;
+        const std::scoped_lock lock{m_InodePidCacheMutex};
+        const auto now = std::chrono::steady_clock::now();
+        const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
+        if (m_InodeToPidCache.empty() || cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
+        {
+            m_InodeToPidCache = buildInodeToPidMap();
+            m_InodeToPidCacheTime = now;
+        }
+        inodeToPid = m_InodeToPidCache;
     }
-    const auto& inodeToPid = m_InodeToPidCache;
     if (inodeToPid.empty())
     {
         return;
