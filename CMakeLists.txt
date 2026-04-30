@@ -1,4 +1,9 @@
-cmake_minimum_required(VERSION 3.28)
+# Minimum CMake version rationale:
+#   3.25: FetchContent_Declare(SYSTEM) keyword (suppresses warnings from third-party headers)
+#   3.25: CMakePresets.json schema version 6 (workflowPresets, include directives)
+#   3.24: FETCHCONTENT_TRY_FIND_PACKAGE_MODE variable
+#   3.29: Declared as minimum in CMakePresets.json (cmakeMinimumRequired field)
+cmake_minimum_required(VERSION 3.29)
 
 # Enable IPO policy explicitly (avoids third-party warnings when targets set IPO properties)
 if(POLICY CMP0069)

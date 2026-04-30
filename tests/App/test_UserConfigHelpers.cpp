@@ -79,6 +79,54 @@ TEST(UserConfigHelpersTest, LoadAndNarrowIntWithClampUsesDefaultWhenMissing)
     EXPECT_EQ(dst, 999);
 }
 
+// ========== isValidConfigDir ==========
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePath)
+{
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/home/user/.config/tasksmack")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePathWithoutTraversal)
+{
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/tmp/tasksmack")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsRelativePath)
+{
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("relative/path")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsDotDotTraversal)
+{
+    // A relative path with traversal components is rejected because it is not absolute.
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("../../etc/passwd")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirNormalizesAbsoluteTraversal)
+{
+    // An absolute path with ".." is lexically normalized (e.g. /home/user/../../etc/passwd → /etc/passwd).
+    // The normalized form is still an absolute path with no ".." components, so it is accepted.
+    // Restricting WHICH absolute paths are allowed is a caller responsibility (e.g. checking the path
+    // is under the expected config root).
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/home/user/../../etc/passwd")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsBareTraversal)
+{
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("../../etc/shadow")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsRootPath)
+{
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("/")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsEmptyPath)
+{
+    // Empty path is not absolute.
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("")));
+}
+
 } // namespace
 } // namespace App
 

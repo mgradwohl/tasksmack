@@ -1,0 +1,77 @@
+# PR auto-labeler configuration for actions/labeler
+# Maps file path globs to labels. Labels are applied when any matching file is changed.
+# See: https://github.com/actions/labeler
+
+# ── Platform ──────────────────────────────────────────────────────────────────
+
+"linux":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/Platform/Linux/**"
+      - "tests/Platform/Linux/**"
+
+"windows":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/Platform/Windows/**"
+      - "tests/Platform/Windows/**"
+
+"Platform":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/Platform/**"
+      - "tests/Platform/**"
+
+# ── Layers ────────────────────────────────────────────────────────────────────
+
+"testing":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "tests/**"
+      - "**/test_*.cpp"
+      - "benchmarks/**"
+
+"documentation":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "**/*.md"
+      - "docs/**"
+      - "assets/themes/README.md"
+
+"ci":
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/codeql/**"
+      - ".github/labeler.yml"
+      - "CMakePresets.json"
+
+"tooling":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "tools/**"
+      - ".clang-format"
+      - ".clang-tidy"
+      - ".pre-commit-config.yaml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+
+"dependencies":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "CMakeLists.txt"
+      - ".github/dependabot.yml"
+
+"security":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "SECURITY.md"
+      - ".github/codeql/**"
+
+"release":
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".github/workflows/release.yml"
+      - "assets/app.manifest.in"
+      - "assets/tasksmack.rc.in"
