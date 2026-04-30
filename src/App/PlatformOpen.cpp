@@ -56,8 +56,8 @@ namespace App::PlatformOpen
     return true;
 #elif defined(__linux__)
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
-    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
     const std::string targetStr{target};
+    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
     const pid_t pid = ::fork();
     if (pid == -1)
     {
@@ -85,9 +85,14 @@ namespace App::PlatformOpen
         _exit(0);
     }
 
-    // Parent: wait for first child to prevent zombie
+    // Parent: wait for first child to prevent zombie; retry on EINTR
     int status = 0;
-    const pid_t waited = ::waitpid(pid, &status, 0);
+    pid_t waited = 0;
+    do
+    {
+        waited = ::waitpid(pid, &status, 0);
+    } while (waited == -1 && errno == EINTR);
+
     if (waited == -1)
     {
         spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
