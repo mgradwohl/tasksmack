@@ -22,8 +22,7 @@ namespace App
 {
 
 ShellLayer::ShellLayer() : Layer("ShellLayer")
-{
-}
+{}
 
 void ShellLayer::onAttach()
 {

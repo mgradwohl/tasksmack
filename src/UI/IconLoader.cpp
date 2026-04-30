@@ -46,8 +46,7 @@ Texture::~Texture()
 
 Texture::Texture(Texture&& other) noexcept
     : m_Id(std::exchange(other.m_Id, 0U)), m_Width(std::exchange(other.m_Width, 0)), m_Height(std::exchange(other.m_Height, 0))
-{
-}
+{}
 
 Texture& Texture::operator=(Texture&& other) noexcept
 {

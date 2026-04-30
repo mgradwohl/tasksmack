@@ -45,8 +45,7 @@ namespace
 SettingsLayer* SettingsLayer::s_Instance = nullptr;
 
 SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
-{
-}
+{}
 
 SettingsLayer::~SettingsLayer() = default;
 

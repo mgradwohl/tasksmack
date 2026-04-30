@@ -60,8 +60,7 @@ namespace App
 AboutLayer* AboutLayer::s_Instance = nullptr;
 
 AboutLayer::AboutLayer() : Core::Layer("AboutLayer")
-{
-}
+{}
 
 AboutLayer::~AboutLayer() = default;
 

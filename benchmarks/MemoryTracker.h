@@ -97,8 +97,7 @@ class MemoryDeltaTracker
 {
   public:
     MemoryDeltaTracker() : m_StartStats(readMemoryStats())
-    {
-    }
+    {}
 
     /// Get memory stats at start
     [[nodiscard]] auto startStats() const -> const MemoryStats&

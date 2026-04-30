@@ -9,6 +9,7 @@ release/
 optimized/
 .cache/
 _deps/
+_codeql_build_dir/
 
 # CMake generated files
 CMakeFiles/

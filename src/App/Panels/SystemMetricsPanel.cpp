@@ -125,8 +125,7 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
 } // namespace
 
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
-{
-}
+{}
 
 SystemMetricsPanel::~SystemMetricsPanel()
 {

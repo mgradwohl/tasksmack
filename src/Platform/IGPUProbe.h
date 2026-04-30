@@ -37,8 +37,7 @@ class IGPUProbe
     // This controls how often PDH refreshes the list of GPU-using processes.
     // Has no effect on Linux or other platforms.
     virtual void setInstanceRefreshInterval([[maybe_unused]] std::chrono::seconds interval)
-    {
-    }
+    {}
 };
 
 } // namespace Platform

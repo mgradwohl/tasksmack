@@ -23,8 +23,7 @@ namespace Domain
 
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
     : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
-{
-}
+{}
 
 void StorageModel::sample()
 {

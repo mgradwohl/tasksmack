@@ -3,3 +3,5 @@ build/
 coverage/
 assets/
 cmake/
+dist/
+_codeql_build_dir/

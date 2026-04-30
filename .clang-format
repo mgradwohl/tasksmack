@@ -11,28 +11,29 @@ UseTab: Never
 ColumnLimit: 140
 ContinuationIndentWidth: 4
 
-# Allman braces everywhere
-BreakBeforeBraces: Allman
+# Allman braces everywhere (Custom so BraceWrapping overrides are honoured)
+BreakBeforeBraces: Custom
 
 BraceWrapping:
-  AfterClass: true
-  AfterControlStatement: true
-  AfterEnum: true
-  AfterFunction: true
-  AfterNamespace: true
-  AfterStruct: true
-  AfterUnion: true
-  AfterCaseLabel: true
-  BeforeCatch: true
-  BeforeElse: true
-  IndentBraces: false
-  SplitEmptyFunction: false
-  SplitEmptyRecord: false
-  SplitEmptyNamespace: false
+  AfterCaseLabel:        true
+  AfterClass:            true
+  AfterControlStatement: Always
+  AfterEnum:             true
+  AfterExternBlock:      true
+  AfterFunction:         true
+  AfterNamespace:        true
+  AfterStruct:           true
+  AfterUnion:            true
+  BeforeCatch:           true
+  BeforeElse:            true
+  BeforeLambdaBody:      true
+  IndentBraces:          false
+  SplitEmptyFunction:    false
+  SplitEmptyRecord:      false
+  SplitEmptyNamespace:   false
 
 # Make spacing consistent & readable
-SpaceInEmptyParentheses: false
-SpacesInParentheses: false
+SpacesInParens: Never
 SpaceAfterCStyleCast: true
 SpaceAfterTemplateKeyword: false
 SpaceBeforeRangeBasedForLoopColon: true
@@ -54,14 +55,14 @@ AllowShortBlocksOnASingleLine: false
 AllowShortLambdasOnASingleLine: Inline
 
 # Alignment / wrapping
-AlignAfterOpenBracket: Align
+AlignAfterOpenBracket: true
 AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
 AlignOperands: AlignAfterOperator
 BinPackArguments: false
-BinPackParameters: false
+BinPackParameters: OnePerLine
 BreakConstructorInitializers: BeforeColon
-ConstructorInitializerAllOnOneLineOrOnePerLine: true
+PackConstructorInitializers: NextLine
 
 # Includes
 SortIncludes: true
@@ -69,7 +70,7 @@ IncludeBlocks: Regroup
 
 IncludeCategories:
   # 1. Main/matching header for this translation unit
-  - Regex: '^"([^"]+)\.(h|hpp)$'
+  - Regex: '^"([^"]+)\.(h|hpp)"$'
     Priority: 1
 
   # 2. Project-local headers (quoted includes from src/, include/, tests/, or relative paths)
@@ -96,7 +97,7 @@ IncludeCategories:
   - Regex: '.*'
     Priority: 6
 
-SortUsingDeclarations: true
+SortUsingDeclarations: LexicographicNumeric
 
 # Comments
 ReflowComments: true
