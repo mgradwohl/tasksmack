@@ -18,7 +18,16 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Validate tag is strict semver
+        # Reject pre-release/4-part tags (e.g. v1.2.3-rc1, v1.2.3.4) so the
+        # generated changelog always contains a proper release section.
+        run: |
+          if ! [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${{ github.ref_name }}' is not strict semver (vMAJOR.MINOR.PATCH). Skipping changelog generation."
+            exit 1
+          fi
+
+      - name: Checkout main
         uses: actions/checkout@v6
         with:
           # Full history is required so git-cliff can read all commits and tags
@@ -26,6 +35,17 @@ jobs:
           # Check out main so we can commit CHANGELOG.md back to the branch
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify tag is on main
+        # Abort if the tag was not pushed from main to prevent generating a
+        # changelog from the wrong set of commits and committing it to main.
+        run: |
+          TAG_SHA=$(git rev-list -n1 "${{ github.ref_name }}")
+          MAIN_SHA=$(git rev-parse origin/main)
+          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "Tag '${{ github.ref_name }}' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting."
+            exit 1
+          fi
 
       - name: Generate Changelog
         uses: orhun/git-cliff-action@v4

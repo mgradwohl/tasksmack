@@ -28,7 +28,7 @@ body = """
 - {% if commit.breaking %}**BREAKING CHANGE:** {% endif %}\
 {{ commit.message | upper_first }}\
 {% if commit.github.username %} ([@{{ commit.github.username }}](https://github.com/{{ commit.github.username }})){% endif %} \
-([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/mgradwohl/tasksmack/commit/{{ commit.id }}))
+([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/commit/{{ commit.id }}))
 {% endfor %}
 {% endfor %}\
 """
@@ -42,8 +42,11 @@ filter_unconventional = true
 split_commits = false
 
 commit_preprocessors = [
-  # Link issue/PR references like (#123) to GitHub
-  { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/mgradwohl/tasksmack/issues/${2}))" },
+  # Link issue/PR references like (fixes #123) or (#123) to GitHub.
+  # ${1} preserves the optional leading word (e.g. "fixes ") so context is not lost.
+  # NOTE: The URL here duplicates [remote.github]; regex replacements cannot
+  # reference TOML sections, so this is the one remaining hard-coded occurrence.
+  { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "(${1}[#${2}](https://github.com/mgradwohl/tasksmack/issues/${2}))" },
 ]
 
 commit_parsers = [
@@ -70,3 +73,11 @@ skip_tags = ""
 ignore_tags = ""
 topo_order = false
 sort_commits = "oldest"
+
+# Remote configuration: owner/repo are defined here once and referenced in the
+# changelog body template via {{ remote.github.owner }}/{{ remote.github.repo }}.
+# The GITHUB_TOKEN passed by the workflow enables git-cliff to enrich commits
+# with GitHub metadata (PR titles, usernames, etc.).
+[remote.github]
+owner = "mgradwohl"
+repo = "tasksmack"
