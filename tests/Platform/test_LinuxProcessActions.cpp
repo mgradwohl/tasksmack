@@ -94,10 +94,6 @@ TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
     EXPECT_GT(result.errorMessage.size(), 0ULL);
 }
 
-// =============================================================================
-// Priority Adjustment Tests
-// =============================================================================
-
 TEST(LinuxProcessActionsTest, TerminateInvalidPid)
 {
     LinuxProcessActions actions;
@@ -151,6 +147,10 @@ TEST(LinuxProcessActionsTest, ResumeInvalidPid)
     EXPECT_FALSE(resultNeg.success);
     EXPECT_GT(resultNeg.errorMessage.size(), 0ULL);
 }
+
+// =============================================================================
+// Priority Adjustment Tests
+// =============================================================================
 
 TEST(LinuxProcessActionsTest, SetPriorityNonExistentProcess)
 {
