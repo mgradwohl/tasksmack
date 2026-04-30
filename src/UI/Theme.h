@@ -45,133 +45,131 @@ struct ColorScheme
     // Accent colors for line charts, legends, etc. (8 colors)
     std::array<ImVec4, 8> accents{};
 
-    // NOLINTBEGIN(readability-redundant-member-init)
-    //  Progress bar colors (low, medium, high)
-    ImVec4 progressLow{};    // 0-50%
-    ImVec4 progressMedium{}; // 50-80%
-    ImVec4 progressHigh{};   // 80-100%
+    // Progress bar colors (low, medium, high)
+    ImVec4 progressLow;    // 0-50%
+    ImVec4 progressMedium; // 50-80%
+    ImVec4 progressHigh;   // 80-100%
 
     // Semantic UI colors
-    ImVec4 textPrimary{};  // Primary text color
-    ImVec4 textDisabled{}; // Disabled text color
-    ImVec4 textMuted{};    // Dimmed/secondary text (labels, hints)
-    ImVec4 textError{};    // Error messages
-    ImVec4 textWarning{};  // Warning messages
-    ImVec4 textSuccess{};  // Success messages
-    ImVec4 textInfo{};     // Informational text
+    ImVec4 textPrimary;  // Primary text color
+    ImVec4 textDisabled; // Disabled text color
+    ImVec4 textMuted;    // Dimmed/secondary text (labels, hints)
+    ImVec4 textError;    // Error messages
+    ImVec4 textWarning;  // Warning messages
+    ImVec4 textSuccess;  // Success messages
+    ImVec4 textInfo;     // Informational text
 
     // Status colors for process states
-    ImVec4 statusRunning{};   // R - Running/Active (green)
-    ImVec4 statusSleeping{};  // S - Sleeping/Interruptible (gray/muted)
-    ImVec4 statusDiskSleep{}; // D - Disk sleep/Uninterruptible (yellow/orange)
-    ImVec4 statusZombie{};    // Z - Zombie/Defunct (red)
-    ImVec4 statusStopped{};   // T - Stopped/Traced (purple/magenta)
-    ImVec4 statusIdle{};      // I - Idle kernel thread (gray)
+    ImVec4 statusRunning;   // R - Running/Active (green)
+    ImVec4 statusSleeping;  // S - Sleeping/Interruptible (gray/muted)
+    ImVec4 statusDiskSleep; // D - Disk sleep/Uninterruptible (yellow/orange)
+    ImVec4 statusZombie;    // Z - Zombie/Defunct (red)
+    ImVec4 statusStopped;   // T - Stopped/Traced (purple/magenta)
+    ImVec4 statusIdle;      // I - Idle kernel thread (gray)
 
     // Chart line colors (for specific metrics)
-    ImVec4 chartCpu{};     // CPU usage line
-    ImVec4 chartMemory{};  // Memory usage line
-    ImVec4 chartIo{};      // I/O read usage line
-    ImVec4 chartIoWrite{}; // I/O write usage line (distinct from read)
+    ImVec4 chartCpu;     // CPU usage line
+    ImVec4 chartMemory;  // Memory usage line
+    ImVec4 chartIo;      // I/O read usage line
+    ImVec4 chartIoWrite; // I/O write usage line (distinct from read)
 
     // Chart fill colors (semi-transparent versions for shaded plots)
-    ImVec4 chartCpuFill{};     // CPU usage fill
-    ImVec4 chartMemoryFill{};  // Memory usage fill
-    ImVec4 chartIoFill{};      // I/O read usage fill
-    ImVec4 chartIoWriteFill{}; // I/O write usage fill
+    ImVec4 chartCpuFill;     // CPU usage fill
+    ImVec4 chartMemoryFill;  // Memory usage fill
+    ImVec4 chartIoFill;      // I/O read usage fill
+    ImVec4 chartIoWriteFill; // I/O write usage fill
 
     // CPU breakdown colors
-    ImVec4 cpuUser{};   // User CPU time
-    ImVec4 cpuSystem{}; // System/kernel CPU time
-    ImVec4 cpuIowait{}; // I/O wait time
-    ImVec4 cpuIdle{};   // Idle time
+    ImVec4 cpuUser;   // User CPU time
+    ImVec4 cpuSystem; // System/kernel CPU time
+    ImVec4 cpuIowait; // I/O wait time
+    ImVec4 cpuIdle;   // Idle time
 
     // CPU breakdown fill colors (semi-transparent versions for stacked area charts)
-    ImVec4 cpuUserFill{};   // User CPU time fill
-    ImVec4 cpuSystemFill{}; // System/kernel CPU time fill
-    ImVec4 cpuIowaitFill{}; // I/O wait time fill
-    ImVec4 cpuIdleFill{};   // Idle time fill
+    ImVec4 cpuUserFill;   // User CPU time fill
+    ImVec4 cpuSystemFill; // System/kernel CPU time fill
+    ImVec4 cpuIowaitFill; // I/O wait time fill
+    ImVec4 cpuIdleFill;   // Idle time fill
 
     // GPU chart colors
-    ImVec4 gpuUtilization{};     // GPU utilization line
-    ImVec4 gpuUtilizationFill{}; // GPU utilization fill
-    ImVec4 gpuMemory{};          // GPU memory line
-    ImVec4 gpuMemoryFill{};      // GPU memory fill
-    ImVec4 gpuTemperature{};     // GPU temperature line
-    ImVec4 gpuPower{};           // GPU power line
-    ImVec4 gpuEncoder{};         // GPU encoder utilization
-    ImVec4 gpuDecoder{};         // GPU decoder utilization
-    ImVec4 gpuClock{};           // GPU clock speed line
-    ImVec4 gpuClockFill{};       // GPU clock speed fill (semi-transparent)
-    ImVec4 gpuFan{};             // GPU fan speed line
+    ImVec4 gpuUtilization;     // GPU utilization line
+    ImVec4 gpuUtilizationFill; // GPU utilization fill
+    ImVec4 gpuMemory;          // GPU memory line
+    ImVec4 gpuMemoryFill;      // GPU memory fill
+    ImVec4 gpuTemperature;     // GPU temperature line
+    ImVec4 gpuPower;           // GPU power line
+    ImVec4 gpuEncoder;         // GPU encoder utilization
+    ImVec4 gpuDecoder;         // GPU decoder utilization
+    ImVec4 gpuClock;           // GPU clock speed line
+    ImVec4 gpuClockFill;       // GPU clock speed fill (semi-transparent)
+    ImVec4 gpuFan;             // GPU fan speed line
 
     // Chart overlay colors
-    ImVec4 chartPeakLine{}; // Peak value reference line (semi-transparent)
+    ImVec4 chartPeakLine; // Peak value reference line (semi-transparent)
 
     // Success button colors (e.g., Apply, Resume)
-    ImVec4 successButton{};
-    ImVec4 successButtonHovered{};
-    ImVec4 successButtonActive{};
+    ImVec4 successButton;
+    ImVec4 successButtonHovered;
+    ImVec4 successButtonActive;
 
     // ImGui style colors (base colors for UI chrome)
-    ImVec4 windowBg{};
-    ImVec4 childBg{};
-    ImVec4 popupBg{};
-    ImVec4 border{};
-    ImVec4 borderShadow{}; // Border shadow (typically transparent)
-    ImVec4 frameBg{};
-    ImVec4 frameBgHovered{};
-    ImVec4 frameBgActive{};
-    ImVec4 titleBg{};
-    ImVec4 titleBgActive{};
-    ImVec4 titleBgCollapsed{};
-    ImVec4 menuBarBg{};
-    ImVec4 statusBarBg{}; // Status bar background (distinct from window/menu)
-    ImVec4 scrollbarBg{};
-    ImVec4 scrollbarGrab{};
-    ImVec4 scrollbarGrabHovered{};
-    ImVec4 scrollbarGrabActive{};
-    ImVec4 checkMark{};
-    ImVec4 sliderGrab{};
-    ImVec4 sliderGrabActive{};
-    ImVec4 button{};
-    ImVec4 buttonHovered{};
-    ImVec4 buttonActive{};
-    ImVec4 header{};
-    ImVec4 headerHovered{};
-    ImVec4 headerActive{};
-    ImVec4 separator{};
-    ImVec4 separatorHovered{};
-    ImVec4 separatorActive{};
-    ImVec4 resizeGrip{};
-    ImVec4 resizeGripHovered{};
-    ImVec4 resizeGripActive{};
-    ImVec4 tab{};
-    ImVec4 tabHovered{};
-    ImVec4 tabSelected{};
-    ImVec4 tabSelectedOverline{};
-    ImVec4 tabDimmed{};
-    ImVec4 tabDimmedSelected{};
-    ImVec4 tabDimmedSelectedOverline{};
-    ImVec4 dockingPreview{};
-    ImVec4 dockingEmptyBg{};
-    ImVec4 plotLines{};
-    ImVec4 plotLinesHovered{};
-    ImVec4 plotHistogram{};
-    ImVec4 plotHistogramHovered{};
-    ImVec4 tableHeaderBg{};
-    ImVec4 tableBorderStrong{};
-    ImVec4 tableBorderLight{};
-    ImVec4 tableRowBg{};
-    ImVec4 tableRowBgAlt{};
-    ImVec4 textSelectedBg{};
-    ImVec4 dragDropTarget{};
-    ImVec4 navHighlight{};
-    ImVec4 navWindowingHighlight{};
-    ImVec4 navWindowingDimBg{};
-    ImVec4 modalWindowDimBg{};
+    ImVec4 windowBg;
+    ImVec4 childBg;
+    ImVec4 popupBg;
+    ImVec4 border;
+    ImVec4 borderShadow; // Border shadow (typically transparent)
+    ImVec4 frameBg;
+    ImVec4 frameBgHovered;
+    ImVec4 frameBgActive;
+    ImVec4 titleBg;
+    ImVec4 titleBgActive;
+    ImVec4 titleBgCollapsed;
+    ImVec4 menuBarBg;
+    ImVec4 statusBarBg; // Status bar background (distinct from window/menu)
+    ImVec4 scrollbarBg;
+    ImVec4 scrollbarGrab;
+    ImVec4 scrollbarGrabHovered;
+    ImVec4 scrollbarGrabActive;
+    ImVec4 checkMark;
+    ImVec4 sliderGrab;
+    ImVec4 sliderGrabActive;
+    ImVec4 button;
+    ImVec4 buttonHovered;
+    ImVec4 buttonActive;
+    ImVec4 header;
+    ImVec4 headerHovered;
+    ImVec4 headerActive;
+    ImVec4 separator;
+    ImVec4 separatorHovered;
+    ImVec4 separatorActive;
+    ImVec4 resizeGrip;
+    ImVec4 resizeGripHovered;
+    ImVec4 resizeGripActive;
+    ImVec4 tab;
+    ImVec4 tabHovered;
+    ImVec4 tabSelected;
+    ImVec4 tabSelectedOverline;
+    ImVec4 tabDimmed;
+    ImVec4 tabDimmedSelected;
+    ImVec4 tabDimmedSelectedOverline;
+    ImVec4 dockingPreview;
+    ImVec4 dockingEmptyBg;
+    ImVec4 plotLines;
+    ImVec4 plotLinesHovered;
+    ImVec4 plotHistogram;
+    ImVec4 plotHistogramHovered;
+    ImVec4 tableHeaderBg;
+    ImVec4 tableBorderStrong;
+    ImVec4 tableBorderLight;
+    ImVec4 tableRowBg;
+    ImVec4 tableRowBgAlt;
+    ImVec4 textSelectedBg;
+    ImVec4 dragDropTarget;
+    ImVec4 navHighlight;
+    ImVec4 navWindowingHighlight;
+    ImVec4 navWindowingDimBg;
+    ImVec4 modalWindowDimBg;
 };
-// NOLINTEND(readability-redundant-member-init)
 
 /// Information about a discovered theme
 struct DiscoveredTheme
