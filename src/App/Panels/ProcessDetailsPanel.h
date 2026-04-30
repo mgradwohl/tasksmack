@@ -57,7 +57,7 @@ class ProcessDetailsPanel : public Panel
   private:
     static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
-    void renderThreadAndFaultHistory(const Domain::ProcessSnapshot& proc);
+    void renderThreadAndFaultHistory();
     void renderIoStats(const Domain::ProcessSnapshot& proc);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc);

@@ -1,5 +1,6 @@
 #include "SettingsLayer.h"
 
+#include "App/PlatformOpen.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -15,31 +16,8 @@
 
 #include <cassert>
 #include <cstddef>
-#include <cstdlib>
 #include <filesystem>
 #include <string>
-#include <tuple>
-#include <utility>
-
-#ifdef __linux__
-#include <cerrno>
-#include <system_error>
-
-// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-// NOLINTEND(misc-include-cleaner)
-#endif
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <shellapi.h>
-#include <windows.h>
-#endif
 
 namespace App
 {
@@ -60,95 +38,6 @@ namespace
 {
     auto provider = Platform::makePathProvider();
     return provider->getExecutableDir() / "assets" / "themes";
-}
-
-// Open a file or folder with the system default handler
-// Returns true on success, false on failure (with logged warning)
-[[nodiscard]] bool openPath(const std::filesystem::path& path)
-{
-    const std::string pathStr = path.string();
-
-#ifdef _WIN32
-    // Properly convert UTF-8 to UTF-16 using MultiByteToWideChar
-    const int wideSize = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pathStr.c_str(), -1, nullptr, 0);
-    if (wideSize == 0)
-    {
-        spdlog::warn("Failed to convert UTF-8 path to UTF-16: {}", pathStr);
-        return false;
-    }
-
-    // wideSize includes the null terminator; std::wstring length excludes it.
-    std::wstring widePath(static_cast<size_t>(wideSize - 1), L'\0');
-    const int result = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pathStr.c_str(), -1, widePath.data(), wideSize);
-    if (result == 0)
-    {
-        spdlog::warn("Failed to convert UTF-8 path to UTF-16 on second pass: {}", pathStr);
-        return false;
-    }
-
-    // ShellExecuteW returns > 32 on success
-    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
-    const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
-    if (shellCode <= 32)
-    {
-        spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, pathStr);
-        return false;
-    }
-    return true;
-#else
-    // Linux: Use double-fork to safely spawn xdg-open without creating zombies
-    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
-    const pid_t pid = ::fork();
-    if (pid == -1)
-    {
-        spdlog::warn("Failed to fork process for xdg-open: {}", std::system_category().message(errno));
-        return false;
-    }
-
-    if (pid == 0)
-    {
-        // First child: fork again to create grandchild
-        const pid_t grandchild = ::fork();
-        if (grandchild == -1)
-        {
-            _exit(EXIT_FAILURE);
-        }
-
-        if (grandchild == 0)
-        {
-            // Grandchild: exec xdg-open (will be adopted by init when first child exits)
-            ::execlp("xdg-open", "xdg-open", pathStr.c_str(), nullptr);
-            _exit(127); // execlp only returns on error
-        }
-        // First child exits immediately (grandchild will be adopted by init)
-        _exit(0);
-    }
-
-    // Parent: wait for first child to prevent zombie
-    int status = 0;
-    const pid_t waited = ::waitpid(pid, &status, 0);
-    if (waited == -1)
-    {
-        spdlog::warn("waitpid failed for xdg-open launcher: {}", std::system_category().message(errno));
-        return false;
-    }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFEXITED/WEXITSTATUS from sys/wait.h, include-cleaner false positive
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WEXITSTATUS from sys/wait.h
-        spdlog::warn("xdg-open launcher exited with code {}", WEXITSTATUS(status));
-        return false;
-    }
-    // NOLINTNEXTLINE(misc-include-cleaner) - WIFSIGNALED from sys/wait.h, include-cleaner false positive
-    if (WIFSIGNALED(status))
-    {
-        // NOLINTNEXTLINE(misc-include-cleaner) - WTERMSIG from sys/wait.h
-        spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
-        return false;
-    }
-    return true;
-#endif
 }
 
 } // namespace
@@ -477,14 +366,14 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
         if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
         {
-            // Result intentionally ignored - openPath logs warnings on failure
-            std::ignore = openPath(UserConfig::get().configPath());
+            // Result intentionally ignored - openWithSystemHandler logs warnings on failure
+            (void) App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
         }
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
         {
-            // Result intentionally ignored - openPath logs warnings on failure
-            std::ignore = openPath(getThemesDir());
+            // Result intentionally ignored - openWithSystemHandler logs warnings on failure
+            (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
         }
         ImGui::PopStyleColor();
 

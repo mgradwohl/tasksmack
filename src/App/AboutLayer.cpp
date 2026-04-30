@@ -1,5 +1,6 @@
 #include "App/AboutLayer.h"
 
+#include "App/PlatformOpen.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
@@ -18,19 +19,11 @@
 #include <string_view>
 #include <system_error>
 
-// NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t
-#ifdef __linux__
-#include <sys/types.h>
-#include <unistd.h>
-#endif
-// NOLINTEND(misc-include-cleaner)
-
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <shellapi.h>
 #include <windows.h>
 #endif
 
@@ -203,7 +196,7 @@ void AboutLayer::renderAboutDialog()
         ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
         if (ImGui::Selectable(repoUrl, false, ImGuiSelectableFlags_DontClosePopups))
         {
-            openUrl(repoUrl);
+            (void) App::PlatformOpen::openWithSystemHandler(std::string_view{repoUrl});
         }
         if (ImGui::IsItemHovered())
         {
@@ -277,40 +270,6 @@ void AboutLayer::loadIcon()
     }
 
     spdlog::warn("About dialog icon not found; continuing without image");
-}
-
-void AboutLayer::openUrl(const std::string& url)
-{
-#ifdef _WIN32
-    // MultiByteToWideChar correctly converts UTF-8 to UTF-16;
-    // constructing wstring from url.begin()/url.end() only byte-widens and corrupts non-ASCII chars.
-    const int wlen = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), static_cast<int>(url.size()), nullptr, 0);
-    if (wlen <= 0)
-    {
-        spdlog::warn("Failed to convert URL to wide string: {}", url);
-        return;
-    }
-    std::wstring wideUrl(static_cast<std::size_t>(wlen), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, 0, url.c_str(), static_cast<int>(url.size()), wideUrl.data(), wlen) == 0)
-    {
-        spdlog::warn("Failed to convert URL to wide string: {}", url);
-        return;
-    }
-    ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#else
-    // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
-    const pid_t pid = ::fork();
-    if (pid == 0)
-    {
-        // Child: exec xdg-open; if it fails, exit quietly.
-        ::execlp("xdg-open", "xdg-open", url.c_str(), nullptr);
-        _exit(127);
-    }
-    else if (pid < 0)
-    {
-        spdlog::warn("Failed to launch xdg-open for URL: {}", url);
-    }
-#endif
 }
 
 /// Set the singleton instance (non-owning; layer is owned by the application's layer stack).

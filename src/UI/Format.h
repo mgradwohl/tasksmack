@@ -105,11 +105,6 @@ template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) 
     return std::format("{:.{}Lf}", static_cast<long double>(value), decimals);
 }
 
-template<std::floating_point T> [[nodiscard]] inline auto percentOneDecimalLocalized(T percent) -> std::string
-{
-    return std::format("{:.1Lf}%", static_cast<long double>(percent));
-}
-
 template<std::integral T> [[nodiscard]] inline auto formatCountWithLabel(T value, std::string_view label) -> std::string
 {
     return std::format("{} {}", formatIntLocalized(value), label);
@@ -125,11 +120,6 @@ template<typename T, typename Formatter>
     }
 
     return std::invoke(std::forward<Formatter>(formatter), value);
-}
-
-[[nodiscard]] inline auto formatHoursMinutes(std::uint64_t hours, std::uint64_t minutes) -> std::string
-{
-    return std::format("{}h {}m", hours, minutes);
 }
 
 [[nodiscard]] inline auto formatUptimeShort(std::uint64_t seconds) -> std::string
