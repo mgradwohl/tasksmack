@@ -8,11 +8,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -78,6 +80,40 @@ void StorageModel::sample()
         m_LatestSnapshot = snapshot;
         m_History.push_back(snapshot);
         m_Timestamps.push_back(nowSeconds);
+
+        // Maintain per-disk I/O histories aligned to m_Timestamps.
+        // Track which disks are present in this sample; known-but-absent disks
+        // get a zero placeholder so every deque stays index-aligned with m_Timestamps.
+        std::unordered_set<std::string> presentDisks;
+        presentDisks.reserve(snapshot.disks.size());
+        for (const auto& disk : snapshot.disks)
+        {
+            const auto& name = disk.deviceName;
+            presentDisks.insert(name);
+            if (!m_DiskReadHistory.contains(name))
+            {
+                // New disk: backfill zeros for all prior timestamps before this sample.
+                m_DiskOrder.push_back(name);
+                const size_t backfillCount = m_Timestamps.size() - 1; // current ts already pushed
+                for (size_t i = 0; i < backfillCount; ++i)
+                {
+                    m_DiskReadHistory[name].push_back(0.0);
+                    m_DiskWriteHistory[name].push_back(0.0);
+                }
+            }
+            m_DiskReadHistory[name].push_back(disk.readBytesPerSec);
+            m_DiskWriteHistory[name].push_back(disk.writeBytesPerSec);
+        }
+        // Append a zero placeholder for known disks absent from this sample.
+        for (const auto& name : m_DiskOrder)
+        {
+            if (!presentDisks.contains(name))
+            {
+                m_DiskReadHistory[name].push_back(0.0);
+                m_DiskWriteHistory[name].push_back(0.0);
+            }
+        }
+
         trimHistory(nowSeconds);
         m_HasPrevSample = true;
         m_PrevSampleTime = now;
@@ -168,6 +204,40 @@ void StorageModel::trimHistory(double nowSeconds)
         m_Timestamps.pop_front();
         m_History.pop_front();
     }
+
+    // Align per-disk deques to the timestamp count so each disk series remains
+    // index-aligned with m_Timestamps even when a disk is introduced later or
+    // missing from some samples.
+    // Use .find() rather than operator[] to avoid unintentionally inserting
+    // empty deques for names that do not yet have map entries.
+    const size_t targetSize = m_Timestamps.size();
+    for (const auto& name : m_DiskOrder)
+    {
+        if (auto readIt = m_DiskReadHistory.find(name); readIt != m_DiskReadHistory.end())
+        {
+            auto& readHist = readIt->second;
+            while (readHist.size() > targetSize)
+            {
+                readHist.pop_front();
+            }
+            while (readHist.size() < targetSize)
+            {
+                readHist.push_front({});
+            }
+        }
+        if (auto writeIt = m_DiskWriteHistory.find(name); writeIt != m_DiskWriteHistory.end())
+        {
+            auto& writeHist = writeIt->second;
+            while (writeHist.size() > targetSize)
+            {
+                writeHist.pop_front();
+            }
+            while (writeHist.size() < targetSize)
+            {
+                writeHist.push_front({});
+            }
+        }
+    }
 }
 
 StorageSnapshot StorageModel::latestSnapshot() const
@@ -204,6 +274,30 @@ std::vector<double> StorageModel::totalWriteHistory() const
         out.push_back(snap.totalWriteBytesPerSec);
     }
     return out;
+}
+
+std::vector<PerDiskHistory> StorageModel::perDiskHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    std::vector<PerDiskHistory> result;
+    result.reserve(m_DiskOrder.size());
+    for (const auto& name : m_DiskOrder)
+    {
+        PerDiskHistory entry;
+        entry.deviceName = name;
+        const auto readIt = m_DiskReadHistory.find(name);
+        const auto writeIt = m_DiskWriteHistory.find(name);
+        if (readIt != m_DiskReadHistory.end())
+        {
+            entry.readBytesPerSec = {readIt->second.begin(), readIt->second.end()};
+        }
+        if (writeIt != m_DiskWriteHistory.end())
+        {
+            entry.writeBytesPerSec = {writeIt->second.begin(), writeIt->second.end()};
+        }
+        result.push_back(std::move(entry));
+    }
+    return result;
 }
 
 std::vector<double> StorageModel::historyTimestamps() const
