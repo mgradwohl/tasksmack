@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <thread>
 
@@ -568,6 +569,111 @@ TEST(StorageModelTest, PerDiskHistoryPreservesInsertionOrder)
     // Order must match probe insertion order
     EXPECT_EQ(history[0].deviceName, "sdb");
     EXPECT_EQ(history[1].deviceName, "sda");
+}
+
+TEST(StorageModelTest, PerDiskHistoryDiskDisappearsPreservesAlignment)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // Sample 1: two disks
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+    Platform::DiskCounters sdb;
+    sdb.deviceName = "sdb";
+    sdb.sectorSize = 512;
+    sdb.readsCompleted = 50;
+    sdb.readSectors = 500;
+    counters.disks.push_back(sdb);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Sample 2: sdb disappears
+    counters.disks.clear();
+    sda.readsCompleted = 200;
+    sda.readSectors = 2000;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    const auto timestamps = model.historyTimestamps();
+    const auto history = model.perDiskHistory();
+
+    ASSERT_EQ(history.size(), 2U);
+    for (const auto& entry : history)
+    {
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size())
+            << "Per-disk read history for " << entry.deviceName << " must be aligned to timestamps";
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size())
+            << "Per-disk write history for " << entry.deviceName << " must be aligned to timestamps";
+    }
+
+    // sdb was absent in sample 2: its last entry must be the 0.0 placeholder
+    const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
+    ASSERT_NE(it, history.end());
+    EXPECT_DOUBLE_EQ(it->readBytesPerSec.back(), 0.0);
+    EXPECT_DOUBLE_EQ(it->writeBytesPerSec.back(), 0.0);
+}
+
+TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    // Sample 1: only sda
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Sample 2: sda + new disk nvme0n1
+    sda.readsCompleted = 200;
+    sda.readSectors = 2000;
+    Platform::DiskCounters nvme;
+    nvme.deviceName = "nvme0n1";
+    nvme.sectorSize = 512;
+    nvme.readsCompleted = 100;
+    nvme.readSectors = 1000;
+    counters.disks.clear();
+    counters.disks.push_back(sda);
+    counters.disks.push_back(nvme);
+    mockProbe->setNextCounters(counters);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    const auto timestamps = model.historyTimestamps();
+    const auto history = model.perDiskHistory();
+
+    ASSERT_EQ(history.size(), 2U);
+    for (const auto& entry : history)
+    {
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size())
+            << "Per-disk read history for " << entry.deviceName << " must be aligned to timestamps";
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size())
+            << "Per-disk write history for " << entry.deviceName << " must be aligned to timestamps";
+    }
+
+    // nvme0n1 appeared in sample 2: its oldest (backfilled) entry must be 0.0
+    const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "nvme0n1"; });
+    ASSERT_NE(it, history.end());
+    ASSERT_GE(it->readBytesPerSec.size(), 1U);
+    EXPECT_DOUBLE_EQ(it->readBytesPerSec.front(), 0.0);
+    EXPECT_DOUBLE_EQ(it->writeBytesPerSec.front(), 0.0);
 }
 
 } // namespace

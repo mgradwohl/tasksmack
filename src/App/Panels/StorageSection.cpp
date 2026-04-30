@@ -16,6 +16,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace App::StorageSection
@@ -45,22 +46,22 @@ void renderDiskCell(std::string_view deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
                     const std::vector<float>& writeData,
-                    double smoothedRead,
-                    double smoothedWrite,
+                    double currentRead,
+                    double currentWrite,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme)
 {
-    const double readMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)), smoothedRead, 1.0});
+    const double readMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)), currentRead, 1.0});
     const double writeMax =
-        std::max({writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)), smoothedWrite, 1.0});
+        std::max({writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)), currentWrite, 1.0});
 
-    const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
+    const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(currentRead),
                          .label = "Read",
-                         .value01 = std::clamp(smoothedRead / readMax, 0.0, 1.0),
+                         .value01 = std::clamp(currentRead / readMax, 0.0, 1.0),
                          .color = theme.scheme().chartIo};
-    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(smoothedWrite),
+    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(currentWrite),
                           .label = "Write",
-                          .value01 = std::clamp(smoothedWrite / writeMax, 0.0, 1.0),
+                          .value01 = std::clamp(currentWrite / writeMax, 0.0, 1.0),
                           .color = theme.scheme().chartIoWrite};
 
     const std::string plotId = std::format("##DiskPlot_{}", deviceName);
@@ -173,6 +174,14 @@ void renderStorageSection(RenderContext& ctx)
         const int gridColsInt = UI::Format::checkedCount(gridCols);
         const size_t gridRows = (diskCount + gridCols - 1) / gridCols;
 
+        // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
+        std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
+        diskLookup.reserve(diskSnap.disks.size());
+        for (const auto& d : diskSnap.disks)
+        {
+            diskLookup.emplace(d.deviceName, &d);
+        }
+
         if (ImGui::BeginTable("PerDiskGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
         {
             for (size_t row = 0; row < gridRows; ++row)
@@ -203,17 +212,13 @@ void renderStorageSection(RenderContext& ctx)
                         writeData.push_back(static_cast<float>(disk.writeBytesPerSec[writeOffset + i]));
                     }
 
-                    // Per-disk snapshot values for NowBars (no smoothing per-disk for simplicity)
+                    // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
                     double diskRead = 0.0;
                     double diskWrite = 0.0;
-                    for (const auto& d : diskSnap.disks)
+                    if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
                     {
-                        if (d.deviceName == disk.deviceName)
-                        {
-                            diskRead = d.readBytesPerSec;
-                            diskWrite = d.writeBytesPerSec;
-                            break;
-                        }
+                        diskRead = it->second->readBytesPerSec;
+                        diskWrite = it->second->writeBytesPerSec;
                     }
 
                     const std::string childId = std::format("DiskCell_{}", disk.deviceName);

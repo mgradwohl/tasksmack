@@ -51,7 +51,9 @@ class StorageModel
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
     /// Per-device I/O history for charting individual disks.
-    /// Each entry is aligned to historyTimestamps().
+    /// Each entry is strictly aligned to historyTimestamps(): every per-disk
+    /// vector has the same length as historyTimestamps(). Samples where a disk
+    /// was absent (disappeared or not yet seen) are represented as 0.0.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
 
     /// Configure history retention.
