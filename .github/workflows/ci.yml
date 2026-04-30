@@ -194,7 +194,7 @@ jobs:
   include-analysis:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: write
@@ -204,10 +204,34 @@ jobs:
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
 
-      - name: Install include-what-you-use
+      - name: Cache IWYU build
+        id: cache-iwyu
+        uses: actions/cache@v5
+        with:
+          path: /tmp/iwyu-install
+          key: iwyu-llvm22-${{ runner.os }}-v1
+
+      - name: Build include-what-you-use from source
+        if: steps.cache-iwyu.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y iwyu
+          git clone --branch clang_22 --depth 1 \
+            https://github.com/include-what-you-use/include-what-you-use.git /tmp/iwyu-src
+          cmake -G "Ninja" \
+            -DCMAKE_C_COMPILER=clang-22 \
+            -DCMAKE_CXX_COMPILER=clang++-22 \
+            -DCMAKE_PREFIX_PATH=/usr/lib/llvm-22 \
+            -DCMAKE_INSTALL_PREFIX=/tmp/iwyu-install \
+            -S /tmp/iwyu-src \
+            -B /tmp/iwyu-build
+          cmake --build /tmp/iwyu-build --parallel "$(nproc)"
+          cmake --install /tmp/iwyu-build --strip
+
+      - name: Install IWYU binaries to PATH
+        run: |
+          sudo install -m 755 /tmp/iwyu-install/bin/include-what-you-use /usr/local/bin/
+          sudo install -m 755 /tmp/iwyu-install/bin/iwyu_tool.py /usr/local/bin/iwyu_tool.py
+          sudo install -m 755 /tmp/iwyu-install/bin/fix_includes.py /usr/local/bin/fix_includes.py
+          include-what-you-use --version
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
