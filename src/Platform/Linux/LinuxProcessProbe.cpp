@@ -923,26 +923,28 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
 
     // Rebuild inode-to-PID map at most once per INODE_PID_CACHE_TTL_MS.
     // buildInodeToPidMap() scans /proc/[pid]/fd/* for every process — expensive at scale.
-    // Caching reduces rebuilds; copy under lock to avoid races on the mutable cache members
-    // when enumerate() is called concurrently from multiple threads (see #460).
-    std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
+    // The map is stored as a shared_ptr so we copy only the pointer under the lock (O(1))
+    // rather than the entire map. Empty results are cached too, so a permission-restricted
+    // /proc environment does not trigger a rescan on every call (see #460).
+    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
     {
         const std::scoped_lock lock{m_InodePidCacheMutex};
         const auto now = std::chrono::steady_clock::now();
         const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-        if (m_InodeToPidCache.empty() || cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
+        if (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
         {
-            m_InodeToPidCache = buildInodeToPidMap();
+            m_InodeToPidCache = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
             m_InodeToPidCacheTime = now;
         }
-        inodeToPid = m_InodeToPidCache;
+        inodeToPidPtr = m_InodeToPidCache;
     }
-    if (inodeToPid.empty())
+    if (!inodeToPidPtr || inodeToPidPtr->empty())
     {
         return;
     }
 
     // Aggregate socket bytes by PID
+    const auto& inodeToPid = *inodeToPidPtr;
     const auto pidStats = aggregateByPid(sockets, inodeToPid);
 
     // Apply network stats to processes

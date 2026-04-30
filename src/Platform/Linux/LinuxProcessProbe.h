@@ -60,9 +60,12 @@ class LinuxProcessProbe : public IProcessProbe
 
     // Inode-to-PID cache: rebuilt by buildInodeToPidMap() at most once per
     // INODE_PID_CACHE_TTL_MS to avoid scanning /proc/[pid]/fd/* every enumerate().
-    // m_InodePidCacheMutex guards both cache members against concurrent enumerate() calls.
+    // The map is stored behind a shared_ptr so callers copy the pointer (O(1)) rather
+    // than the entire map. m_InodePidCacheMutex guards both cache members; the mutex
+    // is necessary because tests (and production callers) may call enumerate()
+    // concurrently from multiple threads.
     mutable std::mutex m_InodePidCacheMutex;
-    mutable std::unordered_map<std::uint64_t, std::int32_t> m_InodeToPidCache;
+    mutable std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> m_InodeToPidCache;
     mutable std::chrono::steady_clock::time_point m_InodeToPidCacheTime;
 #endif
 
