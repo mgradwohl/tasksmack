@@ -123,12 +123,13 @@ namespace App::PlatformOpen
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)
     {
-        spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, path.string());
+        spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, Platform::WinString::wideToUtf8(widePath));
         return false;
     }
     return true;
 #elif defined(__linux__)
-    // On Linux, std::filesystem::path::string() returns a UTF-8 string.
+    // On Linux, std::filesystem::path::string() typically returns a UTF-8 string
+    // (the encoding is locale-dependent, but virtually all Linux distros use UTF-8).
     return openWithSystemHandler(std::string_view{path.string()});
 #else
     spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", path.string());

@@ -197,7 +197,7 @@ void AboutLayer::renderAboutDialog()
         ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
         if (ImGui::Selectable(repoUrl, false, ImGuiSelectableFlags_DontClosePopups))
         {
-            std::ignore = App::PlatformOpen::openWithSystemHandler(repoUrl);
+            std::ignore = App::PlatformOpen::openWithSystemHandler(std::string_view{repoUrl});
         }
         if (ImGui::IsItemHovered())
         {
