@@ -69,14 +69,16 @@ struct ColorScheme
     ImVec4 statusIdle{};      // I - Idle kernel thread (gray)
 
     // Chart line colors (for specific metrics)
-    ImVec4 chartCpu{};    // CPU usage line
-    ImVec4 chartMemory{}; // Memory usage line
-    ImVec4 chartIo{};     // I/O usage line
+    ImVec4 chartCpu{};     // CPU usage line
+    ImVec4 chartMemory{};  // Memory usage line
+    ImVec4 chartIo{};      // I/O read usage line
+    ImVec4 chartIoWrite{}; // I/O write usage line (distinct from read)
 
     // Chart fill colors (semi-transparent versions for shaded plots)
-    ImVec4 chartCpuFill{};    // CPU usage fill
-    ImVec4 chartMemoryFill{}; // Memory usage fill
-    ImVec4 chartIoFill{};     // I/O usage fill
+    ImVec4 chartCpuFill{};     // CPU usage fill
+    ImVec4 chartMemoryFill{};  // Memory usage fill
+    ImVec4 chartIoFill{};      // I/O read usage fill
+    ImVec4 chartIoWriteFill{}; // I/O write usage fill
 
     // CPU breakdown colors
     ImVec4 cpuUser{};   // User CPU time
