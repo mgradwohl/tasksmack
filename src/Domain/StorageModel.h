@@ -14,6 +14,14 @@
 namespace Domain
 {
 
+/// Per-device I/O history for charting.
+struct PerDiskHistory
+{
+    std::string deviceName;
+    std::vector<double> readBytesPerSec;  ///< Aligned to StorageModel::historyTimestamps()
+    std::vector<double> writeBytesPerSec; ///< Aligned to StorageModel::historyTimestamps()
+};
+
 /// Manages disk/storage metrics: samples probe, computes rates, maintains history.
 /// Thread-safe (allows background sampling + UI reads).
 class StorageModel
@@ -41,6 +49,10 @@ class StorageModel
     [[nodiscard]] std::vector<double> totalReadHistory() const;
     [[nodiscard]] std::vector<double> totalWriteHistory() const;
     [[nodiscard]] std::vector<double> historyTimestamps() const;
+
+    /// Per-device I/O history for charting individual disks.
+    /// Each entry is aligned to historyTimestamps().
+    [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
 
     /// Configure history retention.
     void setMaxHistorySeconds(double seconds);
@@ -72,6 +84,11 @@ class StorageModel
     std::chrono::steady_clock::time_point m_PrevSampleTime;
     std::chrono::steady_clock::time_point m_StartTime;
     bool m_HasPrevSample = false;
+
+    // Per-device I/O history for per-disk charting (deques aligned to m_Timestamps)
+    std::unordered_map<std::string, std::deque<double>> m_DiskReadHistory;
+    std::unordered_map<std::string, std::deque<double>> m_DiskWriteHistory;
+    std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
 
     double m_MaxHistorySeconds = 300.0; // 5 minutes default
 };

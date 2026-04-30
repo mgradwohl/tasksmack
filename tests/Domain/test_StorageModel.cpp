@@ -406,5 +406,169 @@ TEST(StorageModelTest, SnapshotReflectsProbeCapabilities)
     EXPECT_TRUE(snap.hasIoTime);
 }
 
+// =============================================================================
+// Per-Disk History
+// =============================================================================
+
+TEST(StorageModelTest, PerDiskHistoryEmptyBeforeSample)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    StorageModel model(std::move(mockProbe));
+
+    EXPECT_TRUE(model.perDiskHistory().empty());
+}
+
+TEST(StorageModelTest, PerDiskHistoryTracksAllDisks)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+
+    Platform::DiskCounters nvme;
+    nvme.deviceName = "nvme0n1";
+    nvme.sectorSize = 512;
+    nvme.readsCompleted = 200;
+    nvme.readSectors = 2000;
+    counters.disks.push_back(nvme);
+
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 2U);
+    EXPECT_EQ(history[0].deviceName, "sda");
+    EXPECT_EQ(history[1].deviceName, "nvme0n1");
+}
+
+TEST(StorageModelTest, PerDiskHistoryAlignedToTimestamps)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+
+    Platform::DiskCounters nvme;
+    nvme.deviceName = "nvme0n1";
+    nvme.sectorSize = 512;
+    nvme.readsCompleted = 200;
+    nvme.readSectors = 2000;
+    counters.disks.push_back(nvme);
+
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    // Second sample with updated sector counts to produce non-zero rates
+    sda.readsCompleted = 200;
+    sda.readSectors = 2000;
+    sda.writesCompleted = 50;
+    sda.writeSectors = 500;
+    nvme.readsCompleted = 400;
+    nvme.readSectors = 4000;
+    nvme.writesCompleted = 100;
+    nvme.writeSectors = 1000;
+    counters.disks.clear();
+    counters.disks.push_back(sda);
+    counters.disks.push_back(nvme);
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    const auto timestamps = model.historyTimestamps();
+    const auto history = model.perDiskHistory();
+
+    ASSERT_EQ(history.size(), 2U);
+    for (const auto& entry : history)
+    {
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size());
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size());
+    }
+}
+
+TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    sda.writesCompleted = 50;
+    sda.writeSectors = 500;
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.sample();
+
+    sda.readsCompleted = 200;
+    sda.readSectors = 2000;
+    sda.writesCompleted = 100;
+    sda.writeSectors = 1000;
+    counters.disks.clear();
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.sample();
+
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 1U);
+    for (const double rate : history[0].readBytesPerSec)
+    {
+        EXPECT_GE(rate, 0.0);
+    }
+    for (const double rate : history[0].writeBytesPerSec)
+    {
+        EXPECT_GE(rate, 0.0);
+    }
+}
+
+TEST(StorageModelTest, PerDiskHistoryPreservesInsertionOrder)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters diskA;
+    diskA.deviceName = "sdb";
+    diskA.sectorSize = 512;
+    counters.disks.push_back(diskA);
+
+    Platform::DiskCounters diskB;
+    diskB.deviceName = "sda";
+    diskB.sectorSize = 512;
+    counters.disks.push_back(diskB);
+
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+
+    const auto history = model.perDiskHistory();
+    ASSERT_EQ(history.size(), 2U);
+    // Order must match probe insertion order
+    EXPECT_EQ(history[0].deviceName, "sdb");
+    EXPECT_EQ(history[1].deviceName, "sda");
+}
+
 } // namespace
 } // namespace Domain
