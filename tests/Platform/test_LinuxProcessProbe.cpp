@@ -528,20 +528,29 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 
 TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
 {
-    // Kernel threads have empty /proc/[pid]/cmdline; the probe formats their command as "[name]".
+    // Verify the empty-cmdline fallback branch by finding a real process whose
+    // /proc/[pid]/cmdline is empty and asserting the probe formats command as "[name]".
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
 
-    // Every process must have a non-empty name regardless of cmdline availability.
-    for (const auto& proc : processes)
+    const auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& proc) {
+        const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
+        std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
+        if (!cmdlineFile.is_open())
+        {
+            return false;
+        }
+
+        return (cmdlineFile.peek() == std::ifstream::traits_type::eof());
+    });
+
+    if (it == processes.end())
     {
-        EXPECT_FALSE(proc.name.empty()) << "Process " << proc.pid << " should always have a name";
+        GTEST_SKIP() << "No process with an empty /proc/<pid>/cmdline was visible in this environment";
     }
 
-    // At least one kernel thread (PID 2 or kthreadd children) should appear with a bracketed
-    // command, confirming the empty-cmdline → "[name]" branch was exercised.
-    const bool hasBracketedCommand = std::ranges::any_of(processes, [](const ProcessCounters& p) { return p.command.starts_with('['); });
-    EXPECT_TRUE(hasBracketedCommand) << "Expected at least one kernel thread with command formatted as [name]";
+    EXPECT_FALSE(it->name.empty()) << "Process " << it->pid << " should always have a name";
+    EXPECT_EQ(it->command, ("[" + it->name + "]")) << "Processes with empty cmdline should use the [name] fallback";
 }
 
 TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
