@@ -120,8 +120,8 @@ jobs:
       - name: Derive safe version label
         id: version
         run: |
-          label="${{ github.ref_name }}"
-          label="${label//\//-}"
+          label="${GITHUB_REF_NAME}"
+          label=$(printf '%s' "$label" | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "label=${label}" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM
