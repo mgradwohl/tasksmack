@@ -256,6 +256,17 @@ The UI uses these capabilities to:
 
 ## Feature Roadmap
 
+1. **Foundation**
+   - SDL3 + ImGui docking shell
+   - Metrics contract implementation and sampler threads
+   - Basic CPU/memory metrics and process list on a single platform
+2. **Core Monitoring**
+   - Per-process CPU, memory, IO metrics with histories
+   - Network interface stats and secondary platform support
+3. **Controls and Polish**
+   - Process controls (kill, priority adjustments)
+   - GPU metrics (best effort per vendor)
+   - Config file integration (toml++) and theming
 Items 1–3 are shipped (see [completed-features.md](completed-features.md)). Remaining work:
 
 4. **Advanced Features**

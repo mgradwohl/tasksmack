@@ -127,6 +127,7 @@ add_executable(TaskSmackTests
     UI/test_ThemeLoader.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessesPanel.cpp
+    App/test_ShellLayer.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
