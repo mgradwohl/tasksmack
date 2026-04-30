@@ -103,8 +103,7 @@ namespace UI
 {
 
 UILayer::UILayer() : Layer("UILayer")
-{
-}
+{}
 
 UILayer::~UILayer() = default;
 

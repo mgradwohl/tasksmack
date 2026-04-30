@@ -22,8 +22,7 @@ class ConcreteLayer : public Core::Layer
 {
   public:
     explicit ConcreteLayer(const std::string& name = "ConcreteLayer") : Layer(name)
-    {
-    }
+    {}
 
     void onAttach() override
     {

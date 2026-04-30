@@ -14,8 +14,7 @@ class ProcessSelectedEvent : public Event
 {
   public:
     explicit ProcessSelectedEvent(std::int32_t pid, uint64_t uniqueKey = 0) : m_Pid(pid), m_UniqueKey(uniqueKey)
-    {
-    }
+    {}
 
     [[nodiscard]] auto getPid() const -> std::int32_t
     {
@@ -45,8 +44,7 @@ class RefreshRateChangedEvent : public Event
 {
   public:
     explicit RefreshRateChangedEvent(int intervalMs) : m_IntervalMs(intervalMs)
-    {
-    }
+    {}
 
     [[nodiscard]] auto getIntervalMs() const -> int
     {
@@ -70,8 +68,7 @@ class HistoryDurationChangedEvent : public Event
 {
   public:
     explicit HistoryDurationChangedEvent(int seconds) : m_Seconds(seconds)
-    {
-    }
+    {}
 
     [[nodiscard]] auto getSeconds() const -> int
     {
@@ -94,8 +91,7 @@ class ThemeChangedEvent : public Event
 {
   public:
     explicit ThemeChangedEvent(std::string themeId) : m_ThemeId(std::move(themeId))
-    {
-    }
+    {}
 
     [[nodiscard]] auto themeId() const -> const std::string&
     {
@@ -118,8 +114,7 @@ class FontSizeChangedEvent : public Event
 {
   public:
     explicit FontSizeChangedEvent(int size) : m_Size(size)
-    {
-    }
+    {}
 
     [[nodiscard]] auto size() const -> int
     {
@@ -142,8 +137,7 @@ class ActiveTabChangedEvent : public Event
 {
   public:
     explicit ActiveTabChangedEvent(std::string tabName) : m_TabName(std::move(tabName))
-    {
-    }
+    {}
 
     [[nodiscard]] auto tabName() const -> const std::string&
     {

@@ -17,8 +17,7 @@ class MockLayer
     MockLayer& operator=(MockLayer&&) = delete;
 
     virtual void onAttach()
-    {
-    }
+    {}
     virtual void onDetach()
     {
         if (s_Instance == this)

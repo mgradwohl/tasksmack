@@ -239,8 +239,7 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
 } // namespace
 
 NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
-{
-}
+{}
 
 NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_CacheTtl(cacheTtl)
 {

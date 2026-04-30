@@ -76,8 +76,7 @@ class EventDispatcher
 {
   public:
     explicit EventDispatcher(Event& event) : m_Event(event)
-    {
-    }
+    {}
 
     /// Dispatch event to handler if types match
     /// Returns true if the event was dispatched (regardless of whether it was handled)

@@ -14,9 +14,6 @@
 
 namespace Platform
 {
-namespace
-{
-} // namespace
 
 TEST(WindowsProcessActionsTest, ConstructsSuccessfully)
 {

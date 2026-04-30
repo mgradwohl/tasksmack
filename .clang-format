@@ -11,28 +11,29 @@ UseTab: Never
 ColumnLimit: 140
 ContinuationIndentWidth: 4
 
-# Allman braces everywhere
-BreakBeforeBraces: Allman
+# Allman braces everywhere (Custom so BraceWrapping overrides are honoured)
+BreakBeforeBraces: Custom
 
 BraceWrapping:
-  AfterClass: true
-  AfterControlStatement: true
-  AfterEnum: true
-  AfterFunction: true
-  AfterNamespace: true
-  AfterStruct: true
-  AfterUnion: true
-  AfterCaseLabel: true
-  BeforeCatch: true
-  BeforeElse: true
-  IndentBraces: false
-  SplitEmptyFunction: false
-  SplitEmptyRecord: false
-  SplitEmptyNamespace: false
+  AfterCaseLabel:        true
+  AfterClass:            true
+  AfterControlStatement: Always
+  AfterEnum:             true
+  AfterExternBlock:      true
+  AfterFunction:         true
+  AfterNamespace:        true
+  AfterStruct:           true
+  AfterUnion:            true
+  BeforeCatch:           true
+  BeforeElse:            true
+  BeforeLambdaBody:      true
+  IndentBraces:          false
+  SplitEmptyFunction:    false
+  SplitEmptyRecord:      false
+  SplitEmptyNamespace:   false
 
 # Make spacing consistent & readable
-SpaceInEmptyParentheses: false
-SpacesInParentheses: false
+SpacesInParens: Never
 SpaceAfterCStyleCast: true
 SpaceAfterTemplateKeyword: false
 SpaceBeforeRangeBasedForLoopColon: true
@@ -54,25 +55,33 @@ AllowShortBlocksOnASingleLine: false
 AllowShortLambdasOnASingleLine: Inline
 
 # Alignment / wrapping
-AlignAfterOpenBracket: Align
+AlignAfterOpenBracket: true
 AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
 AlignOperands: AlignAfterOperator
 BinPackArguments: false
-BinPackParameters: false
+BinPackParameters: OnePerLine
 BreakConstructorInitializers: BeforeColon
-ConstructorInitializerAllOnOneLineOrOnePerLine: true
+PackConstructorInitializers: NextLine
 
 # Includes
 SortIncludes: true
 IncludeBlocks: Regroup
 
+# Tell clang-format how to identify the "main" header (the TU's own .h/.hpp).
+# Clang-format implicitly assigns it category 0 (sorted before all IncludeCategories
+# entries below) when the header stem matches the source file stem (with any of the
+# allowed suffixes, e.g. "_test", "_impl", "_win", "_linux").
+IncludeIsMainRegex: '(_test|_impl|_win|_linux|_platform)?$'
+
 IncludeCategories:
-  # 1. Main/matching header for this translation unit
-  - Regex: '^"([^"]+)\.(h|hpp)$'
+  # 1. All quoted local/project headers (.h/.hpp).
+  #    The TU's own header (category 0) will already be sorted first by clang-format's
+  #    built-in main-header detection above; remaining quoted .h/.hpp headers land here.
+  - Regex: '^"([^"]+)\.(h|hpp)"$'
     Priority: 1
 
-  # 2. Project-local headers (quoted includes from src/, include/, tests/, or relative paths)
+  # 2. Other quoted project headers (no extension, or non-.h/.hpp extension)
   - Regex: '^".*"'
     Priority: 2
 
@@ -96,7 +105,7 @@ IncludeCategories:
   - Regex: '.*'
     Priority: 6
 
-SortUsingDeclarations: true
+SortUsingDeclarations: LexicographicNumeric
 
 # Comments
 ReflowComments: true

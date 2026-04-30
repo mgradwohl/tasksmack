@@ -150,8 +150,7 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
 } // namespace
 
 TitleBarLayer::TitleBarLayer() : Layer("TitleBarLayer")
-{
-}
+{}
 
 TitleBarLayer::~TitleBarLayer() = default;
 

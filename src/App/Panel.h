@@ -15,8 +15,7 @@ class Panel
 {
   public:
     explicit Panel(std::string name) : m_Name(std::move(name))
-    {
-    }
+    {}
 
     virtual ~Panel() = default;
 
@@ -28,26 +27,22 @@ class Panel
     /// Called when the panel is first added to the application.
     /// Use for initialization, resource allocation, starting background tasks.
     virtual void onAttach()
-    {
-    }
+    {}
 
     /// Called when the panel is removed from the application.
     /// Use for cleanup, stopping background tasks, releasing resources.
     virtual void onDetach()
-    {
-    }
+    {}
 
     /// Called every frame before render.
     /// @param deltaTime Time since last frame in seconds.
     virtual void onUpdate([[maybe_unused]] float deltaTime)
-    {
-    }
+    {}
 
     /// Handle application events (process selection, settings changes, etc.)
     /// Return true from your handler to mark the event as handled and stop propagation
     virtual void onEvent([[maybe_unused]] Core::Event& event)
-    {
-    }
+    {}
 
     /// Render the panel. Must be implemented by derived classes.
     /// Should call ImGui::Begin/End with the panel name.

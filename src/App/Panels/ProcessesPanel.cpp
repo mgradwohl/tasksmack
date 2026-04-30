@@ -271,8 +271,7 @@ void ProcessesPanel::ensureTextSizeCacheValid()
 // ============================================================================
 
 ProcessesPanel::ProcessesPanel() : Panel("Processes")
-{
-}
+{}
 
 ProcessesPanel::~ProcessesPanel()
 {

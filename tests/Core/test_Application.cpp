@@ -57,8 +57,7 @@ class TestLayer : public Core::Layer
 {
   public:
     explicit TestLayer(const std::string& name = "TestLayer") : Layer(name)
-    {
-    }
+    {}
 
     void onAttach() override
     {
@@ -103,8 +102,7 @@ class StopAfterNLayer : public Core::Layer
 {
   public:
     explicit StopAfterNLayer(int n) : Layer("StopLayer"), m_MaxUpdates(n)
-    {
-    }
+    {}
 
     void onUpdate(float /* deltaTime */) override
     {
@@ -129,8 +127,7 @@ class TrackedLayer : public Core::Layer
 {
   public:
     explicit TrackedLayer(const std::string& name) : Layer(name)
-    {
-    }
+    {}
 
     void onDetach() override
     {

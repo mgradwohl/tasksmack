@@ -110,8 +110,7 @@ ProcessDetailsPanel::ProcessDetailsPanel()
     : Panel("Process Details"),
       m_ProcessActions(Platform::makeProcessActions()),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
-{
-}
+{}
 
 /// Captures all computed layout values in one place for helper methods
 struct ProcessDetailsPanel::PrioritySliderContext
