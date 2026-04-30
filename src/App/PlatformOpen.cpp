@@ -2,12 +2,16 @@
 
 #include <spdlog/spdlog.h>
 
+#include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 // NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
 #ifdef __linux__
 #include <cerrno>
+
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -18,8 +22,10 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+
+#include "Platform/Windows/WinString.h"
+
 #include <shellapi.h>
-#include <system_error>
 #include <windows.h>
 #endif
 
@@ -28,23 +34,11 @@ namespace App::PlatformOpen
 
 [[nodiscard]] bool openWithSystemHandler(std::string_view target)
 {
-    const std::string targetStr{target};
-
 #ifdef _WIN32
-    // Properly convert UTF-8 to UTF-16 using MultiByteToWideChar
-    const int wideSize = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, targetStr.c_str(), -1, nullptr, 0);
-    if (wideSize == 0)
+    const std::wstring wideTarget = Platform::WinString::utf8ToWide(target);
+    if (wideTarget.empty())
     {
-        spdlog::warn("Failed to convert UTF-8 target to UTF-16: {}", targetStr);
-        return false;
-    }
-
-    // wideSize includes the null terminator; std::wstring length excludes it.
-    std::wstring wideTarget(static_cast<std::size_t>(wideSize - 1), L'\0');
-    const int result = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, targetStr.c_str(), -1, wideTarget.data(), wideSize);
-    if (result == 0)
-    {
-        spdlog::warn("Failed to convert UTF-8 target to UTF-16 on second pass: {}", targetStr);
+        spdlog::warn("Failed to convert UTF-8 target to UTF-16: {}", std::string{target});
         return false;
     }
 
@@ -54,13 +48,14 @@ namespace App::PlatformOpen
     const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
     if (shellCode <= 32)
     {
-        spdlog::warn("Failed to open target via ShellExecuteW (code {}): {}", shellCode, targetStr);
+        spdlog::warn("Failed to open target via ShellExecuteW (code {}): {}", shellCode, std::string{target});
         return false;
     }
     return true;
-#else
+#elif defined(__linux__)
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
     // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
+    const std::string targetStr{target};
     const pid_t pid = ::fork();
     if (pid == -1)
     {
@@ -110,6 +105,34 @@ namespace App::PlatformOpen
         return false;
     }
     return true;
+#else
+    spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});
+    return false;
+#endif
+}
+
+[[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path)
+{
+#ifdef _WIN32
+    // Use the native wide path directly to avoid ANSI/UTF-8 encoding issues.
+    const std::wstring widePath = path.wstring();
+
+    // ShellExecuteW returns > 32 on success
+    auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
+    const auto shellCode = reinterpret_cast<INT_PTR>(shellResult);
+    if (shellCode <= 32)
+    {
+        spdlog::warn("Failed to open path via ShellExecuteW (code {}): {}", shellCode, path.string());
+        return false;
+    }
+    return true;
+#elif defined(__linux__)
+    // On Linux, std::filesystem::path::string() returns a UTF-8 string.
+    return openWithSystemHandler(std::string_view{path.string()});
+#else
+    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", path.string());
+    return false;
 #endif
 }
 

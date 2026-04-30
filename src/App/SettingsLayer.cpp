@@ -369,15 +369,13 @@ void SettingsLayer::renderSettingsDialog()
         if (ImGui::Button(ICON_FA_FILE_PEN "  Edit Config File"))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-            const auto configPath = UserConfig::get().configPath().string();
-            std::ignore = App::PlatformOpen::openWithSystemHandler(configPath);
+            std::ignore = App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
         }
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_FOLDER "  Open Themes Folder"))
         {
             // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-            const auto themesDir = getThemesDir().string();
-            std::ignore = App::PlatformOpen::openWithSystemHandler(themesDir);
+            std::ignore = App::PlatformOpen::openWithSystemHandler(getThemesDir());
         }
         ImGui::PopStyleColor();
 
