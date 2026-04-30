@@ -533,16 +533,19 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
     LinuxProcessProbe probe;
     auto processes = probe.enumerate();
 
-    const auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& proc) {
-        const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
-        std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
-        if (!cmdlineFile.is_open())
-        {
-            return false;
-        }
+    const auto it = std::find_if(processes.begin(),
+                                 processes.end(),
+                                 [](const ProcessCounters& proc)
+                                 {
+                                     const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
+                                     std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
+                                     if (!cmdlineFile.is_open())
+                                     {
+                                         return false;
+                                     }
 
-        return (cmdlineFile.peek() == std::ifstream::traits_type::eof());
-    });
+                                     return (cmdlineFile.peek() == std::ifstream::traits_type::eof());
+                                 });
 
     if (it == processes.end())
     {
