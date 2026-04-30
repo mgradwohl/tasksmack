@@ -363,8 +363,13 @@ if [[ -n "$IWYU_TOOL" ]]; then
             "$IWYU_TOOL" "${IWYU_TOOL_ARGS[@]}" "$file" -- "${IWYU_ARGS[@]}" 2>&1 | tee -a "$IWYU_OUTPUT" || true
         done
     else
-        # Analyze all files
-        "$IWYU_TOOL" "${IWYU_TOOL_ARGS[@]}" -- "${IWYU_ARGS[@]}" 2>&1 | tee "$IWYU_OUTPUT" || true
+        # Analyze all project source files, excluding other-platform files.
+        # SOURCE_FILES is pre-populated from find "${PROJECT_ROOT}/src" and
+        # excludes the other platform (e.g. Windows files on Linux).
+        # Pass it explicitly to prevent iwyu_tool.py from falling through to
+        # analyzing every entry in compile_commands.json (which includes
+        # third-party dependencies in .cache/fetchcontent and build artifacts).
+        "$IWYU_TOOL" "${IWYU_TOOL_ARGS[@]}" "${SOURCE_FILES[@]}" -- "${IWYU_ARGS[@]}" 2>&1 | tee "$IWYU_OUTPUT" || true
     fi
 else
     # Fall back to running include-what-you-use directly
