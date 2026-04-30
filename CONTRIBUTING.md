@@ -633,18 +633,73 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 
 **Do not edit CHANGELOG.md manually.** The `changelog` workflow commits the regenerated file back to `main` automatically.
 
-**Branch protection note:** The `changelog` workflow pushes a commit directly to `main`. If branch protection rules require pull requests, you must allow `github-actions[bot]` to bypass them: _Settings → Branches → Branch protection rule for `main` → Allow specified actors to bypass required pull requests → add `github-actions[bot]`_. Tags should only be pushed from `main` to avoid branch mismatches.
+#### Producing Your First Changelog
 
-To get meaningful changelog entries, follow [Conventional Commits](https://www.conventionalcommits.org/) when writing commit messages:
+> **One-time setup — branch protection:** The `changelog` workflow pushes a commit directly to `main`. If your repo has branch protection rules that require pull requests, you must first allow `github-actions[bot]` to bypass them:
+> _Settings → Branches → Branch protection rule for `main` → Allow specified actors to bypass required pull requests → add `github-actions[bot]`_
+
+Once that is done (or if you have no branch protection), producing a changelog is a single command:
+
+```bash
+# 1. Make sure you are on main and fully up to date
+git checkout main
+git pull
+
+# 2. Create and push a strict semver tag — this is the only trigger
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The `changelog` workflow then runs automatically and:
+
+1. Validates the tag is strict semver (`vMAJOR.MINOR.PATCH`). Tags like `v1.0.0-rc1` or `v1.0.0.4` are rejected.
+2. Verifies the tag points to the current `HEAD` of `main`. Tagging from a branch or an older commit will abort the workflow.
+3. Runs git-cliff over the full commit history to generate `CHANGELOG.md`.
+4. Commits and pushes the updated `CHANGELOG.md` back to `main`.
+
+You can watch the progress under **Actions → Changelog** in the GitHub UI.
+
+#### Writing Commits for Meaningful Changelog Entries
+
+The output quality depends entirely on commit messages. Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```text
 feat: add network panel
 fix: handle zero-division in CPU delta calculation
+perf: reduce snapshot allocation in hot path
+security: sanitize process name input
 docs: update architecture overview
-chore: bump dependencies
+test: add ProcessModel delta edge cases
+ci: cache FetchContent dependencies
+build: bump minimum CMake to 3.28
+chore: remove unused include
+revert: revert "feat: add network panel"
 ```
 
-The git-cliff configuration lives in `cliff.toml` at the repo root.
+These prefixes map to changelog sections as follows:
+
+| Commit prefix | Changelog section |
+|---|---|
+| `feat:` | Added |
+| `fix:` | Fixed |
+| `security:` | Security |
+| `perf:`, `refactor:`, `style:` | Changed |
+| `docs:` | Documentation |
+| `test:`, `ci:`, `build:` | Infrastructure |
+| `chore:` | Maintenance |
+| `revert:` | Reverted |
+| `Merge ...` | _(skipped — noise)_ |
+| Unconventional messages | _(skipped)_ |
+
+Issue and PR references like `(fixes #42)` or `(#42)` in commit messages are automatically hyperlinked to GitHub.
+
+Breaking changes are highlighted when you add a `!` after the prefix or include a `BREAKING CHANGE:` footer:
+
+```text
+feat!: remove legacy probe interface
+```
+
+The git-cliff configuration lives in [`cliff.toml`](cliff.toml) at the repo root.
 
 ### CI Artifacts (GitHub UI)
 
