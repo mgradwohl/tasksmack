@@ -1,5 +1,9 @@
 #include "App/PlatformOpen.h"
 
+#ifdef _WIN32
+#include "Platform/Windows/WinString.h"
+#endif
+
 #include <spdlog/spdlog.h>
 
 #include <cstdlib>
@@ -22,8 +26,6 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-
-#include "Platform/Windows/WinString.h"
 
 #include <shellapi.h>
 #include <windows.h>
@@ -104,6 +106,9 @@ namespace App::PlatformOpen
         spdlog::warn("xdg-open launcher killed by signal {}", WTERMSIG(status));
         return false;
     }
+    // Launcher reaped successfully. Note: grandchild exec failure (e.g., xdg-open
+    // not installed) is not detectable here by design — the grandchild is adopted
+    // by init before the parent can observe its exit status.
     return true;
 #else
     spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});

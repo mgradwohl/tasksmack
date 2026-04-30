@@ -8,6 +8,9 @@ namespace App::PlatformOpen
 
 /// Open a URL or UTF-8 encoded string with the system's default handler.
 /// On Linux, uses xdg-open via a double-fork to avoid zombie processes.
+/// Note: on Linux, success only means the launcher process was forked and
+/// reaped cleanly — it cannot detect whether xdg-open itself was found or
+/// succeeded (exec failure in the grandchild is silent by design).
 /// On Windows, uses ShellExecuteW with UTF-8 to UTF-16 conversion.
 /// Returns true on success, false on failure (with a logged warning).
 [[nodiscard]] bool openWithSystemHandler(std::string_view target);
