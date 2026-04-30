@@ -215,6 +215,24 @@ else()
     message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
 endif()
 
+# Security hardening flags for release builds
+# Applied only for Release-type builds to avoid impacting Debug ergonomics (e.g., ASAN stack checks).
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # -fstack-protector-strong: instrument functions with stack buffers/alloca against overflows
+        # -D_FORTIFY_SOURCE=2: enable glibc buffer-overflow checks for common string/memory functions
+        # -fPIE/-pie: produce a position-independent executable (enables ASLR)
+        add_compile_options(-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE)
+        add_link_options(-pie)
+        message(STATUS "Security hardening flags enabled (Linux release)")
+    elseif(WIN32)
+        # -fstack-protector-strong: stack canaries via clang on Windows
+        # ASLR (/DYNAMICBASE) is enabled by default by lld-link on Windows
+        add_compile_options(-fstack-protector-strong)
+        message(STATUS "Security hardening flags enabled (Windows release)")
+    endif()
+endif()
+
 # Prefer header-only spdlog and std::format to sidestep MSVC fmt deprecation noise.
 set(SPDLOG_HEADER_ONLY ON CACHE BOOL "Build spdlog in header-only mode" FORCE)
 
@@ -281,9 +299,6 @@ set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering exte
 
 FetchContent_MakeAvailable(SDL3)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
-
-# OpenGL
-find_package(OpenGL REQUIRED)
 
 # Early check for GLAD requirements (Python3 + jinja2)
 # GLAD generation uses jinja2 templates and fails with cryptic errors if not installed

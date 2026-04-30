@@ -188,7 +188,9 @@ void LinuxProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
 std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> processes;
-    processes.reserve(500); // Reasonable initial size
+    // No upfront reserve: the vector grows via amortized doubling.
+    // Reserving a fixed constant (e.g. 500) wastes memory on light systems
+    // and still reallocates on busy ones. Let the allocator manage growth.
 
     const std::filesystem::path procPath("/proc");
     std::error_code errorCode;

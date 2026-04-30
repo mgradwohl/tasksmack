@@ -379,6 +379,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
     // Per-interface network - always populate metadata, compute rates only with previous data
     const double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
+    snap.networkInterfaces.reserve(counters.networkInterfaces.size());
     for (const auto& iface : counters.networkInterfaces)
     {
         SystemSnapshot::InterfaceSnapshot ifaceSnap;

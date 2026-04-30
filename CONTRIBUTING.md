@@ -672,6 +672,25 @@ For simple single-PR features, branch directly from `main` with a `feature/` pre
 
 **Note:** If you installed pre-commit hooks (recommended), format checks run automatically on commit.
 
+## Code Review Expectations
+
+### For authors
+- Keep PRs small and focused (< 200 lines changed is ideal; see the PR template for guidelines).
+- Fill out the PR template fully — description, type of change, and testing steps.
+- Respond to review comments within a few days; mark threads resolved after addressing them.
+- Do not force-push after a review has started unless asked to rebase.
+
+### For reviewers
+- Aim to complete reviews within 2–3 business days.
+- Distinguish blocking concerns (must fix) from suggestions (nice to have) in comments.
+- Approve once all blocking issues are addressed; don't hold approval for minor nits.
+- When evaluating layer boundaries, refer to the architecture section in [.github/copilot-instructions.md](.github/copilot-instructions.md).
+
+### Merge criteria
+- All CI checks pass.
+- At least one approving review.
+- No unresolved blocking comments.
+
 ## Reporting Issues
 
 Please use the issue templates:

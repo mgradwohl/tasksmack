@@ -121,7 +121,8 @@
     // Disable CMake Tools test discovery - use CTest preset tasks instead
     "cmake.ctest.testExplorerIntegrationEnabled": false,
     "chat.tools.terminal.autoApprove": {
-        "cmake": true
+        "cmake": true,
+        "gh": true
     },
     // Shell Integration: Enable advanced terminal features (command decorations, run recent, command history)
     "terminal.integrated.shellIntegration.enabled": true,
