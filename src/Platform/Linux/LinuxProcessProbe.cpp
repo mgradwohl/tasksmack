@@ -946,9 +946,22 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
         auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
         {
             const std::scoped_lock lock{m_InodePidCacheMutex};
-            m_InodeToPidCache = std::move(rebuilt);
-            m_InodeToPidCacheTime = std::chrono::steady_clock::now();
-            inodeToPidPtr = m_InodeToPidCache;
+            if (!rebuilt->empty())
+            {
+                m_InodeToPidCache = std::move(rebuilt);
+                m_InodeToPidCacheTime = std::chrono::steady_clock::now();
+                inodeToPidPtr = m_InodeToPidCache;
+            }
+            else
+            {
+                // Preserve the previous snapshot when procfs enumeration transiently
+                // produces no entries; allow a quick retry instead of waiting the full TTL.
+                constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
+                const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
+                const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
+                m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
+                // inodeToPidPtr already holds the previous (possibly non-empty) snapshot
+            }
         }
     }
     if (!inodeToPidPtr || inodeToPidPtr->empty())
