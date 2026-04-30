@@ -3,6 +3,7 @@
 #include "Domain/Numeric.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 
 #include <toml++/toml.hpp>
@@ -66,6 +67,24 @@ inline void loadAndNarrowIntWithClamp(
         const int narrowed = Domain::Numeric::narrowOr<int>(*val, defaultValue);
         destination = std::clamp(narrowed, minVal, maxVal);
     }
+}
+
+/// Validates a candidate config directory path derived from user/environment input.
+/// Returns true if the path is safe to use as a config directory:
+///   - must be absolute after lexical normalization
+///   - must not contain any ".." traversal components after normalization
+///
+/// This is a purely lexical check (no filesystem access). Callers that need
+/// symlink-safe validation should resolve the path with weakly_canonical() first
+/// and then call this function on the result.
+[[nodiscard]] inline auto isValidConfigDir(const std::filesystem::path& candidate) -> bool
+{
+    const auto normalized = candidate.lexically_normal();
+    if (!normalized.is_absolute())
+    {
+        return false;
+    }
+    return !std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
 }
 
 } // namespace App::UserConfigHelpers

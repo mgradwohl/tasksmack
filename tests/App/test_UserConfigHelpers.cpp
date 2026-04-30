@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include <toml++/toml.hpp>
 
 namespace App
@@ -77,6 +79,60 @@ TEST(UserConfigHelpersTest, LoadAndNarrowIntWithClampUsesDefaultWhenMissing)
     // Key missing -> destination unchanged
     App::UserConfigHelpers::loadAndNarrowIntWithClamp(tbl, "window", "width", dst, 800, 200, 16000);
     EXPECT_EQ(dst, 999);
+}
+
+// ========== isValidConfigDir ==========
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePath)
+{
+    // Build a platform-native absolute path: C:\home\user\... on Windows, /home/user/... on POSIX.
+    const auto absPath = std::filesystem::current_path().root_path() / "home" / "user" / ".config" / "tasksmack";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(absPath));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsAbsolutePathWithoutTraversal)
+{
+    const auto absPath = std::filesystem::current_path().root_path() / "tmp" / "tasksmack";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(absPath));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsRelativePath)
+{
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("relative/path")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsDotDotTraversal)
+{
+    // A relative path with traversal components is rejected because it is not absolute.
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("../../etc/passwd")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirNormalizesAbsoluteTraversal)
+{
+    // An absolute path with ".." that normalizes away all traversal components is accepted.
+    // e.g. on POSIX: root/"home"/"user"/".."/../"etc" → /etc (absolute, no "..").
+    // Restricting WHICH absolute paths are allowed is a caller responsibility (e.g. checking
+    // the resolved path is under the expected config root).
+    const auto root = std::filesystem::current_path().root_path();
+    const auto pathWithTraversal = root / "home" / "user" / ".." / ".." / "etc";
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(pathWithTraversal));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsBareTraversal)
+{
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("../../etc/shadow")));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirAcceptsRootPath)
+{
+    // root_path() returns "/" on POSIX and e.g. "C:\" on Windows — always absolute.
+    EXPECT_TRUE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::current_path().root_path()));
+}
+
+TEST(UserConfigHelpersTest, IsValidConfigDirRejectsEmptyPath)
+{
+    // Empty path is not absolute.
+    EXPECT_FALSE(App::UserConfigHelpers::isValidConfigDir(std::filesystem::path("")));
 }
 
 } // namespace
