@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -52,6 +53,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -114,17 +116,18 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v6
 
       - name: Download Linux packages
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           name: linux-packages
           path: dist/
 
       - name: Download Windows packages
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           name: windows-packages
           path: dist/

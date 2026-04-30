@@ -11,6 +11,8 @@ jobs:
   validate-environment:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -27,6 +29,9 @@ jobs:
   build-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
     strategy:
       matrix:
         build_type: [debug, release]
@@ -70,6 +75,9 @@ jobs:
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
     strategy:
       matrix:
         build_type: [debug, release]
@@ -77,7 +85,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Pin the Python that will be used for GLAD (and install jinja2 into it).
+      # Pin the Python used for GLAD and install jinja2 into that interpreter.
+      # The configure step passes Python3_EXECUTABLE to CMake so GLAD uses the
+      # setup-python interpreter rather than relying on unrelated runner discovery.
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -89,8 +99,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install jinja2
-          python -c "import sys; print('Python:', sys.executable)"
-          python -c "import jinja2; print('jinja2:', jinja2.__version__)"
 
       - name: Install LLVM / Ninja / ccache
         shell: pwsh
@@ -137,6 +145,8 @@ jobs:
   docs-hygiene:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -146,6 +156,9 @@ jobs:
   static-analysis:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -182,6 +195,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -331,6 +347,9 @@ jobs:
   coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v6
 
@@ -414,6 +433,9 @@ jobs:
   sanitizers:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
