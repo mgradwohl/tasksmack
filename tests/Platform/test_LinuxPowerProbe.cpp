@@ -225,7 +225,7 @@ TEST_F(LinuxPowerProbeUnitTest, AcOnly_EmptyDirectory_ReturnsNotPresent)
 TEST_F(LinuxPowerProbeUnitTest, AcOnly_OnlyAcAdapter_ReturnsNotPresent)
 {
     // Directory only has an AC adapter (type = "Mains")
-    makeAcDevice("AC0");
+    [[maybe_unused]] const auto acPath = makeAcDevice("AC0");
 
     LinuxPowerProbe probe(m_SysRoot.string());
 
