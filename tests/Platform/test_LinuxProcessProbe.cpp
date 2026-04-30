@@ -587,8 +587,15 @@ TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
     // it is acceptable, but if found it must be 'Z'.)
 
     // Always reap to avoid leaking a zombie process.
+    // Retry on EINTR; accept ECHILD if the environment auto-reaps (SA_NOCLDWAIT / SIGCHLD ignored).
     int status = 0;
-    waitpid(childPid, &status, 0);
+    pid_t ret = 0;
+    do
+    {
+        ret = waitpid(childPid, &status, 0);
+    } while (ret == -1 && errno == EINTR);
+
+    EXPECT_TRUE(ret == childPid || (ret == -1 && errno == ECHILD)) << "waitpid failed unexpectedly: " << strerror(errno);
 }
 
 TEST(LinuxProcessProbeTest, EnumerateOwnProcessHasNonEmptyName)
