@@ -289,11 +289,13 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartCpu = getColor(tbl, "charts.cpu");
         scheme.chartMemory = getColor(tbl, "charts.memory");
         scheme.chartIo = getColor(tbl, "charts.io");
+        scheme.chartIoWrite = getColor(tbl, "charts.io_write", scheme.chartMemory);
 
         // Chart fill colors (with fallback to line colors for backward compatibility)
         scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", scheme.chartCpu);
         scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
         scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
+        scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", scheme.chartIoWrite);
 
         // CPU breakdown
         scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");

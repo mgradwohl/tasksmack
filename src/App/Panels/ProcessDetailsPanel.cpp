@@ -1031,7 +1031,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
                           .label = "Disk Write",
                           .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
-                          .color = theme.accentColor(1)};
+                          .color = theme.scheme().chartIoWrite};
 
     auto plot = [&]()
     {
@@ -1046,7 +1046,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Read", timeData.data(), readData.data(), plotCount, theme.scheme().chartIo, theme.scheme().chartIoFill);
 
-            plotLineWithFill("Write", timeData.data(), writeData.data(), plotCount, theme.accentColor(1));
+            plotLineWithFill(
+                "Write", timeData.data(), writeData.data(), plotCount, theme.scheme().chartIoWrite, theme.scheme().chartIoWriteFill);
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1059,7 +1060,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                         const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::TextColored(theme.scheme().chartIo, "Read: %s", UI::Format::formatBytesPerSec(readData[*idxVal]).c_str());
-                        ImGui::TextColored(theme.accentColor(1), "Write: %s", UI::Format::formatBytesPerSec(writeData[*idxVal]).c_str());
+                        ImGui::TextColored(
+                            theme.scheme().chartIoWrite, "Write: %s", UI::Format::formatBytesPerSec(writeData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }

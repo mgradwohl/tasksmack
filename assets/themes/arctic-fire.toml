@@ -70,10 +70,12 @@ idle = "#808080"       # Gray - idle kernel thread (I)
 [charts]
 cpu = "#42A5F5"       # Blue - CPU usage line
 memory = "#00E676"    # Emerald - memory usage line
-io = "#FF7043"        # Orange - I/O usage line
+io = "#FF7043"        # Orange - I/O read usage line
+io_write = "#AB47BC"        # Purple - I/O write usage line
 cpu_fill = "#42A5F54D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#00E6764D"    # Emerald with 30% alpha - memory fill
-io_fill = "#FF70434D"        # Orange with 30% alpha - I/O fill
+io_fill = "#FF70434D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#AB47BC4D"   # Purple with 30% alpha - I/O write fill
 peak_line = "#FFD54FB3"      # Gold with 70% alpha - peak reference line
 
 # =============================================================================
