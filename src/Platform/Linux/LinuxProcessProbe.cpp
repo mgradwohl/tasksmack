@@ -923,20 +923,39 @@ void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>
 
     // Rebuild inode-to-PID map at most once per INODE_PID_CACHE_TTL_MS.
     // buildInodeToPidMap() scans /proc/[pid]/fd/* for every process — expensive at scale.
-    // The map is stored as a shared_ptr so we copy only the pointer under the lock (O(1))
-    // rather than the entire map. Empty results are cached too, so a permission-restricted
-    // /proc environment does not trigger a rescan on every call (see #460).
+    // Double-checked pattern: decide under the lock whether a rebuild is needed, release
+    // the lock to do the scan (so concurrent threads can still use the previous cache),
+    // then re-lock briefly to publish. Empty results are cached too so a
+    // permission-restricted /proc environment does not rescan every call (see #460).
     std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
+    bool needsRebuild = false;
     {
         const std::scoped_lock lock{m_InodePidCacheMutex};
         const auto now = std::chrono::steady_clock::now();
         const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-        if (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
+        needsRebuild = (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS);
+        if (!needsRebuild)
         {
-            m_InodeToPidCache = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
-            m_InodeToPidCacheTime = now;
+            inodeToPidPtr = m_InodeToPidCache;
         }
-        inodeToPidPtr = m_InodeToPidCache;
+    }
+    if (needsRebuild)
+    {
+        // Build the map outside the lock so concurrent threads keep using the old cache.
+        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap());
+        const auto publishTime = std::chrono::steady_clock::now();
+        {
+            const std::scoped_lock lock{m_InodePidCacheMutex};
+            // Guard against two threads both deciding to rebuild: only publish if the
+            // cache is still older than the TTL (the other thread may have just refreshed it).
+            const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(publishTime - m_InodeToPidCacheTime).count();
+            if (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS)
+            {
+                m_InodeToPidCache = std::move(rebuilt);
+                m_InodeToPidCacheTime = publishTime;
+            }
+            inodeToPidPtr = m_InodeToPidCache;
+        }
     }
     if (!inodeToPidPtr || inodeToPidPtr->empty())
     {
