@@ -27,3 +27,6 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    commit-message:
+      prefix: "build"
+      include: "scope"

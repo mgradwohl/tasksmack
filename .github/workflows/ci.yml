@@ -7,6 +7,10 @@ on:
     branches: [ main, 'dev/**' ]
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate-environment:
     runs-on: ubuntu-24.04
@@ -27,6 +31,7 @@ jobs:
         run: ./tools/check-prereqs.sh
 
   build-linux:
+    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -73,6 +78,7 @@ jobs:
           retention-days: 30
 
   build-windows:
+    needs: [validate-environment]
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
@@ -143,6 +149,7 @@ jobs:
           retention-days: 30
 
   docs-hygiene:
+    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -154,6 +161,7 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
+    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -192,6 +200,7 @@ jobs:
           retention-days: 14
 
   include-analysis:
+    needs: [validate-environment]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -345,6 +354,7 @@ jobs:
           retention-days: 14
 
   coverage:
+    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -431,6 +441,7 @@ jobs:
           retention-days: 30
 
   sanitizers:
+    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:

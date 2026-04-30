@@ -45,6 +45,7 @@
       - ".github/actions/**"
       - ".github/codeql/**"
       - ".github/labeler.yml"
+      - ".github/dependabot.yml"
       - "CMakePresets.json"
 
 "tooling":
