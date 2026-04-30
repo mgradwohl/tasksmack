@@ -320,7 +320,8 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
                 // Impact: Multi-GPU systems without NVML show inflated per-GPU percentages.
                 // Single-GPU systems or NVML-enabled multi-GPU systems are accurate.
                 //
-                // TODO: Parse PDH LUID strings and match to DXGI adapter LUIDs for true per-GPU breakdown.
+                // See https://github.com/mgradwohl/tasksmack/issues/462 to parse PDH LUID strings
+                // and match to DXGI adapter LUIDs for true per-GPU breakdown.
                 dxgiCounter.utilizationPercent = totalUtilization;
                 spdlog::debug(
                     "WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}%", dxgiCounter.gpuId, totalUtilization);
