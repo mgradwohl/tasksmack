@@ -2,6 +2,14 @@
 
 <!-- Describe your changes in detail -->
 
+## PR Size
+
+<!-- Aim for small, focused PRs. Guidelines:
+- ✅ Small (< 200 lines changed): ideal, fast to review
+- ⚠️  Medium (200–500 lines): acceptable with clear description
+- 🔴 Large (> 500 lines): split into smaller PRs if possible
+Exclude generated files, vendored code, and lock files from the count. -->
+
 ## Type of Change
 
 <!-- Mark the relevant option with an [x] -->
