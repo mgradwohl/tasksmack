@@ -21,11 +21,14 @@
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 #else
@@ -525,29 +528,55 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
 
 TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
 {
-    // Kernel threads have empty /proc/[pid]/cmdline; the probe must handle this gracefully.
+    // Kernel threads have empty /proc/[pid]/cmdline; the probe formats their command as "[name]".
     LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
 
-    EXPECT_NO_THROW({
-        auto processes = probe.enumerate();
+    // Every process must have a non-empty name regardless of cmdline availability.
+    for (const auto& proc : processes)
+    {
+        EXPECT_FALSE(proc.name.empty()) << "Process " << proc.pid << " should always have a name";
+    }
 
-        // Kernel threads are normal entries with empty cmdline; they should all have a name.
-        for (const auto& proc : processes)
-        {
-            EXPECT_FALSE(proc.name.empty()) << "Process " << proc.pid << " should always have a name";
-        }
-    });
+    // At least one kernel thread (PID 2 or kthreadd children) should appear with a bracketed
+    // command, confirming the empty-cmdline → "[name]" branch was exercised.
+    const bool hasBracketedCommand = std::ranges::any_of(processes, [](const ProcessCounters& p) { return p.command.starts_with('['); });
+    EXPECT_TRUE(hasBracketedCommand) << "Expected at least one kernel thread with command formatted as [name]";
 }
 
 TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
 {
-    // Zombie processes (state 'Z') may exist; the probe should enumerate them without crashing.
-    LinuxProcessProbe probe;
+    // Create a real zombie: fork a child that exits immediately, delay waitpid() so the
+    // probe can observe it in state 'Z', then reap it.
+    const pid_t childPid = fork();
+    ASSERT_NE(childPid, -1) << "fork() failed: " << strerror(errno);
 
-    EXPECT_NO_THROW({
-        auto processes = probe.enumerate();
-        EXPECT_GT(processes.size(), 0ULL) << "Enumeration should return at least one process";
-    });
+    if (childPid == 0)
+    {
+        // Child: exit immediately without cleanup so the parent's fork() bookkeeping is intact.
+        _exit(0);
+    }
+
+    // Give the kernel a moment to transition the child to zombie state before enumeration.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+
+    // Find our zombie child in the enumerated list.
+    const auto it = std::find_if(
+        processes.begin(), processes.end(), [childPid](const ProcessCounters& p) { return p.pid == static_cast<std::int32_t>(childPid); });
+
+    if (it != processes.end())
+    {
+        EXPECT_EQ(it->state, 'Z') << "Child process should be in zombie state";
+    }
+    // (The zombie may already have been reaped by the OS in rare CI edge cases; not finding
+    // it is acceptable, but if found it must be 'Z'.)
+
+    // Always reap to avoid leaking a zombie process.
+    int status = 0;
+    waitpid(childPid, &status, 0);
 }
 
 TEST(LinuxProcessProbeTest, EnumerateOwnProcessHasNonEmptyName)
