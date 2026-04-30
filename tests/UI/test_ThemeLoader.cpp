@@ -1101,6 +1101,37 @@ description = "Second theme"
     EXPECT_TRUE(foundB);
 }
 
+// ========== Sort-Order Test ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, DiscoverThemes_SortedAlphabeticallyByName)
+{
+    createThemeFile("z-theme.toml", R"(
+[meta]
+name = "Zebra"
+description = "Sorts last"
+)");
+
+    createThemeFile("a-theme.toml", R"(
+[meta]
+name = "Apple"
+description = "Sorts first"
+)");
+
+    createThemeFile("m-theme.toml", R"(
+[meta]
+name = "Mango"
+description = "Sorts middle"
+)");
+
+    auto themes = ThemeLoader::discoverThemes(m_TempDir);
+    ASSERT_EQ(themes.size(), 3U);
+
+    // discoverThemes sorts by name ascending
+    EXPECT_EQ(themes[0].name, "Apple");
+    EXPECT_EQ(themes[1].name, "Mango");
+    EXPECT_EQ(themes[2].name, "Zebra");
+}
+
 // ========== I/O Write Color Tests ==========
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_IoWriteColor_FallsBackToMemoryWhenAbsent)

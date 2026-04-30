@@ -23,8 +23,6 @@ namespace Platform
 namespace
 {
 
-constexpr const char* POWER_SUPPLY_PATH = "/sys/class/power_supply";
-
 [[nodiscard]] bool isBatteryDevice(const std::string& devicePath)
 {
     std::ifstream typeFile(devicePath + "/type");
@@ -61,7 +59,7 @@ constexpr const char* POWER_SUPPLY_PATH = "/sys/class/power_supply";
 
 } // namespace
 
-LinuxPowerProbe::LinuxPowerProbe()
+LinuxPowerProbe::LinuxPowerProbe(std::string powerSupplyRoot) : m_PowerSupplyRoot(std::move(powerSupplyRoot))
 {
     discoverBatteries();
     spdlog::debug("LinuxPowerProbe: found {} batteries", m_BatteryPaths.size());
@@ -72,9 +70,9 @@ void LinuxPowerProbe::discoverBatteries()
     namespace Fs = std::filesystem;
 
     std::error_code ec;
-    if (!Fs::exists(POWER_SUPPLY_PATH, ec) || !Fs::is_directory(POWER_SUPPLY_PATH, ec))
+    if (!Fs::exists(m_PowerSupplyRoot, ec) || !Fs::is_directory(m_PowerSupplyRoot, ec))
     {
-        spdlog::debug("LinuxPowerProbe: {} not found or not a directory", POWER_SUPPLY_PATH);
+        spdlog::debug("LinuxPowerProbe: {} not found or not a directory", m_PowerSupplyRoot);
         m_Capabilities.hasBattery = false;
         return;
     }
@@ -83,7 +81,7 @@ void LinuxPowerProbe::discoverBatteries()
     std::vector<std::string> primaryBatteries;    // BAT*, CMB*, etc.
     std::vector<std::string> peripheralBatteries; // hidpp_battery_*, wacom_*, etc.
 
-    for (const auto& entry : Fs::directory_iterator(POWER_SUPPLY_PATH, ec))
+    for (const auto& entry : Fs::directory_iterator(m_PowerSupplyRoot, ec))
     {
         if (!entry.is_directory(ec))
         {
@@ -114,7 +112,7 @@ void LinuxPowerProbe::discoverBatteries()
 
     if (ec)
     {
-        spdlog::warn("LinuxPowerProbe: error iterating {}: {}", POWER_SUPPLY_PATH, ec.message());
+        spdlog::warn("LinuxPowerProbe: error iterating {}: {}", m_PowerSupplyRoot, ec.message());
     }
 
     // Set capabilities based on discovery

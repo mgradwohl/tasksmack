@@ -17,13 +17,18 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/Linux/LinuxProcessProbe.h"
+#include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <thread>
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 #else
@@ -516,6 +521,143 @@ TEST(LinuxProcessProbeTest, IoCountersIncreaseWithActivity)
     // Clean up
     std::filesystem::remove(tempFilePath);
 }
+
+// =============================================================================
+// Process Status and Cmdline Tests (covers additional parsing branches)
+// =============================================================================
+
+TEST(LinuxProcessProbeTest, EnumerateHandlesKernelThreadsWithNullCmdline)
+{
+    // Verify the empty-cmdline fallback branch by finding a real process whose
+    // /proc/[pid]/cmdline is empty and asserting the probe formats command as "[name]".
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+
+    const auto it = std::find_if(processes.begin(),
+                                 processes.end(),
+                                 [](const ProcessCounters& proc)
+                                 {
+                                     const auto cmdlinePath = std::filesystem::path("/proc") / std::to_string(proc.pid) / "cmdline";
+                                     std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
+                                     if (!cmdlineFile.is_open())
+                                     {
+                                         return false;
+                                     }
+
+                                     return (cmdlineFile.peek() == std::ifstream::traits_type::eof());
+                                 });
+
+    if (it == processes.end())
+    {
+        GTEST_SKIP() << "No process with an empty /proc/<pid>/cmdline was visible in this environment";
+    }
+
+    EXPECT_FALSE(it->name.empty()) << "Process " << it->pid << " should always have a name";
+    EXPECT_EQ(it->command, ("[" + it->name + "]")) << "Processes with empty cmdline should use the [name] fallback";
+}
+
+TEST(LinuxProcessProbeTest, EnumerateHandlesZombieProcesses)
+{
+    // Create a real zombie: fork a child that exits immediately, delay waitpid() so the
+    // probe can observe it in state 'Z', then reap it.
+    const pid_t childPid = fork();
+    ASSERT_NE(childPid, -1) << "fork() failed: " << strerror(errno);
+
+    if (childPid == 0)
+    {
+        // Child: exit immediately without cleanup so the parent's fork() bookkeeping is intact.
+        _exit(0);
+    }
+
+    // Give the kernel a moment to transition the child to zombie state before enumeration.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+
+    // Find our zombie child in the enumerated list.
+    const auto it = std::find_if(
+        processes.begin(), processes.end(), [childPid](const ProcessCounters& p) { return p.pid == static_cast<std::int32_t>(childPid); });
+
+    if (it != processes.end())
+    {
+        EXPECT_EQ(it->state, 'Z') << "Child process should be in zombie state";
+    }
+    // (The zombie may already have been reaped by the OS in rare CI edge cases; not finding
+    // it is acceptable, but if found it must be 'Z'.)
+
+    // Always reap to avoid leaking a zombie process.
+    // Retry on EINTR; accept ECHILD if the environment auto-reaps (SA_NOCLDWAIT / SIGCHLD ignored).
+    int status = 0;
+    pid_t ret = 0;
+    do
+    {
+        ret = waitpid(childPid, &status, 0);
+    } while (ret == -1 && errno == EINTR);
+
+    EXPECT_TRUE(ret == childPid || (ret == -1 && errno == ECHILD)) << "waitpid failed unexpectedly: " << strerror(errno);
+}
+
+TEST(LinuxProcessProbeTest, EnumerateOwnProcessHasNonEmptyName)
+{
+    // Verify that our own process always has a non-empty name returned by the probe.
+    LinuxProcessProbe probe;
+    auto processes = probe.enumerate();
+    const pid_t selfPid = getpid();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+    EXPECT_FALSE(it->name.empty()) << "Our process should have a non-empty name";
+}
+
+TEST(LinuxProcessProbeTest, EnumerateReturnsReasonableThreadCounts)
+{
+    // Thread count must be >= 1. Multi-threaded processes (like this test binary) should report > 1.
+    LinuxProcessProbe probe;
+    const pid_t selfPid = getpid();
+    auto processes = probe.enumerate();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+    // This test binary uses multiple threads (gtest runs tests on the main thread but jthread
+    // tests may have created background threads); the thread count must be at least 1.
+    EXPECT_GE(it->threadCount, 1) << "Thread count must be >= 1";
+}
+
+TEST(LinuxProcessProbeTest, CapabilitiesHasThreadCount)
+{
+    // LinuxProcessProbe always reports thread counts.
+    LinuxProcessProbe probe;
+    auto caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasThreadCount);
+}
+
+TEST(LinuxProcessProbeTest, UserFieldIsPopulatedForOwnProcess)
+{
+    LinuxProcessProbe probe;
+    const pid_t selfPid = getpid();
+    auto processes = probe.enumerate();
+
+    auto it = std::find_if(processes.begin(), processes.end(), [selfPid](const ProcessCounters& p) { return p.pid == selfPid; });
+    ASSERT_NE(it, processes.end()) << "Should find our own process";
+
+    // The user field should be populated (at minimum as a UID string).
+    EXPECT_FALSE(it->user.empty()) << "User field should not be empty for own process";
+}
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
+{
+    LinuxProcessProbe probe;
+
+    // Changing the TTL should not crash regardless of whether Netlink is available.
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(500)));
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(0)));
+    EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(10000)));
+}
+#endif
 
 } // namespace
 } // namespace Platform
