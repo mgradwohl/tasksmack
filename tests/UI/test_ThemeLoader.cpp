@@ -21,6 +21,148 @@ void expectColorNear(const ImVec4& actual, const ImVec4& expected, float toleran
     EXPECT_NEAR(actual.w, expected.w, tolerance) << "Alpha channel mismatch";
 }
 
+// Shared minimal-valid theme body (all required sections, no [meta]).
+// Used by tests that need a complete theme without a meta section, or that
+// prepend their own [meta] block on top of this body.
+constexpr const char* k_FullThemeTomlBody = R"(
+[accents]
+colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
+
+[progress]
+low = "#00FF00"
+medium = "#FFFF00"
+high = "#FF0000"
+
+[semantic]
+text_primary = "#FFFFFF"
+text_disabled = "#808080"
+text_muted = "#CCCCCC"
+text_error = "#FF0000"
+text_warning = "#FFA500"
+text_success = "#00FF00"
+text_info = "#00FFFF"
+
+[status]
+running = "#00FF00"
+sleeping = "#0000FF"
+disk_sleep = "#FFA500"
+zombie = "#FF0000"
+stopped = "#FF00FF"
+idle = "#808080"
+
+[charts]
+cpu = "#0078D4"
+memory = "#10893E"
+io = "#E74856"
+io_write = "#F7630C"
+
+[cpu_breakdown]
+user = "#0078D4"
+system = "#E74856"
+iowait = "#FFB900"
+idle = "#808080"
+
+[charts.gpu]
+utilization = "#0078D4"
+memory = "#10893E"
+temperature = "#E74856"
+power = "#FFB900"
+encoder = "#00B7C3"
+decoder = "#8E8CD8"
+clock = "#E3008C"
+fan = "#808080"
+
+[buttons.success]
+normal = "#10893E"
+hovered = "#2AA84E"
+active = "#0A6B2E"
+
+[ui.window]
+background = "#1E1E1E"
+child_background = "#252526"
+popup_background = "#2D2D30"
+border = "#3F3F46"
+
+[ui.frame]
+background = "#333337"
+background_hovered = "#3E3E42"
+background_active = "#0078D4"
+
+[ui.title]
+background = "#2D2D30"
+background_active = "#0078D4"
+background_collapsed = "#3F3F46"
+
+[ui.bars]
+menu = "#2D2D30"
+status = "#2D2D30"
+
+[ui.scrollbar]
+background = "#1E1E1E"
+grab = "#5A5A5A"
+grab_hovered = "#808080"
+grab_active = "#0078D4"
+
+[ui.controls]
+check_mark = "#FFFFFF"
+slider_grab = "#5A5A5A"
+slider_grab_active = "#0078D4"
+
+[ui.button]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.header]
+normal = "#333337"
+hovered = "#3E3E42"
+active = "#0078D4"
+
+[ui.separator]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.resize_grip]
+normal = "#3F3F46"
+hovered = "#5A5A5A"
+active = "#0078D4"
+
+[ui.tab]
+normal = "#2D2D30"
+hovered = "#3E3E42"
+active = "#0078D4"
+active_overline = "#FFFFFF"
+unfocused = "#252526"
+unfocused_active = "#3F3F46"
+unfocused_active_overline = "#808080"
+
+[ui.docking]
+preview = "#0078D480"
+empty_background = "#1E1E1E"
+
+[ui.plot]
+lines = "#0078D4"
+lines_hovered = "#60CDFF"
+histogram = "#10893E"
+histogram_hovered = "#6CCB5F"
+
+[ui.table]
+header_background = "#333337"
+border_strong = "#3F3F46"
+border_light = "#2D2D30"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF0D"
+
+[ui.misc]
+text_selected_background = "#0078D480"
+drag_drop_target = "#FFB900"
+nav_highlight = "#0078D4"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#0000004D"
+modal_window_dim_background = "#0000004D"
+)";
+
 // ========== hexToImVec4 Tests ==========
 
 TEST(ThemeLoaderTest, HexToImVec4_ValidSixDigit)
@@ -706,146 +848,9 @@ modal_window_dim_background = "#0000004D"
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingMetaSection_NameIsEmpty)
 {
-    // A valid TOML file with all required color keys but no [meta] section.
+    // k_FullThemeTomlBody has all required sections but no [meta] section.
     // scheme.name should remain empty (default) since the meta block is absent.
-    createThemeFile("no-meta-theme.toml", R"(
-[accents]
-colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
-[semantic]
-text_primary = "#FFFFFF"
-text_disabled = "#808080"
-text_muted = "#CCCCCC"
-text_error = "#FF0000"
-text_warning = "#FFA500"
-text_success = "#00FF00"
-text_info = "#00FFFF"
-
-[status]
-running = "#00FF00"
-sleeping = "#0000FF"
-disk_sleep = "#FFA500"
-zombie = "#FF0000"
-stopped = "#FF00FF"
-idle = "#808080"
-
-[charts]
-cpu = "#0078D4"
-memory = "#10893E"
-io = "#E74856"
-io_write = "#F7630C"
-
-[cpu_breakdown]
-user = "#0078D4"
-system = "#E74856"
-iowait = "#FFB900"
-idle = "#808080"
-
-[charts.gpu]
-utilization = "#0078D4"
-memory = "#10893E"
-temperature = "#E74856"
-power = "#FFB900"
-encoder = "#00B7C3"
-decoder = "#8E8CD8"
-clock = "#E3008C"
-fan = "#808080"
-
-[buttons.success]
-normal = "#10893E"
-hovered = "#2AA84E"
-active = "#0A6B2E"
-
-[ui.window]
-background = "#1E1E1E"
-child_background = "#252526"
-popup_background = "#2D2D30"
-border = "#3F3F46"
-
-[ui.frame]
-background = "#333337"
-background_hovered = "#3E3E42"
-background_active = "#0078D4"
-
-[ui.title]
-background = "#2D2D30"
-background_active = "#0078D4"
-background_collapsed = "#3F3F46"
-
-[ui.bars]
-menu = "#2D2D30"
-status = "#2D2D30"
-
-[ui.scrollbar]
-background = "#1E1E1E"
-grab = "#5A5A5A"
-grab_hovered = "#808080"
-grab_active = "#0078D4"
-
-[ui.controls]
-check_mark = "#FFFFFF"
-slider_grab = "#5A5A5A"
-slider_grab_active = "#0078D4"
-
-[ui.button]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.header]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.separator]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.resize_grip]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.tab]
-normal = "#2D2D30"
-hovered = "#3E3E42"
-active = "#0078D4"
-active_overline = "#FFFFFF"
-unfocused = "#252526"
-unfocused_active = "#3F3F46"
-unfocused_active_overline = "#808080"
-
-[ui.docking]
-preview = "#0078D480"
-empty_background = "#1E1E1E"
-
-[ui.plot]
-lines = "#0078D4"
-lines_hovered = "#60CDFF"
-histogram = "#10893E"
-histogram_hovered = "#6CCB5F"
-
-[ui.table]
-header_background = "#333337"
-border_strong = "#3F3F46"
-border_light = "#2D2D30"
-row_background = "#00000000"
-row_background_alt = "#FFFFFF0D"
-
-[ui.misc]
-text_selected_background = "#0078D480"
-drag_drop_target = "#FFB900"
-nav_highlight = "#0078D4"
-nav_windowing_highlight = "#FFFFFFB3"
-nav_windowing_dim_background = "#0000004D"
-modal_window_dim_background = "#0000004D"
-)");
+    createThemeFile("no-meta-theme.toml", k_FullThemeTomlBody);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "no-meta-theme.toml");
     ASSERT_TRUE(theme.has_value());
@@ -857,7 +862,7 @@ modal_window_dim_background = "#0000004D"
 
 // ========== Missing Required Color Keys Tests ==========
 
-TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingRequiredColors_FallBackToErrorColor)
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingRequiredColors_FallsBackToErrorColor)
 {
     // A TOML file with [meta] and [charts] but missing required progress/semantic/status/etc.
     // Missing required keys (those without explicit C++ fallbacks) → errorColor (magenta).
