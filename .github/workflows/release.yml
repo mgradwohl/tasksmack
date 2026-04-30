@@ -128,7 +128,7 @@ jobs:
         uses: anchore/sbom-action@v0.20.0
         with:
           path: .
-          output-file: sbom.spdx.json
+          output-file: ${{ runner.temp }}/sbom.spdx.json
           format: spdx-json
           upload-artifact: false
           upload-release-assets: false
@@ -146,7 +146,7 @@ jobs:
           path: dist/
 
       - name: Stage SBOM into dist
-        run: mv sbom.spdx.json dist/tasksmack-${{ steps.version.outputs.label }}-sbom.spdx.json
+        run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${{ steps.version.outputs.label }}-sbom.spdx.json"
 
       - name: Create Release
         uses: softprops/action-gh-release@v3

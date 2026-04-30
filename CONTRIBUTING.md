@@ -625,7 +625,7 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 
 - Linux packages: `.tar.gz` and `.deb`
 - Windows packages: `.zip`
-- SBOM: `tasksmack-<version>-sbom.spdx.json` — an SPDX-JSON Software Bill of Materials generated from the source tree using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). The SBOM lists all detected components and licenses to improve supply-chain transparency.
+- SBOM: `tasksmack-<tag>-sbom.spdx.json` — an SPDX-JSON Software Bill of Materials generated from the source tree using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). The SBOM lists all detected components and licenses to improve supply-chain transparency.
 
 ### CI Artifacts (GitHub UI)
 
