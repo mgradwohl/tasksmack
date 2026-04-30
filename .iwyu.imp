@@ -12,15 +12,11 @@
   # SDL3/GLAD - platform-specific handling
   { include: ["<GL/gl.h>", "private", "<glad/gl.h>", "public"] },
 
-  # Standard library mappings (C++ prefers <cstdint> over <stdint.h>, etc.)
-  { include: ["<stdint.h>", "private", "<cstdint>", "public"] },
-  { include: ["<stdlib.h>", "private", "<cstdlib>", "public"] },
-  { include: ["<string.h>", "private", "<cstring>", "public"] },
-  { include: ["<stdio.h>", "private", "<cstdio>", "public"] },
-  { include: ["<math.h>", "private", "<cmath>", "public"] },
-  { include: ["<assert.h>", "private", "<cassert>", "public"] },
-  { include: ["<errno.h>", "private", "<cerrno>", "public"] },
-  { include: ["<time.h>", "private", "<ctime>", "public"] },
+  # Note: C-to-C++ header mappings (e.g. <stdint.h> -> <cstdint>) are handled
+  # by IWYU's built-in mappings in version 0.22+ and do not need to be listed
+  # here. Defining them as "private" in this file conflicts with IWYU's internal
+  # database (which marks them as "public"), causing assertion failures at
+  # analysis time.
 
   # Project-specific: group related platform headers
   { include: ["\"Platform/Linux/LinuxProcessProbe.h\"", "private", "\"Platform/IProcessProbe.h\"", "public"] },

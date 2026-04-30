@@ -28,6 +28,7 @@ test-results.xml
 /sanitizer-logs/
 /sanitizer-reports/
 clang-tidy-output.txt
+iwyu-output.txt
 
 # CMake artifacts
 CMakeCache.txt
