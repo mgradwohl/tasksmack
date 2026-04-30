@@ -99,7 +99,11 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
     }
 
+    // Steal capacity from the previous snapshot vector to avoid a malloc each refresh.
+    // m_Snapshots is already under the write lock so this is safe.
     std::vector<ProcessSnapshot> newSnapshots;
+    std::swap(newSnapshots, m_Snapshots); // steal old allocation
+    newSnapshots.clear();                 // drop elements, keep capacity
     newSnapshots.reserve(counters.size());
 
     // Track active keys to prune stale entries (reuse existing set)
@@ -221,6 +225,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     }
 
     m_Snapshots = std::move(newSnapshots);
+    ++m_SnapshotVersion;
     m_NetworkBaselines = std::move(newNetworkBaselines);
 
     // Merge per-process GPU data if GPUModel is available
@@ -254,6 +259,12 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshots;
+}
+
+std::uint64_t ProcessModel::snapshotVersion() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_SnapshotVersion;
 }
 
 std::vector<double> ProcessModel::systemNetSentHistory() const
