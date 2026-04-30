@@ -44,6 +44,10 @@ class ProcessModel
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
 
+    /// Monotonically increasing counter, incremented each time snapshots are updated.
+    /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
+    [[nodiscard]] std::uint64_t snapshotVersion() const;
+
     // Aggregated system-level histories derived from per-process data
     [[nodiscard]] std::vector<double> systemNetSentHistory() const;
     [[nodiscard]] std::vector<double> systemNetRecvHistory() const;
@@ -140,6 +144,7 @@ class ProcessModel
 
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
+    std::uint64_t m_SnapshotVersion = 0;
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

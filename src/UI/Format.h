@@ -102,7 +102,7 @@ template<std::integral T> [[nodiscard]] inline auto formatIntLocalized(T value) 
 
 [[nodiscard]] inline auto formatDoubleLocalized(double value, int decimals) -> std::string
 {
-    return std::format("{:.{}Lf}", static_cast<long double>(value), decimals);
+    return std::format("{:.{}Lf}", value, decimals);
 }
 
 template<std::integral T> [[nodiscard]] inline auto formatCountWithLabel(T value, std::string_view label) -> std::string
@@ -307,7 +307,7 @@ struct ByteUnit
 [[nodiscard]] inline auto formatBytesWithUnit(double bytes, ByteUnit unit) -> std::string
 {
     const double value = bytes / unit.scale;
-    return std::format("{:.{}Lf} {}", static_cast<long double>(value), unit.decimals, unit.suffix);
+    return std::format("{:.{}Lf} {}", value, unit.decimals, unit.suffix);
 }
 
 [[nodiscard]] inline auto formatBytes(double bytes) -> std::string
@@ -483,6 +483,38 @@ struct AlignedBytesParts
     return parts;
 }
 
+/// Zero-allocation fast path for splitting bytes-per-second values for decimal-aligned rendering.
+/// Identical to splitBytesForAlignmentFast but uses "/s" unit suffixes (" B/s", " KB/s", etc.).
+[[nodiscard]] inline auto splitBytesPerSecForAlignmentFast(double bytesPerSec, ByteUnit unit) -> AlignedBytesParts
+{
+    auto parts = splitBytesForAlignmentFast(bytesPerSec, unit);
+
+    static constexpr std::string_view unitBps = " B/s";
+    static constexpr std::string_view unitKBps = " KB/s";
+    static constexpr std::string_view unitMBps = " MB/s";
+    static constexpr std::string_view unitGBps = " GB/s";
+
+    const std::string_view suffix{unit.suffix};
+    if (suffix == "GB")
+    {
+        parts.unitPart = unitGBps;
+    }
+    else if (suffix == "MB")
+    {
+        parts.unitPart = unitMBps;
+    }
+    else if (suffix == "KB")
+    {
+        parts.unitPart = unitKBps;
+    }
+    else
+    {
+        parts.unitPart = unitBps;
+    }
+
+    return parts;
+}
+
 /// Split a byte value into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitBytesForAlignment(double bytes, ByteUnit unit) -> AlignedNumericParts
 {
@@ -631,13 +663,13 @@ struct AlignedBytesParts
 {
     if (value >= 1'000'000.0)
     {
-        return std::format("{:.1Lf}M/s", static_cast<long double>(value) / 1'000'000.0L);
+        return std::format("{:.1Lf}M/s", value / 1'000'000.0);
     }
     if (value >= 1'000.0)
     {
-        return std::format("{:.1Lf}K/s", static_cast<long double>(value) / 1'000.0L);
+        return std::format("{:.1Lf}K/s", value / 1'000.0);
     }
-    return std::format("{:.1Lf}/s", static_cast<long double>(value));
+    return std::format("{:.1Lf}/s", value);
 }
 
 [[nodiscard]] inline auto bytesUsedTotalPercentCompact(std::uint64_t usedBytes, std::uint64_t totalBytes, double percent) -> std::string
@@ -755,14 +787,14 @@ struct AlignedBytesParts
     const double absWatts = std::abs(watts);
     if (absWatts >= 1.0)
     {
-        return std::format("{:.2Lf} W", static_cast<long double>(watts));
+        return std::format("{:.2Lf} W", watts);
     }
     if (absWatts >= 0.001)
     {
-        return std::format("{:.2Lf} mW", static_cast<long double>(watts) * 1000.0L);
+        return std::format("{:.2Lf} mW", watts * 1000.0);
     }
 
-    return std::format("{:.2Lf} µW", static_cast<long double>(watts) * 1'000'000.0L);
+    return std::format("{:.2Lf} µW", watts * 1'000'000.0);
 }
 
 // ============================================================================

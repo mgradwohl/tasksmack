@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -82,14 +83,14 @@ constexpr std::string_view LIST_VIEW_LABEL = "List View";
     return std::nullopt;
 }
 
-void renderRightAlignedText(const std::string& text)
+void renderRightAlignedText(std::string_view text)
 {
     // GetContentRegionAvail() properly returns space from cursor to right edge of cell
-    const float textWidth = ImGui::CalcTextSize(text.c_str()).x;
+    const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
     const float availWidth = ImGui::GetContentRegionAvail().x;
     const float currentX = ImGui::GetCursorPosX();
     ImGui::SetCursorPosX(currentX + std::max(0.0F, availWidth - textWidth));
-    ImGui::TextUnformatted(text.c_str());
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
 /// Render a numeric value with decimal-point alignment.
@@ -434,8 +435,15 @@ void ProcessesPanel::renderContent()
     // Ensure text size cache is valid for current font (called once per frame)
     ensureTextSizeCacheValid();
 
-    // Get thread-safe copy of snapshots
-    auto currentSnapshots = m_ProcessModel->snapshots();
+    // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
+    // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
+    const auto currentVersion = m_ProcessModel->snapshotVersion();
+    if (currentVersion != m_CachedSnapshotVersion)
+    {
+        m_CachedRenderSnapshots = m_ProcessModel->snapshots();
+        m_CachedSnapshotVersion = currentVersion;
+    }
+    const auto& currentSnapshots = m_CachedRenderSnapshots;
 
     // Search bar
     const auto& theme = UI::Theme::get();
@@ -483,73 +491,86 @@ void ProcessesPanel::renderContent()
         }
     }
 
-    // Filter snapshots based on search
+    // Filter snapshots based on search — cached to avoid O(n) rebuild every 60fps frame.
+    // Filtered indices, running count, and summary string are only recomputed when snapshot
+    // version or search term changes (typically once per second at the 1Hz refresh rate).
     const std::string_view searchTerm(m_SearchBuffer);
-    std::vector<size_t> filteredIndices;
-    filteredIndices.reserve(currentSnapshots.size());
-
-    for (size_t i = 0; i < currentSnapshots.size(); ++i)
+    const bool filterDirty = (currentVersion != m_CachedFilterVersion || searchTerm != m_CachedSearchTerm);
+    if (filterDirty)
     {
-        if (searchTerm.empty())
+        m_CachedFilteredIndices.clear();
+        m_CachedFilteredIndices.reserve(currentSnapshots.size());
+
+        for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            filteredIndices.push_back(i);
-        }
-        else
-        {
-            // Case-insensitive search in process name
-            const auto& name = currentSnapshots[i].name;
-            bool found = false;
-            if (name.size() >= searchTerm.size())
+            if (searchTerm.empty())
             {
-                for (size_t j = 0; j <= name.size() - searchTerm.size(); ++j)
+                m_CachedFilteredIndices.push_back(i);
+            }
+            else
+            {
+                // Case-insensitive search in process name
+                const auto& name = currentSnapshots[i].name;
+                bool found = false;
+                if (name.size() >= searchTerm.size())
                 {
-                    bool match = true;
-                    for (size_t k = 0; k < searchTerm.size(); ++k)
+                    for (size_t j = 0; j <= name.size() - searchTerm.size(); ++j)
                     {
-                        if (lowerAscii(name[j + k]) != lowerAscii(searchTerm[k]))
+                        bool match = true;
+                        for (size_t k = 0; k < searchTerm.size(); ++k)
                         {
-                            match = false;
+                            if (lowerAscii(name[j + k]) != lowerAscii(searchTerm[k]))
+                            {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match)
+                        {
+                            found = true;
                             break;
                         }
                     }
-                    if (match)
-                    {
-                        found = true;
-                        break;
-                    }
+                }
+                if (found)
+                {
+                    m_CachedFilteredIndices.push_back(i);
                 }
             }
-            if (found)
+        }
+
+        m_CachedRunningCount = 0;
+        for (const auto& proc : currentSnapshots)
+        {
+            if (proc.displayState == "Running")
             {
-                filteredIndices.push_back(i);
+                ++m_CachedRunningCount;
             }
         }
+
+        if (searchTerm.empty())
+        {
+            m_CachedSummaryStr = std::format("{:L} processes, {:L} running",
+                                             static_cast<long long>(currentSnapshots.size()),
+                                             static_cast<long long>(m_CachedRunningCount));
+        }
+        else
+        {
+            m_CachedSummaryStr = std::format("{:L} / {:L} processes",
+                                             static_cast<long long>(m_CachedFilteredIndices.size()),
+                                             static_cast<long long>(currentSnapshots.size()));
+        }
+
+        m_CachedFilterVersion = currentVersion;
+        m_CachedSearchTerm = std::string(searchTerm);
+
+        // Reset sorted indices to natural order so the next list-view sort starts from scratch.
+        // This keeps m_CachedFilteredIndices always in natural order for tree view.
+        m_CachedSortedIndices = m_CachedFilteredIndices;
     }
 
     // Process count with state summary (filtered/total)
     ImGui::SameLine();
-
-    // Count processes by state
-    size_t runningCount = 0;
-    for (const auto& proc : currentSnapshots)
-    {
-        if (proc.displayState == "Running")
-        {
-            ++runningCount;
-        }
-    }
-
-    std::string summaryStr;
-    if (searchTerm.empty())
-    {
-        summaryStr = std::format(
-            "{:L} processes, {:L} running", static_cast<long long>(currentSnapshots.size()), static_cast<long long>(runningCount));
-    }
-    else
-    {
-        summaryStr = std::format(
-            "{:L} / {:L} processes", static_cast<long long>(filteredIndices.size()), static_cast<long long>(currentSnapshots.size()));
-    }
 
     // Get a stable button width based on the widest possible label so layout doesn't shift when toggling
     // Use cached label widths to avoid repeated CalcTextSize calls
@@ -559,9 +580,9 @@ void ProcessesPanel::renderContent()
     const float buttonWidthPx = maxLabelWidth + (style.FramePadding.x * 2.0F);
 
     const float rightEdgeX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const float textW = ImGui::CalcTextSize(summaryStr.c_str()).x;
+    const float textW = ImGui::CalcTextSize(m_CachedSummaryStr.c_str()).x;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdgeX - textW - buttonWidthPx - style.ItemSpacing.x));
-    ImGui::TextUnformatted(summaryStr.c_str());
+    ImGui::TextUnformatted(m_CachedSummaryStr.c_str());
 
     // Tree view toggle button
     ImGui::SameLine();
@@ -668,7 +689,10 @@ void ProcessesPanel::renderContent()
         {
             if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
             {
-                if (sortSpecs->SpecsCount > 0)
+                // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
+                // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
+                // on every frame when neither the data nor the sort column has changed.
+                if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty))
                 {
                     const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
                     const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
@@ -684,7 +708,10 @@ void ProcessesPanel::renderContent()
 
                     const ProcessColumn sortCol = *sortColOpt;
 
-                    std::ranges::sort(filteredIndices,
+                    // Sort m_CachedSortedIndices (a copy of natural order) so that
+                    // m_CachedFilteredIndices remains in PID/natural order for tree view.
+                    m_CachedSortedIndices = m_CachedFilteredIndices;
+                    std::ranges::sort(m_CachedSortedIndices,
                                       [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
                                       {
                                           const auto& procA = currentSnapshots[a];
@@ -770,6 +797,7 @@ void ProcessesPanel::renderContent()
                                               return false;
                                           }
                                       });
+                    sortSpecs->SpecsDirty = false;
                 }
             }
         } // End of sorting (disabled in tree view mode)
@@ -778,19 +806,19 @@ void ProcessesPanel::renderContent()
         if (m_TreeViewEnabled)
         {
             // Render tree view (tree is rebuilt in onUpdate on refresh timer)
-            renderTreeView(currentSnapshots, filteredIndices, m_CachedTree);
+            renderTreeView(currentSnapshots, m_CachedFilteredIndices, m_CachedTree);
         }
         else
         {
             // Render flat list with clipper for performance
             // ImGuiListClipper only renders visible rows, skipping off-screen rows
             ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(filteredIndices.size()));
+            clipper.Begin(static_cast<int>(m_CachedSortedIndices.size()));
             while (clipper.Step())
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
                 {
-                    const auto& proc = currentSnapshots[filteredIndices[static_cast<size_t>(i)]];
+                    const auto& proc = currentSnapshots[m_CachedSortedIndices[static_cast<size_t>(i)]];
                     renderProcessRow(proc, 0, false, false);
                 }
             }
@@ -904,9 +932,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             // Tree expand/collapse button
             if (m_TreeViewEnabled && hasChildren)
             {
-                const std::string buttonLabel = isExpanded ? "-" : "+";
-                const std::string buttonId = std::format("{}##tree_btn_{}", buttonLabel, proc.uniqueKey);
-                if (ImGui::SmallButton(buttonId.c_str()))
+                // Stack-allocated button ID: avoids heap allocation per visible row per frame
+                std::array<char, 40> buttonIdBuf{};
+                const char buttonChar = isExpanded ? '-' : '+';
+                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
+                *btnRes.out = '\0';
+                if (ImGui::SmallButton(buttonIdBuf.data()))
                 {
                     // Toggle collapsed state using uniqueKey
                     if (isExpanded)
@@ -927,10 +958,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 ImGui::SameLine();
             }
 
-            const std::string label = UI::Format::formatId(proc.pid);
-            const std::string selectableId = std::format("##pid_select_{}", proc.uniqueKey);
+            // Stack-allocated label and selectable ID — avoids heap allocations per visible row per frame
+            std::array<char, 16> labelBuf{};
+            const auto labelResult = std::to_chars(labelBuf.data(), labelBuf.data() + labelBuf.size() - 1, proc.pid);
+            *labelResult.ptr = '\0';
+            const std::string_view label(labelBuf.data(), static_cast<std::size_t>(labelResult.ptr - labelBuf.data()));
+
+            std::array<char, 40> selectableIdBuf{};
+            auto selRes = std::format_to_n(selectableIdBuf.data(), selectableIdBuf.size() - 1, "##pid_select_{}", proc.uniqueKey);
+            *selRes.out = '\0';
             if (ImGui::Selectable(
-                    selectableId.c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    selectableIdBuf.data(), isSelected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
             {
                 m_SelectedPid = proc.pid;
 
@@ -1085,12 +1123,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         }
 
         case ProcessColumn::Priority:
-        {
-            // Display human-readable priority label (High, Above Normal, Normal, Below Normal, Idle)
-            const std::string text{Domain::Priority::getPriorityLabel(proc.nice)};
-            renderRightAlignedText(text);
+            // getPriorityLabel returns string_view into static storage — no allocation needed
+            renderRightAlignedText(Domain::Priority::getPriorityLabel(proc.nice));
             break;
-        }
 
         case ProcessColumn::Threads:
         {
@@ -1139,8 +1174,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.ioReadBytesPerSec > 0.0)
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec);
-                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioReadBytesPerSec, unit);
-                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW, true);
+                const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(proc.ioReadBytesPerSec, unit);
+                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW);
             }
             else
             {
@@ -1154,8 +1189,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.ioWriteBytesPerSec > 0.0)
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec);
-                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.ioWriteBytesPerSec, unit);
-                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW, true);
+                const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(proc.ioWriteBytesPerSec, unit);
+                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW);
             }
             else
             {
@@ -1169,8 +1204,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.netSentBytesPerSec > 0.0)
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec);
-                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netSentBytesPerSec, unit);
-                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW, true);
+                const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(proc.netSentBytesPerSec, unit);
+                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW);
             }
             else
             {
@@ -1184,8 +1219,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (proc.netReceivedBytesPerSec > 0.0)
             {
                 const auto unit = UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec);
-                const auto parts = UI::Format::splitBytesPerSecForAlignment(proc.netReceivedBytesPerSec, unit);
-                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW, true);
+                const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(proc.netReceivedBytesPerSec, unit);
+                renderDecimalAligned(parts, unitBytesPerSecW, singleDigitW);
             }
             else
             {
