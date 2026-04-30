@@ -146,7 +146,9 @@ jobs:
           path: dist/
 
       - name: Stage SBOM into dist
-        run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${{ steps.version.outputs.label }}-sbom.spdx.json"
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
+        run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-sbom.spdx.json"
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
