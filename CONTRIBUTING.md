@@ -415,7 +415,11 @@ By default, benchmarks output to console. You can also:
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_SystemModel_*` | System metric sampling and history accessor performance |
+| `BM_SystemModel_MemoryGrowth` | Memory growth over repeated SystemModel refresh cycles |
+| `BM_SystemProbe_Sample` | Raw OS system probe API performance |
 | `BM_Format_*` | UI formatting functions |
+| `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 
 ### Memory Tracking
 
@@ -503,6 +507,101 @@ cmake --build --preset debug
 
 # Each .cpp generates a .json trace file
 # Open in Chrome's chrome://tracing or Perfetto
+```
+
+## Profile-Guided Optimization (PGO)
+
+PGO uses real runtime behavior to guide the compiler's optimization decisions — inlining, branch prediction hints, layout — resulting in measurable throughput gains (typically 5–15% on hot paths). TaskSmack uses Clang's instrumentation-based PGO.
+
+### How it works
+
+1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
+2. **Run the binary** (benchmarks and/or the app itself) to collect branch-count data into `.profraw` files
+3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
+4. **Build the optimised binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
+
+### Automated workflow (recommended)
+
+Use the provided helper scripts to run all three phases:
+
+```bash
+# Linux – full workflow (build instrumented, run benchmarks, merge, build optimised)
+./tools/pgo.sh
+
+# Run individual phases
+./tools/pgo.sh generate   # Step 1 + 2: instrumented build + profile collection
+./tools/pgo.sh merge      # Step 3: merge *.profraw → profiles/tasksmack.profdata
+./tools/pgo.sh use        # Step 4: build PGO-optimised binary
+
+# Optimised binary ends up at:
+build/pgo-use/bin/TaskSmack
+```
+
+```powershell
+# Windows – full workflow
+pwsh tools/pgo.ps1
+
+# Individual phases
+pwsh tools/pgo.ps1 generate
+pwsh tools/pgo.ps1 merge
+pwsh tools/pgo.ps1 use
+
+# Optimised binary ends up at:
+build\win-pgo-use\bin\TaskSmack.exe
+```
+
+### Manual workflow
+
+```bash
+# Step 1 – instrumented build
+cmake --preset pgo-generate
+cmake --build --preset pgo-generate
+
+# Step 2 – collect profile data
+# %p in LLVM_PROFILE_FILE expands to the PID, preventing clobbering during parallel runs
+mkdir -p profiles
+LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
+    ./build/pgo-generate/bin/TaskSmackBenchmarks --benchmark_min_time=0.5
+
+# Optionally run the app too (more representative sample of UI paths)
+LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
+    ./build/pgo-generate/bin/TaskSmack
+# (exit after a few seconds of normal use)
+
+# Step 3 – merge profraw files
+llvm-profdata merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
+
+# Step 4 – PGO-optimised build (reads profiles/tasksmack.profdata)
+cmake --preset pgo-use
+cmake --build --preset pgo-use
+```
+
+### Profile data files
+
+The `profiles/` directory stores collected `.profraw` and merged `.profdata` files:
+
+- `profiles/*.profraw` – per-run raw profile data (auto-cleaned by `pgo.sh generate`)
+- `profiles/tasksmack.profdata` – merged profile data consumed by the `pgo-use` preset
+
+These files are `.gitignore`-d and should not be committed. Re-generate them whenever significant code changes are made to keep the profile representative.
+
+### Tips
+
+- **Run real workloads, not just benchmarks.** The benchmarks cover hot paths well, but briefly running the app with a few hundred processes visible gives the compiler more signal for UI and rendering code.
+- **Re-profile after large refactors.** Stale profile data still improves performance, but fresh data gives the best results.
+- **Combine with the `optimized` preset flags.** The `pgo-use` preset already includes `-O3 -march=x86-64-v3` for maximum effect.
+- **Verify improvement.** Compare the benchmark preset against the pgo-use preset:
+
+```bash
+# Baseline (unguided optimised build)
+cmake --preset benchmark && cmake --build --preset benchmark
+./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/baseline.json
+
+# PGO-optimised (after running tools/pgo.sh)
+./build/pgo-use/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/pgo.json
+
+# Compare (requires: pip install google-benchmark)
+python -m google_benchmark.compare /tmp/baseline.json /tmp/pgo.json
 ```
 
 ## Packaging (CPack)

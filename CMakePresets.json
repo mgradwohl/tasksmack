@@ -179,6 +179,31 @@
             }
         },
         {
+            "name": "pgo-generate",
+            "displayName": "PGO Generate",
+            "description": "Instrumented build to collect profiling data for PGO (run tools/pgo.sh after building)",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG -fprofile-instr-generate",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-generate",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-generate",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "pgo-use",
+            "displayName": "PGO Use",
+            "description": "PGO-optimized build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.sh to generate)",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata"
+            }
+        },
+        {
             "name": "win-debug",
             "displayName": "Windows Debug",
             "description": "Debug build for Windows",
@@ -268,6 +293,33 @@
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
+        },
+        {
+            "name": "win-pgo-generate",
+            "displayName": "Windows PGO Generate",
+            "description": "Instrumented build to collect profiling data for PGO on Windows (run tools/pgo.ps1 after building)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-pgo-generate",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG -fprofile-instr-generate",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fprofile-instr-generate",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fprofile-instr-generate",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "win-pgo-use",
+            "displayName": "Windows PGO Use",
+            "description": "PGO-optimized Windows build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.ps1 to generate)",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-pgo-use",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fprofile-instr-use=${sourceDir}/profiles/tasksmack.profdata"
+            }
         }
     ],
     "buildPresets": [
@@ -322,6 +374,16 @@
             "configurePreset": "benchmark"
         },
         {
+            "name": "pgo-generate",
+            "displayName": "PGO Generate",
+            "configurePreset": "pgo-generate"
+        },
+        {
+            "name": "pgo-use",
+            "displayName": "PGO Use",
+            "configurePreset": "pgo-use"
+        },
+        {
             "name": "win-debug",
             "displayName": "Windows Debug",
             "configurePreset": "win-debug"
@@ -360,6 +422,16 @@
             "name": "win-benchmark",
             "displayName": "Windows Benchmark",
             "configurePreset": "win-benchmark"
+        },
+        {
+            "name": "win-pgo-generate",
+            "displayName": "Windows PGO Generate",
+            "configurePreset": "win-pgo-generate"
+        },
+        {
+            "name": "win-pgo-use",
+            "displayName": "Windows PGO Use",
+            "configurePreset": "win-pgo-use"
         }
     ],
     "testPresets": [
