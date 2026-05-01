@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <ranges>
 #include <string>
 #include <thread>
@@ -585,7 +586,10 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesPerGPUUtilization
     // enumerateGPUs() must be called first to build the LUID map used in
     // mergePDHSystemWideUtilization(). This mirrors how GPUModel uses the probe.
     auto gpus = probe.enumerateGPUs();
-    ASSERT_GE(gpus.size(), 1ULL) << "Must have at least one GPU to test counter reading";
+    if (gpus.empty())
+    {
+        GTEST_SKIP() << "No hardware GPUs enumerated by DXGI; skipping GPU counter read test";
+    }
 
     auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), gpus.size()) << "Counter count should match GPU count";
