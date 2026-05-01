@@ -335,11 +335,12 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         {
             // No LUID mapping available (enumerateGPUs not yet called).
             // Skip rather than falling back to the inflated system-wide total.
-            spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: No LUID mapping for GPU {}", dxgiCounter.gpuId);
+            spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: No LUID mapping for GPU {}. Ensure enumerateGPUs() was called first.",
+                          dxgiCounter.gpuId);
             continue;
         }
 
-        const std::string& luidId = mapIt->second;
+        const auto& luidId = mapIt->second;
         auto utilIt = utilizationByLuid.find(luidId);
         if (utilIt != utilizationByLuid.end())
         {

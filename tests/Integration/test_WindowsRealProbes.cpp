@@ -14,7 +14,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <ranges>
+#include <string>
 #include <thread>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -492,6 +495,33 @@ TEST(WindowsRealProbesTest, ProbeHandlesProcessExitingDuringEnumeration)
 // WindowsGPUProbe LUID Matching Tests
 // =============================================================================
 
+namespace
+{
+
+/// Logs a diagnostic message when all GPUs report identical non-zero utilization
+/// on a multi-GPU system.  Genuine equal load across GPUs is valid, so this does
+/// not fail the test — it just records the observation for developers investigating
+/// per-GPU breakdown accuracy.
+void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounters>& counters)
+{
+    bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
+    if (!hasNonZero)
+    {
+        return; // All idle — nothing to check
+    }
+
+    const double firstUtil = counters[0].utilizationPercent;
+    bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return c.utilizationPercent == firstUtil; });
+
+    if (allSame)
+    {
+        GTEST_LOG_(INFO) << "All " << counters.size() << " GPUs report identical utilization (" << firstUtil
+                         << "%). This is expected when load is truly balanced or GPUs are idle.";
+    }
+}
+
+} // namespace
+
 TEST(WindowsGPUProbeTest, EnumerateGPUsReturnsAtLeastOneGPU)
 {
     Platform::WindowsGPUProbe probe;
@@ -521,13 +551,8 @@ TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
         GTEST_SKIP() << "Need multiple GPUs to verify LUID uniqueness";
     }
 
-    // Collect all LUIDs
-    std::vector<std::string> luids;
-    luids.reserve(gpus.size());
-    for (const auto& gpu : gpus)
-    {
-        luids.push_back(gpu.luidId);
-    }
+    // Collect all LUIDs using a range-based transform
+    std::vector<std::string> luids(gpus | std::views::transform([](const auto& gpu) { return gpu.luidId; }));
 
     // Verify all LUIDs are distinct (each adapter must have a unique LUID)
     for (std::size_t i = 0; i < luids.size(); ++i)
@@ -570,25 +595,6 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesPerGPUUtilization
     // system-wide-total-to-all-GPUs bug is still present).
     if (gpus.size() >= 2)
     {
-        bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
-        if (hasNonZero)
-        {
-            // At least check that not all non-zero values are exactly the same
-            // (a sign of the inflated-total-assigned-to-all bug).
-            const double firstUtil = counters[0].utilizationPercent;
-            bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return c.utilizationPercent == firstUtil; });
-
-            // If all utilizations are 0 that's fine (system idle); if they're
-            // all identical and non-zero it may indicate the old bug — but since
-            // genuine equal load across GPUs is theoretically possible, this is
-            // only a warning, not a hard failure.
-            if (allSame && firstUtil > 0.0)
-            {
-                // Log for diagnostic purposes on multi-GPU test machines.
-                // This does not fail the test because equal load across GPUs is valid.
-                GTEST_LOG_(INFO) << "All " << counters.size() << " GPUs report identical utilization (" << firstUtil
-                                 << "%). This is expected when load is truly balanced or GPUs are idle.";
-            }
-        }
+        checkMultiGPUUtilizationDistribution(counters);
     }
 }
