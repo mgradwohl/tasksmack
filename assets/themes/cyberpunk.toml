@@ -109,6 +109,15 @@ system_fill = "#FF408159"    # Neon Pink with 35% alpha - system fill
 iowait_fill = "#FFEA0059"    # Electric Yellow with 35% alpha - iowait fill
 idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
 
+[priority]
+high   = "#FF4D33"     # Red/orange (high priority)
+normal = "#80CC33"     # Green (normal priority)
+low    = "#6666CC"     # Blue/gray (low priority)
+
+[buttons.close]
+hovered = "#CC1A1A"     # Dark red hover
+active  = "#E63333"     # Brighter red active
+
 [buttons.success]
 normal = "#00E5FF"     # Cyan
 hovered = "#18FFFF"    # Bright cyan

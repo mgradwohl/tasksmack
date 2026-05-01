@@ -6,7 +6,6 @@
 
 #include <gtest/gtest.h>
 
-#include <cstring>
 
 namespace App::Detail
 {
@@ -103,11 +102,7 @@ TEST(SettingsLayerDetailTest, AllFontSizeOptionsHaveLabels)
 {
     for (const auto& opt : FONT_SIZE_OPTIONS)
     {
-        EXPECT_NE(opt.label, nullptr) << "Font size option has null label";
-        if (opt.label != nullptr)
-        {
-            EXPECT_GT(std::strlen(opt.label), 0U) << "Font size option has empty label";
-        }
+        EXPECT_FALSE(opt.label.empty()) << "Font size option has empty label";
     }
 }
 
@@ -115,11 +110,7 @@ TEST(SettingsLayerDetailTest, AllRefreshRateOptionsHaveLabels)
 {
     for (const auto& opt : REFRESH_RATE_OPTIONS)
     {
-        EXPECT_NE(opt.label, nullptr) << "Refresh rate option has null label (valueMs=" << opt.valueMs << ")";
-        if (opt.label != nullptr)
-        {
-            EXPECT_GT(std::strlen(opt.label), 0U) << "Refresh rate option has empty label (valueMs=" << opt.valueMs << ")";
-        }
+        EXPECT_FALSE(opt.label.empty()) << "Refresh rate option has empty label (valueMs=" << opt.valueMs << ")";
     }
 }
 
@@ -127,11 +118,7 @@ TEST(SettingsLayerDetailTest, AllHistoryOptionsHaveLabels)
 {
     for (const auto& opt : HISTORY_OPTIONS)
     {
-        EXPECT_NE(opt.label, nullptr) << "History option has null label (valueSeconds=" << opt.valueSeconds << ")";
-        if (opt.label != nullptr)
-        {
-            EXPECT_GT(std::strlen(opt.label), 0U) << "History option has empty label (valueSeconds=" << opt.valueSeconds << ")";
-        }
+        EXPECT_FALSE(opt.label.empty()) << "History option has empty label (valueSeconds=" << opt.valueSeconds << ")";
     }
 }
 
@@ -140,7 +127,7 @@ TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
     for (const auto& opt : REFRESH_RATE_OPTIONS)
     {
         EXPECT_GT(opt.valueMs, 0) << "Refresh rate option has non-positive valueMs: " << opt.valueMs
-                                  << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
+                                  << " (label=" << opt.label << ")";
     }
 }
 
@@ -149,7 +136,7 @@ TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
     for (const auto& opt : HISTORY_OPTIONS)
     {
         EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds
-                                       << " (label=" << (opt.label != nullptr ? opt.label : "<null>") << ")";
+                                       << " (label=" << opt.label << ")";
     }
 }
 

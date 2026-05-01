@@ -149,6 +149,15 @@ void Theme::loadDefaultFallbackTheme()
     fallback.navWindowingDimBg = ImVec4(0.80F, 0.80F, 0.80F, 0.20F);
     fallback.modalWindowDimBg = ImVec4(0.80F, 0.80F, 0.80F, 0.35F);
 
+    // Close button colors (title bar ×)
+    fallback.closeButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
+    fallback.closeButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
+
+    // Priority slider gradient endpoints
+    fallback.priorityHighColor = ImVec4(1.0F, 0.3F, 0.2F, 1.0F);
+    fallback.priorityNormalColor = ImVec4(0.5F, 0.8F, 0.2F, 1.0F);
+    fallback.priorityLowColor = ImVec4(0.4F, 0.4F, 0.8F, 1.0F);
+
     // Add as the initial theme
     DiscoveredTheme fallbackInfo;
     fallbackInfo.id = "fallback";

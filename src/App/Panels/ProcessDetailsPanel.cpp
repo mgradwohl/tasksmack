@@ -123,6 +123,9 @@ struct ProcessDetailsPanel::PrioritySliderContext
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
+    ImVec4 priorityHighColor;   // Theme color for high-priority end
+    ImVec4 priorityNormalColor; // Theme color for normal priority
+    ImVec4 priorityLowColor;    // Theme color for low-priority end
 };
 
 void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime)
@@ -1838,6 +1841,9 @@ void ProcessDetailsPanel::renderActions()
         ctx.niceValue = m_PriorityNiceValue;
         ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
         ctx.style = &style;
+        ctx.priorityHighColor = theme.scheme().priorityHighColor;
+        ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
+        ctx.priorityLowColor = theme.scheme().priorityLowColor;
 
         // Reserve space for badge above slider (offset by High label width)
         const ImVec2 rowStart = ImGui::GetCursorScreenPos();
@@ -1978,7 +1984,7 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + PRIORITY_BADGE_HEIGHT);
 
     // Badge color based on nice value
-    const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue);
+    const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
 
     // Draw badge rectangle with rounded corners
     drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, PRIORITY_BADGE_CORNER_RADIUS);
@@ -2005,8 +2011,8 @@ void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const Prior
         const float t2 = static_cast<float>(i + 1) / PRIORITY_GRADIENT_SEGMENTS;
         const int nice1 = NICE_MIN + static_cast<int>(t1 * static_cast<float>(NICE_RANGE));
         const int nice2 = NICE_MIN + static_cast<int>(t2 * static_cast<float>(NICE_RANGE));
-        const ImU32 col1 = getNiceColor(nice1);
-        const ImU32 col2 = getNiceColor(nice2);
+        const ImU32 col1 = getNiceColor(nice1, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
+        const ImU32 col2 = getNiceColor(nice2, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
 
         const ImVec2 segMin(ctx.sliderMin.x + (static_cast<float>(i) * segmentWidth), ctx.sliderMin.y);
         const ImVec2 segMax(ctx.sliderMin.x + (static_cast<float>(i + 1) * segmentWidth), ctx.sliderMax.y);

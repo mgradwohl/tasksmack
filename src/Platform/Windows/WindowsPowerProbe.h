@@ -15,8 +15,8 @@ class WindowsPowerProbe : public IPowerProbe
 
     WindowsPowerProbe(const WindowsPowerProbe&) = delete;
     WindowsPowerProbe& operator=(const WindowsPowerProbe&) = delete;
-    WindowsPowerProbe(WindowsPowerProbe&&) = default;
-    WindowsPowerProbe& operator=(WindowsPowerProbe&&) = default;
+    WindowsPowerProbe(WindowsPowerProbe&&) noexcept = default;
+    WindowsPowerProbe& operator=(WindowsPowerProbe&&) noexcept = default;
 
     [[nodiscard]] PowerCounters read() override;
     [[nodiscard]] PowerCapabilities capabilities() const override;

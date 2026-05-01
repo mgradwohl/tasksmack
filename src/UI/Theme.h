@@ -112,6 +112,15 @@ struct ColorScheme
     ImVec4 successButtonHovered;
     ImVec4 successButtonActive;
 
+    // Close button colors (title bar ×)
+    ImVec4 closeButtonHovered;
+    ImVec4 closeButtonActive;
+
+    // Priority slider gradient endpoint colors
+    ImVec4 priorityHighColor;   // nice < 0 end (high priority; default: red/orange)
+    ImVec4 priorityNormalColor; // nice == 0 mid (normal priority; default: green)
+    ImVec4 priorityLowColor;    // nice > 0 end (low priority; default: blue)
+
     // ImGui style colors (base colors for UI chrome)
     ImVec4 windowBg;
     ImVec4 childBg;
@@ -327,6 +336,12 @@ constexpr ImVec4 hexToImVec4(std::uint32_t hex)
             static_cast<float>((hex >> 8) & 0xFF) / 255.0F,
             static_cast<float>(hex & 0xFF) / 255.0F,
             1.0F};
+}
+
+/// Return a copy of a color with a different alpha value.
+[[nodiscard]] inline ImVec4 withAlpha(const ImVec4& color, float alpha) noexcept
+{
+    return {color.x, color.y, color.z, alpha};
 }
 
 } // namespace UI

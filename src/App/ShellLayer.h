@@ -47,6 +47,9 @@ class ShellLayer : public Core::Layer
     // Active tab
     ActiveTab m_ActiveTab = ActiveTab::SystemOverview;
 
+    // FPS averaging window: accumulate frames over this many seconds before updating display
+    static constexpr float FPS_AVERAGE_WINDOW_SECONDS = 0.5F;
+
     // Frame timing
     float m_FrameTime = 0.0F;
 
@@ -54,7 +57,7 @@ class ShellLayer : public Core::Layer
     std::int32_t m_LastGpuLogPid = -1;
     bool m_LastGpuLogHasData = false;
     float m_FrameTimeAccumulator = 0.0F;
-    int m_FrameCount = 0;
+    uint32_t m_FrameCount = 0U;
     float m_DisplayedFps = 0.0F;
 };
 

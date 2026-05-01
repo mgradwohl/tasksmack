@@ -54,18 +54,21 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
  * @brief Interpolate color based on nice value (-20 to 19)
  *
  * Returns a gradient color:
- * - nice -20: Red (high priority, uses more CPU)
- * - nice 0: Green (normal priority)
- * - nice 19: Blue (low priority, yields CPU)
+ * - nice -20: high priority color (default: red/orange)
+ * - nice 0: normal priority color (default: green)
+ * - nice 19: low priority color (default: blue/gray)
  *
  * Note: Returns ImU32 directly (rather than ImVec4) because all call sites
  * use the packed format for ImDrawList operations. This avoids redundant
  * ImVec4->ImU32 conversions at each call site.
  *
  * @param nice The nice value (-20 to 19)
+ * @param high Color for high-priority end (nice == -20)
+ * @param normal Color for normal priority (nice == 0)
+ * @param low Color for low-priority end (nice == 19)
  * @return ImU32 The interpolated color in packed RGBA format
  */
-[[nodiscard]] inline auto getNiceColor(int32_t nice) -> ImU32
+[[nodiscard]] inline auto getNiceColor(int32_t nice, const ImVec4& high, const ImVec4& normal, const ImVec4& low) -> ImU32
 {
     // Clamp nice value to valid range
     nice = std::clamp(nice, NICE_MIN, NICE_MAX);
@@ -80,9 +83,9 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
         // nice = -20 -> t = 0.0 (red)
         // nice = 0   -> t = 1.0 (green)
         const float t = static_cast<float>(nice - NICE_MIN) / static_cast<float>(-NICE_MIN);
-        r = PRIORITY_COLOR_HIGH[0] + (t * (PRIORITY_COLOR_NORMAL[0] - PRIORITY_COLOR_HIGH[0]));
-        g = PRIORITY_COLOR_HIGH[1] + (t * (PRIORITY_COLOR_NORMAL[1] - PRIORITY_COLOR_HIGH[1]));
-        b = PRIORITY_COLOR_HIGH[2] + (t * (PRIORITY_COLOR_NORMAL[2] - PRIORITY_COLOR_HIGH[2]));
+        r = high.x + (t * (normal.x - high.x));
+        g = high.y + (t * (normal.y - high.y));
+        b = high.z + (t * (normal.z - high.z));
     }
     else
     {
@@ -90,9 +93,9 @@ inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};  
         // nice = 0  -> t = 0.0 (green)
         // nice = 19 -> t = 1.0 (blue)
         const float t = static_cast<float>(nice) / static_cast<float>(NICE_MAX);
-        r = PRIORITY_COLOR_NORMAL[0] + (t * (PRIORITY_COLOR_LOW[0] - PRIORITY_COLOR_NORMAL[0]));
-        g = PRIORITY_COLOR_NORMAL[1] + (t * (PRIORITY_COLOR_LOW[1] - PRIORITY_COLOR_NORMAL[1]));
-        b = PRIORITY_COLOR_NORMAL[2] + (t * (PRIORITY_COLOR_LOW[2] - PRIORITY_COLOR_NORMAL[2]));
+        r = normal.x + (t * (low.x - normal.x));
+        g = normal.y + (t * (low.y - normal.y));
+        b = normal.z + (t * (low.z - normal.z));
     }
 
     // Use std::lround for accurate color representation (avoids truncation)
