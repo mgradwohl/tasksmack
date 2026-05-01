@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <string>
 #include <system_error>
 
 namespace Core
@@ -51,23 +52,35 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
     // this degenerate condition is visible; the caller should not rely on the
     // result being absolute.
     //
-    // raw.string() can throw on some platforms when the path contains characters
-    // that cannot be represented in the current locale encoding. Use a try/catch
-    // so the warning itself cannot propagate an exception in this already-broken
-    // environment.
+    // All logging below is best-effort: raw.string() can throw when the path
+    // contains characters that cannot be represented in the current locale
+    // encoding, and spdlog::warn itself can throw.  Each warn call is wrapped in
+    // its own try/catch so that no exception can escape from this fallback path.
     try
     {
         const std::string rawStr = raw.empty() ? "<empty>" : raw.string();
-        spdlog::warn("PathService: could not resolve absolute path for '{}'; "
-                     "both absolute() and current_path() failed. "
-                     "Returning lexically-normalized raw path.",
-                     rawStr);
+        try
+        {
+            spdlog::warn("PathService: could not resolve absolute path for '{}'; "
+                         "both absolute() and current_path() failed. "
+                         "Returning lexically-normalized raw path.",
+                         rawStr);
+        }
+        catch (...)
+        {
+        }
     }
     catch (...)
     {
-        spdlog::warn("PathService: could not resolve absolute path (path contains "
-                     "non-representable characters); both absolute() and current_path() failed. "
-                     "Returning lexically-normalized raw path.");
+        try
+        {
+            spdlog::warn("PathService: could not resolve absolute path (path contains "
+                         "non-representable characters); both absolute() and current_path() failed. "
+                         "Returning lexically-normalized raw path.");
+        }
+        catch (...)
+        {
+        }
     }
     return raw.lexically_normal();
 }
