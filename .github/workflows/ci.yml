@@ -49,6 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install LLVM / Ninja / ccache
+        shell: pwsh
+        run: |
+          choco install llvm --version 22.1.0 -y
+          choco install ninja ccache -y
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -60,12 +66,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install jinja2
-
-      - name: Install LLVM / Ninja / ccache
-        shell: pwsh
-        run: |
-          choco install llvm --version 22.1.0 -y
-          choco install ninja ccache -y
 
       - name: Validate prerequisites
         shell: pwsh
