@@ -38,14 +38,6 @@ inline constexpr int32_t NICE_MIN = Domain::Priority::MIN_NICE;
 inline constexpr int32_t NICE_MAX = Domain::Priority::MAX_NICE;
 inline constexpr int32_t NICE_RANGE = NICE_MAX - NICE_MIN; // 39
 
-// Color anchors for gradient (at nice values -20, 0, 19)
-// High priority (nice -20) = red/orange
-// Normal priority (nice 0) = green
-// Low priority (nice 19) = blue/gray
-inline constexpr std::array<float, 3> PRIORITY_COLOR_HIGH = {1.0F, 0.3F, 0.2F};   // Red
-inline constexpr std::array<float, 3> PRIORITY_COLOR_NORMAL = {0.5F, 0.8F, 0.2F}; // Green
-inline constexpr std::array<float, 3> PRIORITY_COLOR_LOW = {0.4F, 0.4F, 0.8F};    // Blue
-
 // =============================================================================
 // Helper Functions
 // =============================================================================

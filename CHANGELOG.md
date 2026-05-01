@@ -327,5 +327,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tools
 
 - Add script to dismiss dependency/generated CodeQL alerts ([@mgradwohl](https://github.com/mgradwohl)) ([`0f14817`](https://github.com/mgradwohl/tasksmack/commit/0f1481755ea0b6dc1fbbf9890c6e21527ca15e49))
-
-
