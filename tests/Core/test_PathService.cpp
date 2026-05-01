@@ -6,6 +6,13 @@
 /// - userConfigDir() returns a non-empty, absolute path
 /// - Both accessors return stable values across repeated calls
 /// - PathService is non-copyable and non-movable
+///
+/// @note The is_absolute() assertions assume a functioning OS (one where at
+///       least std::filesystem::absolute() or std::filesystem::current_path()
+///       succeeds). On a severely broken system where both calls fail
+///       simultaneously, PathService logs a warning and may return a relative
+///       path. That degenerate case is not tested here because the application
+///       cannot function at all in that environment.
 
 #include "Core/PathService.h"
 

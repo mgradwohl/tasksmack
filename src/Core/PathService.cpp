@@ -2,6 +2,8 @@
 
 #include "Platform/Factory.h"
 
+#include <spdlog/spdlog.h>
+
 #include <system_error>
 
 namespace Core
@@ -12,10 +14,18 @@ namespace
 
 // Normalize a raw path from a platform provider to an absolute, cleaned path.
 // Uses the error_code overload to avoid throwing.
+//
 // Fallback order when absolute() fails:
 //   1. If raw is relative, try (current_path() / raw).lexically_normal().
-//   2. Otherwise (or if current_path() also fails), return raw.lexically_normal()
-//      so callers at least get a cleaned path even if it may still be relative.
+//   2. Return raw.lexically_normal() as a last resort.
+//
+// NOTE: the final fallback can return a relative path only when BOTH
+// std::filesystem::absolute() AND std::filesystem::current_path() fail
+// simultaneously. This can only occur in a severely broken environment (e.g.,
+// an unmounted filesystem or a chroot where the kernel refuses all CWD queries).
+// In that state the application cannot locate any of its assets or config, so
+// the relaxed invariant is acceptable. A warning is emitted so the condition is
+// at least observable at runtime.
 std::filesystem::path toAbsolute(const std::filesystem::path& raw)
 {
     std::error_code ec;
@@ -36,8 +46,14 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
         }
     }
 
-    // All fallbacks failed; return a lexically-normalized copy so the path is
-    // at least cleaned even though it may not be absolute.
+    // Both absolute() and current_path() failed.  The returned path may not be
+    // absolute, violating the normal contract of PathService.  Log a warning so
+    // this degenerate condition is visible; the caller should not rely on the
+    // result being absolute.
+    spdlog::warn("PathService: could not resolve absolute path for '{}'; "
+                 "both absolute() and current_path() failed. "
+                 "Returning lexically-normalized raw path.",
+                 raw.string());
     return raw.lexically_normal();
 }
 
