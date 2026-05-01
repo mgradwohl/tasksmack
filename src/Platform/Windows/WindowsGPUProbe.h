@@ -33,7 +33,9 @@ class WindowsGPUProbe : public IGPUProbe
     /// @note enumerateGPUs() must be called before readGPUCounters() to populate
     /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
     /// Without a prior call to enumerateGPUs(), readGPUCounters() will return 0%
-    /// PDH utilization for all adapters and log a debug warning per adapter.
+    /// PDH utilization for all adapters. It may also log a debug message when
+    /// PDH adapter utilization data is present but the DXGI→LUID mapping needed
+    /// to merge that data is missing.
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
