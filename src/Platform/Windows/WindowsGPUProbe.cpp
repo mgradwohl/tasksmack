@@ -258,6 +258,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
         // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't)
         // Always use NVML utilization when available, even if it's 0 (which is valid at idle)
         dxgiCounter.utilizationPercent = nvmlCounter.utilizationPercent;
+        dxgiCounter.hasUtilizationSource = true; // Mark so PDH merge doesn't overwrite a valid 0%
         spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: GPU {} utilization = {}%", dxgiIdx, nvmlCounter.utilizationPercent);
 
         // Prefer NVML memory metrics (more accurate)
@@ -277,12 +278,12 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         return;
     }
 
-    // Check if we need PDH at all - if all GPUs have non-zero utilization, skip
-    // (they likely came from NVML or another source)
+    // Check if we need PDH at all - if all GPUs already have a hardware utilization source, skip
+    // (they came from NVML or another authoritative source; 0% at idle is valid)
     bool allHaveUtilization = true;
     for (const auto& counter : dxgiCounters)
     {
-        if (counter.utilizationPercent == 0.0)
+        if (!counter.hasUtilizationSource)
         {
             allHaveUtilization = false;
             break;
@@ -325,9 +326,9 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
     // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
     for (auto& dxgiCounter : dxgiCounters)
     {
-        if (dxgiCounter.utilizationPercent != 0.0)
+        if (dxgiCounter.hasUtilizationSource)
         {
-            continue; // Already filled by NVML or another source
+            continue; // Already filled by NVML or another hardware source
         }
 
         auto mapIt = m_DXGIIdToLuidId.find(dxgiCounter.gpuId);

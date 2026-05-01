@@ -502,6 +502,12 @@ namespace
 /// on a multi-GPU system.  Genuine equal load across GPUs is valid, so this does
 /// not fail the test — it just records the observation for developers investigating
 /// per-GPU breakdown accuracy.
+///
+/// Note: A deterministic regression test for the PDH→DXGI LUID matching logic
+/// (e.g. asserting that distinct LUID buckets map to distinct adapters) requires
+/// synthetic probe counters and belongs in a unit test, not an integration test
+/// that reads live hardware state.  The bounds check in the calling test (utilization
+/// in [0, 100]) is the integration-level correctness assertion.
 void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounters>& counters)
 {
     bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
@@ -551,8 +557,10 @@ TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
         GTEST_SKIP() << "Need multiple GPUs to verify LUID uniqueness";
     }
 
-    // Collect all LUIDs using a range-based transform
-    std::vector<std::string> luids(gpus | std::views::transform([](const auto& gpu) { return gpu.luidId; }));
+    // Collect all LUIDs
+    std::vector<std::string> luids;
+    luids.reserve(gpus.size());
+    std::ranges::transform(gpus, std::back_inserter(luids), [](const auto& gpu) { return gpu.luidId; });
 
     // Verify all LUIDs are distinct (each adapter must have a unique LUID)
     for (std::size_t i = 0; i < luids.size(); ++i)
