@@ -70,7 +70,6 @@
       - "SECURITY.md"
       - ".github/codeql/**"
       - ".github/workflows/osv-scanner.yml"
-      - "osv-scanner.toml"
 
 "release":
   - changed-files:
