@@ -34,7 +34,7 @@ float pointsToPixels(float points)
     }
 
     // pixels = points * (DPI / 72), where effective DPI = BASE_DPI * scale
-    return points * ((BASE_DPI * scale) / 72.0F);
+    return points * (BASE_DPI * scale) / 72.0F;
 }
 
 // Best-effort system monospace font discovery (platform-specific, prefers widely available defaults)
