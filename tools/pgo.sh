@@ -71,6 +71,8 @@ phase_generate() {
 
     # Run all benchmarks; LLVM_PROFILE_FILE drives per-process .profraw output.
     # %p expands to the PID so parallel processes don't clobber each other.
+    # The KEY=value prefix scopes the assignment to the subprocess only, so any
+    # pre-existing LLVM_PROFILE_FILE in the current shell is automatically preserved.
     LLVM_PROFILE_FILE="${PROFRAW_PATTERN}" \
         "${BENCH_BIN}" --benchmark_min_time=0.5 2>&1
 
