@@ -41,7 +41,8 @@ TEST(AssetPathTest, ReturnsThirdCandidateForFHSBinLayout)
     // Only candidate 3 (FHS, binary in bin/) matches
     // exeDir = /usr/bin → candidate 3 = /usr/bin/../share/<app>/assets → /usr/share/<app>/assets
     const std::filesystem::path exeDir = "/usr/bin";
-    const std::filesystem::path expected = std::filesystem::path("/usr") / TASKSMACK_INSTALL_DATADIR / TASKSMACK_PROJECT_NAME_LOWER / "assets";
+    const std::filesystem::path expected =
+        std::filesystem::path("/usr") / TASKSMACK_INSTALL_DATADIR / TASKSMACK_PROJECT_NAME_LOWER / "assets";
     int callCount = 0;
     const auto result = selectAssetsDir(exeDir,
                                         [&](const std::filesystem::path& p)
