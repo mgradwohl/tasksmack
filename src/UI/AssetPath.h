@@ -23,8 +23,7 @@ namespace UI
 /// Testable inner implementation: selects the assets directory given a custom executable
 /// directory and an existence predicate. Probes candidate paths in priority order and
 /// returns the first for which \p probeExists returns true, or falls back to candidate 1.
-[[nodiscard]] std::filesystem::path selectAssetsDir(
-    const std::filesystem::path& exeDir,
-    const std::function<bool(const std::filesystem::path&)>& probeExists);
+[[nodiscard]] std::filesystem::path selectAssetsDir(const std::filesystem::path& exeDir,
+                                                    const std::function<bool(const std::filesystem::path&)>& probeExists);
 
 } // namespace UI

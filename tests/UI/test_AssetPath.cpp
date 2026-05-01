@@ -1,5 +1,4 @@
 #include "UI/AssetPath.h"
-
 #include "version.h"
 
 #include <gtest/gtest.h>
@@ -28,11 +27,11 @@ TEST(AssetPathTest, SkipsFirstAndReturnsSecondCandidateOnMatch)
     const std::filesystem::path expected = exeDir / "share" / TASKSMACK_PROJECT_NAME_LOWER / "assets";
     int callCount = 0;
     const auto result = selectAssetsDir(exeDir,
-        [&](const std::filesystem::path& p)
-        {
-            ++callCount;
-            return p == expected;
-        });
+                                        [&](const std::filesystem::path& p)
+                                        {
+                                            ++callCount;
+                                            return p == expected;
+                                        });
     EXPECT_EQ(result, expected);
     EXPECT_EQ(callCount, 2); // candidate 1 was probed and missed
 }
@@ -42,15 +41,14 @@ TEST(AssetPathTest, ReturnsThirdCandidateForFHSBinLayout)
     // Only candidate 3 (FHS, binary in bin/) matches
     // exeDir = /usr/bin → candidate 3 = /usr/bin/../share/<app>/assets → /usr/share/<app>/assets
     const std::filesystem::path exeDir = "/usr/bin";
-    const std::filesystem::path expected =
-        std::filesystem::path("/usr") / "share" / TASKSMACK_PROJECT_NAME_LOWER / "assets";
+    const std::filesystem::path expected = std::filesystem::path("/usr") / "share" / TASKSMACK_PROJECT_NAME_LOWER / "assets";
     int callCount = 0;
     const auto result = selectAssetsDir(exeDir,
-        [&](const std::filesystem::path& p)
-        {
-            ++callCount;
-            return p == expected;
-        });
+                                        [&](const std::filesystem::path& p)
+                                        {
+                                            ++callCount;
+                                            return p == expected;
+                                        });
     EXPECT_EQ(result, expected);
     EXPECT_EQ(callCount, 3); // candidates 1 and 2 were probed and missed
 }
@@ -61,8 +59,7 @@ TEST(AssetPathTest, FallsBackToFirstCandidateWhenNoneExist)
 {
     // No candidate matches: should return candidate 1 as fallback
     const std::filesystem::path exeDir = "/nonexistent/exe";
-    const auto result =
-        selectAssetsDir(exeDir, [](const std::filesystem::path& /*p*/) { return false; });
+    const auto result = selectAssetsDir(exeDir, [](const std::filesystem::path& /*p*/) { return false; });
     EXPECT_EQ(result, exeDir / "assets");
 }
 

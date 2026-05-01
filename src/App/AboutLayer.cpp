@@ -201,7 +201,7 @@ void AboutLayer::loadIcon()
 {
     const auto iconsDir = UI::findAssetsDir() / "icons";
 
-    constexpr std::array<std::string_view, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
+    constexpr std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
     for (const auto file : sizes)
     {
