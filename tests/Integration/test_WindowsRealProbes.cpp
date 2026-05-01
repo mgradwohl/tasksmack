@@ -4,6 +4,7 @@
 /// These tests validate actual Windows API calls and real system behavior.
 /// They ensure probes correctly handle real-world scenarios on Windows.
 
+#include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
@@ -12,7 +13,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <iterator>
+#include <ranges>
+#include <string>
 #include <thread>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -483,5 +490,131 @@ TEST(WindowsRealProbesTest, ProbeHandlesProcessExitingDuringEnumeration)
         WaitForSingleObject(pi.hProcess, 1000);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+    }
+}
+
+// =============================================================================
+// WindowsGPUProbe LUID Matching Tests
+// =============================================================================
+
+namespace
+{
+
+/// Logs a diagnostic message when all GPUs report identical non-zero utilization
+/// on a multi-GPU system.  Genuine equal load across GPUs is valid, so this does
+/// not fail the test — it just records the observation for developers investigating
+/// per-GPU breakdown accuracy.
+///
+/// Note: A deterministic regression test for the PDH→DXGI LUID matching logic
+/// (e.g. asserting that distinct LUID buckets map to distinct adapters) requires
+/// synthetic probe counters and belongs in a unit test, not an integration test
+/// that reads live hardware state.  The bounds check in the calling test (utilization
+/// in [0, 100]) is the integration-level correctness assertion.
+void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounters>& counters)
+{
+    bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
+    if (!hasNonZero)
+    {
+        return; // All idle — nothing to check
+    }
+
+    const double firstUtil = counters[0].utilizationPercent;
+    bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
+
+    if (allSame)
+    {
+        GTEST_LOG_(INFO) << "All " << counters.size() << " GPUs report identical utilization (" << firstUtil
+                         << "%). This is expected when load is truly balanced or GPUs are idle.";
+    }
+}
+
+} // namespace
+
+TEST(WindowsGPUProbeTest, EnumerateGPUsValidatesAdapterFieldsOrSkips)
+{
+    Platform::WindowsGPUProbe probe;
+    auto gpus = probe.enumerateGPUs();
+
+    // Skip if no hardware GPUs are enumerated (e.g. CI/VM environments that only
+    // expose software adapters, which DXGIGPUProbe filters out)
+    if (gpus.empty())
+    {
+        GTEST_SKIP() << "No hardware GPU adapters found — skipping on software-only environment";
+    }
+
+    for (const auto& gpu : gpus)
+    {
+        EXPECT_FALSE(gpu.id.empty()) << "GPU id should not be empty";
+        EXPECT_FALSE(gpu.name.empty()) << "GPU name should not be empty";
+        EXPECT_FALSE(gpu.luidId.empty()) << "GPU luidId should not be empty";
+
+        // luidId must start with "GPU_" (format: GPU_0x{High}_0x{Low})
+        EXPECT_TRUE(gpu.luidId.starts_with("GPU_")) << "GPU luidId should start with 'GPU_': " << gpu.luidId;
+    }
+}
+
+TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
+{
+    Platform::WindowsGPUProbe probe;
+    auto gpus = probe.enumerateGPUs();
+
+    if (gpus.size() <= 1)
+    {
+        GTEST_SKIP() << "Need multiple GPUs to verify LUID uniqueness";
+    }
+
+    // Collect all LUIDs
+    std::vector<std::string> luids;
+    luids.reserve(gpus.size());
+    std::ranges::transform(gpus, std::back_inserter(luids), [](const auto& gpu) { return gpu.luidId; });
+
+    // Verify all LUIDs are distinct (each adapter must have a unique LUID)
+    for (std::size_t i = 0; i < luids.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < luids.size(); ++j)
+        {
+            EXPECT_NE(luids[i], luids[j]) << "Each GPU should have a distinct LUID; GPU " << i << " and GPU " << j << " both have LUID "
+                                          << luids[i];
+        }
+    }
+}
+
+TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesValidUtilizationRange)
+{
+    Platform::WindowsGPUProbe probe;
+
+    // enumerateGPUs() must be called first to build the LUID map used in
+    // mergePDHAdapterUtilization(). This mirrors how GPUModel uses the probe.
+    auto gpus = probe.enumerateGPUs();
+    if (gpus.empty())
+    {
+        GTEST_SKIP() << "No hardware GPUs enumerated by DXGI; skipping GPU counter read test";
+    }
+
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), gpus.size()) << "Counter count should match GPU count";
+
+    // On a multi-GPU system without NVML (common in CI / laptop configurations),
+    // each GPU should get its own PDH-derived utilization value.  The old bug
+    // would assign the global sum to *every* adapter.  After the fix, utilization
+    // values for different GPUs may differ when workloads are GPU-specific.
+    //
+    // On a single-GPU system the fix has no visible effect, but we still verify
+    // basic sanity: utilization is in [0, 100].
+    for (const auto& counter : counters)
+    {
+        EXPECT_GE(counter.utilizationPercent, 0.0) << "Utilization should be >= 0 for GPU " << counter.gpuId;
+        EXPECT_LE(counter.utilizationPercent, 100.0) << "Utilization should be <= 100 for GPU " << counter.gpuId;
+    }
+
+    // With two or more GPUs and PDH available, perform a diagnostic check for
+    // the old system-wide-total-to-all-GPUs bug, where every adapter could be
+    // assigned the same non-zero utilization value. This helper logs
+    // suspicious distributions for investigation but does not fail the test,
+    // because live utilization can legitimately vary based on hardware and
+    // workload timing.
+    if (gpus.size() >= 2)
+    {
+        checkMultiGPUUtilizationDistribution(counters);
     }
 }

@@ -4,7 +4,9 @@
 #include "Platform/IGPUProbe.h"
 
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -30,6 +32,14 @@ class WindowsGPUProbe : public IGPUProbe
     WindowsGPUProbe(WindowsGPUProbe&&) = delete;
     WindowsGPUProbe& operator=(WindowsGPUProbe&&) = delete;
 
+    /// @note enumerateGPUs() must be called before readGPUCounters() to populate
+    /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
+    /// Without a prior call to enumerateGPUs(), the PDH per-adapter utilization
+    /// merge is unavailable, so PDH-backed adapter utilization will be missing
+    /// (and may remain 0% unless another source populates it). NVML may still
+    /// provide utilizationPercent independently for supported NVIDIA adapters.
+    /// A debug message may also be logged when PDH adapter utilization data is
+    /// present but the DXGI→LUID mapping needed to merge that data is missing.
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
@@ -37,8 +47,8 @@ class WindowsGPUProbe : public IGPUProbe
     void setInstanceRefreshInterval(std::chrono::seconds interval) override;
 
   private:
-    void mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
-    void mergePDHSystemWideUtilization(std::vector<GPUCounters>& dxgiCounters);
+    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
+    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
@@ -46,6 +56,11 @@ class WindowsGPUProbe : public IGPUProbe
 
     // Map DXGI GPU index to NVML GPU index (for merging data)
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
+
+    // Map DXGI GPU id ("GPU0") to LUID-based id ("GPU_0x00000000_0x0000D3A0")
+    // Built during enumerateGPUs(), used in mergePDHAdapterUtilization()
+    // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
+    std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
 };
 
 } // namespace Platform
