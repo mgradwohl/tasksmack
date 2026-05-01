@@ -67,8 +67,7 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
                          rawStr);
         }
         catch (...)
-        {
-        }
+        {}
     }
     catch (...)
     {
@@ -79,8 +78,7 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
                          "Returning lexically-normalized raw path.");
         }
         catch (...)
-        {
-        }
+        {}
     }
     return raw.lexically_normal();
 }
