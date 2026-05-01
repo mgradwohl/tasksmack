@@ -43,8 +43,8 @@ class WindowsProcessProbe : public IProcessProbe
 
     WindowsProcessProbe(const WindowsProcessProbe&) = delete;
     WindowsProcessProbe& operator=(const WindowsProcessProbe&) = delete;
-    WindowsProcessProbe(WindowsProcessProbe&&) noexcept = default;
-    WindowsProcessProbe& operator=(WindowsProcessProbe&&) noexcept = default;
+    WindowsProcessProbe(WindowsProcessProbe&&) = delete;
+    WindowsProcessProbe& operator=(WindowsProcessProbe&&) = delete;
 
     [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
     [[nodiscard]] ProcessCapabilities capabilities() const override;

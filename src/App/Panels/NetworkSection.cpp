@@ -459,7 +459,8 @@ void renderNetworkSection(RenderContext& ctx)
                     {
                         if ((iface.linkSpeedMbps % 1000) == 0)
                         {
-                            ImGui::Text("%d Gbps", iface.linkSpeedMbps / 1000);
+                            const auto speedText = std::format("{} Gbps", iface.linkSpeedMbps / 1000);
+                            ImGui::TextUnformatted(speedText.c_str());
                         }
                         else
                         {

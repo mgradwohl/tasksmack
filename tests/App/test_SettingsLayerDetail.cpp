@@ -6,7 +6,6 @@
 
 #include <gtest/gtest.h>
 
-
 namespace App::Detail
 {
 namespace
@@ -126,8 +125,7 @@ TEST(SettingsLayerDetailTest, RefreshRateValuesArePositive)
 {
     for (const auto& opt : REFRESH_RATE_OPTIONS)
     {
-        EXPECT_GT(opt.valueMs, 0) << "Refresh rate option has non-positive valueMs: " << opt.valueMs
-                                  << " (label=" << opt.label << ")";
+        EXPECT_GT(opt.valueMs, 0) << "Refresh rate option has non-positive valueMs: " << opt.valueMs << " (label=" << opt.label << ")";
     }
 }
 
@@ -135,8 +133,8 @@ TEST(SettingsLayerDetailTest, HistoryValuesArePositive)
 {
     for (const auto& opt : HISTORY_OPTIONS)
     {
-        EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds
-                                       << " (label=" << opt.label << ")";
+        EXPECT_GT(opt.valueSeconds, 0) << "History option has non-positive valueSeconds: " << opt.valueSeconds << " (label=" << opt.label
+                                       << ")";
     }
 }
 

@@ -107,9 +107,9 @@ TEST(PriorityHelpersTest, GetNiceFromPositionRoundTrip)
 }
 
 // Default test colors matching the legacy hardcoded values
-static const ImVec4 TEST_HIGH   = {1.0F, 0.3F, 0.2F, 1.0F}; // Red/orange
+static const ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
 static const ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
-static const ImVec4 TEST_LOW    = {0.4F, 0.4F, 0.8F, 1.0F}; // Blue
+static const ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
 
 // =============================================================================
 // getNiceColor Tests
