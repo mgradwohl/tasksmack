@@ -206,7 +206,7 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         nvmlSourcedIds = mergeNVMLEnhancements(counters);
     }
 
-    // For GPUs without NVML, merge PDH system-wide utilization data
+    // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
 
     return counters;
