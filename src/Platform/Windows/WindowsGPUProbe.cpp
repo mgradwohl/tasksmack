@@ -350,7 +350,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
         if (utilIt != utilizationByLuid.end())
         {
             // Clamp to [0, 100] — summing engine utilizations can exceed 100,
-            // and guard against any negative PDH values from corrupted data.
+            // so keep the final per-adapter value within the expected range.
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             spdlog::debug("WindowsGPUProbe::mergePDHAdapterUtilization: GPU {} ({}) utilization = {:.1f}%",
                           dxgiCounter.gpuId,
