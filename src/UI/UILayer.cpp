@@ -96,7 +96,7 @@ UILayer::UILayer() : Layer("UILayer")
 
 UILayer::~UILayer() = default;
 
-void UILayer::loadAllFonts()
+void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
 {
     auto& theme = Theme::get();
     ImGuiIO& imguiIO = ImGui::GetIO();
@@ -106,8 +106,6 @@ void UILayer::loadAllFonts()
     // LightHinting provides better quality for UI fonts at typical screen sizes
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
-    // Locate assets directory (searches build dir and FHS install paths)
-    const auto assetsDir = findAssetsDir();
     auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
     auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = getMonospaceFontPath();
@@ -252,10 +250,12 @@ void UILayer::onAttach()
     imguiIO.IniFilename = nullptr;
 
     // Pre-bake fonts for all size presets
-    loadAllFonts();
+    // Locate assets directory once (searches build dir and FHS install paths)
+    const auto assetsDir = findAssetsDir();
+    loadAllFonts(assetsDir);
 
     // Load themes from TOML files (built-ins)
-    auto themesDir = findAssetsDir() / "themes";
+    auto themesDir = assetsDir / "themes";
     Theme::get().loadThemes(themesDir);
     spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
