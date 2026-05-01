@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cinttypes>
 #include <cstddef>
 #include <format>
 #include <functional>
@@ -459,7 +460,8 @@ void renderNetworkSection(RenderContext& ctx)
                     {
                         if ((iface.linkSpeedMbps % 1000) == 0)
                         {
-                            ImGui::Text("%d Gbps", static_cast<int>(iface.linkSpeedMbps / 1000));
+                            // safe: PRIu64 handles uint64_t without narrowing
+                            ImGui::Text("%" PRIu64 " Gbps", iface.linkSpeedMbps / 1000);
                         }
                         else
                         {
@@ -468,7 +470,7 @@ void renderNetworkSection(RenderContext& ctx)
                     }
                     else
                     {
-                        ImGui::Text("%d Mbps", static_cast<int>(iface.linkSpeedMbps));
+                        ImGui::Text("%" PRIu64 " Mbps", iface.linkSpeedMbps);
                     }
                 }
                 else
