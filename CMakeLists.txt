@@ -599,7 +599,7 @@ if(CLANG_TIDY_EXE)
         COMMENT "Running clang-tidy on project sources"
     )
     # Dependencies:
-    # - generate-clang-tidy-compile-commands: strips module and PCH flags from compile_commands.json
+    # - generate-clang-tidy-compile-commands: strips C++20 module flags from compile_commands.json
     # - copy-compile-commands: ensures compile_commands.json is in source root
     # - glad_gl_core_33: ensures GLAD headers are generated before clang-tidy runs
     add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
