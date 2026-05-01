@@ -529,9 +529,9 @@ Use the provided helper scripts to run all three phases:
 ./tools/pgo.sh
 
 # Run individual phases
-./tools/pgo.sh generate   # Step 1 + 2: instrumented build + profile collection
-./tools/pgo.sh merge      # Step 3: merge *.profraw → profiles/tasksmack.profdata
-./tools/pgo.sh use        # Step 4: build PGO-optimized binary
+./tools/pgo.sh generate   # Phase 1: instrumented build + profile collection
+./tools/pgo.sh merge      # Phase 2: merge *.profraw → profiles/tasksmack.profdata
+./tools/pgo.sh use        # Phase 3: build PGO-optimized binary
 
 # Optimized binary ends up at:
 build/pgo-use/bin/TaskSmack
@@ -553,11 +553,11 @@ build\win-pgo-use\bin\TaskSmack.exe
 ### Manual workflow
 
 ```bash
-# Step 1 – instrumented build
+# Phase 1 – instrumented build
 cmake --preset pgo-generate
 cmake --build --preset pgo-generate
 
-# Step 2 – collect profile data
+# Phase 1 (continued) – collect profile data
 # %p in LLVM_PROFILE_FILE expands to the PID, preventing clobbering during parallel runs
 mkdir -p profiles
 LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
@@ -568,10 +568,10 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
     ./build/pgo-generate/bin/TaskSmack
 # (exit after a few seconds of normal use)
 
-# Step 3 – merge profraw files
+# Phase 2 – merge profraw files
 llvm-profdata merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
-# Step 4 – PGO-optimized build (reads profiles/tasksmack.profdata)
+# Phase 3 – PGO-optimized build (reads profiles/tasksmack.profdata)
 cmake --preset pgo-use
 cmake --build --preset pgo-use
 ```

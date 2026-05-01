@@ -3,9 +3,9 @@
 #
 # Usage:
 #   ./tools/pgo.sh             # Full PGO workflow (generate + merge + use)
-#   ./tools/pgo.sh generate    # Step 1 only: instrumented build + run to collect data
-#   ./tools/pgo.sh merge       # Step 2 only: merge *.profraw → profiles/tasksmack.profdata
-#   ./tools/pgo.sh use         # Step 3 only: build PGO-optimized binary
+#   ./tools/pgo.sh generate    # Phase 1 only: instrumented build + run to collect data
+#   ./tools/pgo.sh merge       # Phase 2 only: merge *.profraw → profiles/tasksmack.profdata
+#   ./tools/pgo.sh use         # Phase 3 only: build PGO-optimized binary
 #
 # The resulting binary is at: build/pgo-use/bin/TaskSmack
 #
@@ -24,6 +24,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=tools/common.sh
+source "${SCRIPT_DIR}/common.sh"
 PROFILES_DIR="${ROOT}/profiles"
 PROFRAW_PATTERN="${PROFILES_DIR}/tasksmack-%p.profraw"
 PROFDATA="${PROFILES_DIR}/tasksmack.profdata"
@@ -83,7 +86,9 @@ phase_generate() {
 phase_merge() {
     print_step "Phase 2 – Merging profraw files → ${PROFDATA}"
 
-    require_cmd llvm-profdata
+    local llvm_profdata
+    llvm_profdata="$(find_llvm_tool llvm-profdata)" \
+        || die "'llvm-profdata' not found. Install LLVM (sudo apt install llvm-22) and ensure it is on PATH."
 
     local profraw_files=()
     while IFS= read -r -d '' f; do
@@ -95,7 +100,7 @@ phase_merge() {
     fi
 
     echo "Merging ${#profraw_files[@]} .profraw file(s)…"
-    llvm-profdata merge -sparse "${profraw_files[@]}" -o "${PROFDATA}"
+    "${llvm_profdata}" merge -sparse "${profraw_files[@]}" -o "${PROFDATA}"
 
     echo "Profile data merged: ${PROFDATA}"
     if command -v du &>/dev/null; then

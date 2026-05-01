@@ -2,9 +2,9 @@
 #
 # Usage:
 #   pwsh tools/pgo.ps1             # Full PGO workflow (generate + merge + use)
-#   pwsh tools/pgo.ps1 generate    # Step 1 only: instrumented build + run to collect data
-#   pwsh tools/pgo.ps1 merge       # Step 2 only: merge *.profraw → profiles/tasksmack.profdata
-#   pwsh tools/pgo.ps1 use         # Step 3 only: build PGO-optimized binary
+#   pwsh tools/pgo.ps1 generate    # Phase 1 only: instrumented build + run to collect data
+#   pwsh tools/pgo.ps1 merge       # Phase 2 only: merge *.profraw → profiles/tasksmack.profdata
+#   pwsh tools/pgo.ps1 use         # Phase 3 only: build PGO-optimized binary
 #
 # The resulting binary is at: build\win-pgo-use\bin\TaskSmack.exe
 #
@@ -38,11 +38,31 @@ function Write-Step([string]$message) {
     Write-Host '──────────────────────────────────────────'
 }
 
-function Require-Cmd([string]$cmd) {
-    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
-        Write-Error "'$cmd' not found. Ensure LLVM is installed and LLVM_ROOT/bin is on PATH."
-        exit 1
+# Invoke a native executable and abort if it returns a non-zero exit code.
+# $ErrorActionPreference = 'Stop' does not cover native executables in PowerShell,
+# so each call must be checked explicitly.
+function Invoke-Native {
+    & $args
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Command failed with exit code ${LASTEXITCODE}: $args"
+        exit $LASTEXITCODE
     }
+}
+
+# Resolve llvm-profdata: prefer $env:LLVM_ROOT\bin (same as tools/coverage.ps1),
+# then fall back to PATH.
+$LlvmProfdata = $null
+if ($env:LLVM_ROOT) {
+    $candidate = Join-Path $env:LLVM_ROOT 'bin\llvm-profdata.exe'
+    if (Test-Path $candidate) { $LlvmProfdata = $candidate }
+}
+if (-not $LlvmProfdata) {
+    $cmd = Get-Command 'llvm-profdata' -ErrorAction SilentlyContinue
+    if ($cmd) { $LlvmProfdata = $cmd.Source }
+}
+if (-not $LlvmProfdata) {
+    Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."
+    exit 1
 }
 
 # ── phase 1: instrumented build and profiling run ─────────────────────────────
@@ -50,8 +70,8 @@ function Require-Cmd([string]$cmd) {
 function Invoke-Generate {
     Write-Step 'Phase 1 – Instrumented build (win-pgo-generate preset)'
 
-    cmake --preset win-pgo-generate -S $Root
-    cmake --build --preset win-pgo-generate
+    Invoke-Native cmake --preset win-pgo-generate -S $Root
+    Invoke-Native cmake --build --preset win-pgo-generate
 
     if (-not (Test-Path $ProfilesDir)) {
         New-Item -ItemType Directory -Path $ProfilesDir | Out-Null
@@ -70,7 +90,7 @@ function Invoke-Generate {
     # Run all benchmarks; LLVM_PROFILE_FILE drives per-process .profraw output.
     # %p expands to the PID so parallel processes don't clobber each other.
     $env:LLVM_PROFILE_FILE = $ProfrawPattern
-    & $BenchBin --benchmark_min_time=0.5
+    Invoke-Native $BenchBin --benchmark_min_time=0.5
     Remove-Item Env:\LLVM_PROFILE_FILE -ErrorAction SilentlyContinue
 
     if (Test-Path $AppBin) {
@@ -90,8 +110,6 @@ function Invoke-Generate {
 function Invoke-Merge {
     Write-Step "Phase 2 – Merging profraw files → $Profdata"
 
-    Require-Cmd 'llvm-profdata'
-
     $profrawFiles = @(Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue)
 
     if (-not $profrawFiles -or $profrawFiles.Count -eq 0) {
@@ -100,7 +118,7 @@ function Invoke-Merge {
     }
 
     Write-Host "Merging $($profrawFiles.Count) .profraw file(s)..."
-    & llvm-profdata merge -sparse ($profrawFiles | ForEach-Object { $_.FullName }) -o $Profdata
+    Invoke-Native $LlvmProfdata merge -sparse ($profrawFiles | ForEach-Object { $_.FullName }) -o $Profdata
 
     $size = (Get-Item $Profdata).Length / 1KB
     Write-Host "Profile data merged: $Profdata"
@@ -117,8 +135,8 @@ function Invoke-Use {
         exit 1
     }
 
-    cmake --preset win-pgo-use -S $Root
-    cmake --build --preset win-pgo-use
+    Invoke-Native cmake --preset win-pgo-use -S $Root
+    Invoke-Native cmake --build --preset win-pgo-use
 
     $finalBin = Join-Path $Root 'build\win-pgo-use\bin\TaskSmack.exe'
     Write-Host ''
