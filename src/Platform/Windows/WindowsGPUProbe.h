@@ -46,6 +46,11 @@ class WindowsGPUProbe : public IGPUProbe
 
     // Map DXGI GPU index to NVML GPU index (for merging data)
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
+
+    // Map DXGI GPU id ("GPU0") to LUID-based id ("GPU_0x00000000_0x0000D3A0")
+    // Built during enumerateGPUs(), used in mergePDHSystemWideUtilization()
+    // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
+    std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
 };
 
 } // namespace Platform

@@ -4,6 +4,7 @@
 /// These tests validate actual Windows API calls and real system behavior.
 /// They ensure probes correctly handle real-world scenarios on Windows.
 
+#include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <thread>
 
 // clang-format off
@@ -483,5 +485,110 @@ TEST(WindowsRealProbesTest, ProbeHandlesProcessExitingDuringEnumeration)
         WaitForSingleObject(pi.hProcess, 1000);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+    }
+}
+
+// =============================================================================
+// WindowsGPUProbe LUID Matching Tests
+// =============================================================================
+
+TEST(WindowsGPUProbeTest, EnumerateGPUsReturnsAtLeastOneGPU)
+{
+    Platform::WindowsGPUProbe probe;
+    auto gpus = probe.enumerateGPUs();
+
+    // Every Windows machine with a display has at least one GPU
+    EXPECT_GE(gpus.size(), 1ULL) << "Should find at least one GPU";
+
+    for (const auto& gpu : gpus)
+    {
+        EXPECT_FALSE(gpu.id.empty()) << "GPU id should not be empty";
+        EXPECT_FALSE(gpu.name.empty()) << "GPU name should not be empty";
+        EXPECT_FALSE(gpu.luidId.empty()) << "GPU luidId should not be empty";
+
+        // luidId must start with "GPU_" (format: GPU_0x{High}_0x{Low})
+        EXPECT_TRUE(gpu.luidId.starts_with("GPU_")) << "GPU luidId should start with 'GPU_': " << gpu.luidId;
+    }
+}
+
+TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
+{
+    Platform::WindowsGPUProbe probe;
+    auto gpus = probe.enumerateGPUs();
+
+    if (gpus.size() <= 1)
+    {
+        GTEST_SKIP() << "Need multiple GPUs to verify LUID uniqueness";
+    }
+
+    // Collect all LUIDs
+    std::vector<std::string> luids;
+    luids.reserve(gpus.size());
+    for (const auto& gpu : gpus)
+    {
+        luids.push_back(gpu.luidId);
+    }
+
+    // Verify all LUIDs are distinct (each adapter must have a unique LUID)
+    for (std::size_t i = 0; i < luids.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < luids.size(); ++j)
+        {
+            EXPECT_NE(luids[i], luids[j]) << "Each GPU should have a distinct LUID; GPU " << i << " and GPU " << j
+                                           << " both have LUID " << luids[i];
+        }
+    }
+}
+
+TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesPerGPUUtilization)
+{
+    Platform::WindowsGPUProbe probe;
+
+    // enumerateGPUs() must be called first to build the LUID map used in
+    // mergePDHSystemWideUtilization(). This mirrors how GPUModel uses the probe.
+    auto gpus = probe.enumerateGPUs();
+    ASSERT_GE(gpus.size(), 1ULL) << "Must have at least one GPU to test counter reading";
+
+    auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), gpus.size()) << "Counter count should match GPU count";
+
+    // On a multi-GPU system without NVML (common in CI / laptop configurations),
+    // each GPU should get its own PDH-derived utilization value.  The old bug
+    // would assign the global sum to *every* adapter.  After the fix, utilization
+    // values for different GPUs may differ when workloads are GPU-specific.
+    //
+    // On a single-GPU system the fix has no visible effect, but we still verify
+    // basic sanity: utilization is in [0, 100].
+    for (const auto& counter : counters)
+    {
+        EXPECT_GE(counter.utilizationPercent, 0.0) << "Utilization should be >= 0 for GPU " << counter.gpuId;
+        EXPECT_LE(counter.utilizationPercent, 100.0) << "Utilization should be <= 100 for GPU " << counter.gpuId;
+    }
+
+    // With two or more GPUs and PDH available, verify that utilization values
+    // are not all identical non-zero values (which would indicate the old
+    // system-wide-total-to-all-GPUs bug is still present).
+    if (gpus.size() >= 2)
+    {
+        bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
+        if (hasNonZero)
+        {
+            // At least check that not all non-zero values are exactly the same
+            // (a sign of the inflated-total-assigned-to-all bug).
+            const double firstUtil = counters[0].utilizationPercent;
+            bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return c.utilizationPercent == firstUtil; });
+
+            // If all utilizations are 0 that's fine (system idle); if they're
+            // all identical and non-zero it may indicate the old bug — but since
+            // genuine equal load across GPUs is theoretically possible, this is
+            // only a warning, not a hard failure.
+            if (allSame && firstUtil > 0.0)
+            {
+                // Log for diagnostic purposes on multi-GPU test machines.
+                // This does not fail the test because equal load across GPUs is valid.
+                GTEST_LOG_(INFO) << "All " << counters.size() << " GPUs report identical utilization (" << firstUtil
+                                 << "%). This is expected when load is truly balanced or GPUs are idle.";
+            }
+        }
     }
 }

@@ -165,6 +165,20 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             spdlog::debug("WindowsGPUProbe: NVML not available for NVIDIA GPU enhancement");
         }
 
+        // Build DXGI id → LUID map for PDH per-GPU utilization matching.
+        // PDH process counters use "GPU_0x{High}_0x{Low}" as their gpuId; DXGI
+        // stores the same value in GPUInfo::luidId. We need to look up a counter's
+        // LUID from its index-based gpuId ("GPU0", "GPU1", …) to match PDH data.
+        m_DXGIIdToLuidId.clear();
+        for (const auto& gpu : gpus)
+        {
+            if (!gpu.luidId.empty())
+            {
+                m_DXGIIdToLuidId[gpu.id] = gpu.luidId;
+                spdlog::debug("WindowsGPUProbe: LUID mapping: {} → {}", gpu.id, gpu.luidId);
+            }
+        }
+
         return gpus;
     }
 
@@ -287,46 +301,56 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         return;
     }
 
-    // Sum GPU utilization across all processes to get system-wide total
-    // PDH returns per-process GPU utilization which is additive across engines
-    // System-wide utilization = sum of all per-process utilizations (capped at 100%)
-    double totalUtilization = 0.0;
+    // Sum utilization per GPU LUID.
+    // PDH ProcessGPUCounters::gpuId is "GPU_0x{HighPart}_0x{LowPart}" — the same
+    // format as GPUInfo::luidId from DXGI. Group process contributions per GPU so
+    // we assign the correct utilization to each physical adapter instead of the
+    // system-wide sum to every adapter (which inflated multi-GPU readings).
+    std::unordered_map<std::string, double> utilizationByLuid;
     for (const auto& procCounter : processCounters)
     {
         if (procCounter.gpuUtilPercent > 0.0)
         {
-            totalUtilization += procCounter.gpuUtilPercent;
+            utilizationByLuid[procCounter.gpuId] += procCounter.gpuUtilPercent;
         }
     }
 
-    if (totalUtilization > 0.0)
+    if (utilizationByLuid.empty())
     {
-        // Clamp to 0-100 range (utilization is percentage of single GPU capacity)
-        totalUtilization = std::min(100.0, totalUtilization);
+        return;
+    }
 
-        // Assign to all GPUs that don't have utilization data
-        for (auto& dxgiCounter : dxgiCounters)
+    // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
+    // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
+    // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
+    for (auto& dxgiCounter : dxgiCounters)
+    {
+        if (dxgiCounter.utilizationPercent != 0.0)
         {
-            if (dxgiCounter.utilizationPercent == 0.0)
-            {
-                // NOTE: Multi-GPU limitation without NVML: We sum per-process GPU utilization
-                // across ALL GPUs (from PDH system-wide counters) and assign that TOTAL to EACH
-                // GPU. This means if process uses 50% GPU0 + 30% GPU1, we'll show 80% on BOTH GPUs.
-                //
-                // Why: PDH "GPU Engine" counters don't directly map to specific physical GPUs
-                // (they use LUIDs which require complex DXGI matching). For now, we assign the
-                // system-wide total to each GPU as a conservative "worst case" estimate.
-                //
-                // Impact: Multi-GPU systems without NVML show inflated per-GPU percentages.
-                // Single-GPU systems or NVML-enabled multi-GPU systems are accurate.
-                //
-                // See https://github.com/mgradwohl/tasksmack/issues/462 to parse PDH LUID strings
-                // and match to DXGI adapter LUIDs for true per-GPU breakdown.
-                dxgiCounter.utilizationPercent = totalUtilization;
-                spdlog::debug(
-                    "WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} utilization = {}%", dxgiCounter.gpuId, totalUtilization);
-            }
+            continue; // Already filled by NVML or another source
         }
+
+        auto mapIt = m_DXGIIdToLuidId.find(dxgiCounter.gpuId);
+        if (mapIt == m_DXGIIdToLuidId.end())
+        {
+            // No LUID mapping available (enumerateGPUs not yet called).
+            // Skip rather than falling back to the inflated system-wide total.
+            spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: No LUID mapping for GPU {}", dxgiCounter.gpuId);
+            continue;
+        }
+
+        const std::string& luidId = mapIt->second;
+        auto utilIt = utilizationByLuid.find(luidId);
+        if (utilIt != utilizationByLuid.end())
+        {
+            // Clamp to [0, 100] — summing engine utilizations can exceed 100
+            dxgiCounter.utilizationPercent = std::min(100.0, utilIt->second);
+            spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} ({}) utilization = {:.1f}%",
+                          dxgiCounter.gpuId,
+                          luidId,
+                          dxgiCounter.utilizationPercent);
+        }
+        // If no PDH data found for this GPU's LUID, utilization stays 0
     }
 }
 
