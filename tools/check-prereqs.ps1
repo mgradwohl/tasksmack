@@ -11,8 +11,10 @@ param()
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
-$MIN_CLANG_VERSION = 21
+$MIN_CLANG_VERSION = 22
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
+$MIN_PYTHON_VERSION = [Version]"3.14"
+$MIN_GIT_VERSION = [Version]"2.30"
 
 # Helper function to print status
 function Write-Status {
@@ -185,6 +187,18 @@ function Get-LLVMCovVersion {
     return $null
 }
 
+# Get git version
+function Get-GitVersion {
+    try {
+        $output = (& git --version 2>&1) | Out-String
+        if ($output -match 'git version (\d+\.\d+(\.\d+)?)') {
+            return $Matches[1]
+        }
+    }
+    catch {}
+    return $null
+}
+
 # Get working Python 3 command (handles Windows Store alias issues)
 function Get-WorkingPythonCommand {
     # Try python3 first - but verify it actually works (Windows Store alias might fail)
@@ -348,11 +362,11 @@ else {
 # Check clang-tidy
 $tidyVer = Get-ClangTidyVersion
 $tidyPath = Get-ToolPath "clang-tidy"
-if ($tidyVer) {
-    Write-Status -Name "clang-tidy" -Status "ok" -Version $tidyVer -Path $tidyPath -Required ""
+if ($tidyVer -and [int]$tidyVer -ge $MIN_CLANG_VERSION) {
+    Write-Status -Name "clang-tidy" -Status "ok" -Version $tidyVer -Path $tidyPath -Required $MIN_CLANG_VERSION
 }
 else {
-    Write-Status -Name "clang-tidy" -Status "fail" -Version $null -Path $tidyPath -Required ""
+    Write-Status -Name "clang-tidy" -Status "fail" -Version $tidyVer -Path $tidyPath -Required $MIN_CLANG_VERSION
     $AllOK = $false
 }
 
@@ -393,11 +407,11 @@ else {
 $python3Ver = Get-Python3Version
 $pythonCmd = Get-WorkingPythonCommand
 $python3Path = if ($pythonCmd) { Get-ToolPath $pythonCmd } else { $null }
-if ($python3Ver) {
-    Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required "3.0"
+if ($python3Ver -and [Version]$python3Ver -ge $MIN_PYTHON_VERSION) {
+    Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required $MIN_PYTHON_VERSION
 }
 else {
-    Write-Status -Name "python3" -Status "fail" -Version $null -Path $python3Path -Required "3.0"
+    Write-Status -Name "python3" -Status "fail" -Version $python3Ver -Path $python3Path -Required $MIN_PYTHON_VERSION
     $AllOK = $false
 }
 
@@ -410,6 +424,17 @@ if ($jinja2Installed) {
 }
 else {
     Write-Status -Name "jinja2" -Status "fail" -Version "missing" -Path "(pip install jinja2)" -Required ""
+    $AllOK = $false
+}
+
+# Check git
+$gitVer = Get-GitVersion
+$gitPath = Get-ToolPath "git"
+if ($gitVer -and [Version]$gitVer -ge $MIN_GIT_VERSION) {
+    Write-Status -Name "git" -Status "ok" -Version $gitVer -Path $gitPath -Required $MIN_GIT_VERSION
+}
+else {
+    Write-Status -Name "git" -Status "fail" -Version $gitVer -Path $gitPath -Required $MIN_GIT_VERSION
     $AllOK = $false
 }
 

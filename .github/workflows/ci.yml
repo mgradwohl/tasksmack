@@ -27,8 +27,49 @@ jobs:
           install-clang-tidy: 'true'
           install-coverage-tools: 'true'
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
       - name: Validate prerequisites
         run: ./tools/check-prereqs.sh
+
+  validate-environment-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install LLVM / Ninja / ccache
+        shell: pwsh
+        run: |
+          choco install llvm --version 22.1.0 -y
+          choco install ninja ccache -y
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
+      - name: Validate prerequisites
+        shell: pwsh
+        run: ./tools/check-prereqs.ps1
 
   build-linux:
     needs: [validate-environment]
@@ -78,7 +119,7 @@ jobs:
           retention-days: 30
 
   build-windows:
-    needs: [validate-environment]
+    needs: [validate-environment-windows]
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
@@ -108,7 +149,9 @@ jobs:
 
       - name: Install LLVM / Ninja / ccache
         shell: pwsh
-        run: choco install llvm ninja ccache -y
+        run: |
+          choco install llvm --version 22.1.0 -y
+          choco install ninja ccache -y
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -175,6 +218,17 @@ jobs:
         with:
           install-clang-tidy: 'true'
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -188,8 +242,18 @@ jobs:
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
+      - name: Configure
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+
       - name: Run clang-tidy
-        run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+        shell: bash
+        run: |
+          # Capture output with tee for the artifact while preserving clang-tidy.sh's exit code.
+          # `cmd | tee` exits with tee's code when pipefail is not set (the default for GitHub
+          # Actions run steps). PIPESTATUS[0] captures the script's exit code robustly even
+          # when pipefail is not enabled, so a failure is never silently swallowed.
+          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+          test "${PIPESTATUS[0]}" -eq 0
 
       - name: Upload clang-tidy results
         if: always()

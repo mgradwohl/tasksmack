@@ -25,7 +25,7 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] [BUILD_TYPE] [FILES...]
 
 Run clang-tidy static analysis on source files with parallel execution.
-Configures if needed, strips module flags, and runs clang-tidy on all source files.
+Configures if needed, strips module and PCH flags, and runs clang-tidy on all source files.
 
 BUILD_TYPE:
   debug           Use debug build (default)
@@ -98,14 +98,21 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
     cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Strip C++20 module flags from compile_commands.json (clang-tidy doesn't handle them)
-# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
+# Strip C++20 module flags and PCH references from compile_commands.json.
+# CMake emits two PCH-related flag groups per TU:
+#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
+#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
+#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
+# clang-tidy cannot use any of these without a prior full build, so strip all.
 if $VERBOSE; then
-    echo "Stripping module flags from compile_commands.json..."
+    echo "Stripping module and PCH flags from compile_commands.json..."
 fi
 sed -i.bak \
     -e 's/@[^ ]*\.modmap//g' \
     -e 's/-fmodule-output=[^ ]*//g' \
+    -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
+    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+    -e 's/-Xclang -fno-pch-timestamp//g' \
     "$COMPILE_COMMANDS"
 rm -f "${COMPILE_COMMANDS}.bak"
 
@@ -143,8 +150,8 @@ else
 fi
 
 if [[ ${#SOURCE_FILES[@]} -eq 0 ]]; then
-    echo "No source files found to analyze."
-    exit 0
+    echo "Error: No source files found to analyze." >&2
+    exit 1
 fi
 
 if $VERBOSE; then

@@ -74,7 +74,7 @@ if (-not $ClangTidy) {
     $ClangTidy = Get-Command clang-tidy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 }
 if (-not $ClangTidy) {
-    Write-Error "clang-tidy not found. Please install LLVM or set LLVM_ROOT."
+    Write-Error "clang-tidy not found. Please install LLVM or set LLVM_ROOT." -ErrorAction Continue
     exit 1
 }
 
@@ -97,14 +97,21 @@ if (-not (Test-Path $CompileCommandsJson)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Strip C++20 module flags from compile_commands.json (clang-tidy doesn't handle them)
-# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
+# Strip C++20 module flags and PCH references from compile_commands.json.
+# CMake emits two PCH-related flag groups per TU:
+#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
+#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
+#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
+# clang-tidy cannot use any of these without a prior full build, so strip all.
 if ($ShowDetails) {
-    Write-Host "Stripping module flags from compile_commands.json..."
+    Write-Host "Stripping module and PCH flags from compile_commands.json..."
 }
 $content = Get-Content $CompileCommandsJson -Raw
 $content = $content -replace '@[^ ]*\.modmap', ''
 $content = $content -replace '-fmodule-output=[^ ]*', ''
+$content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
+$content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
+$content = $content -replace '-Xclang -fno-pch-timestamp', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline
 
 # Determine files to analyze
@@ -151,8 +158,8 @@ if (-not $ChangedOnly) {
 }
 
 if ($SourceFiles.Count -eq 0) {
-    Write-Host "No source files found to analyze."
-    exit 0
+    Write-Host "Error: No source files found to analyze." -ForegroundColor Red
+    exit 1
 }
 
 # Determine number of jobs
