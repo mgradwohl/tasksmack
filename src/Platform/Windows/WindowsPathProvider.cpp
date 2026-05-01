@@ -62,8 +62,8 @@ std::filesystem::path WindowsPathProvider::getExecutableDir() const
     // Fallback to current directory if GetModuleFileName fails.
     // Use the error_code overload so we never throw.
     // If current_path() also fails, returns an empty path ({}) as a last-resort
-    // sentinel. PathService::toAbsolute() handles this degenerate case and logs
-    // a warning so the condition is visible at runtime.
+    // sentinel. PathService's normalization step handles this degenerate case and
+    // logs a warning so the condition is visible at runtime.
     std::error_code cwdEc;
     auto cwd = std::filesystem::current_path(cwdEc);
     if (!cwdEc)
@@ -89,8 +89,8 @@ std::filesystem::path WindowsPathProvider::getUserConfigDir() const
     // Fallback to current directory if APPDATA not found.
     // Use the error_code overload so we never throw.
     // If current_path() also fails, returns an empty path ({}) as a last-resort
-    // sentinel. PathService::toAbsolute() handles this degenerate case and logs
-    // a warning so the condition is visible at runtime.
+    // sentinel. PathService's normalization step handles this degenerate case and
+    // logs a warning so the condition is visible at runtime.
     std::error_code cwdEc;
     auto cwd = std::filesystem::current_path(cwdEc);
     if (!cwdEc)

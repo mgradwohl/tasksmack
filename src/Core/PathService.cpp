@@ -57,10 +57,11 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
     // environment.
     try
     {
+        const std::string rawStr = raw.empty() ? "<empty>" : raw.string();
         spdlog::warn("PathService: could not resolve absolute path for '{}'; "
                      "both absolute() and current_path() failed. "
                      "Returning lexically-normalized raw path.",
-                     raw.string());
+                     rawStr);
     }
     catch (...)
     {
