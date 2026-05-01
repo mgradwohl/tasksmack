@@ -560,7 +560,8 @@ endif()
 if(CLANG_TIDY_EXE)
     # Generate a module-free compile_commands.json for clang-tidy
     # CMake/Ninja adds C++20 module dependency files (@*.modmap) that clang-tidy doesn't understand.
-    # PCH flags are no longer included in compile_commands.json by modern CMake/Ninja.
+    # CMake includes PCH flags (-Xclang -include-pch) in compile_commands.json; the
+    # clang-tidy scripts strip these flags so clang-tidy can run without a prior full build.
     # Use platform-appropriate tools: sed on Unix, PowerShell on Windows
     if(WIN32)
         add_custom_target(generate-clang-tidy-compile-commands
@@ -598,7 +599,7 @@ if(CLANG_TIDY_EXE)
         COMMENT "Running clang-tidy on project sources"
     )
     # Dependencies:
-    # - generate-clang-tidy-compile-commands: strips PCH flags from compile_commands.json
+    # - generate-clang-tidy-compile-commands: strips module and PCH flags from compile_commands.json
     # - copy-compile-commands: ensures compile_commands.json is in source root
     # - glad_gl_core_33: ensures GLAD headers are generated before clang-tidy runs
     add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)

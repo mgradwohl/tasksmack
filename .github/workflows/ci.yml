@@ -175,6 +175,17 @@ jobs:
         with:
           install-clang-tidy: 'true'
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -188,8 +199,17 @@ jobs:
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
+      - name: Configure
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+
       - name: Run clang-tidy
-        run: ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+        run: |
+          # Capture output with tee for the artifact while preserving clang-tidy.sh's exit code.
+          # `cmd | tee` exits with tee's code (always 0), regardless of shell pipefail settings.
+          # PIPESTATUS[0] gives clang-tidy.sh's exit code explicitly, so a failure is never
+          # silently swallowed.
+          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+          test "${PIPESTATUS[0]}" -eq 0
 
       - name: Upload clang-tidy results
         if: always()

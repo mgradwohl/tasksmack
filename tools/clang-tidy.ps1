@@ -97,14 +97,17 @@ if (-not (Test-Path $CompileCommandsJson)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Strip C++20 module flags from compile_commands.json (clang-tidy doesn't handle them)
-# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
+# Strip C++20 module flags and PCH references from compile_commands.json.
+# CMake includes PCH flags (-Xclang -include-pch) in compile_commands.json, but
+# clang-tidy cannot use pre-built PCH files without a prior full build.
 if ($ShowDetails) {
-    Write-Host "Stripping module flags from compile_commands.json..."
+    Write-Host "Stripping module and PCH flags from compile_commands.json..."
 }
 $content = Get-Content $CompileCommandsJson -Raw
 $content = $content -replace '@[^ ]*\.modmap', ''
 $content = $content -replace '-fmodule-output=[^ ]*', ''
+$content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
+$content = $content -replace '-Xclang -fno-pch-timestamp', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline
 
 # Determine files to analyze
@@ -151,8 +154,8 @@ if (-not $ChangedOnly) {
 }
 
 if ($SourceFiles.Count -eq 0) {
-    Write-Host "No source files found to analyze."
-    exit 0
+    Write-Error "No source files found to analyze."
+    exit 1
 }
 
 # Determine number of jobs
