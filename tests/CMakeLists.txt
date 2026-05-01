@@ -140,7 +140,6 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
-    ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
