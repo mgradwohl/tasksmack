@@ -447,7 +447,6 @@ set(TASKSMACK_SOURCES
     src/Core/Application.cpp
     src/Core/Window.cpp
     src/UI/AssetPath.cpp
-    src/UI/AssetPath.h
     src/UI/UILayer.cpp
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
@@ -516,6 +515,7 @@ set(TASKSMACK_HEADERS
     src/Core/Application.h
     src/Core/Window.h
     src/Core/Layer.h
+    src/UI/AssetPath.h
     src/UI/UILayer.h
     src/App/ShellLayer.h
     src/App/Panels/ProcessesPanel.h
