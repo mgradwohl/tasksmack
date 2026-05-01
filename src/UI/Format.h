@@ -271,7 +271,7 @@ template<typename T, typename Formatter>
 
 struct ByteUnit
 {
-    const char* suffix = "B";
+    std::string_view suffix = "B";
     double scale = 1.0;
     int decimals = 0;
 };
@@ -462,16 +462,15 @@ struct AlignedBytesParts
 
     // Match unit suffix to our static strings using full comparison
     // This ensures correct handling of all byte units (B, KB, MB, GB)
-    const std::string_view suffix{unit.suffix};
-    if (suffix == "GB")
+    if (unit.suffix == "GB")
     {
         parts.unitPart = unitGB;
     }
-    else if (suffix == "MB")
+    else if (unit.suffix == "MB")
     {
         parts.unitPart = unitMB;
     }
-    else if (suffix == "KB")
+    else if (unit.suffix == "KB")
     {
         parts.unitPart = unitKB;
     }

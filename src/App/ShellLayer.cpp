@@ -104,7 +104,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_FrameTimeAccumulator += deltaTime;
     m_FrameCount++;
 
-    if (m_FrameTimeAccumulator >= 0.5F)
+    if (m_FrameTimeAccumulator >= FPS_AVERAGE_WINDOW_SECONDS)
     {
         m_DisplayedFps = static_cast<float>(m_FrameCount) / m_FrameTimeAccumulator;
         m_FrameTimeAccumulator = 0.0F;

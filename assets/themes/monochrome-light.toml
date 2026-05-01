@@ -108,6 +108,15 @@ system_fill = "#4CAF5059"    # Medium green with 35% alpha - system fill
 iowait_fill = "#1B5E2059"    # Darkest green with 35% alpha - iowait fill
 idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
 
+[priority]
+high   = "#FF4D33"     # Red/orange (high priority)
+normal = "#80CC33"     # Green (normal priority)
+low    = "#6666CC"     # Blue/gray (low priority)
+
+[buttons.close]
+hovered = "#CC1A1A"     # Dark red hover
+active  = "#E63333"     # Brighter red active
+
 [buttons.success]
 normal = "#43A047"     # Medium green
 hovered = "#66BB6A"    # Light green

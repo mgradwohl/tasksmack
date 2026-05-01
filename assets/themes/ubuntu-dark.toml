@@ -108,6 +108,15 @@ system_fill = "#ED333B59"    # Light Red with 35% alpha - system fill
 iowait_fill = "#FFA34859"    # Light Orange with 35% alpha - iowait fill
 idle_fill = "#3D3D3D33"      # Dark gray with 20% alpha - idle fill
 
+[priority]
+high   = "#FF4D33"     # Red/orange (high priority)
+normal = "#80CC33"     # Green (normal priority)
+low    = "#6666CC"     # Blue/gray (low priority)
+
+[buttons.close]
+hovered = "#CC1A1A"     # Dark red hover
+active  = "#E63333"     # Brighter red active
+
 [buttons.success]
 normal = "#26A269"     # Ubuntu green
 hovered = "#33D17A"    # Bright green

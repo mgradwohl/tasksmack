@@ -330,6 +330,15 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
         scheme.successButtonActive = getColor(tbl, "buttons.success.active");
 
+        // Close button (title bar ×); defaults to conventional dark-red hover/active
+        scheme.closeButtonHovered = getColor(tbl, "buttons.close.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+        scheme.closeButtonActive = getColor(tbl, "buttons.close.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
+
+        // Priority slider gradient endpoints; defaults match legacy hardcoded values
+        scheme.priorityHighColor = getColor(tbl, "priority.high", ImVec4(1.0F, 0.3F, 0.2F, 1.0F));
+        scheme.priorityNormalColor = getColor(tbl, "priority.normal", ImVec4(0.5F, 0.8F, 0.2F, 1.0F));
+        scheme.priorityLowColor = getColor(tbl, "priority.low", ImVec4(0.4F, 0.4F, 0.8F, 1.0F));
+
         // Window colors
         scheme.windowBg = getColor(tbl, "ui.window.background");
         scheme.childBg = getColor(tbl, "ui.window.child_background");

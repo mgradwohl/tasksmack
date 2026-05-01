@@ -15,8 +15,8 @@ class LinuxDiskProbe : public IDiskProbe
 
     LinuxDiskProbe(const LinuxDiskProbe&) = delete;
     LinuxDiskProbe& operator=(const LinuxDiskProbe&) = delete;
-    LinuxDiskProbe(LinuxDiskProbe&&) = default;
-    LinuxDiskProbe& operator=(LinuxDiskProbe&&) = default;
+    LinuxDiskProbe(LinuxDiskProbe&&) noexcept = default;
+    LinuxDiskProbe& operator=(LinuxDiskProbe&&) noexcept = default;
 
     [[nodiscard]] SystemDiskCounters read() override;
     [[nodiscard]] DiskCapabilities capabilities() const override;

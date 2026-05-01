@@ -1106,7 +1106,7 @@ void SystemMetricsPanel::renderCpuSection()
                         else
                         {
                             ImGui::BeginTooltip();
-                            const auto ageText = formatAgeSeconds(static_cast<double>(timeSec));
+                            const auto ageText = formatAgeSeconds(timeSec);
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
                             ImGui::EndTooltip();
