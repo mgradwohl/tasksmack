@@ -1,7 +1,7 @@
 // Benchmarks for Domain/SystemModel
 //
 // These benchmarks measure the performance of system metric sampling and
-// snapshot computation, which run on the background sampler thread.
+// snapshot computation, which are called from the UI/main thread update cycle.
 // Memory tracking is included to catch allocation regressions.
 
 #include "Domain/SystemModel.h"
@@ -26,8 +26,8 @@ static void BM_SystemProbe_Sample(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto counters = probe->sample();
-        benchmark::DoNotOptimize(counters.cpuTotal.userTime);
+        auto counters = probe->read();
+        benchmark::DoNotOptimize(counters.cpuTotal.user);
     }
 
     BenchmarkUtils::reportMemoryCounters(state);
@@ -50,7 +50,7 @@ static void BM_SystemModel_Refresh(benchmark::State& state)
     for (auto _ : state)
     {
         model.refresh();
-        benchmark::DoNotOptimize(model.snapshot().cpuPercent);
+        benchmark::DoNotOptimize(model.snapshot().cpuTotal.totalPercent);
     }
 
     BenchmarkUtils::reportMemoryCounters(state);
@@ -69,7 +69,7 @@ static void BM_SystemModel_Snapshot(benchmark::State& state)
     for (auto _ : state)
     {
         auto snap = model.snapshot();
-        benchmark::DoNotOptimize(snap.cpuPercent);
+        benchmark::DoNotOptimize(snap.cpuTotal.totalPercent);
     }
 }
 BENCHMARK(BM_SystemModel_Snapshot);

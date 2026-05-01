@@ -117,7 +117,7 @@ phase_use() {
     echo
     echo "PGO-optimized binary: ${final_bin}"
 
-    if command -v size &>/dev/null && [[ -f "${final_bin}" ]]; then
+    if command -v du &>/dev/null && [[ -f "${final_bin}" ]]; then
         echo "Binary size: $(du -sh "${final_bin}" | cut -f1)"
     fi
 }
