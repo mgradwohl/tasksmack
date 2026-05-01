@@ -181,7 +181,7 @@
         {
             "name": "pgo-generate",
             "displayName": "PGO Generate",
-            "description": "Instrumented build to collect profiling data for PGO (run tools/pgo.sh after building)",
+            "description": "Instrumented build to collect profiling data for PGO (run ./tools/pgo.sh generate, or ./tools/pgo.sh for the full workflow)",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -298,7 +298,7 @@
         {
             "name": "win-pgo-generate",
             "displayName": "Windows PGO Generate",
-            "description": "Instrumented build to collect profiling data for PGO on Windows (run tools/pgo.ps1 after building)",
+            "description": "Instrumented build to collect profiling data for PGO on Windows (run pwsh tools/pgo.ps1 generate, or pwsh tools/pgo.ps1 for the full workflow)",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-pgo-generate",
             "cacheVariables": {

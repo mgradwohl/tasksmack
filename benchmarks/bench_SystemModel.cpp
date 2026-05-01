@@ -4,6 +4,7 @@
 // snapshot computation, which are called from the UI/main thread update cycle.
 // Memory tracking is included to catch allocation regressions.
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 #include "MemoryTracker.h"
 #include "Platform/Factory.h"
@@ -118,17 +119,31 @@ static void BM_SystemModel_PerCoreHistory(benchmark::State& state)
 BENCHMARK(BM_SystemModel_PerCoreHistory);
 
 // Benchmark memory growth over many refresh cycles
-// Verifies that the history deques are correctly trimmed and do not grow unbounded
+// Uses simulated time advancing by 1 second per iteration and the minimum
+// history window (10 s) so that history trimming is actually exercised after
+// the first 10 iterations, verifying that deques do not grow unbounded.
 static void BM_SystemModel_MemoryGrowth(benchmark::State& state)
 {
-    auto probe = Platform::makeSystemProbe();
-    Domain::SystemModel model(std::move(probe));
+    // A second probe supplies real counters; the model owns its own probe
+    auto counterProbe = Platform::makeSystemProbe();
+    auto modelProbe = Platform::makeSystemProbe();
+    Domain::SystemModel model(std::move(modelProbe));
+
+    // Minimum allowed window (10 s) so trimming kicks in quickly under simulated time
+    model.setMaxHistorySeconds(static_cast<double>(Domain::Sampling::HISTORY_SECONDS_MIN));
+
+    // Prime previous-counters state at t=0 so the first benchmarked call computes valid deltas
+    auto primeCounters = counterProbe->read();
+    model.updateFromCounters(primeCounters, 0.0);
 
     auto startStats = BenchmarkUtils::readMemoryStats();
 
+    double simTime = 1.0; // advance 1 second per iteration to trigger trimming after 10 iters
     for (auto _ : state)
     {
-        model.refresh();
+        auto counters = counterProbe->read();
+        model.updateFromCounters(counters, simTime);
+        simTime += 1.0;
     }
 
     auto endStats = BenchmarkUtils::readMemoryStats();

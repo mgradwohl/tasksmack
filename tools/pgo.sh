@@ -14,7 +14,7 @@
 #   - llvm-profdata (ships with LLVM)
 #   - cmake, ninja
 #
-# Background: Clang PGO works in three phases:
+# Background: Clang PGO works in four steps:
 #   1. Build with -fprofile-instr-generate (instrumented binary that records branch counts)
 #   2. Run the instrumented binary; LLVM_PROFILE_FILE controls output filename
 #   3. Merge the per-run .profraw files into a single .profdata with llvm-profdata
