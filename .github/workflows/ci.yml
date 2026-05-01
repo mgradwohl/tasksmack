@@ -203,11 +203,12 @@ jobs:
         run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
 
       - name: Run clang-tidy
+        shell: bash
         run: |
           # Capture output with tee for the artifact while preserving clang-tidy.sh's exit code.
-          # `cmd | tee` exits with tee's code (always 0), regardless of shell pipefail settings.
-          # PIPESTATUS[0] gives clang-tidy.sh's exit code explicitly, so a failure is never
-          # silently swallowed.
+          # `cmd | tee` exits with tee's code when pipefail is not set (the default for GitHub
+          # Actions run steps). PIPESTATUS[0] captures the script's exit code robustly even
+          # when pipefail is not enabled, so a failure is never silently swallowed.
           ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
 
