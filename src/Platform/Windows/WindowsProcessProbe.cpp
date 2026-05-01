@@ -332,6 +332,15 @@ WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMon
     }
 }
 
+WindowsProcessProbe::~WindowsProcessProbe()
+{
+    if (m_IphlpModule != nullptr)
+    {
+        FreeLibrary(m_IphlpModule);
+        m_IphlpModule = nullptr;
+    }
+}
+
 std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> results;
@@ -633,9 +642,10 @@ uint64_t WindowsProcessProbe::readSystemEnergy() const
 
     // Increment synthetic energy counter (this simulates cumulative energy consumption)
     // In production, this would read actual hardware counters or integrate power over time
-    m_SyntheticEnergy += 1000000; // Add 1 joule (1,000,000 microjoules) per sample
+    // fetch_add returns the value *before* the increment; add the increment to get the new total.
+    const uint64_t newEnergy = m_SyntheticEnergy.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 
-    return m_SyntheticEnergy;
+    return newEnergy;
 }
 
 void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const
@@ -680,6 +690,8 @@ bool WindowsProcessProbe::detectNetworkCounters()
         {
             return false;
         }
+        // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
+        m_IphlpModule = iphlp;
     }
 
     m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");

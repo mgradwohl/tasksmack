@@ -16,6 +16,7 @@
 #define WINVER _WIN32_WINNT
 #endif
 
+#include <atomic>
 #include <unordered_map>
 
 // Windows headers must be in correct order:
@@ -38,12 +39,12 @@ class WindowsProcessProbe : public IProcessProbe
 {
   public:
     WindowsProcessProbe();
-    ~WindowsProcessProbe() override = default;
+    ~WindowsProcessProbe() override;
 
     WindowsProcessProbe(const WindowsProcessProbe&) = delete;
     WindowsProcessProbe& operator=(const WindowsProcessProbe&) = delete;
-    WindowsProcessProbe(WindowsProcessProbe&&) = default;
-    WindowsProcessProbe& operator=(WindowsProcessProbe&&) = default;
+    WindowsProcessProbe(WindowsProcessProbe&&) = delete;
+    WindowsProcessProbe& operator=(WindowsProcessProbe&&) = delete;
 
     [[nodiscard]] std::vector<ProcessCounters> enumerate() override;
     [[nodiscard]] ProcessCapabilities capabilities() const override;
@@ -54,7 +55,8 @@ class WindowsProcessProbe : public IProcessProbe
   private:
     bool m_HasPowerMonitoring = false;
     bool m_HasNetworkCounters = false;
-    mutable uint64_t m_SyntheticEnergy = 0;
+    mutable std::atomic<uint64_t> m_SyntheticEnergy{0};
+    HMODULE m_IphlpModule = nullptr; // Non-null only when loaded by this class (must be freed in destructor)
 
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =

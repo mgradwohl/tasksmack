@@ -18,8 +18,8 @@ class WindowsSystemProbe : public ISystemProbe
 
     WindowsSystemProbe(const WindowsSystemProbe&) = delete;
     WindowsSystemProbe& operator=(const WindowsSystemProbe&) = delete;
-    WindowsSystemProbe(WindowsSystemProbe&&) = default;
-    WindowsSystemProbe& operator=(WindowsSystemProbe&&) = default;
+    WindowsSystemProbe(WindowsSystemProbe&&) noexcept = default;
+    WindowsSystemProbe& operator=(WindowsSystemProbe&&) noexcept = default;
 
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;

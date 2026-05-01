@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <string_view>
 
 namespace App::Detail
 {
@@ -18,7 +19,7 @@ namespace App::Detail
 // ========================================
 struct FontSizeOption
 {
-    const char* label;
+    std::string_view label;
     UI::FontSize value;
 };
 
@@ -36,7 +37,7 @@ inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
 // ========================================
 struct RefreshRateOption
 {
-    const char* label;
+    std::string_view label;
     int valueMs;
 };
 
@@ -54,7 +55,7 @@ inline constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
 // ========================================
 struct HistoryOption
 {
-    const char* label;
+    std::string_view label;
     int valueSeconds;
 };
 

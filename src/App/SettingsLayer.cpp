@@ -264,13 +264,13 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(LABEL_WIDTH);
         ImGui::SetNextItemWidth(COMBO_WIDTH);
 
-        const char* currentFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label;
+        const char* currentFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label.data();
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedFontSizeIndex == i);
-                if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label, isSelected))
+                if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label.data(), isSelected))
                 {
                     m_SelectedFontSizeIndex = i;
                 }
@@ -304,13 +304,13 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentRefresh = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label;
+        const char* currentRefresh = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data();
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedRefreshRateIndex == i);
-                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label, isSelected))
+                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), isSelected))
                 {
                     m_SelectedRefreshRateIndex = i;
                 }
@@ -330,13 +330,13 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentHistory = HISTORY_OPTIONS[m_SelectedHistoryIndex].label;
+        const char* currentHistory = HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data();
         if (ImGui::BeginCombo("##History", currentHistory))
         {
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedHistoryIndex == i);
-                if (ImGui::Selectable(HISTORY_OPTIONS[i].label, isSelected))
+                if (ImGui::Selectable(HISTORY_OPTIONS[i].label.data(), isSelected))
                 {
                     m_SelectedHistoryIndex = i;
                 }

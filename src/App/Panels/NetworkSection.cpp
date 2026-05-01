@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cinttypes>
 #include <cstddef>
 #include <format>
 #include <functional>
@@ -295,8 +296,8 @@ void renderNetworkSection(RenderContext& ctx)
     }
 
     // Colors for interface-specific lines (lighter/dashed to distinguish from total)
-    const auto ifaceSentColor = ImVec4(theme.scheme().chartCpu.x, theme.scheme().chartCpu.y, theme.scheme().chartCpu.z, 0.7F);
-    const auto ifaceRecvColor = ImVec4(theme.accentColor(2).x, theme.accentColor(2).y, theme.accentColor(2).z, 0.7F);
+    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartCpu, 0.7F);
+    const auto ifaceRecvColor = UI::withAlpha(theme.accentColor(2), 0.7F);
 
     auto plot = [&]()
     {
@@ -457,20 +458,19 @@ void renderNetworkSection(RenderContext& ctx)
                 {
                     if (iface.linkSpeedMbps >= 1000)
                     {
-                        const auto gbps = static_cast<double>(iface.linkSpeedMbps) / 1000.0;
-                        if (gbps == static_cast<int>(gbps))
+                        if ((iface.linkSpeedMbps % 1000) == 0)
                         {
-                            ImGui::Text("%d Gbps", static_cast<int>(gbps));
+                            // safe: PRIu64 handles uint64_t without narrowing
+                            ImGui::Text("%" PRIu64 " Gbps", iface.linkSpeedMbps / 1000);
                         }
                         else
                         {
-                            ImGui::Text("%.1f Gbps", gbps);
+                            ImGui::Text("%.1f Gbps", static_cast<double>(iface.linkSpeedMbps) / 1000.0);
                         }
                     }
                     else
                     {
-                        const auto speedText = std::format("{} Mbps", iface.linkSpeedMbps);
-                        ImGui::TextUnformatted(speedText.c_str());
+                        ImGui::Text("%" PRIu64 " Mbps", iface.linkSpeedMbps);
                     }
                 }
                 else

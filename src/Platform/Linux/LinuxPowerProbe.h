@@ -20,8 +20,8 @@ class LinuxPowerProbe : public IPowerProbe
 
     LinuxPowerProbe(const LinuxPowerProbe&) = delete;
     LinuxPowerProbe& operator=(const LinuxPowerProbe&) = delete;
-    LinuxPowerProbe(LinuxPowerProbe&&) = default;
-    LinuxPowerProbe& operator=(LinuxPowerProbe&&) = default;
+    LinuxPowerProbe(LinuxPowerProbe&&) noexcept = default;
+    LinuxPowerProbe& operator=(LinuxPowerProbe&&) noexcept = default;
 
     [[nodiscard]] PowerCounters read() override;
     [[nodiscard]] PowerCapabilities capabilities() const override;

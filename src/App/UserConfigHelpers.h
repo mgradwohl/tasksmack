@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <string_view>
 
 #include <toml++/toml.hpp>
 
@@ -21,7 +22,7 @@ namespace App::UserConfigHelpers
 /// @param destination Output parameter; updated if key exists
 /// @param clampFn A callable that applies validation/clamping logic
 template<typename T, typename ClampFn>
-inline void loadAndClamp(const toml::table& config, const char* section, const char* key, T& destination, ClampFn&& clampFn)
+inline void loadAndClamp(const toml::table& config, std::string_view section, std::string_view key, T& destination, ClampFn&& clampFn)
 {
     if (auto val = config[section][key].template value<T>())
     {
@@ -40,8 +41,8 @@ inline void loadAndClamp(const toml::table& config, const char* section, const c
 /// @tparam ClampFn A callable that accepts int and returns int (clamped)
 /// @param clampFn A callable that applies validation/clamping logic
 template<typename ClampFn>
-inline void
-loadAndNarrowInt64(const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, ClampFn&& clampFn)
+inline void loadAndNarrowInt64(
+    const toml::table& config, std::string_view section, std::string_view key, int& destination, int defaultValue, ClampFn&& clampFn)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {
@@ -60,7 +61,7 @@ loadAndNarrowInt64(const toml::table& config, const char* section, const char* k
 /// @param minVal Minimum allowed value (inclusive)
 /// @param maxVal Maximum allowed value (inclusive)
 inline void loadAndNarrowIntWithClamp(
-    const toml::table& config, const char* section, const char* key, int& destination, int defaultValue, int minVal, int maxVal)
+    const toml::table& config, std::string_view section, std::string_view key, int& destination, int defaultValue, int minVal, int maxVal)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {

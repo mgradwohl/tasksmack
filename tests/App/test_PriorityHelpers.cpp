@@ -106,6 +106,11 @@ TEST(PriorityHelpersTest, GetNiceFromPositionRoundTrip)
     }
 }
 
+// Default test colors matching the legacy hardcoded values
+static const ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
+static const ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
+static const ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
+
 // =============================================================================
 // getNiceColor Tests
 // =============================================================================
@@ -115,7 +120,7 @@ TEST(PriorityHelpersTest, GetNiceColorReturnsNonZeroAlpha)
     // All colors should have full alpha (255)
     for (int32_t nice = NICE_MIN; nice <= NICE_MAX; ++nice)
     {
-        const ImU32 color = getNiceColor(nice);
+        const ImU32 color = getNiceColor(nice, TEST_HIGH, TEST_NORMAL, TEST_LOW);
         const uint8_t alpha = (color >> 24) & 0xFF;
         EXPECT_EQ(alpha, 255) << "Alpha should be 255 for nice=" << nice;
     }
@@ -123,7 +128,7 @@ TEST(PriorityHelpersTest, GetNiceColorReturnsNonZeroAlpha)
 
 TEST(PriorityHelpersTest, GetNiceColorHighPriorityIsReddish)
 {
-    const ImU32 color = getNiceColor(NICE_MIN);
+    const ImU32 color = getNiceColor(NICE_MIN, TEST_HIGH, TEST_NORMAL, TEST_LOW);
     const uint8_t r = (color >> 0) & 0xFF;
     const uint8_t g = (color >> 8) & 0xFF;
     const uint8_t b = (color >> 16) & 0xFF;
@@ -135,7 +140,7 @@ TEST(PriorityHelpersTest, GetNiceColorHighPriorityIsReddish)
 
 TEST(PriorityHelpersTest, GetNiceColorNormalPriorityIsGreenish)
 {
-    const ImU32 color = getNiceColor(0);
+    const ImU32 color = getNiceColor(0, TEST_HIGH, TEST_NORMAL, TEST_LOW);
     const uint8_t r = (color >> 0) & 0xFF;
     const uint8_t g = (color >> 8) & 0xFF;
     const uint8_t b = (color >> 16) & 0xFF;
@@ -147,7 +152,7 @@ TEST(PriorityHelpersTest, GetNiceColorNormalPriorityIsGreenish)
 
 TEST(PriorityHelpersTest, GetNiceColorLowPriorityIsBluish)
 {
-    const ImU32 color = getNiceColor(NICE_MAX);
+    const ImU32 color = getNiceColor(NICE_MAX, TEST_HIGH, TEST_NORMAL, TEST_LOW);
     const uint8_t r = (color >> 0) & 0xFF;
     const uint8_t g = (color >> 8) & 0xFF;
     const uint8_t b = (color >> 16) & 0xFF;
@@ -160,10 +165,10 @@ TEST(PriorityHelpersTest, GetNiceColorLowPriorityIsBluish)
 TEST(PriorityHelpersTest, GetNiceColorClampsOutOfRange)
 {
     // Colors for out-of-range values should match boundary colors
-    EXPECT_EQ(getNiceColor(-100), getNiceColor(NICE_MIN));
-    EXPECT_EQ(getNiceColor(-21), getNiceColor(NICE_MIN));
-    EXPECT_EQ(getNiceColor(100), getNiceColor(NICE_MAX));
-    EXPECT_EQ(getNiceColor(20), getNiceColor(NICE_MAX));
+    EXPECT_EQ(getNiceColor(-100, TEST_HIGH, TEST_NORMAL, TEST_LOW), getNiceColor(NICE_MIN, TEST_HIGH, TEST_NORMAL, TEST_LOW));
+    EXPECT_EQ(getNiceColor(-21, TEST_HIGH, TEST_NORMAL, TEST_LOW), getNiceColor(NICE_MIN, TEST_HIGH, TEST_NORMAL, TEST_LOW));
+    EXPECT_EQ(getNiceColor(100, TEST_HIGH, TEST_NORMAL, TEST_LOW), getNiceColor(NICE_MAX, TEST_HIGH, TEST_NORMAL, TEST_LOW));
+    EXPECT_EQ(getNiceColor(20, TEST_HIGH, TEST_NORMAL, TEST_LOW), getNiceColor(NICE_MAX, TEST_HIGH, TEST_NORMAL, TEST_LOW));
 }
 
 // =============================================================================
