@@ -518,22 +518,22 @@ PGO uses real runtime behavior to guide the compiler's optimization decisions �
 1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
 2. **Run the binary** (benchmarks and/or the app itself) to collect branch-count data into `.profraw` files
 3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
-4. **Build the optimised binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
+4. **Build the optimized binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
 
 ### Automated workflow (recommended)
 
 Use the provided helper scripts to run all three phases:
 
 ```bash
-# Linux – full workflow (build instrumented, run benchmarks, merge, build optimised)
+# Linux – full workflow (build instrumented, run benchmarks, merge, build optimized)
 ./tools/pgo.sh
 
 # Run individual phases
 ./tools/pgo.sh generate   # Step 1 + 2: instrumented build + profile collection
 ./tools/pgo.sh merge      # Step 3: merge *.profraw → profiles/tasksmack.profdata
-./tools/pgo.sh use        # Step 4: build PGO-optimised binary
+./tools/pgo.sh use        # Step 4: build PGO-optimized binary
 
-# Optimised binary ends up at:
+# Optimized binary ends up at:
 build/pgo-use/bin/TaskSmack
 ```
 
@@ -546,7 +546,7 @@ pwsh tools/pgo.ps1 generate
 pwsh tools/pgo.ps1 merge
 pwsh tools/pgo.ps1 use
 
-# Optimised binary ends up at:
+# Optimized binary ends up at:
 build\win-pgo-use\bin\TaskSmack.exe
 ```
 
@@ -571,7 +571,7 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
 # Step 3 – merge profraw files
 llvm-profdata merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
-# Step 4 – PGO-optimised build (reads profiles/tasksmack.profdata)
+# Step 4 – PGO-optimized build (reads profiles/tasksmack.profdata)
 cmake --preset pgo-use
 cmake --build --preset pgo-use
 ```
@@ -593,11 +593,11 @@ These files are `.gitignore`-d and should not be committed. Re-generate them whe
 - **Verify improvement.** Compare the benchmark preset against the pgo-use preset:
 
 ```bash
-# Baseline (unguided optimised build)
+# Baseline (unguided optimized build)
 cmake --preset benchmark && cmake --build --preset benchmark
 ./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/baseline.json
 
-# PGO-optimised (after running tools/pgo.sh)
+# PGO-optimized (after running tools/pgo.sh)
 ./build/pgo-use/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/pgo.json
 
 # Compare (requires: pip install google-benchmark)

@@ -4,7 +4,7 @@
 #   pwsh tools/pgo.ps1             # Full PGO workflow (generate + merge + use)
 #   pwsh tools/pgo.ps1 generate    # Step 1 only: instrumented build + run to collect data
 #   pwsh tools/pgo.ps1 merge       # Step 2 only: merge *.profraw → profiles/tasksmack.profdata
-#   pwsh tools/pgo.ps1 use         # Step 3 only: build PGO-optimised binary
+#   pwsh tools/pgo.ps1 use         # Step 3 only: build PGO-optimized binary
 #
 # The resulting binary is at: build\win-pgo-use\bin\TaskSmack.exe
 #
@@ -16,7 +16,7 @@
 #   1. Build with -fprofile-instr-generate (instrumented binary that records branch counts)
 #   2. Run the instrumented binary; LLVM_PROFILE_FILE controls output filename
 #   3. Merge the per-run .profraw files into a single .profdata with llvm-profdata
-#   4. Build again with -fprofile-instr-use=<path>.profdata for an optimised binary
+#   4. Build again with -fprofile-instr-use=<path>.profdata for an optimized binary
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -107,10 +107,10 @@ function Invoke-Merge {
     Write-Host "  Size: $([Math]::Round($size, 1)) KB"
 }
 
-# ── phase 3: PGO-optimised build ──────────────────────────────────────────────
+# ── phase 3: PGO-optimized build ──────────────────────────────────────────────
 
 function Invoke-Use {
-    Write-Step 'Phase 3 – PGO-optimised build (win-pgo-use preset)'
+    Write-Step 'Phase 3 – PGO-optimized build (win-pgo-use preset)'
 
     if (-not (Test-Path $Profdata)) {
         Write-Error "Profile data not found: $Profdata. Run merge step first (pwsh tools/pgo.ps1 merge)."
@@ -122,7 +122,7 @@ function Invoke-Use {
 
     $finalBin = Join-Path $Root 'build\win-pgo-use\bin\TaskSmack.exe'
     Write-Host ''
-    Write-Host "PGO-optimised binary: $finalBin"
+    Write-Host "PGO-optimized binary: $finalBin"
 
     if (Test-Path $finalBin) {
         $size = (Get-Item $finalBin).Length / 1KB
@@ -145,13 +145,13 @@ switch ($cmd) {
         Write-Step 'PGO workflow complete'
         Write-Host "  Instrumented binary : build\win-pgo-generate\bin\TaskSmack.exe"
         Write-Host "  Profile data        : profiles\tasksmack.profdata"
-        Write-Host "  Optimised binary    : build\win-pgo-use\bin\TaskSmack.exe"
+        Write-Host "  Optimized binary    : build\win-pgo-use\bin\TaskSmack.exe"
     }
     default {
         Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|all]'
         Write-Host '  generate  – instrumented build + collect profile data'
         Write-Host '  merge     – merge *.profraw files into tasksmack.profdata'
-        Write-Host '  use       – build PGO-optimised binary from tasksmack.profdata'
+        Write-Host '  use       – build PGO-optimized binary from tasksmack.profdata'
         Write-Host '  all       – run all three phases in order (default)'
         exit 1
     }

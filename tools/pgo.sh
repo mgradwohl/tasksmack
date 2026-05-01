@@ -18,7 +18,7 @@
 #   1. Build with -fprofile-instr-generate (instrumented binary that records branch counts)
 #   2. Run the instrumented binary; LLVM_PROFILE_FILE controls output filename
 #   3. Merge the per-run .profraw files into a single .profdata with llvm-profdata
-#   4. Build again with -fprofile-instr-use=<path>.profdata for an optimised binary
+#   4. Build again with -fprofile-instr-use=<path>.profdata for an optimized binary
 
 set -euo pipefail
 
@@ -101,10 +101,10 @@ phase_merge() {
     echo "  Size: $(du -sh "${PROFDATA}" | cut -f1)"
 }
 
-# ── phase 3: PGO-optimised build ──────────────────────────────────────────────
+# ── phase 3: PGO-optimized build ──────────────────────────────────────────────
 
 phase_use() {
-    print_step "Phase 3 – PGO-optimised build (pgo-use preset)"
+    print_step "Phase 3 – PGO-optimized build (pgo-use preset)"
 
     if [[ ! -f "${PROFDATA}" ]]; then
         die "Profile data not found: ${PROFDATA}. Run merge step first (./tools/pgo.sh merge)."
@@ -115,7 +115,7 @@ phase_use() {
 
     local final_bin="${ROOT}/build/pgo-use/bin/TaskSmack"
     echo
-    echo "PGO-optimised binary: ${final_bin}"
+    echo "PGO-optimized binary: ${final_bin}"
 
     if command -v size &>/dev/null && [[ -f "${final_bin}" ]]; then
         echo "Binary size: $(du -sh "${final_bin}" | cut -f1)"
@@ -138,13 +138,13 @@ main() {
             print_step "PGO workflow complete"
             echo "  Instrumented binary : build/pgo-generate/bin/TaskSmack"
             echo "  Profile data        : profiles/tasksmack.profdata"
-            echo "  Optimised binary    : build/pgo-use/bin/TaskSmack"
+            echo "  Optimized binary    : build/pgo-use/bin/TaskSmack"
             ;;
         *)
             echo "Usage: $0 [generate|merge|use|all]"
             echo "  generate  – instrumented build + collect profile data"
             echo "  merge     – merge *.profraw files into tasksmack.profdata"
-            echo "  use       – build PGO-optimised binary from tasksmack.profdata"
+            echo "  use       – build PGO-optimized binary from tasksmack.profdata"
             echo "  all       – run all three phases in order (default)"
             exit 1
             ;;
