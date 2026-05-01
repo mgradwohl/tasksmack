@@ -26,8 +26,7 @@ struct GPUCounters
     std::string gpuId; // Associates with GPUInfo
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
-    bool hasUtilizationSource = false; // true when a hardware source (e.g. NVML) already filled utilizationPercent
-    double utilizationPercent = 0.0;   // GPU usage reported by hardware
+    double utilizationPercent = 0.0; // GPU usage reported by hardware
     // Note: memoryUtilPercent computed by Domain layer from memoryUsedBytes/memoryTotalBytes
 
     // Memory (bytes - raw counters)

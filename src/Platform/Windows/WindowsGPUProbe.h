@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -43,8 +44,9 @@ class WindowsGPUProbe : public IGPUProbe
     void setInstanceRefreshInterval(std::chrono::seconds interval) override;
 
   private:
-    void mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
-    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters);
+    [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
+    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
+                                    const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
