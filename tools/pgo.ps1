@@ -94,7 +94,7 @@ function Invoke-Merge {
 
     $profrawFiles = Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue
 
-    if ($profrawFiles.Count -eq 0) {
+    if (-not $profrawFiles -or $profrawFiles.Count -eq 0) {
         Write-Error "No .profraw files found in $ProfilesDir. Run phase 1 first (pwsh tools/pgo.ps1 generate)."
         exit 1
     }

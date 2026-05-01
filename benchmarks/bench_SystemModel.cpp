@@ -36,7 +36,7 @@ static void BM_SystemProbe_Sample(benchmark::State& state)
 BENCHMARK(BM_SystemProbe_Sample);
 
 // Benchmark SystemModel refresh (full pipeline including delta computation)
-// This is called every sample interval from the background thread
+// This is called from the UI/main-thread update cycle (not a background thread)
 static void BM_SystemModel_Refresh(benchmark::State& state)
 {
     auto probe = Platform::makeSystemProbe();

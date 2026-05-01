@@ -98,7 +98,9 @@ phase_merge() {
     llvm-profdata merge -sparse "${profraw_files[@]}" -o "${PROFDATA}"
 
     echo "Profile data merged: ${PROFDATA}"
-    echo "  Size: $(du -sh "${PROFDATA}" | cut -f1)"
+    if command -v du &>/dev/null; then
+        echo "  Size: $(du -sh "${PROFDATA}" | cut -f1)"
+    fi
 }
 
 # ── phase 3: PGO-optimized build ──────────────────────────────────────────────
