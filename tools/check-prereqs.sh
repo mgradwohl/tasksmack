@@ -79,6 +79,15 @@ get_clang_version() {
     fi
 }
 
+# Get clang++ major version
+get_clangpp_version() {
+    if command -v clang++ &>/dev/null; then
+        clang++ --version 2>/dev/null | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1
+    else
+        echo ""
+    fi
+}
+
 # Get clangd version
 get_clangd_version() {
     if command -v clangd &>/dev/null; then
@@ -296,16 +305,20 @@ main() {
     fi
 
     # clang++
-    local clangpp_path
-    clangpp_path="$(command -v clang++ 2>/dev/null || true)"
-    if [[ -z "${clangpp_path}" ]]; then
+    local clangpp_ver
+    clangpp_ver="$(get_clangpp_version)"
+    if [[ -z "${clangpp_ver}" ]]; then
         echo -e "${RED}clang++${NC}: not found"
         all_ok=1
-    elif version_at_least "${MIN_CLANG_VERSION}" "${clang_ver}"; then
-        echo -e "${GREEN}clang++${NC}: ${clang_ver} (${clangpp_path})"
     else
-        echo -e "${YELLOW}clang++${NC}: ${clang_ver} (${clangpp_path}) - minimum required ${MIN_CLANG_VERSION}"
-        all_ok=1
+        local clangpp_path
+        clangpp_path="$(command -v clang++ 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clangpp_ver}"; then
+            echo -e "${GREEN}clang++${NC}: ${clangpp_ver} (${clangpp_path})"
+        else
+            echo -e "${YELLOW}clang++${NC}: ${clangpp_ver} (${clangpp_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
     fi
 
     # clangd (required for VS Code workspace defaults)
