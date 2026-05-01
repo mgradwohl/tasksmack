@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <ranges>
 #include <string>
@@ -517,7 +518,8 @@ void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounter
     }
 
     const double firstUtil = counters[0].utilizationPercent;
-    bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return c.utilizationPercent == firstUtil; });
+    bool allSame =
+        std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
 
     if (allSame)
     {

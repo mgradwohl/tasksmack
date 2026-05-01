@@ -169,6 +169,8 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // PDH process counters use "GPU_0x{High}_0x{Low}" as their gpuId; DXGI
         // stores the same value in GPUInfo::luidId. We need to look up a counter's
         // LUID from its index-based gpuId ("GPU0", "GPU1", …) to match PDH data.
+        // Clear before rebuilding because enumerateGPUs() may be called multiple times
+        // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
         for (const auto& gpu : gpus)
         {
@@ -346,8 +348,9 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
         auto utilIt = utilizationByLuid.find(luidId);
         if (utilIt != utilizationByLuid.end())
         {
-            // Clamp to [0, 100] — summing engine utilizations can exceed 100
-            dxgiCounter.utilizationPercent = std::min(100.0, utilIt->second);
+            // Clamp to [0, 100] — summing engine utilizations can exceed 100,
+            // and guard against any negative PDH values from corrupted data.
+            dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
             spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} ({}) utilization = {:.1f}%",
                           dxgiCounter.gpuId,
                           luidId,
