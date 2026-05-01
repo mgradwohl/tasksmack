@@ -1,0 +1,75 @@
+name: OSV Dependency Scan
+
+# Scans C++ FetchContent dependencies (via Syft SBOM) and Python requirements.txt
+# against the OSV vulnerability database (https://osv.dev).
+#
+# Dependabot covers GitHub Actions and pip; this workflow fills the gap for C++ deps.
+# Syft's cmake cataloger reads FetchContent_Declare entries from CMakeLists.txt and
+# emits them into an SPDX-JSON SBOM without requiring a build.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Mondays at 06:00 UTC (offset from CodeQL at 10:00 UTC)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: osv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vulnerability-scan:
+    name: Scan dependencies for vulnerabilities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Generate an SPDX-JSON SBOM from the source tree.
+      # Syft's cmake cataloger extracts FetchContent_Declare entries from
+      # CMakeLists.txt so C++ deps are visible to the scanner without a full build.
+      - name: Generate SBOM from source
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          output-file: ${{ runner.temp }}/sbom.spdx.json
+          format: spdx-json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # Scan the SBOM (C++ FetchContent deps detected by Syft) and
+      # requirements.txt (Python build-time deps) against the OSV database.
+      # continue-on-error lets us upload the SARIF report before failing the job.
+      - name: Run OSV Scanner
+        id: scan
+        uses: google/osv-scanner-action@v2
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --lockfile=requirements.txt
+            --sbom=${{ runner.temp }}/sbom.spdx.json
+          results-file-name: results.sarif
+
+      # Upload results to the GitHub Security tab regardless of outcome.
+      - name: Upload SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
+          category: osv-scanner
+
+      # Propagate a non-zero exit so the job is marked as failed when
+      # vulnerabilities are found, after the SARIF has been uploaded.
+      - name: Fail if vulnerabilities found
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "::error::OSV Scanner found vulnerabilities. Review the Security tab for details."
+          exit 1
