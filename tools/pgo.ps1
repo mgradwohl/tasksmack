@@ -92,7 +92,7 @@ function Invoke-Merge {
 
     Require-Cmd 'llvm-profdata'
 
-    $profrawFiles = Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue
+    $profrawFiles = @(Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue)
 
     if (-not $profrawFiles -or $profrawFiles.Count -eq 0) {
         Write-Error "No .profraw files found in $ProfilesDir. Run phase 1 first (pwsh tools/pgo.ps1 generate)."
