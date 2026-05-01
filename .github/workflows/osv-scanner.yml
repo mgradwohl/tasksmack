@@ -1,0 +1,71 @@
+name: OSV Dependency Scan
+
+# Scans C++ FetchContent dependencies (via Syft SBOM) and Python requirements.txt
+# against the OSV vulnerability database (https://osv.dev).
+#
+# Dependabot covers GitHub Actions and pip; this workflow fills the gap for C++ deps.
+# Syft's cmake cataloger reads FetchContent_Declare entries from CMakeLists.txt and
+# emits them into an SPDX-JSON SBOM without requiring a build.
+#
+# google/osv-scanner-action is a reusable workflow, not a step-level composite action.
+# The SBOM is generated and uploaded as an artifact by the first job, then downloaded
+# inside the reusable workflow via its download-artifact input.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Mondays at 06:00 UTC (offset from CodeQL at 10:00 UTC)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: osv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Generate an SPDX-JSON SBOM from the source tree so the scanner can see
+  # C++ FetchContent dependencies detected by Syft's cmake cataloger.
+  generate-sbom:
+    name: Generate SBOM from source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          output-file: sbom.spdx.json
+          format: spdx-json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-file
+          path: sbom.spdx.json
+          retention-days: 1
+
+  # Scan the SBOM (C++ FetchContent deps) and requirements.txt (Python) against OSV.
+  # The reusable workflow handles checkout, download of the artifact, scanning,
+  # SARIF upload to the Security tab, and job failure on vulnerabilities.
+  vulnerability-scan:
+    needs: generate-sbom
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5
+    with:
+      scan-args: |-
+        --lockfile=requirements.txt
+        --sbom=./sbom.spdx.json
+      download-artifact: sbom-file
+      results-file-name: results.sarif
