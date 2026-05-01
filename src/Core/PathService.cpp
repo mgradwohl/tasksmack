@@ -50,10 +50,24 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
     // absolute, violating the normal contract of PathService.  Log a warning so
     // this degenerate condition is visible; the caller should not rely on the
     // result being absolute.
-    spdlog::warn("PathService: could not resolve absolute path for '{}'; "
-                 "both absolute() and current_path() failed. "
-                 "Returning lexically-normalized raw path.",
-                 raw.string());
+    //
+    // raw.string() can throw on some platforms when the path contains characters
+    // that cannot be represented in the current locale encoding. Use a try/catch
+    // so the warning itself cannot propagate an exception in this already-broken
+    // environment.
+    try
+    {
+        spdlog::warn("PathService: could not resolve absolute path for '{}'; "
+                     "both absolute() and current_path() failed. "
+                     "Returning lexically-normalized raw path.",
+                     raw.string());
+    }
+    catch (...)
+    {
+        spdlog::warn("PathService: could not resolve absolute path (path contains "
+                     "non-representable characters); both absolute() and current_path() failed. "
+                     "Returning lexically-normalized raw path.");
+    }
     return raw.lexically_normal();
 }
 

@@ -1,7 +1,6 @@
 #include "App/AboutLayer.h"
 
 #include "App/PlatformOpen.h"
-#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
