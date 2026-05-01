@@ -41,8 +41,8 @@ inline void loadAndClamp(const toml::table& config, std::string_view section, st
 /// @tparam ClampFn A callable that accepts int and returns int (clamped)
 /// @param clampFn A callable that applies validation/clamping logic
 template<typename ClampFn>
-inline void
-loadAndNarrowInt64(const toml::table& config, std::string_view section, std::string_view key, int& destination, int defaultValue, ClampFn&& clampFn)
+inline void loadAndNarrowInt64(
+    const toml::table& config, std::string_view section, std::string_view key, int& destination, int defaultValue, ClampFn&& clampFn)
 {
     if (auto val = config[section][key].template value<std::int64_t>())
     {

@@ -689,7 +689,7 @@ bool WindowsProcessProbe::detectNetworkCounters()
         {
             return false;
         }
-        // We loaded the library; store the handle so we can free it in the destructor
+        // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
         m_IphlpModule = iphlp;
     }
 
