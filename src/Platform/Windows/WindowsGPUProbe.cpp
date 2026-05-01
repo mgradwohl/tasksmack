@@ -287,13 +287,13 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
         return;
     }
 
-    // Check if we need PDH at all - if all GPUs already have a hardware utilization source, skip
-    // (they came from NVML or another authoritative source; 0% at idle is valid)
-    bool allHaveUtilization =
+    // Check if we need PDH at all - if all GPUs already have NVML utilization, skip
+    // (0% at idle is a valid NVML reading, not a sentinel)
+    bool allHaveNvmlUtilization =
         !dxgiCounters.empty() &&
         std::ranges::all_of(dxgiCounters, [&nvmlSourcedIds](const auto& counter) { return nvmlSourcedIds.contains(counter.gpuId); });
     // Skip PDH if all GPUs already have NVML utilization data
-    if (allHaveUtilization)
+    if (allHaveNvmlUtilization)
     {
         return;
     }
@@ -331,7 +331,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
     {
         if (nvmlSourcedIds.contains(dxgiCounter.gpuId))
         {
-            continue; // Already filled by NVML or another hardware source
+            continue; // Already filled by NVML
         }
 
         auto mapIt = m_DXGIIdToLuidId.find(dxgiCounter.gpuId);

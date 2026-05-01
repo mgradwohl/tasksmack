@@ -607,9 +607,12 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesValidUtilizationR
         EXPECT_LE(counter.utilizationPercent, 100.0) << "Utilization should be <= 100 for GPU " << counter.gpuId;
     }
 
-    // With two or more GPUs and PDH available, verify that utilization values
-    // are not all identical non-zero values (which would indicate the old
-    // system-wide-total-to-all-GPUs bug is still present).
+    // With two or more GPUs and PDH available, perform a diagnostic check for
+    // the old system-wide-total-to-all-GPUs bug, where every adapter could be
+    // assigned the same non-zero utilization value. This helper logs
+    // suspicious distributions for investigation but does not fail the test,
+    // because live utilization can legitimately vary based on hardware and
+    // workload timing.
     if (gpus.size() >= 2)
     {
         checkMultiGPUUtilizationDistribution(counters);
