@@ -5,6 +5,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
 #include "version.h"
@@ -199,37 +200,27 @@ void AboutLayer::renderAboutDialog()
 
 void AboutLayer::loadIcon()
 {
-    const auto& exeDir = Core::Application::get().paths().executableDir();
-    const auto cwd = std::filesystem::current_path();
+    const auto iconsDir = UI::findAssetsDir() / "icons";
 
-    const std::array<std::filesystem::path, 3> baseDirs = {
-        exeDir,               // installed layout (assets next to executable)
-        exeDir.parent_path(), // build tree layout (bin/ + assets/ sibling)
-        cwd,                  // running from repo root
-    };
+    constexpr std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
-    constexpr std::array<std::string_view, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
-
-    for (const auto& base : baseDirs)
+    for (const auto file : sizes)
     {
-        for (const auto file : sizes)
+        const auto iconPath = iconsDir / file;
+
+        if (!std::filesystem::exists(iconPath))
         {
-            const auto iconPath = base / "assets" / "icons" / file;
+            continue;
+        }
 
-            if (!std::filesystem::exists(iconPath))
-            {
-                continue;
-            }
-
-            m_Icon = UI::loadTexture(iconPath);
-            if (m_Icon.valid())
-            {
-                spdlog::info("Loaded About dialog icon: {} ({}x{})",
-                             iconPath.string(),
-                             static_cast<int>(m_Icon.size().x),
-                             static_cast<int>(m_Icon.size().y));
-                return;
-            }
+        m_Icon = UI::loadTexture(iconPath);
+        if (m_Icon.valid())
+        {
+            spdlog::info("Loaded About dialog icon: {} ({}x{})",
+                         iconPath.string(),
+                         static_cast<int>(m_Icon.size().x),
+                         static_cast<int>(m_Icon.size().y));
+            return;
         }
     }
 

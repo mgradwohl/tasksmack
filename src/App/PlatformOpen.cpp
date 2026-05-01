@@ -87,11 +87,11 @@ namespace App::PlatformOpen
 
     // Parent: wait for first child to prevent zombie; retry on EINTR
     int status = 0;
-    pid_t waited = 0;
-    do
+    pid_t waited = ::waitpid(pid, &status, 0);
+    while (waited == -1 && errno == EINTR)
     {
         waited = ::waitpid(pid, &status, 0);
-    } while (waited == -1 && errno == EINTR);
+    }
 
     if (waited == -1)
     {

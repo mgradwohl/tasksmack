@@ -2,6 +2,8 @@
 
 #include "Core/Layer.h"
 
+#include <filesystem>
+
 union SDL_Event;
 
 namespace UI
@@ -28,7 +30,7 @@ class UILayer : public Core::Layer
   private:
     static void beginFrame();
     static void endFrame();
-    static void loadAllFonts();
+    static void loadAllFonts(const std::filesystem::path& assetsDir);
 };
 
 } // namespace UI

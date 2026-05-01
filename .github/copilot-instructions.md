@@ -107,17 +107,17 @@ struct ProcessCapabilities {
 };
 ```
 
-### Background Sampling
-- Use `BackgroundSampler` with `std::jthread` + `std::stop_token`
-- UI registers callback; sampler delivers data on background thread
-- Domain models are thread-safe (`std::shared_mutex`)
-- Sampler interval configurable (default 1 second)
+### Data Refresh (Current Architecture)
+- Panels call `model->refresh()` synchronously from their `onUpdate()` method on the main thread
+- Refresh cadence is accumulator-based: each `onUpdate(deltaTime)` accumulates time and calls `refresh()` when the configured interval elapses (default 1 second)
+- `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but **not yet active** — it is a future option for moving enumeration off the main thread if UI responsiveness issues arise
 
 ### Panel Lifecycle
 ```cpp
-void onAttach() override { /* create model, start sampler */ }
-void onDetach() override { /* stop sampler, cleanup */ }
-void render(bool* open) override { /* ImGui::Begin/End, consume snapshots */ }
+void onAttach() override { /* create model, call refresh() to seed history */ }
+void onDetach() override { /* cleanup model */ }
+void onUpdate(float deltaTime) override { /* accumulate time, call model->refresh() on interval */ }
+void render(bool* open) override { /* ImGui::Begin/End, render version-cached snapshots */ }
 ```
 
 ## Coding Standards
@@ -263,7 +263,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` (impl)
 2. **New model**: `Domain/XxxModel.cpp` (computes deltas from probe counters)
-3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model + sampler)
+3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`)
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
 
 ## Common Pitfalls

@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
+#include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -82,7 +83,7 @@ UILayer::UILayer() : Layer("UILayer")
 
 UILayer::~UILayer() = default;
 
-void UILayer::loadAllFonts()
+void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
 {
     auto& theme = Theme::get();
     ImGuiIO& imguiIO = ImGui::GetIO();
@@ -92,10 +93,8 @@ void UILayer::loadAllFonts()
     // LightHinting provides better quality for UI fonts at typical screen sizes
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
-    // Build font path relative to executable directory
-    const auto& exeDir = Core::Application::get().paths().executableDir();
-    auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
-    auto iconFontPath = (exeDir / "assets" / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
+    auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = getMonospaceFontPath();
 
     // Check if icon font exists
@@ -195,7 +194,7 @@ void UILayer::loadAllFonts()
     // Load Sixtyfour pixel font for custom title bar
     // This is a fixed-size font that looks best at specific pixel sizes
     constexpr float TITLE_FONT_SIZE_PX = 18.0F;
-    auto titleFontPath = (exeDir / "assets" / "fonts" / "Sixtyfour.ttf").string();
+    auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
     if (std::filesystem::exists(titleFontPath))
     {
         ImFontConfig titleConfig;
@@ -238,11 +237,12 @@ void UILayer::onAttach()
     imguiIO.IniFilename = nullptr;
 
     // Pre-bake fonts for all size presets
-    loadAllFonts();
+    // Locate assets directory once (searches build dir and FHS install paths)
+    const auto assetsDir = findAssetsDir();
+    loadAllFonts(assetsDir);
 
     // Load themes from TOML files (built-ins)
-    const auto& exeDir = Core::Application::get().paths().executableDir();
-    auto themesDir = exeDir / "assets" / "themes";
+    auto themesDir = assetsDir / "themes";
     Theme::get().loadThemes(themesDir);
     spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
