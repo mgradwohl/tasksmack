@@ -642,9 +642,10 @@ uint64_t WindowsProcessProbe::readSystemEnergy() const
 
     // Increment synthetic energy counter (this simulates cumulative energy consumption)
     // In production, this would read actual hardware counters or integrate power over time
-    m_SyntheticEnergy.fetch_add(1000000, std::memory_order_relaxed); // Add 1 joule (1,000,000 microjoules) per sample
+    // fetch_add returns the value *before* the increment; add the increment to get the new total.
+    const uint64_t newEnergy = m_SyntheticEnergy.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 
-    return m_SyntheticEnergy.load(std::memory_order_relaxed);
+    return newEnergy;
 }
 
 void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>& processes) const

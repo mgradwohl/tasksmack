@@ -493,7 +493,7 @@ struct AlignedBytesParts
     static constexpr std::string_view unitMBps = " MB/s";
     static constexpr std::string_view unitGBps = " GB/s";
 
-    const std::string_view suffix{unit.suffix};
+    const std::string_view suffix = unit.suffix;
     if (suffix == "GB")
     {
         parts.unitPart = unitGBps;
