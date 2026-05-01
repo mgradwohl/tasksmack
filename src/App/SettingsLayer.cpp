@@ -7,7 +7,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
+#include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -33,11 +33,10 @@ using Detail::REFRESH_RATE_OPTIONS;
 namespace
 {
 
-// Get the themes directory path (relative to executable)
+// Get the themes directory path using multi-path asset resolution
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
 {
-    auto provider = Platform::makePathProvider();
-    return provider->getExecutableDir() / "assets" / "themes";
+    return UI::findAssetsDir() / "themes";
 }
 
 } // namespace

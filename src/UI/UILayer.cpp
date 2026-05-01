@@ -3,6 +3,7 @@
 #include "Core/Application.h"
 #include "Core/Layer.h"
 #include "Platform/Factory.h"
+#include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -30,52 +31,6 @@ std::filesystem::path getUserConfigDir()
         return provider->getUserConfigDir();
     }();
     return dir;
-}
-
-// Get directory containing the executable using platform abstraction
-// Cached as static local to avoid repeated allocations
-std::filesystem::path getExecutableDir()
-{
-    static const auto dir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getExecutableDir();
-    }();
-    return dir;
-}
-
-// Locate the runtime assets directory by probing candidate paths in priority order.
-// Supports three layouts:
-//   1. Portable / build-dir:    <exeDir>/assets/                  (post-build copy)
-//   2. FHS, binary at prefix:   <exeDir>/share/tasksmack/assets/  (cmake --install)
-//   3. FHS, binary in bin/:     <exeDir>/../share/tasksmack/assets/
-// Returns the first candidate whose "fonts" subdirectory exists, or falls back to (1).
-std::filesystem::path findAssetsDir()
-{
-    const auto exeDir = getExecutableDir();
-
-    // Use PROJECT_NAME_LOWER to match the CMake install destination (share/tasksmack/assets/).
-    constexpr std::string_view APP_NAME = "tasksmack";
-
-    // lexically_normal() resolves ".." components without requiring the path to exist,
-    // which is intentional here since we validate existence via std::filesystem::exists().
-    const std::array<std::filesystem::path, 3> candidates = {
-        exeDir / "assets",
-        exeDir / "share" / APP_NAME / "assets",
-        (exeDir / ".." / "share" / APP_NAME / "assets").lexically_normal(),
-    };
-
-    for (const auto& candidate : candidates)
-    {
-        if (std::filesystem::exists(candidate / "fonts"))
-        {
-            spdlog::debug("Assets directory found: {}", candidate.string());
-            return candidate;
-        }
-    }
-
-    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", candidates[0].string());
-    return candidates[0];
 }
 
 // Convert typographic points to pixels based on display DPI

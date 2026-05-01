@@ -446,6 +446,7 @@ set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
     src/Core/Window.cpp
+    src/UI/AssetPath.cpp
     src/UI/UILayer.cpp
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
