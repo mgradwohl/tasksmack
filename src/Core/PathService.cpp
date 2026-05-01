@@ -6,10 +6,11 @@ namespace Core
 {
 
 PathService::PathService()
-    : m_Provider(Platform::makePathProvider()),
-      m_ExecutableDir(m_Provider->getExecutableDir()),
-      m_UserConfigDir(m_Provider->getUserConfigDir())
-{}
+{
+    auto provider = Platform::makePathProvider();
+    m_ExecutableDir = provider->getExecutableDir();
+    m_UserConfigDir = provider->getUserConfigDir();
+}
 
 const std::filesystem::path& PathService::executableDir() const noexcept
 {

@@ -148,7 +148,7 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 | Layer | May call at construction / `onAttach` | May call at runtime |
 |---|---|---|
 | Platform | OS APIs | OS APIs |
-| Domain | *(none — receives probes via constructor)* | *(none)* |
+| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
 | Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
 | App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
 | UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |

@@ -1,16 +1,13 @@
 #pragma once
 
-#include "Platform/IPathProvider.h"
-
 #include <filesystem>
-#include <memory>
 
 namespace Core
 {
 
 /// Centralized path resolution service owned by Application.
-/// Wraps Platform::IPathProvider and caches results so callers
-/// never need to include Platform/Factory.h outside of Core.
+/// Queries Platform::IPathProvider once at construction and caches both
+/// paths so callers never need to include Platform/Factory.h outside of Core.
 ///
 /// Lifetime: Created during Application construction; valid for the
 /// lifetime of the Application instance.
@@ -35,7 +32,6 @@ class PathService
     [[nodiscard]] const std::filesystem::path& userConfigDir() const noexcept;
 
   private:
-    std::unique_ptr<Platform::IPathProvider> m_Provider;
     std::filesystem::path m_ExecutableDir;
     std::filesystem::path m_UserConfigDir;
 };
