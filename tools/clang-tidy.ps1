@@ -101,7 +101,8 @@ if (-not (Test-Path $CompileCommandsJson)) {
 # CMake emits two PCH-related flag groups per TU:
 #   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
 #   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
-# clang-tidy cannot use either without a prior full build, so strip both.
+#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
+# clang-tidy cannot use any of these without a prior full build, so strip all.
 if ($ShowDetails) {
     Write-Host "Stripping module and PCH flags from compile_commands.json..."
 }
@@ -110,6 +111,7 @@ $content = $content -replace '@[^ ]*\.modmap', ''
 $content = $content -replace '-fmodule-output=[^ ]*', ''
 $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
 $content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
+$content = $content -replace '-Xclang -fno-pch-timestamp', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline
 
 # Determine files to analyze

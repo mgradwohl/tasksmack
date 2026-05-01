@@ -102,7 +102,8 @@ fi
 # CMake emits two PCH-related flag groups per TU:
 #   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
 #   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
-# clang-tidy cannot use either without a prior full build, so strip both.
+#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
+# clang-tidy cannot use any of these without a prior full build, so strip all.
 if $VERBOSE; then
     echo "Stripping module and PCH flags from compile_commands.json..."
 fi
@@ -111,6 +112,7 @@ sed -i.bak \
     -e 's/-fmodule-output=[^ ]*//g' \
     -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
     -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+    -e 's/-Xclang -fno-pch-timestamp//g' \
     "$COMPILE_COMMANDS"
 rm -f "${COMPILE_COMMANDS}.bak"
 
