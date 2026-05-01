@@ -41,10 +41,13 @@ function Write-Step([string]$message) {
 # Invoke a native executable and abort if it returns a non-zero exit code.
 # $ErrorActionPreference = 'Stop' does not cover native executables in PowerShell,
 # so each call must be checked explicitly.
+# $args[0] is the executable; remaining elements are its arguments (splatted).
 function Invoke-Native {
-    & $args
+    $exe  = $args[0]
+    $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+    & $exe @rest
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Command failed with exit code ${LASTEXITCODE}: $args"
+        Write-Error "Command failed with exit code ${LASTEXITCODE}: $($args -join ' ')"
         exit $LASTEXITCODE
     }
 }
