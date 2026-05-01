@@ -518,8 +518,7 @@ void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounter
     }
 
     const double firstUtil = counters[0].utilizationPercent;
-    bool allSame =
-        std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
+    bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
 
     if (allSame)
     {
