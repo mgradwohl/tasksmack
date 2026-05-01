@@ -790,11 +790,13 @@ install(TARGETS imgui_lib implot_lib glad_gl_core_33
     ARCHIVE DESTINATION .
 )
 
-# Install runtime assets (fonts/themes/icons) only
+# Install runtime assets (fonts/themes/icons) using GNUInstallDirs for FHS compliance.
+# On Linux this resolves to share/tasksmack/assets/; on Windows the prefix root is typically
+# the install directory so share/tasksmack/assets/ lives alongside the binary.
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
         ${CMAKE_SOURCE_DIR}/assets/themes
         ${CMAKE_SOURCE_DIR}/assets/icons
-    DESTINATION assets
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME_LOWER}/assets
 )
 
 if(TASKSMACK_BUILD_TESTS)

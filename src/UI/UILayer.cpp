@@ -44,6 +44,40 @@ std::filesystem::path getExecutableDir()
     return dir;
 }
 
+// Locate the runtime assets directory by probing candidate paths in priority order.
+// Supports three layouts:
+//   1. Portable / build-dir:    <exeDir>/assets/                  (post-build copy)
+//   2. FHS, binary at prefix:   <exeDir>/share/tasksmack/assets/  (cmake --install)
+//   3. FHS, binary in bin/:     <exeDir>/../share/tasksmack/assets/
+// Returns the first candidate whose "fonts" subdirectory exists, or falls back to (1).
+std::filesystem::path findAssetsDir()
+{
+    const auto exeDir = getExecutableDir();
+
+    // Use PROJECT_NAME_LOWER to match the CMake install destination (share/tasksmack/assets/).
+    constexpr std::string_view APP_NAME = "tasksmack";
+
+    // lexically_normal() resolves ".." components without requiring the path to exist,
+    // which is intentional here since we validate existence via std::filesystem::exists().
+    const std::array<std::filesystem::path, 3> candidates = {
+        exeDir / "assets",
+        exeDir / "share" / APP_NAME / "assets",
+        (exeDir / ".." / "share" / APP_NAME / "assets").lexically_normal(),
+    };
+
+    for (const auto& candidate : candidates)
+    {
+        if (std::filesystem::exists(candidate / "fonts"))
+        {
+            spdlog::debug("Assets directory found: {}", candidate.string());
+            return candidate;
+        }
+    }
+
+    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", candidates[0].string());
+    return candidates[0];
+}
+
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -117,10 +151,10 @@ void UILayer::loadAllFonts()
     // LightHinting provides better quality for UI fonts at typical screen sizes
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
-    // Build font path relative to executable directory
-    auto exeDir = getExecutableDir();
-    auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
-    auto iconFontPath = (exeDir / "assets" / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    // Locate assets directory (searches build dir and FHS install paths)
+    const auto assetsDir = findAssetsDir();
+    auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
+    auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = getMonospaceFontPath();
 
     // Check if icon font exists
@@ -220,7 +254,7 @@ void UILayer::loadAllFonts()
     // Load Sixtyfour pixel font for custom title bar
     // This is a fixed-size font that looks best at specific pixel sizes
     constexpr float TITLE_FONT_SIZE_PX = 18.0F;
-    auto titleFontPath = (exeDir / "assets" / "fonts" / "Sixtyfour.ttf").string();
+    auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
     if (std::filesystem::exists(titleFontPath))
     {
         ImFontConfig titleConfig;
@@ -266,7 +300,7 @@ void UILayer::onAttach()
     loadAllFonts();
 
     // Load themes from TOML files (built-ins)
-    auto themesDir = getExecutableDir() / "assets" / "themes";
+    auto themesDir = findAssetsDir() / "themes";
     Theme::get().loadThemes(themesDir);
     spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
