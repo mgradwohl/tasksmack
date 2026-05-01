@@ -74,7 +74,7 @@ if (-not $ClangTidy) {
     $ClangTidy = Get-Command clang-tidy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 }
 if (-not $ClangTidy) {
-    Write-Host "Error: clang-tidy not found. Please install LLVM or set LLVM_ROOT." -ForegroundColor Red
+    Write-Error "clang-tidy not found. Please install LLVM or set LLVM_ROOT." -ErrorAction Continue
     exit 1
 }
 
