@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 
 namespace Platform
 {
@@ -58,8 +59,15 @@ std::filesystem::path WindowsPathProvider::getExecutableDir() const
         buffer.assign(static_cast<std::size_t>(newSize), L'\0');
     }
 
-    // Fallback to current directory if GetModuleFileName fails
-    return std::filesystem::current_path();
+    // Fallback to current directory if GetModuleFileName fails.
+    // Use the error_code overload so we never throw.
+    std::error_code cwdEc;
+    auto cwd = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        return cwd;
+    }
+    return {};
 }
 
 std::filesystem::path WindowsPathProvider::getUserConfigDir() const
@@ -75,8 +83,15 @@ std::filesystem::path WindowsPathProvider::getUserConfigDir() const
         }
     }
 
-    // Fallback to current directory if APPDATA not found
-    return std::filesystem::current_path();
+    // Fallback to current directory if APPDATA not found.
+    // Use the error_code overload so we never throw.
+    std::error_code cwdEc;
+    auto cwd = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        return cwd;
+    }
+    return {};
 }
 
 } // namespace Platform
