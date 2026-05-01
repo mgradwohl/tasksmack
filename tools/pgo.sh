@@ -38,17 +38,12 @@ APP_BIN="${ROOT}/build/pgo-generate/bin/TaskSmack"
 print_step() { echo; echo "──────────────────────────────────────────"; echo "  $*"; echo "──────────────────────────────────────────"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-require_cmd() {
-    local cmd="$1"
-    if ! command -v "${cmd}" &>/dev/null; then
-        die "'${cmd}' not found. Install LLVM (sudo apt install llvm-22) and ensure it is on PATH."
-    fi
-}
-
 # ── phase 1: instrumented build and profiling run ─────────────────────────────
 
 phase_generate() {
     print_step "Phase 1 – Instrumented build (pgo-generate preset)"
+
+    validate_build_prereqs || die "Missing build prerequisites. See CONTRIBUTING.md."
 
     cmake --preset pgo-generate -S "${ROOT}" 2>&1
     cmake --build --preset pgo-generate 2>&1
@@ -112,6 +107,8 @@ phase_merge() {
 
 phase_use() {
     print_step "Phase 3 – PGO-optimized build (pgo-use preset)"
+
+    validate_build_prereqs || die "Missing build prerequisites. See CONTRIBUTING.md."
 
     if [[ ! -f "${PROFDATA}" ]]; then
         die "Profile data not found: ${PROFDATA}. Run merge step first (./tools/pgo.sh merge)."
