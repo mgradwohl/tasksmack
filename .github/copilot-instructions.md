@@ -280,6 +280,9 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Using raw `new`/`delete` instead of smart pointers
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
 - ❌ Missing `override` keyword on virtual function overrides
+- ❌ Calling `Platform::makePathProvider()` from UI or App — use `Core::Application::get().paths()` instead
+- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in App panel `onAttach`, not in render loops
+- ❌ Adding `#include "Platform/Factory.h"` to `UI/` or non-panel `App/` files
 
 ## Engineering Workflow
 
@@ -313,7 +316,9 @@ When performing a code review on this project:
 6. **Architecture Boundaries**: Verify layer dependencies are correct:
    - Platform probes should return raw counters, not computed values
    - Domain should not depend on UI, Core, or graphics libraries
-   - UI should not call Platform probes directly
+   - UI should not include `Platform/Factory.h` or call `Platform::make*()` directly; path resolution goes through `Core::Application::get().paths()`
+   - App panels (composition root) may call `Platform::make*Probe()` and `Platform::makeProcessActions()` at construction/`onAttach` time only — never in render loops
+   - `Platform::makePathProvider()` is called only inside `Core::PathService`; all other path access goes through `Core::Application::get().paths()`
    - All OpenGL calls should be in UI/Core layers only
 
 7. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_camelCase members)
