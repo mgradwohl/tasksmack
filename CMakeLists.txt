@@ -513,6 +513,7 @@ endif()
 
 set(TASKSMACK_HEADERS
     src/Core/Application.h
+    src/Core/PathService.h
     src/Core/Window.h
     src/Core/Layer.h
     src/UI/UILayer.h
