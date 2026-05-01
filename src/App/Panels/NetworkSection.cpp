@@ -132,12 +132,14 @@ void renderNetworkSection(RenderContext& ctx)
         }
     }
 
-    // Calculate dropdown width based on longest interface name
-    float dropdownWidth = ImGui::CalcTextSize("Total (All Interfaces)").x + 20.0F;
-    for (size_t i = 0; i <= interfaceCount; ++i)
+    // Calculate dropdown width based on longest interface name.
+    // Use GetFrameHeight() for the arrow button and FramePadding.x*2 for text inset,
+    // rather than a magic constant, so the width is correct at any font size/DPI.
+    const float comboExtraWidth = ImGui::GetFrameHeight() + (ImGui::GetStyle().FramePadding.x * 2.0F);
+    float dropdownWidth = 0.0F;
+    for (const auto& name : interfaceNames)
     {
-        const float itemWidth = ImGui::CalcTextSize(interfaceNames[i].c_str()).x + 20.0F;
-        dropdownWidth = std::max(dropdownWidth, itemWidth);
+        dropdownWidth = std::max(dropdownWidth, ImGui::CalcTextSize(name.c_str()).x + comboExtraWidth);
     }
 
     // Interface selector
