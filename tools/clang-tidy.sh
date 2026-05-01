@@ -99,8 +99,10 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
 fi
 
 # Strip C++20 module flags and PCH references from compile_commands.json.
-# CMake includes PCH flags (-Xclang -include-pch) in compile_commands.json, but
-# clang-tidy cannot use pre-built PCH files without a prior full build.
+# CMake emits two PCH-related flag groups per TU:
+#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
+#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
+# clang-tidy cannot use either without a prior full build, so strip both.
 if $VERBOSE; then
     echo "Stripping module and PCH flags from compile_commands.json..."
 fi
@@ -108,7 +110,7 @@ sed -i.bak \
     -e 's/@[^ ]*\.modmap//g' \
     -e 's/-fmodule-output=[^ ]*//g' \
     -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
-    -e 's/-Xclang -fno-pch-timestamp//g' \
+    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
     "$COMPILE_COMMANDS"
 rm -f "${COMPILE_COMMANDS}.bak"
 

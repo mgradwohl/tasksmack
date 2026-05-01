@@ -98,8 +98,10 @@ if (-not (Test-Path $CompileCommandsJson)) {
 }
 
 # Strip C++20 module flags and PCH references from compile_commands.json.
-# CMake includes PCH flags (-Xclang -include-pch) in compile_commands.json, but
-# clang-tidy cannot use pre-built PCH files without a prior full build.
+# CMake emits two PCH-related flag groups per TU:
+#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
+#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
+# clang-tidy cannot use either without a prior full build, so strip both.
 if ($ShowDetails) {
     Write-Host "Stripping module and PCH flags from compile_commands.json..."
 }
@@ -107,7 +109,7 @@ $content = Get-Content $CompileCommandsJson -Raw
 $content = $content -replace '@[^ ]*\.modmap', ''
 $content = $content -replace '-fmodule-output=[^ ]*', ''
 $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
-$content = $content -replace '-Xclang -fno-pch-timestamp', ''
+$content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
 Set-Content $CompileCommandsJson -Value $content -NoNewline
 
 # Determine files to analyze
