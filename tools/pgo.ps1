@@ -45,7 +45,13 @@ function Write-Step([string]$message) {
 function Invoke-Native {
     $exe  = $args[0]
     $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
-    & $exe @rest
+    # Flatten nested arrays so array-valued arguments (e.g. a list of .profraw paths)
+    # are expanded into individual arguments for the native process rather than being
+    # passed as a single "System.Object[]" string.
+    $flatRest = [string[]]@($rest | ForEach-Object {
+        if ($_ -is [array]) { $_ | ForEach-Object { [string]$_ } } else { [string]$_ }
+    })
+    & $exe @flatRest
     if ($LASTEXITCODE -ne 0) {
         # Flatten nested arrays to strings so the error message shows the actual
         # command line rather than "System.Object[]" for array-valued arguments.
@@ -95,13 +101,19 @@ function Invoke-Generate {
 
     # Run all benchmarks; LLVM_PROFILE_FILE drives per-process .profraw output.
     # %p expands to the PID so parallel processes don't clobber each other.
-    # Use try/finally so the env var is always removed even if the benchmark fails.
+    # Save and restore any pre-existing LLVM_PROFILE_FILE so the user's environment
+    # is not permanently modified if one was already set before this script ran.
+    $prevLlvmProfileFile = $env:LLVM_PROFILE_FILE
     $env:LLVM_PROFILE_FILE = $ProfrawPattern
     try {
         Invoke-Native $BenchBin --benchmark_min_time=0.5
     }
     finally {
-        Remove-Item Env:\LLVM_PROFILE_FILE -ErrorAction SilentlyContinue
+        if ($null -eq $prevLlvmProfileFile) {
+            Remove-Item Env:\LLVM_PROFILE_FILE -ErrorAction SilentlyContinue
+        } else {
+            $env:LLVM_PROFILE_FILE = $prevLlvmProfileFile
+        }
     }
 
     if (Test-Path $AppBin) {

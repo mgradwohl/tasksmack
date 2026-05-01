@@ -721,6 +721,10 @@ elseif(UNIX AND NOT APPLE)
     target_link_libraries(TaskSmack PRIVATE dl)
 endif()
 
+set_target_properties(TaskSmack PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
 # Copy assets (fonts and themes) to build directory
 set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
 add_custom_command(TARGET TaskSmack POST_BUILD
