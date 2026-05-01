@@ -11,8 +11,9 @@ param()
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
-$MIN_CLANG_VERSION = 21
+$MIN_CLANG_VERSION = 22
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
+$MIN_PYTHON_VERSION = [Version]"3.14"
 
 # Helper function to print status
 function Write-Status {
@@ -393,11 +394,11 @@ else {
 $python3Ver = Get-Python3Version
 $pythonCmd = Get-WorkingPythonCommand
 $python3Path = if ($pythonCmd) { Get-ToolPath $pythonCmd } else { $null }
-if ($python3Ver) {
-    Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required "3.0"
+if ($python3Ver -and [Version]$python3Ver -ge $MIN_PYTHON_VERSION) {
+    Write-Status -Name "python3" -Status "ok" -Version $python3Ver -Path $python3Path -Required $MIN_PYTHON_VERSION
 }
 else {
-    Write-Status -Name "python3" -Status "fail" -Version $null -Path $python3Path -Required "3.0"
+    Write-Status -Name "python3" -Status "fail" -Version $python3Ver -Path $python3Path -Required $MIN_PYTHON_VERSION
     $AllOK = $false
 }
 

@@ -12,6 +12,7 @@ MIN_CMAKE_VERSION="3.29"
 MIN_CLANG_VERSION="22"
 MIN_CCACHE_VERSION="4.9.1"
 MIN_GIT_VERSION="2.30"
+MIN_PYTHON_VERSION="3.14"
 
 # Colors for output
 RED='\033[0;31m'
@@ -294,6 +295,19 @@ main() {
         fi
     fi
 
+    # clang++
+    local clangpp_path
+    clangpp_path="$(command -v clang++ 2>/dev/null || true)"
+    if [[ -z "${clangpp_path}" ]]; then
+        echo -e "${RED}clang++${NC}: not found"
+        all_ok=1
+    elif version_at_least "${MIN_CLANG_VERSION}" "${clang_ver}"; then
+        echo -e "${GREEN}clang++${NC}: ${clang_ver} (${clangpp_path})"
+    else
+        echo -e "${YELLOW}clang++${NC}: ${clang_ver} (${clangpp_path}) - minimum required ${MIN_CLANG_VERSION}"
+        all_ok=1
+    fi
+
     # clangd (required for VS Code workspace defaults)
     local clangd_ver
     clangd_ver="$(get_clangd_version)"
@@ -312,6 +326,18 @@ main() {
         fi
     fi
 
+    # lld
+    local lld_ver
+    lld_ver="$(get_lld_version)"
+    if [[ -z "${lld_ver}" ]]; then
+        echo -e "${RED}lld${NC}: not found"
+        all_ok=1
+    else
+        local lld_path
+        lld_path="$(command -v ld.lld 2>/dev/null || command -v lld 2>/dev/null || true)"
+        echo -e "${GREEN}lld${NC}: ${lld_ver} (${lld_path})"
+    fi
+
     # clang-format (required for VS Code/workflow defaults)
     local clang_format_ver
     clang_format_ver="$(get_clang_format_version)"
@@ -326,6 +352,23 @@ main() {
             echo -e "${GREEN}clang-format${NC}: ${clang_format_ver} (${clang_format_path})"
         else
             echo -e "${YELLOW}clang-format${NC}: ${clang_format_ver} (${clang_format_path}) - minimum recommended ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
+    fi
+
+    # clang-tidy
+    local clang_tidy_ver
+    clang_tidy_ver="$(get_clang_tidy_version)"
+    if [[ -z "${clang_tidy_ver}" ]]; then
+        echo -e "${RED}clang-tidy${NC}: not found"
+        all_ok=1
+    else
+        local clang_tidy_path
+        clang_tidy_path="$(command -v clang-tidy 2>/dev/null || true)"
+        if version_at_least "${MIN_CLANG_VERSION}" "${clang_tidy_ver}"; then
+            echo -e "${GREEN}clang-tidy${NC}: ${clang_tidy_ver} (${clang_tidy_path})"
+        else
+            echo -e "${YELLOW}clang-tidy${NC}: ${clang_tidy_ver} (${clang_tidy_path}) - minimum required ${MIN_CLANG_VERSION}"
             all_ok=1
         fi
     fi
@@ -364,6 +407,18 @@ main() {
         fi
     fi
 
+    # ninja
+    local ninja_ver
+    ninja_ver="$(get_ninja_version)"
+    if [[ -z "${ninja_ver}" ]]; then
+        echo -e "${RED}ninja${NC}: not found"
+        all_ok=1
+    else
+        local ninja_path
+        ninja_path="$(command -v ninja 2>/dev/null || true)"
+        echo -e "${GREEN}ninja${NC}: ${ninja_ver} (${ninja_path})"
+    fi
+
     # iwyu (optional)
     local iwyu_ver
     iwyu_ver="$(get_iwyu_version)"
@@ -374,6 +429,17 @@ main() {
         local iwyu_path
         iwyu_path="$(command -v iwyu 2>/dev/null || true)"
         echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
+    fi
+
+    # llvm-profdata (informational)
+    local llvm_profdata_ver
+    llvm_profdata_ver="$(get_llvm_profdata_version)"
+    if [[ -z "${llvm_profdata_ver}" ]]; then
+        echo -e "${YELLOW}llvm-profdata${NC}: not found (only required for coverage)"
+    else
+        local llvm_profdata_path
+        llvm_profdata_path="$(command -v llvm-profdata 2>/dev/null || true)"
+        echo -e "${GREEN}llvm-profdata${NC}: ${llvm_profdata_ver} (${llvm_profdata_path})"
     fi
 
     # llvm-cov (informational)
@@ -387,24 +453,31 @@ main() {
         echo -e "${GREEN}llvm-cov${NC}: ${llvm_cov_ver} (${llvm_cov_path})"
     fi
 
-    # Python 3 (informational)
+    # Python 3 (required for GLAD OpenGL loader generation)
     local py_ver
     py_ver="$(get_python3_version)"
     if [[ -z "${py_ver}" ]]; then
-        echo -e "${YELLOW}python3${NC}: not found (required for some tooling)"
+        echo -e "${RED}python3${NC}: not found"
+        all_ok=1
     else
         local py_cmd
         py_cmd="$(get_python_cmd)"
         local py_path
         py_path="$(command -v "${py_cmd}" 2>/dev/null || true)"
-        echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
+        if version_at_least "${MIN_PYTHON_VERSION}" "${py_ver}"; then
+            echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
+        else
+            echo -e "${YELLOW}${py_cmd}${NC}: ${py_ver} (${py_path}) - minimum required ${MIN_PYTHON_VERSION}"
+            all_ok=1
+        fi
     fi
 
-    # jinja2 (informational)
+    # jinja2 (required for GLAD OpenGL loader generation)
     local jinja_ver
     jinja_ver="$(get_jinja2_version)"
     if [[ -z "${jinja_ver}" ]]; then
-        echo -e "${YELLOW}jinja2${NC}: Python module not found (required for GLAD generation)"
+        echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
+        all_ok=1
     else
         echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
     fi

@@ -27,8 +27,49 @@ jobs:
           install-clang-tidy: 'true'
           install-coverage-tools: 'true'
 
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
       - name: Validate prerequisites
         run: ./tools/check-prereqs.sh
+
+  validate-environment-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install Python dependencies for GLAD
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
+      - name: Install LLVM / Ninja / ccache
+        shell: pwsh
+        run: |
+          choco install llvm --version 22.1.0 -y
+          choco install ninja ccache -y
+
+      - name: Validate prerequisites
+        shell: pwsh
+        run: ./tools/check-prereqs.ps1
 
   build-linux:
     needs: [validate-environment]
@@ -78,7 +119,7 @@ jobs:
           retention-days: 30
 
   build-windows:
-    needs: [validate-environment]
+    needs: [validate-environment-windows]
     runs-on: windows-latest
     timeout-minutes: 20
     permissions:
@@ -108,7 +149,9 @@ jobs:
 
       - name: Install LLVM / Ninja / ccache
         shell: pwsh
-        run: choco install llvm ninja ccache -y
+        run: |
+          choco install llvm --version 22.1.0 -y
+          choco install ninja ccache -y
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
