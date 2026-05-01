@@ -2,6 +2,7 @@
 
 #include "Event.h"
 #include "Layer.h"
+#include "PathService.h"
 #include "Window.h"
 
 #include <memory>
@@ -63,12 +64,18 @@ class Application
         return *m_Window;
     }
 
+    [[nodiscard]] const PathService& paths() const noexcept
+    {
+        return m_Paths;
+    }
+
     [[nodiscard]] static Application& get();
     [[nodiscard]] static float getTime();
     static void setInstance(std::unique_ptr<Application> app);
 
   private:
     ApplicationSpecification m_Spec;
+    PathService m_Paths;
     std::unique_ptr<Window> m_Window;
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;

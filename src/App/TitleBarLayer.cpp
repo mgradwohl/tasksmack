@@ -3,7 +3,6 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -189,11 +188,7 @@ void TitleBarLayer::onAttach()
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     // Load icon texture
-    auto exeDir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getExecutableDir();
-    }();
+    const auto& exeDir = Core::Application::get().paths().executableDir();
 
     auto iconPath = (exeDir / "assets" / "icons" / "tasksmack-32.png").string();
     int channels = 0;

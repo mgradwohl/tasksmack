@@ -445,6 +445,7 @@ configure_file(
 set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
+    src/Core/PathService.cpp
     src/Core/Window.cpp
     src/UI/UILayer.cpp
     src/UI/Theme.cpp

@@ -7,7 +7,6 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -36,8 +35,7 @@ namespace
 // Get the themes directory path (relative to executable)
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
 {
-    auto provider = Platform::makePathProvider();
-    return provider->getExecutableDir() / "assets" / "themes";
+    return Core::Application::get().paths().executableDir() / "assets" / "themes";
 }
 
 } // namespace

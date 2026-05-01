@@ -2,7 +2,6 @@
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -20,30 +19,6 @@
 
 namespace
 {
-// Get user config directory using platform abstraction
-// Cached as static local to avoid repeated allocations
-std::filesystem::path getUserConfigDir()
-{
-    static const auto dir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getUserConfigDir();
-    }();
-    return dir;
-}
-
-// Get directory containing the executable using platform abstraction
-// Cached as static local to avoid repeated allocations
-std::filesystem::path getExecutableDir()
-{
-    static const auto dir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getExecutableDir();
-    }();
-    return dir;
-}
-
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -59,7 +34,7 @@ float pointsToPixels(float points)
     }
 
     // pixels = points * (DPI / 72), where effective DPI = BASE_DPI * scale
-    return points * (BASE_DPI * scale) / 72.0F;
+    return points * ((BASE_DPI * scale) / 72.0F);
 }
 
 // Best-effort system monospace font discovery (platform-specific, prefers widely available defaults)
@@ -118,7 +93,7 @@ void UILayer::loadAllFonts()
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
     // Build font path relative to executable directory
-    auto exeDir = getExecutableDir();
+    const auto& exeDir = Core::Application::get().paths().executableDir();
     auto fontPath = (exeDir / "assets" / "fonts" / "Inter-Regular.ttf").string();
     auto iconFontPath = (exeDir / "assets" / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = getMonospaceFontPath();
@@ -266,12 +241,13 @@ void UILayer::onAttach()
     loadAllFonts();
 
     // Load themes from TOML files (built-ins)
-    auto themesDir = getExecutableDir() / "assets" / "themes";
+    const auto& exeDir = Core::Application::get().paths().executableDir();
+    auto themesDir = exeDir / "assets" / "themes";
     Theme::get().loadThemes(themesDir);
     spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
     // Optional: load user-provided themes from the same directory as config.toml (../themes)
-    const auto userThemesDir = getUserConfigDir() / "themes";
+    const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
     if (std::filesystem::exists(userThemesDir))
     {
         Theme::get().loadThemes(userThemesDir);
