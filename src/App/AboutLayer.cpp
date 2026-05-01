@@ -1,6 +1,7 @@
 #include "App/AboutLayer.h"
 
 #include "App/PlatformOpen.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
@@ -17,42 +18,6 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
-#include <system_error>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <windows.h>
-#endif
-
-namespace
-{
-
-[[nodiscard]] std::filesystem::path getExecutableDir()
-{
-#ifdef __linux__
-    std::error_code errorCode;
-    auto exePath = std::filesystem::read_symlink("/proc/self/exe", errorCode);
-    if (!errorCode)
-    {
-        return exePath.parent_path();
-    }
-#elif defined(_WIN32)
-    std::wstring buffer(MAX_PATH, L'\0');
-    // Note: GetModuleFileNameW returns DWORD; explicit cast is safe for path lengths.
-    const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (len > 0 && len < buffer.size())
-    {
-        buffer.resize(len);
-        return std::filesystem::path(buffer).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
-}
-
-} // namespace
 
 namespace App
 {
@@ -234,7 +199,7 @@ void AboutLayer::renderAboutDialog()
 
 void AboutLayer::loadIcon()
 {
-    const auto exeDir = getExecutableDir();
+    const auto& exeDir = Core::Application::get().paths().executableDir();
     const auto cwd = std::filesystem::current_path();
 
     const std::array<std::filesystem::path, 3> baseDirs = {
