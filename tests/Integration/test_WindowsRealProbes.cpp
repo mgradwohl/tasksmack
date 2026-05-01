@@ -559,8 +559,8 @@ TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
     {
         for (std::size_t j = i + 1; j < luids.size(); ++j)
         {
-            EXPECT_NE(luids[i], luids[j]) << "Each GPU should have a distinct LUID; GPU " << i << " and GPU " << j
-                                           << " both have LUID " << luids[i];
+            EXPECT_NE(luids[i], luids[j]) << "Each GPU should have a distinct LUID; GPU " << i << " and GPU " << j << " both have LUID "
+                                          << luids[i];
         }
     }
 }
