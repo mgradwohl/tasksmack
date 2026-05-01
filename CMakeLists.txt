@@ -721,9 +721,21 @@ elseif(UNIX AND NOT APPLE)
     target_link_libraries(TaskSmack PRIVATE dl)
 endif()
 
-set_target_properties(TaskSmack PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
+# For multi-config generators (e.g., Visual Studio, Ninja Multi-Config), include
+# $<CONFIG> in the output path to prevent Debug/Release binary collisions.
+# For single-config generators (Ninja), emit directly to bin/ so script and doc
+# paths (e.g., build/pgo-use/bin/TaskSmack) remain correct.
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_is_multi_config)
+    set_target_properties(TaskSmack PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    )
+else()
+    set_target_properties(TaskSmack PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+endif()
+unset(_is_multi_config)
 
 # Copy assets (fonts and themes) to build directory
 set(TASKSMACK_ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")

@@ -11,6 +11,7 @@
 
 #include <benchmark/benchmark.h>
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
