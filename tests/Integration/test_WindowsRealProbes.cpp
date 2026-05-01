@@ -530,7 +530,7 @@ void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounter
 
 } // namespace
 
-TEST(WindowsGPUProbeTest, EnumerateGPUsReturnsAtLeastOneGPU)
+TEST(WindowsGPUProbeTest, EnumerateGPUsValidatesAdapterFieldsOrSkips)
 {
     Platform::WindowsGPUProbe probe;
     auto gpus = probe.enumerateGPUs();
@@ -579,12 +579,12 @@ TEST(WindowsGPUProbeTest, LUIDsAreUniquePerAdapter)
     }
 }
 
-TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesPerGPUUtilization)
+TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesValidUtilizationRange)
 {
     Platform::WindowsGPUProbe probe;
 
     // enumerateGPUs() must be called first to build the LUID map used in
-    // mergePDHSystemWideUtilization(). This mirrors how GPUModel uses the probe.
+    // mergePDHAdapterUtilization(). This mirrors how GPUModel uses the probe.
     auto gpus = probe.enumerateGPUs();
     if (gpus.empty())
     {

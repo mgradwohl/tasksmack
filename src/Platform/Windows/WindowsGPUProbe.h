@@ -30,6 +30,10 @@ class WindowsGPUProbe : public IGPUProbe
     WindowsGPUProbe(WindowsGPUProbe&&) = delete;
     WindowsGPUProbe& operator=(WindowsGPUProbe&&) = delete;
 
+    /// @note enumerateGPUs() must be called before readGPUCounters() to populate
+    /// the DXGI→LUID mapping required for per-adapter PDH utilization merging.
+    /// Without a prior call to enumerateGPUs(), readGPUCounters() will return 0%
+    /// PDH utilization for all adapters and log a debug warning per adapter.
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
@@ -38,7 +42,7 @@ class WindowsGPUProbe : public IGPUProbe
 
   private:
     void mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
-    void mergePDHSystemWideUtilization(std::vector<GPUCounters>& dxgiCounters);
+    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
@@ -48,7 +52,7 @@ class WindowsGPUProbe : public IGPUProbe
     std::unordered_map<uint32_t, uint32_t> m_DXGIToNVMLMap;
 
     // Map DXGI GPU id ("GPU0") to LUID-based id ("GPU_0x00000000_0x0000D3A0")
-    // Built during enumerateGPUs(), used in mergePDHSystemWideUtilization()
+    // Built during enumerateGPUs(), used in mergePDHAdapterUtilization()
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
 };

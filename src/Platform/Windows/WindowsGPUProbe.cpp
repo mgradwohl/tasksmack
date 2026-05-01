@@ -204,7 +204,7 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     }
 
     // For GPUs without NVML, merge PDH system-wide utilization data
-    mergePDHSystemWideUtilization(counters);
+    mergePDHAdapterUtilization(counters);
 
     return counters;
 }
@@ -272,7 +272,7 @@ void WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounte
     }
 }
 
-void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dxgiCounters)
+void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters)
 {
     // Skip if no PDH or if all GPUs already have utilization data (from NVML)
     if (!m_PDHProbe || !m_PDHProbe->isAvailable())
@@ -339,7 +339,7 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
             // No LUID mapping available (enumerateGPUs not yet called).
             // Skip rather than falling back to the inflated system-wide total.
             spdlog::debug(
-                "WindowsGPUProbe::mergePDHSystemWideUtilization: No LUID mapping for GPU {}. Ensure enumerateGPUs() was called first.",
+                "WindowsGPUProbe::mergePDHAdapterUtilization: No LUID mapping for GPU {}. Ensure enumerateGPUs() was called first.",
                 dxgiCounter.gpuId);
             continue;
         }
@@ -351,7 +351,7 @@ void WindowsGPUProbe::mergePDHSystemWideUtilization(std::vector<GPUCounters>& dx
             // Clamp to [0, 100] — summing engine utilizations can exceed 100,
             // and guard against any negative PDH values from corrupted data.
             dxgiCounter.utilizationPercent = std::clamp(utilIt->second, 0.0, 100.0);
-            spdlog::debug("WindowsGPUProbe::mergePDHSystemWideUtilization: GPU {} ({}) utilization = {:.1f}%",
+            spdlog::debug("WindowsGPUProbe::mergePDHAdapterUtilization: GPU {} ({}) utilization = {:.1f}%",
                           dxgiCounter.gpuId,
                           luidId,
                           dxgiCounter.utilizationPercent);
