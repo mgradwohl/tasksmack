@@ -313,8 +313,8 @@ void SettingsLayer::renderSettingsDialog()
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedRefreshRateIndex == i);
-                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(),
-                                      isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
+                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
+                                      isSelected))
                 {
                     m_SelectedRefreshRateIndex = i;
                 }
