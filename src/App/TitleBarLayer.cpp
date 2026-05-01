@@ -3,7 +3,7 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
+#include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -189,13 +189,7 @@ void TitleBarLayer::onAttach()
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     // Load icon texture
-    auto exeDir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getExecutableDir();
-    }();
-
-    auto iconPath = (exeDir / "assets" / "icons" / "tasksmack-32.png").string();
+    auto iconPath = (UI::findAssetsDir() / "icons" / "tasksmack-32.png").string();
     int channels = 0;
     unsigned char* data = stbi_load(iconPath.c_str(), &m_IconWidth, &m_IconHeight, &channels, 4);
     if (data != nullptr)
