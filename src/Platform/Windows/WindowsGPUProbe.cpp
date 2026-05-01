@@ -278,7 +278,7 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
 }
 
 void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
-                                                  const std::unordered_set<std::string>& nvmlSourcedIds)
+                                                 const std::unordered_set<std::string>& nvmlSourcedIds)
 {
     // Skip if no PDH or if all GPUs already have utilization data (from NVML)
     if (!m_PDHProbe || !m_PDHProbe->isAvailable())
@@ -288,10 +288,9 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 
     // Check if we need PDH at all - if all GPUs already have a hardware utilization source, skip
     // (they came from NVML or another authoritative source; 0% at idle is valid)
-    bool allHaveUtilization = !dxgiCounters.empty() &&
-                              std::ranges::all_of(dxgiCounters, [&nvmlSourcedIds](const auto& counter) {
-                                  return nvmlSourcedIds.contains(counter.gpuId);
-                              });
+    bool allHaveUtilization =
+        !dxgiCounters.empty() &&
+        std::ranges::all_of(dxgiCounters, [&nvmlSourcedIds](const auto& counter) { return nvmlSourcedIds.contains(counter.gpuId); });
     // Skip PDH if all GPUs already have NVML utilization data
     if (allHaveUtilization)
     {

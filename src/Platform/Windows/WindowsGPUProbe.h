@@ -45,8 +45,7 @@ class WindowsGPUProbe : public IGPUProbe
 
   private:
     [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);
-    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
-                                    const std::unordered_set<std::string>& nvmlSourcedIds);
+    void mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters, const std::unordered_set<std::string>& nvmlSourcedIds);
 
     std::unique_ptr<DXGIGPUProbe> m_DXGIProbe;
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
