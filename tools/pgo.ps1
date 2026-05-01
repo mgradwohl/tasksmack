@@ -47,7 +47,10 @@ function Invoke-Native {
     $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
     & $exe @rest
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Command failed with exit code ${LASTEXITCODE}: $($args -join ' ')"
+        # Flatten nested arrays to strings so the error message shows the actual
+        # command line rather than "System.Object[]" for array-valued arguments.
+        $cmdLine = ($args | ForEach-Object { if ($_ -is [array]) { $_ -join ' ' } else { [string]$_ } }) -join ' '
+        Write-Error "Command failed with exit code ${LASTEXITCODE}: $cmdLine"
         exit $LASTEXITCODE
     }
 }
@@ -92,9 +95,14 @@ function Invoke-Generate {
 
     # Run all benchmarks; LLVM_PROFILE_FILE drives per-process .profraw output.
     # %p expands to the PID so parallel processes don't clobber each other.
+    # Use try/finally so the env var is always removed even if the benchmark fails.
     $env:LLVM_PROFILE_FILE = $ProfrawPattern
-    Invoke-Native $BenchBin --benchmark_min_time=0.5
-    Remove-Item Env:\LLVM_PROFILE_FILE -ErrorAction SilentlyContinue
+    try {
+        Invoke-Native $BenchBin --benchmark_min_time=0.5
+    }
+    finally {
+        Remove-Item Env:\LLVM_PROFILE_FILE -ErrorAction SilentlyContinue
+    }
 
     if (Test-Path $AppBin) {
         Write-Host ''
