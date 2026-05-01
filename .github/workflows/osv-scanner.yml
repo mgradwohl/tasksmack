@@ -6,6 +6,10 @@ name: OSV Dependency Scan
 # Dependabot covers GitHub Actions and pip; this workflow fills the gap for C++ deps.
 # Syft's cmake cataloger reads FetchContent_Declare entries from CMakeLists.txt and
 # emits them into an SPDX-JSON SBOM without requiring a build.
+#
+# google/osv-scanner-action is a reusable workflow, not a step-level composite action.
+# The SBOM is generated and uploaded as an artifact by the first job, then downloaded
+# inside the reusable workflow via its download-artifact input.
 
 on:
   push:
@@ -22,54 +26,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  vulnerability-scan:
-    name: Scan dependencies for vulnerabilities
+  # Generate an SPDX-JSON SBOM from the source tree so the scanner can see
+  # C++ FetchContent dependencies detected by Syft's cmake cataloger.
+  generate-sbom:
+    name: Generate SBOM from source
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
-      security-events: write
-
     steps:
       - uses: actions/checkout@v6
 
-      # Generate an SPDX-JSON SBOM from the source tree.
-      # Syft's cmake cataloger extracts FetchContent_Declare entries from
-      # CMakeLists.txt so C++ deps are visible to the scanner without a full build.
-      - name: Generate SBOM from source
+      - name: Generate SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
-          output-file: ${{ runner.temp }}/sbom.spdx.json
+          output-file: sbom.spdx.json
           format: spdx-json
           upload-artifact: false
           upload-release-assets: false
 
-      # Scan the SBOM (C++ FetchContent deps detected by Syft) and
-      # requirements.txt (Python build-time deps) against the OSV database.
-      # continue-on-error lets us upload the SARIF report before failing the job.
-      - name: Run OSV Scanner
-        id: scan
-        uses: google/osv-scanner-action@v2
-        continue-on-error: true
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7
         with:
-          scan-args: |-
-            --lockfile=requirements.txt
-            --sbom=${{ runner.temp }}/sbom.spdx.json
-          results-file-name: results.sarif
+          name: sbom-file
+          path: sbom.spdx.json
+          retention-days: 1
 
-      # Upload results to the GitHub Security tab regardless of outcome.
-      - name: Upload SARIF results
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: results.sarif
-          category: osv-scanner
-
-      # Propagate a non-zero exit so the job is marked as failed when
-      # vulnerabilities are found, after the SARIF has been uploaded.
-      - name: Fail if vulnerabilities found
-        if: steps.scan.outcome == 'failure'
-        run: |
-          echo "::error::OSV Scanner found vulnerabilities. Review the Security tab for details."
-          exit 1
+  # Scan the SBOM (C++ FetchContent deps) and requirements.txt (Python) against OSV.
+  # The reusable workflow handles checkout, download of the artifact, scanning,
+  # SARIF upload to the Security tab, and job failure on vulnerabilities.
+  vulnerability-scan:
+    needs: generate-sbom
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5
+    with:
+      scan-args: |-
+        --lockfile=requirements.txt
+        --sbom=./sbom.spdx.json
+      download-artifact: sbom-file
+      results-file-name: results.sarif
