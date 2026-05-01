@@ -1,6 +1,7 @@
 #include "StorageSection.h"
 
 #include "Domain/StorageModel.h"
+#include "Domain/StorageSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"

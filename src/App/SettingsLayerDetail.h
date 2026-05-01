@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <string_view>
+#include <string>
 
 namespace App::Detail
 {
@@ -19,11 +19,11 @@ namespace App::Detail
 // ========================================
 struct FontSizeOption
 {
-    std::string_view label;
+    std::string label;
     UI::FontSize value;
 };
 
-inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
+inline const std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
     {.label = "Small", .value = UI::FontSize::Small},
     {.label = "Medium", .value = UI::FontSize::Medium},
     {.label = "Large", .value = UI::FontSize::Large},
@@ -37,11 +37,11 @@ inline constexpr std::array<FontSizeOption, 6> FONT_SIZE_OPTIONS = {{
 // ========================================
 struct RefreshRateOption
 {
-    std::string_view label;
+    std::string label;
     int valueMs;
 };
 
-inline constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
+inline const std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
     {.label = "100 ms", .valueMs = 100},
     {.label = "250 ms", .valueMs = 250},
     {.label = "500 ms", .valueMs = 500},
@@ -55,11 +55,11 @@ inline constexpr std::array<RefreshRateOption, 6> REFRESH_RATE_OPTIONS = {{
 // ========================================
 struct HistoryOption
 {
-    std::string_view label;
+    std::string label;
     int valueSeconds;
 };
 
-inline constexpr std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
+inline const std::array<HistoryOption, 4> HISTORY_OPTIONS = {{
     {.label = "1 minute", .valueSeconds = 60},
     {.label = "2 minutes", .valueSeconds = 120},
     {.label = "5 minutes", .valueSeconds = 300},
