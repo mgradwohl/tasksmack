@@ -590,14 +590,14 @@ These files are `.gitignore`-d and should not be committed. Re-generate them whe
 - **Run real workloads, not just benchmarks.** The benchmarks cover hot paths well, but briefly running the app with a few hundred processes visible gives the compiler more signal for UI and rendering code.
 - **Re-profile after large refactors.** Stale profile data still improves performance, but fresh data gives the best results.
 - **Combine with the `optimized` preset flags.** The `pgo-use` preset already includes `-O3 -march=x86-64-v3` for maximum effect.
-- **Verify improvement.** Compare the benchmark preset against the pgo-use preset:
+- **Verify end-to-end improvement.** Comparing `benchmark` to `pgo-use` measures the combined effect of PGO and the extra `-march=x86-64-v3` tuning enabled by `pgo-use`, not PGO in isolation. To isolate pure PGO gains, use a baseline build with the same non-PGO flags as `pgo-use`.
 
 ```bash
-# Baseline (unguided optimized build)
+# Baseline (generic optimized benchmark build; no PGO)
 cmake --preset benchmark && cmake --build --preset benchmark
 ./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/baseline.json
 
-# PGO-optimized (after running tools/pgo.sh)
+# PGO + architecture-tuned build (after running tools/pgo.sh)
 ./build/pgo-use/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/pgo.json
 
 # Compare (requires: pip install google-benchmark)
