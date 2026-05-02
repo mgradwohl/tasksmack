@@ -97,9 +97,17 @@ phase_generate() {
 phase_merge() {
     print_step "Phase 2 – Merging profraw files → ${PROFDATA}"
 
+    # Require llvm-profdata from LLVM 22 to match clang-22 used by the pgo-generate/pgo-use
+    # presets. Raw profile formats are not guaranteed to be compatible across LLVM majors,
+    # so mixing e.g. clang-22-generated profraw with llvm-profdata-21 can corrupt the merge.
     local llvm_profdata
-    llvm_profdata="$(find_llvm_tool llvm-profdata)" \
-        || die "'llvm-profdata' not found. Install LLVM (sudo apt install llvm-22) and ensure it is on PATH."
+    if [[ -x "/usr/lib/llvm-22/bin/llvm-profdata" ]]; then
+        llvm_profdata="/usr/lib/llvm-22/bin/llvm-profdata"
+    elif command -v llvm-profdata-22 &>/dev/null; then
+        llvm_profdata="$(command -v llvm-profdata-22)"
+    else
+        die "'llvm-profdata-22' not found. Install LLVM 22 (sudo apt install llvm-22) and ensure it is on PATH."
+    fi
 
     local profraw_files=()
     while IFS= read -r -d '' f; do
