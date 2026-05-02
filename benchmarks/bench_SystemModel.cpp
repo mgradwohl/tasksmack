@@ -147,8 +147,8 @@ static void BM_SystemModel_MemoryGrowth(benchmark::State& state)
 
     if (startStats.valid() && endStats.valid())
     {
-        auto rssGrowth = static_cast<std::int64_t>(endStats.vmRSS) - static_cast<std::int64_t>(startStats.vmRSS);
-        auto heapGrowth = static_cast<std::int64_t>(endStats.vmData) - static_cast<std::int64_t>(startStats.vmData);
+        auto rssGrowth = (static_cast<std::int64_t>(endStats.vmRSS)) - (static_cast<std::int64_t>(startStats.vmRSS));
+        auto heapGrowth = (static_cast<std::int64_t>(endStats.vmData)) - (static_cast<std::int64_t>(startStats.vmData));
 
         state.counters["rss_growth_kb"] = benchmark::Counter((static_cast<double>(rssGrowth)) / 1024.0);
         state.counters["heap_growth_kb"] = benchmark::Counter((static_cast<double>(heapGrowth)) / 1024.0);
