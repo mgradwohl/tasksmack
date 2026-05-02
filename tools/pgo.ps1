@@ -9,7 +9,7 @@
 # The resulting binary is at: build\win-pgo-use\bin\TaskSmack.exe
 #
 # Requirements:
-#   - LLVM/Clang (LLVM_ROOT must be set, see CONTRIBUTING.md)
+#   - LLVM/Clang 22 (LLVM_ROOT must point to your LLVM 22 install, see CONTRIBUTING.md)
 #   - cmake, ninja
 #
 # Background: Clang PGO works in four steps:
@@ -114,14 +114,12 @@ function Invoke-Generate {
 
 # ── phase 2: merge ────────────────────────────────────────────────────────────
 
-function Invoke-Merge {
-    Write-Step "Phase 2 – Merging profraw files → $Profdata"
-
-    # Resolve llvm-profdata here (not at top level) so phases that don't need it
-    # (generate, use) work on machines that only have the build toolchain installed.
-    # Prefer $env:LLVM_ROOT\bin (same mechanism as win-pgo-generate/win-pgo-use presets
-    # which set CMAKE_CXX_COMPILER=$env:LLVM_ROOT/bin/clang++.exe).
-    # Always verify the major version is 22 to prevent mixing incompatible raw profile formats.
+# Resolve and version-validate llvm-profdata.exe, returning its path.
+# Extracted into a helper so the 'all' flow can call it up front (before the
+# expensive instrumented build) rather than failing halfway through.
+# Prefers $env:LLVM_ROOT\bin (same mechanism as win-pgo-generate/win-pgo-use presets
+# which set CMAKE_CXX_COMPILER=$env:LLVM_ROOT/bin/clang++.exe).
+function Resolve-LlvmProfdata {
     $llvmProfdata = $null
     if ($env:LLVM_ROOT) {
         $candidate = Join-Path $env:LLVM_ROOT 'bin\llvm-profdata.exe'
@@ -154,6 +152,13 @@ function Invoke-Merge {
         Write-Error "llvm-profdata not found. Set LLVM_ROOT to your LLVM 22 install directory or add LLVM 22 bin to PATH."
         exit 1
     }
+    return $llvmProfdata
+}
+
+function Invoke-Merge {
+    Write-Step "Phase 2 – Merging profraw files → $Profdata"
+
+    $llvmProfdata = Resolve-LlvmProfdata
 
     $profrawFiles = @(Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue)
 
@@ -202,6 +207,9 @@ switch ($cmd) {
     'merge'    { Invoke-Merge }
     'use'      { Invoke-Use }
     'all' {
+        # Validate llvm-profdata availability and version before starting the expensive
+        # instrumented build so a missing or wrong-version tool fails fast.
+        $null = Resolve-LlvmProfdata
         Invoke-Generate
         Invoke-Merge
         Invoke-Use

@@ -49,6 +49,12 @@ validate_pgo_prereqs() {
         echo "Error: LLD linker not found (tried lld-22, ld.lld, lld). Install via: apt install lld-22 (versioned) or apt install lld (unversioned)" >&2
         return 1
     fi
+    # Validate llvm-profdata-22 up front so the all/generate phases fail before the
+    # expensive instrumented build rather than deep in phase_merge.
+    if [[ ! -x "/usr/lib/llvm-22/bin/llvm-profdata" ]] && ! command -v llvm-profdata-22 &>/dev/null; then
+        echo "Error: llvm-profdata-22 not found. Install LLVM 22: sudo apt install llvm-22" >&2
+        return 1
+    fi
     return 0
 }
 
