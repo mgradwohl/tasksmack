@@ -88,8 +88,7 @@ class DRMGPUProbeUnitTest : public ::testing::Test
     {
         static std::atomic<int> s_counter{0};
         const auto seq = s_counter.fetch_add(1, std::memory_order_relaxed);
-        const auto name =
-            "tasksmack_drm_test_" + std::to_string(getpid()) + "_" + std::to_string(seq);
+        const auto name = "tasksmack_drm_test_" + std::to_string(getpid()) + "_" + std::to_string(seq);
         m_SysRoot = std::filesystem::temp_directory_path() / name;
         std::filesystem::create_directories(m_SysRoot);
     }
@@ -104,8 +103,7 @@ class DRMGPUProbeUnitTest : public ::testing::Test
     /// @param cardName  e.g. "card0"
     /// @param driver    e.g. "i915" or "xe" — the filename the symlink points to
     /// @returns path to the device directory (cardPath/device)
-    [[nodiscard]] std::filesystem::path makeCard(const std::string& cardName,
-                                                 const std::string& driver = "i915") const
+    [[nodiscard]] std::filesystem::path makeCard(const std::string& cardName, const std::string& driver = "i915") const
     {
         const auto deviceDir = m_SysRoot / cardName / "device";
         std::filesystem::create_directories(deviceDir);
@@ -135,6 +133,19 @@ TEST_F(DRMGPUProbeUnitTest, EmptyBasePath_NotAvailable)
     DRMGPUProbe probe((m_SysRoot / "nonexistent").string());
     EXPECT_FALSE(probe.isAvailable());
     EXPECT_TRUE(probe.enumerateGPUs().empty());
+}
+
+TEST_F(DRMGPUProbeUnitTest, FileAsBasePath_NotAvailable)
+{
+    // Passing a regular file instead of a directory must not throw; probe is simply unavailable.
+    const auto filePath = m_SysRoot / "not_a_directory";
+    writeFile(filePath, "regular file");
+
+    EXPECT_NO_THROW({
+        DRMGPUProbe probe(filePath.string());
+        EXPECT_FALSE(probe.isAvailable());
+        EXPECT_TRUE(probe.enumerateGPUs().empty());
+    });
 }
 
 TEST_F(DRMGPUProbeUnitTest, EmptyDirectory_NotAvailable)
@@ -311,6 +322,37 @@ TEST_F(DRMGPUProbeUnitTest, NoClassFile_WithVRAM_IsDiscrete)
     writeFile(deviceDir / "vendor", "0x8086");
     writeFile(deviceDir / "mem_info_vram_total", "4294967296"); // 4 GiB
     // No class file
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, MissingVendorFile_VGA_NoVRAM_IsIntegrated)
+{
+    // Vendor file missing (returns empty string → vendor ID 0).
+    // Card is driven by i915 (Intel), so conservative fallback should treat it as integrated.
+    const auto deviceDir = makeCard("card0", "i915");
+    // No vendor file
+    writeFile(deviceDir / "class", "0x030000"); // VGA compatible
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, MissingVendorFile_VGA_WithVRAM_IsDiscrete)
+{
+    // Vendor file missing but VRAM present: conservative unknown vendor should still classify
+    // as discrete when VRAM is available (VRAM is unambiguous evidence of a dedicated GPU).
+    const auto deviceDir = makeCard("card0", "i915");
+    // No vendor file
+    writeFile(deviceDir / "class", "0x030000"); // VGA compatible
+    writeFile(deviceDir / "mem_info_vram_total", "4294967296"); // 4 GiB
 
     DRMGPUProbe probe(m_SysRoot.string());
     ASSERT_TRUE(probe.isAvailable());

@@ -22,8 +22,8 @@ namespace
 constexpr uint32_t PCI_CLASS_SUBCLASS_MASK = 0xFFFF00U;
 
 // Display/3D controller PCI class+subclass values (prog-if bits cleared)
-constexpr uint32_t PCI_CLASS_VGA_COMPATIBLE = 0x030000U;   // VGA compatible controller
-constexpr uint32_t PCI_CLASS_3D_CONTROLLER = 0x030200U;    // 3D controller (compute-only, no display)
+constexpr uint32_t PCI_CLASS_VGA_COMPATIBLE = 0x030000U;     // VGA compatible controller
+constexpr uint32_t PCI_CLASS_3D_CONTROLLER = 0x030200U;      // 3D controller (compute-only, no display)
 constexpr uint32_t PCI_CLASS_DISPLAY_CONTROLLER = 0x038000U; // Display controller (non-VGA)
 
 // PCI vendor IDs
@@ -71,9 +71,10 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
 {
     std::vector<DRMCard> cards;
 
-    if (!Fs::exists(m_DrmBasePath))
+    std::error_code fsErr;
+    if (!Fs::is_directory(m_DrmBasePath, fsErr) || fsErr)
     {
-        spdlog::debug("DRMGPUProbe: {} not found", m_DrmBasePath);
+        spdlog::debug("DRMGPUProbe: {} is not a directory or not accessible", m_DrmBasePath);
         return cards;
     }
 
@@ -85,7 +86,13 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
     };
 
     // Iterate over DRM card entries
-    for (const auto& entry : Fs::directory_iterator(m_DrmBasePath))
+    Fs::directory_iterator dirIter(m_DrmBasePath, fsErr);
+    if (fsErr)
+    {
+        spdlog::debug("DRMGPUProbe: failed to open {} for iteration: {}", m_DrmBasePath, fsErr.message());
+        return cards;
+    }
+    for (const auto& entry : dirIter)
     {
         const std::string cardName = entry.path().filename().string();
 
@@ -265,11 +272,13 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
     // VGA-compatible controllers have display output.
     // Intel VGA GPUs are integrated unless they carry dedicated VRAM (e.g., Arc discrete).
     // Non-Intel VGA controllers (NVIDIA/AMD) are discrete.
+    // If the vendor is unknown (e.g., /vendor file missing), fall back conservatively to
+    // VRAM presence rather than incorrectly classifying as discrete.
     if (classSubclass == PCI_CLASS_VGA_COMPATIBLE)
     {
-        if (vendor == PCI_VENDOR_INTEL)
+        if (vendor == PCI_VENDOR_INTEL || vendor == 0)
         {
-            // Intel Arc discrete (connected to display) has dedicated VRAM; iGPU does not.
+            // Intel iGPU (or unknown vendor — conservative): integrated unless VRAM is present.
             return vramTotal == 0;
         }
         return false; // NVIDIA/AMD VGA controllers are discrete
@@ -277,9 +286,10 @@ bool DRMGPUProbe::detectIsIntegrated(const std::string& vendorId, uint32_t pciCl
 
     // Display controllers that are not VGA-compatible (e.g., Intel Arc on some platforms).
     // Use VRAM presence as the tiebreaker for Intel; others are discrete.
+    // Same conservative fallback for unknown vendor.
     if (classSubclass == PCI_CLASS_DISPLAY_CONTROLLER)
     {
-        if (vendor == PCI_VENDOR_INTEL)
+        if (vendor == PCI_VENDOR_INTEL || vendor == 0)
         {
             return vramTotal == 0;
         }

@@ -57,8 +57,7 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] static std::string findHwmonPath(const std::string& devicePath);
     [[nodiscard]] static std::string getVendorName(const std::string& vendorId);
     [[nodiscard]] static uint32_t parseHexUint32(const std::string& hexStr);
-    [[nodiscard]] static bool detectIsIntegrated(const std::string& vendorId, uint32_t pciClass,
-                                                 uint64_t vramTotal);
+    [[nodiscard]] static bool detectIsIntegrated(const std::string& vendorId, uint32_t pciClass, uint64_t vramTotal);
     [[nodiscard]] GPUInfo cardToGPUInfo(const DRMCard& card) const;
 
     bool m_Available{false};
