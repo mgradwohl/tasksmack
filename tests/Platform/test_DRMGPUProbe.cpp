@@ -64,12 +64,12 @@ TEST(DRMGPUProbeIntegrationTest, IsIntegratedFieldIsValidWhenPresent)
     }
 
     auto gpus = probe.enumerateGPUs();
+    ASSERT_FALSE(gpus.empty()) << "Expected at least one GPU when probe is available";
     for (const auto& gpu : gpus)
     {
-        // isIntegrated must be a boolean — just check it is set (true or false)
-        EXPECT_TRUE(gpu.isIntegrated == true || gpu.isIntegrated == false);
-        // Vendor must be non-empty
+        // Vendor and id must be populated by the detection logic
         EXPECT_FALSE(gpu.vendor.empty());
+        EXPECT_FALSE(gpu.id.empty());
     }
 }
 
@@ -146,6 +146,29 @@ TEST_F(DRMGPUProbeUnitTest, FileAsBasePath_NotAvailable)
         EXPECT_FALSE(probe.isAvailable());
         EXPECT_TRUE(probe.enumerateGPUs().empty());
     });
+}
+
+TEST_F(DRMGPUProbeUnitTest, UnreadableDirectory_NotAvailable)
+{
+    if (getuid() == 0)
+    {
+        GTEST_SKIP() << "Cannot test EACCES as root";
+    }
+
+    // A mode-000 directory triggers an error-code path in directory_iterator.
+    // The probe must not throw and must report unavailable.
+    const auto lockedDir = m_SysRoot / "locked";
+    std::filesystem::create_directories(lockedDir);
+    std::filesystem::permissions(lockedDir, std::filesystem::perms::none);
+
+    EXPECT_NO_THROW({
+        DRMGPUProbe probe(lockedDir.string());
+        EXPECT_FALSE(probe.isAvailable());
+        EXPECT_TRUE(probe.enumerateGPUs().empty());
+    });
+
+    // Restore permissions so TearDown can remove it
+    std::filesystem::permissions(lockedDir, std::filesystem::perms::all);
 }
 
 TEST_F(DRMGPUProbeUnitTest, EmptyDirectory_NotAvailable)
@@ -351,8 +374,37 @@ TEST_F(DRMGPUProbeUnitTest, MissingVendorFile_VGA_WithVRAM_IsDiscrete)
     // as discrete when VRAM is available (VRAM is unambiguous evidence of a dedicated GPU).
     const auto deviceDir = makeCard("card0", "i915");
     // No vendor file
-    writeFile(deviceDir / "class", "0x030000"); // VGA compatible
+    writeFile(deviceDir / "class", "0x030000");                 // VGA compatible
     writeFile(deviceDir / "mem_info_vram_total", "4294967296"); // 4 GiB
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, MissingVendorFile_DisplayController_NoVRAM_IsIntegrated)
+{
+    // Vendor file missing, display controller class, no VRAM → conservative: integrated.
+    const auto deviceDir = makeCard("card0", "i915");
+    // No vendor file
+    writeFile(deviceDir / "class", "0x038000"); // Display controller (non-VGA)
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, MissingVendorFile_DisplayController_WithVRAM_IsDiscrete)
+{
+    // Vendor file missing, display controller class, VRAM present → discrete.
+    const auto deviceDir = makeCard("card0", "xe");
+    // No vendor file
+    writeFile(deviceDir / "class", "0x038000");                 // Display controller (non-VGA)
+    writeFile(deviceDir / "mem_info_vram_total", "2147483648"); // 2 GiB
 
     DRMGPUProbe probe(m_SysRoot.string());
     ASSERT_TRUE(probe.isAvailable());
