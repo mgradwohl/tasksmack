@@ -199,8 +199,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
-                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
-                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         },
@@ -318,8 +318,6 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
-                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
-                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         }
