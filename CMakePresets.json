@@ -194,7 +194,7 @@
         {
             "name": "pgo-use",
             "displayName": "PGO Use",
-            "description": "PGO-optimized build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.sh to generate)",
+            "description": "PGO-optimized build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.sh to generate). Requires x86-64-v3 capable CPU (Haswell/2013 or newer); will crash on older x86-64 hardware.",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -312,7 +312,7 @@
         {
             "name": "win-pgo-use",
             "displayName": "Windows PGO Use",
-            "description": "PGO-optimized Windows build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.ps1 to generate)",
+            "description": "PGO-optimized Windows build using collected profile data from profiles/tasksmack.profdata (run tools/pgo.ps1 to generate). Requires x86-64-v3 capable CPU (Haswell/2013 or newer); will crash on older x86-64 hardware.",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-pgo-use",
             "cacheVariables": {

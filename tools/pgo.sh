@@ -38,6 +38,44 @@ APP_BIN="${ROOT}/build/pgo-generate/bin/TaskSmack"
 print_step() { echo; echo "──────────────────────────────────────────"; echo "  $*"; echo "──────────────────────────────────────────"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Locate llvm-profdata from an LLVM 22 installation and echo its path.
+# Accepts versioned Debian paths, versioned binary names, and unversioned
+# binaries on PATH – but rejects any that are not LLVM 22, because mixing
+# clang-22-generated .profraw data with an older llvm-profdata can silently
+# corrupt the merged .profdata.  (Mirrors Resolve-LlvmProfdata in pgo.ps1.)
+resolve_pgo_profdata() {
+    local candidates=()
+
+    # 1. Versioned Debian/APT path
+    [[ -x "/usr/lib/llvm-22/bin/llvm-profdata" ]] && candidates+=("/usr/lib/llvm-22/bin/llvm-profdata")
+
+    # 2. Versioned binary name on PATH
+    if command -v llvm-profdata-22 &>/dev/null; then
+        candidates+=("$(command -v llvm-profdata-22)")
+    fi
+
+    # 3. Unversioned binary on PATH – verify it is LLVM 22 before accepting
+    if command -v llvm-profdata &>/dev/null; then
+        local unversioned
+        unversioned="$(command -v llvm-profdata)"
+        local ver_line major
+        ver_line="$("${unversioned}" --version 2>&1 | grep -m1 'LLVM version')"
+        major="$(echo "${ver_line}" | sed -n 's/.*LLVM version \([0-9]*\)\..*/\1/p')"
+        if [[ "${major}" == "22" ]]; then
+            candidates+=("${unversioned}")
+        fi
+    fi
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        echo "Error: llvm-profdata from LLVM 22 not found." >&2
+        echo "       Install LLVM 22 (sudo apt install llvm-22) or ensure an LLVM 22 binary is on PATH." >&2
+        return 1
+    fi
+
+    # Return the first (highest-priority) candidate found.
+    echo "${candidates[0]}"
+}
+
 # Validate PGO prerequisites (superset of validate_build_prereqs).
 # The pgo-generate/pgo-use presets require clang-22 (C compiler) and an LLD
 # installation in addition to clang++-22, cmake, and ninja.
@@ -49,14 +87,9 @@ validate_pgo_prereqs() {
         echo "Error: LLD linker not found (tried lld-22, ld.lld, lld). Install via: apt install lld-22 (versioned) or apt install lld (unversioned)" >&2
         return 1
     fi
-    # Validate llvm-profdata up front so the all/generate phases fail before the
-    # expensive instrumented build rather than deep in phase_merge.
-    # Use the shared find_llvm_tool helper from common.sh so any valid LLVM install
-    # (versioned Debian packages, official tarballs, Homebrew, custom PATH) is accepted.
-    if ! find_llvm_tool llvm-profdata &>/dev/null; then
-        echo "Error: llvm-profdata not found. Install LLVM: sudo apt install llvm-22" >&2
-        return 1
-    fi
+    # Validate llvm-profdata (LLVM 22) up front so the all/generate phases fail
+    # before the expensive instrumented build rather than deep in phase_merge.
+    resolve_pgo_profdata &>/dev/null || return 1
     return 0
 }
 
@@ -105,12 +138,11 @@ phase_generate() {
 phase_merge() {
     print_step "Phase 2 – Merging profraw files → ${PROFDATA}"
 
-    # Use the shared find_llvm_tool helper from common.sh to locate llvm-profdata.
-    # This accepts any valid LLVM install (versioned Debian packages, official
-    # tarballs, Homebrew, custom PATH) rather than hard-coding Debian paths.
+    # Locate llvm-profdata from LLVM 22. Mixing clang-22-generated .profraw with
+    # an older llvm-profdata is not guaranteed to be compatible and can corrupt
+    # the merged .profdata or cause the pgo-use build to fail.
     local llvm_profdata
-    llvm_profdata="$(find_llvm_tool llvm-profdata)" || \
-        die "'llvm-profdata' not found. Install LLVM (e.g. sudo apt install llvm-22)."
+    llvm_profdata="$(resolve_pgo_profdata)" || die "Cannot locate llvm-profdata from LLVM 22."
 
     local profraw_files=()
     while IFS= read -r -d '' f; do

@@ -144,9 +144,16 @@ inline void reportMemoryCounters(benchmark::State& state)
 }
 
 /// Report memory delta as benchmark counters
-/// Call with tracker created before the benchmark work
+/// Call with tracker created before the benchmark work.
+/// On platforms where /proc/self/status is unavailable (e.g. Windows),
+/// no counters are emitted rather than publishing misleading zero values.
 inline void reportMemoryDelta(benchmark::State& state, const MemoryDeltaTracker& tracker)
 {
+    if (!tracker.startStats().valid())
+    {
+        return;
+    }
+
     auto rssDelta = tracker.rssDelta();
     auto peakDelta = tracker.peakRssDelta();
 
