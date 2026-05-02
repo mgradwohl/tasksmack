@@ -573,7 +573,8 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
 # Phase 2 – merge profraw files
 # Use llvm-profdata from your LLVM 22 install (llvm-profdata-22 on Debian/Ubuntu,
 # or llvm-profdata if LLVM 22 is the default on PATH). tools/pgo.sh does this automatically.
-llvm-profdata-22 merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
+LLVM_PROFDATA_BIN="$(command -v llvm-profdata-22 || command -v llvm-profdata)"
+"$LLVM_PROFDATA_BIN" merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
 # Phase 3 – PGO-optimized build (reads profiles/tasksmack.profdata)
 cmake --preset pgo-use
