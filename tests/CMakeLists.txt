@@ -87,6 +87,7 @@ else()
         Platform/test_LinuxPathProvider.cpp
         Platform/test_LinuxPowerProbe.cpp
         Platform/test_NetlinkSocketStats.cpp
+        Platform/test_DRMGPUProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
