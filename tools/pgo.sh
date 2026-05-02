@@ -39,12 +39,16 @@ print_step() { echo; echo "─────────────────�
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # Validate PGO prerequisites (superset of validate_build_prereqs).
-# The pgo-generate/pgo-use presets require clang-22 (C compiler) and lld-22
-# (linker) in addition to clang++-22, cmake, and ninja.
+# The pgo-generate/pgo-use presets require clang-22 (C compiler) and an LLD
+# installation in addition to clang++-22, cmake, and ninja.
+# LLD may be present as lld-22, ld.lld, or lld depending on the distro packaging.
 validate_pgo_prereqs() {
     validate_build_prereqs || return 1
     check_command clang-22 "apt install clang-22" || return 1
-    check_command lld-22 "apt install lld-22" || return 1
+    if ! command -v lld-22 &>/dev/null && ! command -v ld.lld &>/dev/null && ! command -v lld &>/dev/null; then
+        echo "Error: LLD linker not found (tried lld-22, ld.lld, lld). Install via: apt install lld-22" >&2
+        return 1
+    fi
     return 0
 }
 

@@ -61,22 +61,6 @@ function Invoke-Native {
     }
 }
 
-# Resolve llvm-profdata: prefer $env:LLVM_ROOT\bin (same as tools/coverage.ps1),
-# then fall back to PATH.
-$LlvmProfdata = $null
-if ($env:LLVM_ROOT) {
-    $candidate = Join-Path $env:LLVM_ROOT 'bin\llvm-profdata.exe'
-    if (Test-Path $candidate) { $LlvmProfdata = $candidate }
-}
-if (-not $LlvmProfdata) {
-    $cmd = Get-Command 'llvm-profdata' -ErrorAction SilentlyContinue
-    if ($cmd) { $LlvmProfdata = $cmd.Source }
-}
-if (-not $LlvmProfdata) {
-    Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."
-    exit 1
-}
-
 # ── phase 1: instrumented build and profiling run ─────────────────────────────
 
 function Invoke-Generate {
@@ -133,6 +117,23 @@ function Invoke-Generate {
 function Invoke-Merge {
     Write-Step "Phase 2 – Merging profraw files → $Profdata"
 
+    # Resolve llvm-profdata here (not at top level) so phases that don't need it
+    # (generate, use) work on machines that only have the build toolchain installed.
+    # Prefer $env:LLVM_ROOT\bin (same as tools/coverage.ps1), then fall back to PATH.
+    $llvmProfdata = $null
+    if ($env:LLVM_ROOT) {
+        $candidate = Join-Path $env:LLVM_ROOT 'bin\llvm-profdata.exe'
+        if (Test-Path $candidate) { $llvmProfdata = $candidate }
+    }
+    if (-not $llvmProfdata) {
+        $cmd = Get-Command 'llvm-profdata' -ErrorAction SilentlyContinue
+        if ($cmd) { $llvmProfdata = $cmd.Source }
+    }
+    if (-not $llvmProfdata) {
+        Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."
+        exit 1
+    }
+
     $profrawFiles = @(Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue)
 
     if (-not $profrawFiles -or $profrawFiles.Count -eq 0) {
@@ -141,7 +142,7 @@ function Invoke-Merge {
     }
 
     Write-Host "Merging $($profrawFiles.Count) .profraw file(s)..."
-    Invoke-Native $LlvmProfdata merge -sparse ($profrawFiles | ForEach-Object { $_.FullName }) -o $Profdata
+    Invoke-Native $llvmProfdata merge -sparse ($profrawFiles | ForEach-Object { $_.FullName }) -o $Profdata
 
     $size = (Get-Item $Profdata).Length / 1KB
     Write-Host "Profile data merged: $Profdata"
