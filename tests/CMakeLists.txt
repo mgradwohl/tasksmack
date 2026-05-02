@@ -113,6 +113,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Core/test_Application.cpp
     Core/test_Layer.cpp
+    Core/test_PathService.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -141,6 +142,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp

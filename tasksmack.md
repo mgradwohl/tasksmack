@@ -132,9 +132,34 @@ OS APIs
 
 Rules:
 - Domain depends on nothing else.
-- UI never calls platform APIs.
+- UI never calls platform APIs directly; use `Core::Application::get().paths()` for path resolution.
 - Platform never depends on UI or renderer.
 - OpenGL usage is confined to Core/UI only.
+
+## Composition Root and Allowed Dependency Matrix
+
+App panels serve as the **composition root**: they are the only place where Platform probes are
+instantiated and injected into Domain models. This is intentional and correct—only App panels
+have enough context to pair the right Platform implementation with the right Domain model.
+
+The key distinction is **construction-time wiring** (allowed in App panels) vs **runtime calls**
+(which must respect the layering rules):
+
+| Layer | May call at construction / `onAttach` | May call at runtime |
+|---|---|---|
+| Platform | OS APIs | OS APIs |
+| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
+| Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
+| App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
+| UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |
+
+**Rules derived from the matrix:**
+
+- `Platform::makePathProvider()` is called **only** inside `Core::PathService` (owned by `Application`).
+  All path resolution elsewhere goes through `Core::Application::get().paths()`.
+- `Platform::make*Probe()` and `Platform::makeProcessActions()` are called **only** from App panel
+  `onAttach` / constructors (the composition root), never from UI rendering code or Domain.
+- No new `#include "Platform/Factory.h"` should appear in `UI/` or non-panel `App/` code.
 
 ## UI Layer Model
 

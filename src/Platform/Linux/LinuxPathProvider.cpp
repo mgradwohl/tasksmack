@@ -37,8 +37,18 @@ std::filesystem::path LinuxPathProvider::getExecutableDir() const
         return exePath.parent_path();
     }
 
-    // Fallback to current directory if symlink read fails
-    return std::filesystem::current_path();
+    // Fallback to current directory if symlink read fails.
+    // Use the error_code overload so we never throw.
+    // If current_path() also fails, returns an empty path ({}) as a last-resort
+    // sentinel. PathService's normalization step handles this degenerate case and
+    // logs a warning so the condition is visible at runtime.
+    std::error_code cwdEc;
+    auto cwd = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        return cwd;
+    }
+    return {};
 }
 
 std::filesystem::path LinuxPathProvider::getUserConfigDir() const
@@ -61,8 +71,18 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
         }
     }
 
-    // Last resort: current directory
-    return std::filesystem::current_path();
+    // Last resort: current directory.
+    // Use the error_code overload so we never throw.
+    // If current_path() also fails, returns an empty path ({}) as a last-resort
+    // sentinel. PathService's normalization step handles this degenerate case and
+    // logs a warning so the condition is visible at runtime.
+    std::error_code cwdEc;
+    auto cwd = std::filesystem::current_path(cwdEc);
+    if (!cwdEc)
+    {
+        return cwd;
+    }
+    return {};
 }
 
 } // namespace Platform

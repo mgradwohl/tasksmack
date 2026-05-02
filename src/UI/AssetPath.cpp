@@ -1,6 +1,6 @@
 #include "AssetPath.h"
 
-#include "Platform/Factory.h"
+#include "Core/Application.h"
 
 // version.h provides TASKSMACK_PROJECT_NAME_LOWER, which is set by CMake from
 // ${PROJECT_NAME_LOWER} — the same variable used in the install() destination.
@@ -20,15 +20,10 @@ namespace UI
 namespace
 {
 
-/// Get directory containing the current executable via the platform path provider.
+/// Get directory containing the current executable via PathService.
 [[nodiscard]] std::filesystem::path executableDir()
 {
-    static const auto dir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getExecutableDir();
-    }();
-    return dir;
+    return Core::Application::get().paths().executableDir();
 }
 
 } // namespace

@@ -2,7 +2,6 @@
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
 #include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -21,18 +20,6 @@
 
 namespace
 {
-// Get user config directory using platform abstraction
-// Cached as static local to avoid repeated allocations
-std::filesystem::path getUserConfigDir()
-{
-    static const auto dir = []
-    {
-        auto provider = Platform::makePathProvider();
-        return provider->getUserConfigDir();
-    }();
-    return dir;
-}
-
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -260,7 +247,7 @@ void UILayer::onAttach()
     spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
 
     // Optional: load user-provided themes from the same directory as config.toml (../themes)
-    const auto userThemesDir = getUserConfigDir() / "themes";
+    const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
     if (std::filesystem::exists(userThemesDir))
     {
         Theme::get().loadThemes(userThemesDir);
