@@ -52,7 +52,7 @@ static void BM_SystemModel_Refresh(benchmark::State& state)
     for (auto _ : state)
     {
         model.refresh();
-        benchmark::DoNotOptimize(model.snapshot().cpuTotal.totalPercent);
+        benchmark::DoNotOptimize(model);
     }
 
     BenchmarkUtils::reportMemoryCounters(state);

@@ -569,7 +569,7 @@ LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
 # (exit after a few seconds of normal use)
 
 # Phase 2 – merge profraw files
-llvm-profdata merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
+llvm-profdata-22 merge -sparse profiles/*.profraw -o profiles/tasksmack.profdata
 
 # Phase 3 – PGO-optimized build (reads profiles/tasksmack.profdata)
 cmake --preset pgo-use

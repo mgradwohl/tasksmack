@@ -119,7 +119,10 @@ function Invoke-Merge {
 
     # Resolve llvm-profdata here (not at top level) so phases that don't need it
     # (generate, use) work on machines that only have the build toolchain installed.
-    # Prefer $env:LLVM_ROOT\bin (same as tools/coverage.ps1), then fall back to PATH.
+    # Prefer $env:LLVM_ROOT\bin (same mechanism as win-pgo-generate/win-pgo-use presets
+    # which set CMAKE_CXX_COMPILER=$env:LLVM_ROOT/bin/clang++.exe).
+    # When LLVM_ROOT is unset, verify the PATH binary is LLVM 22 to avoid mixing
+    # major versions whose raw profile formats are not guaranteed to be compatible.
     $llvmProfdata = $null
     if ($env:LLVM_ROOT) {
         $candidate = Join-Path $env:LLVM_ROOT 'bin\llvm-profdata.exe'
@@ -127,10 +130,20 @@ function Invoke-Merge {
     }
     if (-not $llvmProfdata) {
         $cmd = Get-Command 'llvm-profdata' -ErrorAction SilentlyContinue
-        if ($cmd) { $llvmProfdata = $cmd.Source }
+        if ($cmd) {
+            # Verify the major version matches clang used by win-pgo-generate/win-pgo-use.
+            $verLine = & $cmd.Source --version 2>&1 | Where-Object { $_ -match 'LLVM version' } | Select-Object -First 1
+            $foundMajor = if ($verLine -match 'LLVM version (\d+)\.') { [int]$Matches[1] } else { 0 }
+            if ($foundMajor -ne 22) {
+                Write-Error ("llvm-profdata on PATH is LLVM $foundMajor, but the win-pgo-generate preset requires LLVM 22. " +
+                             "Set LLVM_ROOT to your LLVM 22 install directory or add LLVM 22 bin to PATH.")
+                exit 1
+            }
+            $llvmProfdata = $cmd.Source
+        }
     }
     if (-not $llvmProfdata) {
-        Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."
+        Write-Error "llvm-profdata not found. Set LLVM_ROOT to your LLVM 22 install directory or add LLVM 22 bin to PATH."
         exit 1
     }
 
