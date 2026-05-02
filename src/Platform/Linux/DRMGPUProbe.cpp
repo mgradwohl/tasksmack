@@ -237,11 +237,15 @@ uint32_t DRMGPUProbe::parseHexUint32(const std::string& hexStr)
     }
     try
     {
-        // std::stoul handles the "0x" prefix automatically
+        // std::stoul handles the "0x" prefix automatically with base 16.
+        // PCI class codes are 24-bit and vendor IDs are 16-bit, so the result
+        // always fits in uint32_t and the static_cast is safe.
         return static_cast<uint32_t>(std::stoul(hexStr, nullptr, 16));
     }
     catch (...)
     {
+        // Malformed or unexpected sysfs content: treat as unknown.
+        spdlog::debug("DRMGPUProbe: failed to parse hex value '{}'", hexStr);
         return 0;
     }
 }

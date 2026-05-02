@@ -114,7 +114,7 @@ class DRMGPUProbeUnitTest : public ::testing::Test
         // DRMGPUProbe reads the symlink target's filename() to get the driver name.
         // The target path does not need to exist; only the filename matters.
         const auto driverLink = deviceDir / "driver";
-        std::filesystem::create_symlink("/dev/null/" + driver, driverLink);
+        std::filesystem::create_symlink("/nonexistent/drivers/" + driver, driverLink);
 
         return deviceDir;
     }
