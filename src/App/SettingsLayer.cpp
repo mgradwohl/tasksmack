@@ -7,7 +7,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Platform/Factory.h"
+#include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -33,11 +33,10 @@ using Detail::REFRESH_RATE_OPTIONS;
 namespace
 {
 
-// Get the themes directory path (relative to executable)
+// Get the themes directory path using multi-path asset resolution
 [[nodiscard]] auto getThemesDir() -> std::filesystem::path
 {
-    auto provider = Platform::makePathProvider();
-    return provider->getExecutableDir() / "assets" / "themes";
+    return UI::findAssetsDir() / "themes";
 }
 
 } // namespace
@@ -264,13 +263,15 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(LABEL_WIDTH);
         ImGui::SetNextItemWidth(COMBO_WIDTH);
 
-        const char* currentFontSize = FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label.data();
+        // NOLINT comments below: label is always initialized from a string literal, so .data() is null-terminated
+        const char* currentFontSize =
+            FONT_SIZE_OPTIONS[m_SelectedFontSizeIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##FontSize", currentFontSize))
         {
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedFontSizeIndex == i);
-                if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label.data(), isSelected))
+                if (ImGui::Selectable(FONT_SIZE_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
                     m_SelectedFontSizeIndex = i;
                 }
@@ -304,13 +305,15 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentRefresh = REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data();
+        const char* currentRefresh =
+            REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
         {
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedRefreshRateIndex == i);
-                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), isSelected))
+                if (ImGui::Selectable(REFRESH_RATE_OPTIONS[i].label.data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
+                                      isSelected))
                 {
                     m_SelectedRefreshRateIndex = i;
                 }
@@ -330,13 +333,14 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::SameLine(perfLabelWidth);
         ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
 
-        const char* currentHistory = HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data();
+        const char* currentHistory =
+            HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
         if (ImGui::BeginCombo("##History", currentHistory))
         {
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
             {
                 const bool isSelected = (m_SelectedHistoryIndex == i);
-                if (ImGui::Selectable(HISTORY_OPTIONS[i].label.data(), isSelected))
+                if (ImGui::Selectable(HISTORY_OPTIONS[i].label.data(), isSelected)) // NOLINT(bugprone-suspicious-stringview-data-usage)
                 {
                     m_SelectedHistoryIndex = i;
                 }

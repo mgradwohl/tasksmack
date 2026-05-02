@@ -18,7 +18,7 @@ else
     exit 1
 fi
 
-# Use CMake install to mirror the optimized build layout (binary + libs at prefix root, assets under assets/)
+# Use CMake install to mirror the optimized build layout (binary + libs at prefix root, assets under share/<project_name_lower>/assets/)
 cmake --install "${ROOT_DIR}/build/optimized" --prefix "${PREFIX}"
 
 # Install launcher entry and icon into the user's local desktop paths

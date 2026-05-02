@@ -34,7 +34,7 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
 ```
 
 - Platform probes are stateless readers of OS counters.
-- Samplers (domain/app) poll probes on background threads and publish raw counters to models.
+- Panels poll probes synchronously on the main thread via `onUpdate()`; `BackgroundSampler` is implemented but not yet active.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
@@ -98,8 +98,8 @@ TaskSmack/
 ### src/App
 
 - Owns application panels and UI composition.
-- Wires Domain models/samplers into UI rendering.
-- Implements panel lifecycle (`onAttach`, `onDetach`, `render`).
+- Wires Domain models into UI rendering; drives refresh via panel `onUpdate()`.
+- Implements panel lifecycle (`onAttach`, `onDetach`, `onUpdate`, `render`).
 
 ### src/Domain
 
@@ -132,9 +132,34 @@ OS APIs
 
 Rules:
 - Domain depends on nothing else.
-- UI never calls platform APIs.
+- UI never calls platform APIs directly; use `Core::Application::get().paths()` for path resolution.
 - Platform never depends on UI or renderer.
 - OpenGL usage is confined to Core/UI only.
+
+## Composition Root and Allowed Dependency Matrix
+
+App panels serve as the **composition root**: they are the only place where Platform probes are
+instantiated and injected into Domain models. This is intentional and correct—only App panels
+have enough context to pair the right Platform implementation with the right Domain model.
+
+The key distinction is **construction-time wiring** (allowed in App panels) vs **runtime calls**
+(which must respect the layering rules):
+
+| Layer | May call at construction / `onAttach` | May call at runtime |
+|---|---|---|
+| Platform | OS APIs | OS APIs |
+| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
+| Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
+| App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
+| UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |
+
+**Rules derived from the matrix:**
+
+- `Platform::makePathProvider()` is called **only** inside `Core::PathService` (owned by `Application`).
+  All path resolution elsewhere goes through `Core::Application::get().paths()`.
+- `Platform::make*Probe()` and `Platform::makeProcessActions()` are called **only** from App panel
+  `onAttach` / constructors (the composition root), never from UI rendering code or Domain.
+- No new `#include "Platform/Factory.h"` should appear in `UI/` or non-panel `App/` code.
 
 ## UI Layer Model
 
@@ -145,9 +170,11 @@ Rules:
 
 ## Sampling and Snapshot Pipeline
 
-1. **Sampler threads (domain/app)** poll probes on fixed intervals to capture process tables and counters.
+1. **Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals (default 1 second).
 2. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
-3. **UI thread** reads the latest snapshots thread-safely (e.g., copy under a lock) and renders without blocking on sampling.
+3. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
+
+> **Note:** `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but not yet used. It is a future option to move probe enumeration off the main thread if UI responsiveness becomes a concern on systems with thousands of processes.
 
 ## Process Scalability Guidance
 
@@ -258,7 +285,7 @@ The UI uses these capabilities to:
 
 1. **Foundation**
    - SDL3 + ImGui docking shell
-   - Metrics contract implementation and sampler threads
+   - Metrics contract implementation and main-loop-driven refresh
    - Basic CPU/memory metrics and process list on a single platform
 2. **Core Monitoring**
    - Per-process CPU, memory, IO metrics with histories
@@ -685,11 +712,12 @@ set(TASKSMACK_SOURCES
 - `IMemoryProbe` - system memory counters
 - Domain calculators for CPU% over time, memory trends
 
-#### Phase 3: Background Sampling
+#### Phase 3: Background Sampling (Implemented, Not Yet Active)
 
-- `std::jthread` sampler with `std::stop_token`
+- `std::jthread` sampler with `std::stop_token` — **implemented** in `src/Domain/BackgroundSampler.{h,cpp}`
 - Lock-free snapshot publishing
 - Configurable refresh intervals
+- Currently unused: panels refresh synchronously on the main thread via `onUpdate()`. Activate if UI responsiveness issues arise on systems with thousands of processes.
 
 #### Phase 4: Process Actions
 

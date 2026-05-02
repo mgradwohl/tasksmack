@@ -107,17 +107,17 @@ struct ProcessCapabilities {
 };
 ```
 
-### Background Sampling
-- Use `BackgroundSampler` with `std::jthread` + `std::stop_token`
-- UI registers callback; sampler delivers data on background thread
-- Domain models are thread-safe (`std::shared_mutex`)
-- Sampler interval configurable (default 1 second)
+### Data Refresh (Current Architecture)
+- Panels call `model->refresh()` synchronously from their `onUpdate()` method on the main thread
+- Refresh cadence is accumulator-based: each `onUpdate(deltaTime)` accumulates time and calls `refresh()` when the configured interval elapses (default 1 second)
+- `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but **not yet active** — it is a future option for moving enumeration off the main thread if UI responsiveness issues arise
 
 ### Panel Lifecycle
 ```cpp
-void onAttach() override { /* create model, start sampler */ }
-void onDetach() override { /* stop sampler, cleanup */ }
-void render(bool* open) override { /* ImGui::Begin/End, consume snapshots */ }
+void onAttach() override { /* create model, call refresh() to seed history */ }
+void onDetach() override { /* cleanup model */ }
+void onUpdate(float deltaTime) override { /* accumulate time, call model->refresh() on interval */ }
+void render(bool* open) override { /* ImGui::Begin/End, render version-cached snapshots */ }
 ```
 
 ## Coding Standards
@@ -263,7 +263,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 1. **New probe**: `Platform/IXxxProbe.h` (interface) → `Platform/Linux/LinuxXxxProbe.cpp` (impl)
 2. **New model**: `Domain/XxxModel.cpp` (computes deltas from probe counters)
-3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model + sampler)
+3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`)
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
 
 ## Common Pitfalls
@@ -280,6 +280,9 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Using raw `new`/`delete` instead of smart pointers
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
 - ❌ Missing `override` keyword on virtual function overrides
+- ❌ Calling `Platform::makePathProvider()` from UI or App — use `Core::Application::get().paths()` instead
+- ❌ Calling `Platform::make*Probe()` from UI rendering code — probe creation belongs in App panel `onAttach`, not in render loops
+- ❌ Adding `#include "Platform/Factory.h"` to `UI/` or non-panel `App/` files
 
 ## Engineering Workflow
 
@@ -313,7 +316,9 @@ When performing a code review on this project:
 6. **Architecture Boundaries**: Verify layer dependencies are correct:
    - Platform probes should return raw counters, not computed values
    - Domain should not depend on UI, Core, or graphics libraries
-   - UI should not call Platform probes directly
+   - UI should not include `Platform/Factory.h` or call `Platform::make*()` directly; path resolution goes through `Core::Application::get().paths()`
+   - App panels (composition root) may call `Platform::make*Probe()` and `Platform::makeProcessActions()` at construction/`onAttach` time only — never in render loops
+   - `Platform::makePathProvider()` is called only inside `Core::PathService`; all other path access goes through `Core::Application::get().paths()`
    - All OpenGL calls should be in UI/Core layers only
 
 7. **Naming Conventions**: Enforce project standards (PascalCase classes, camelCase functions, m_camelCase members)

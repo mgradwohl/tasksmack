@@ -715,8 +715,13 @@ GitHub Actions builds on Linux (Ubuntu 24.04) and Windows and runs:
 - Markdown link audit (`docs-hygiene` job)
 - Coverage (`coverage` job)
 - Include analysis (`include-analysis` job — manual-only via workflow_dispatch)
+- Dependency vulnerability scan (`osv-scanner` workflow — Syft SBOM + OSV database)
 
-Dependabot updates GitHub Actions dependencies weekly.
+Dependabot updates GitHub Actions and Python dependencies weekly.
+[OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
+(via Syft SBOM generated from `CMakeLists.txt`) and Python `requirements.txt` against the
+[OSV vulnerability database](https://osv.dev) on pushes to `main`, pull requests targeting
+`main`, and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
 
 ### Release Artifacts
 

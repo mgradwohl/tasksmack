@@ -113,6 +113,7 @@ add_executable(TaskSmackTests
     test_main.cpp
     Core/test_Application.cpp
     Core/test_Layer.cpp
+    Core/test_PathService.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -125,6 +126,7 @@ add_executable(TaskSmackTests
     UI/test_ChartWidgets.cpp
     UI/test_Format.cpp
     UI/test_ThemeLoader.cpp
+    UI/test_AssetPath.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
@@ -140,6 +142,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
@@ -149,12 +152,14 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
 
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
+    ${CMAKE_BINARY_DIR}/generated  # For generated version.h
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imgui_SOURCE_DIR}/misc/cpp
