@@ -11,7 +11,7 @@
 #
 # Requirements:
 #   - clang++-22 (project Clang version, see CONTRIBUTING.md)
-#   - llvm-profdata (ships with llvm/llvm-22; discovered via find_llvm_tool)
+#   - llvm-profdata from LLVM 22 (ships with llvm-22; resolved via resolve_pgo_profdata())
 #   - cmake, ninja
 #
 # Background: Clang PGO works in four steps:
@@ -87,9 +87,6 @@ validate_pgo_prereqs() {
         echo "Error: LLD linker not found (tried lld-22, ld.lld, lld). Install via: apt install lld-22 (versioned) or apt install lld (unversioned)" >&2
         return 1
     fi
-    # Validate llvm-profdata (LLVM 22) up front so the all/generate phases fail
-    # before the expensive instrumented build rather than deep in phase_merge.
-    resolve_pgo_profdata &>/dev/null || return 1
     return 0
 }
 
@@ -99,6 +96,9 @@ phase_generate() {
     print_step "Phase 1 – Instrumented build (pgo-generate preset)"
 
     validate_pgo_prereqs || die "Missing build prerequisites. See CONTRIBUTING.md."
+    # Validate llvm-profdata (LLVM 22) early so the generate phase fails before
+    # the expensive instrumented build rather than deep in phase_merge.
+    resolve_pgo_profdata &>/dev/null || die "Cannot locate llvm-profdata from LLVM 22. Install via: sudo apt install llvm-22"
 
     cmake --preset pgo-generate -S "${ROOT}" 2>&1
     cmake --build --preset pgo-generate 2>&1
