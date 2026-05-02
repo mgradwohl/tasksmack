@@ -11,7 +11,7 @@
 #
 # Requirements:
 #   - clang++-22 (project Clang version, see CONTRIBUTING.md)
-#   - llvm-profdata-22 (ships with llvm-22)
+#   - llvm-profdata (ships with llvm/llvm-22; discovered via find_llvm_tool)
 #   - cmake, ninja
 #
 # Background: Clang PGO works in four steps:
@@ -49,10 +49,12 @@ validate_pgo_prereqs() {
         echo "Error: LLD linker not found (tried lld-22, ld.lld, lld). Install via: apt install lld-22 (versioned) or apt install lld (unversioned)" >&2
         return 1
     fi
-    # Validate llvm-profdata-22 up front so the all/generate phases fail before the
+    # Validate llvm-profdata up front so the all/generate phases fail before the
     # expensive instrumented build rather than deep in phase_merge.
-    if [[ ! -x "/usr/lib/llvm-22/bin/llvm-profdata" ]] && ! command -v llvm-profdata-22 &>/dev/null; then
-        echo "Error: llvm-profdata-22 not found. Install LLVM 22: sudo apt install llvm-22" >&2
+    # Use the shared find_llvm_tool helper from common.sh so any valid LLVM install
+    # (versioned Debian packages, official tarballs, Homebrew, custom PATH) is accepted.
+    if ! find_llvm_tool llvm-profdata &>/dev/null; then
+        echo "Error: llvm-profdata not found. Install LLVM: sudo apt install llvm-22" >&2
         return 1
     fi
     return 0
@@ -103,17 +105,12 @@ phase_generate() {
 phase_merge() {
     print_step "Phase 2 – Merging profraw files → ${PROFDATA}"
 
-    # Require llvm-profdata from LLVM 22 to match clang-22 used by the pgo-generate/pgo-use
-    # presets. Raw profile formats are not guaranteed to be compatible across LLVM majors,
-    # so mixing e.g. clang-22-generated profraw with llvm-profdata-21 can corrupt the merge.
+    # Use the shared find_llvm_tool helper from common.sh to locate llvm-profdata.
+    # This accepts any valid LLVM install (versioned Debian packages, official
+    # tarballs, Homebrew, custom PATH) rather than hard-coding Debian paths.
     local llvm_profdata
-    if [[ -x "/usr/lib/llvm-22/bin/llvm-profdata" ]]; then
-        llvm_profdata="/usr/lib/llvm-22/bin/llvm-profdata"
-    elif command -v llvm-profdata-22 &>/dev/null; then
-        llvm_profdata="$(command -v llvm-profdata-22)"
-    else
-        die "'llvm-profdata-22' not found. Install LLVM 22 (sudo apt install llvm-22) and ensure it is on PATH."
-    fi
+    llvm_profdata="$(find_llvm_tool llvm-profdata)" || \
+        die "'llvm-profdata' not found. Install LLVM (e.g. sudo apt install llvm-22)."
 
     local profraw_files=()
     while IFS= read -r -d '' f; do
