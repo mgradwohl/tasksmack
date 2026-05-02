@@ -77,7 +77,7 @@ sudo apt install libdrm-dev          # Intel GPU enumeration
 
 ### Windows Pre-Requisites
 
-- LLVM/Clang 21+ (includes clang-tidy, clang-format, lld, llvm-cov)
+- LLVM/Clang 22 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata)
 - `LLVM_ROOT` environment variable set
 - CMake 3.28+
 - Ninja
@@ -539,6 +539,8 @@ build/pgo-use/bin/TaskSmack
 
 ```powershell
 # Windows – full workflow
+# Requires LLVM 22: set LLVM_ROOT to your LLVM 22 install directory
+# (e.g. C:\Program Files\LLVM) before running.
 pwsh tools/pgo.ps1
 
 # Individual phases

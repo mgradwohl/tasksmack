@@ -10,8 +10,8 @@
 # The resulting binary is at: build/pgo-use/bin/TaskSmack
 #
 # Requirements:
-#   - clang++ (project Clang version, see CONTRIBUTING.md)
-#   - llvm-profdata (ships with LLVM)
+#   - clang++-22 (project Clang version, see CONTRIBUTING.md)
+#   - llvm-profdata-22 (ships with llvm-22)
 #   - cmake, ninja
 #
 # Background: Clang PGO works in four steps:
