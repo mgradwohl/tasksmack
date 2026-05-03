@@ -75,6 +75,9 @@ add_executable(TaskSmackBenchmarks
     bench_History.cpp
     bench_ProcessModel.cpp
     bench_SystemModel.cpp
+    bench_StorageModel.cpp
+    bench_GPUModel.cpp
+    bench_Numeric.cpp
     bench_Format.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark

@@ -1,0 +1,221 @@
+// Benchmarks for Domain/StorageModel
+//
+// These benchmarks measure the performance of disk I/O sampling and
+// snapshot computation. StorageModel aggregates per-device counters into
+// rates and maintains history for charting.
+// Memory tracking is included to catch allocation regressions.
+
+#include "Domain/StorageModel.h"
+#include "MemoryTracker.h"
+#include "Platform/Factory.h"
+
+#include <benchmark/benchmark.h>
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+namespace
+{
+
+// Benchmark raw disk probe sample (kernel-facing call)
+// This measures actual OS API performance for disk I/O counters
+static void BM_DiskProbe_Read(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+
+    BenchmarkUtils::MemoryDeltaTracker memTracker;
+
+    for (auto _ : state)
+    {
+        auto counters = probe->read();
+        benchmark::DoNotOptimize(counters.disks.size());
+    }
+
+    // Report disk count for context
+    auto finalCounters = probe->read();
+    state.counters["disks"] = benchmark::Counter(static_cast<double>(finalCounters.disks.size()));
+
+    BenchmarkUtils::reportMemoryCounters(state);
+    BenchmarkUtils::reportMemoryDelta(state, memTracker);
+}
+BENCHMARK(BM_DiskProbe_Read);
+
+// Benchmark StorageModel::sample() – full pipeline including delta computation
+// and history append. Called from the background sampler thread.
+static void BM_StorageModel_Sample(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+
+    // Prime previous-state so the first benchmarked call computes valid deltas
+    model.sample();
+
+    BenchmarkUtils::MemoryDeltaTracker memTracker;
+
+    for (auto _ : state)
+    {
+        model.sample();
+        benchmark::DoNotOptimize(model);
+    }
+
+    BenchmarkUtils::reportMemoryCounters(state);
+    BenchmarkUtils::reportMemoryDelta(state, memTracker);
+}
+BENCHMARK(BM_StorageModel_Sample);
+
+// Benchmark latestSnapshot() – read-only copy returned to the UI thread.
+// Should be fast (shared_mutex read lock + shallow copy).
+static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+    model.sample();
+
+    for (auto _ : state)
+    {
+        auto snap = model.latestSnapshot();
+        benchmark::DoNotOptimize(snap.totalReadBytesPerSec);
+        benchmark::DoNotOptimize(snap.totalWriteBytesPerSec);
+    }
+}
+BENCHMARK(BM_StorageModel_LatestSnapshot);
+
+// Benchmark history() – returns all retained snapshots in chronological order.
+// Used for graph rendering. Copies a deque<StorageSnapshot>.
+static void BM_StorageModel_History(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+
+    // Populate history with multiple sample calls
+    for (int i = 0; i < 10; ++i)
+    {
+        model.sample();
+    }
+
+    for (auto _ : state)
+    {
+        auto hist = model.history();
+        benchmark::DoNotOptimize(hist.data());
+        benchmark::DoNotOptimize(hist.size());
+    }
+}
+BENCHMARK(BM_StorageModel_History);
+
+// Benchmark totalReadHistory() and totalWriteHistory()
+// Used by SystemMetricsPanel to render aggregate I/O charts
+static void BM_StorageModel_TotalRateHistory(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+
+    for (int i = 0; i < 10; ++i)
+    {
+        model.sample();
+    }
+
+    for (auto _ : state)
+    {
+        auto readHist = model.totalReadHistory();
+        auto writeHist = model.totalWriteHistory();
+        benchmark::DoNotOptimize(readHist.data());
+        benchmark::DoNotOptimize(writeHist.data());
+    }
+}
+BENCHMARK(BM_StorageModel_TotalRateHistory);
+
+// Benchmark perDiskHistory() – most expensive history accessor:
+// returns a vector<PerDiskHistory>, one entry per disk device
+static void BM_StorageModel_PerDiskHistory(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+
+    for (int i = 0; i < 10; ++i)
+    {
+        model.sample();
+    }
+
+    for (auto _ : state)
+    {
+        auto hist = model.perDiskHistory();
+        benchmark::DoNotOptimize(hist.data());
+        benchmark::DoNotOptimize(hist.size());
+    }
+}
+BENCHMARK(BM_StorageModel_PerDiskHistory);
+
+// Benchmark memory growth over many sample() cycles.
+// Exercises the full production code path: probe read, delta computation,
+// history append, and trimming. Reports RSS and heap growth so regressions
+// are visible in benchmark output.
+static void BM_StorageModel_MemoryGrowth(benchmark::State& state)
+{
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+
+    // Prime previous-state
+    model.sample();
+
+    auto startStats = BenchmarkUtils::readMemoryStats();
+
+    for (auto _ : state)
+    {
+        model.sample();
+        benchmark::DoNotOptimize(model);
+    }
+
+    auto endStats = BenchmarkUtils::readMemoryStats();
+
+    if (startStats.valid() && endStats.valid())
+    {
+        auto rssGrowth = (static_cast<std::int64_t>(endStats.vmRSS)) - (static_cast<std::int64_t>(startStats.vmRSS));
+        auto heapGrowth = (static_cast<std::int64_t>(endStats.vmData)) - (static_cast<std::int64_t>(startStats.vmData));
+
+        state.counters["rss_growth_kb"] = benchmark::Counter((static_cast<double>(rssGrowth)) / 1024.0);
+        state.counters["heap_growth_kb"] = benchmark::Counter((static_cast<double>(heapGrowth)) / 1024.0);
+        state.counters["final_rss_mb"] = benchmark::Counter((static_cast<double>(endStats.vmRSS)) / (1024.0 * 1024.0));
+
+        if (state.iterations() > 0)
+        {
+            state.counters["bytes_per_iter"] =
+                benchmark::Counter((static_cast<double>(rssGrowth)) / (static_cast<double>(state.iterations())));
+        }
+    }
+}
+BENCHMARK(BM_StorageModel_MemoryGrowth)->Iterations(500);
+
+// Benchmark with varying history window sizes.
+// Larger windows retain more snapshots, increasing memory and copy overhead.
+static void BM_StorageModel_HistoryWindowSize(benchmark::State& state)
+{
+    const auto windowSeconds = static_cast<double>(state.range(0));
+
+    auto probe = Platform::makeDiskProbe();
+    Domain::StorageModel model(std::move(probe));
+    model.setMaxHistorySeconds(windowSeconds);
+
+    // Prime with enough samples to saturate the window
+    for (int i = 0; i < 20; ++i)
+    {
+        model.sample();
+    }
+
+    for (auto _ : state)
+    {
+        model.sample();
+        auto hist = model.history();
+        benchmark::DoNotOptimize(hist.data());
+        benchmark::DoNotOptimize(hist.size());
+    }
+
+    // Report the actual retained history size
+    auto hist = model.history();
+    state.counters["history_size"] = benchmark::Counter(static_cast<double>(hist.size()));
+    state.counters["window_sec"] = benchmark::Counter(windowSeconds);
+}
+// Test 10s (minimal), 60s (1 min), 300s (default 5 min)
+BENCHMARK(BM_StorageModel_HistoryWindowSize)->Arg(10)->Arg(60)->Arg(300)->Unit(benchmark::kMicrosecond);
+
+} // namespace
