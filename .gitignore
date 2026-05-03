@@ -21,6 +21,7 @@
 /coverage/
 *.profraw
 *.profdata
+/profiles/
 coverage-output.txt
 
 # Test results and sanitizer outputs

@@ -74,6 +74,7 @@ add_executable(TaskSmackBenchmarks
     bench_main.cpp
     bench_History.cpp
     bench_ProcessModel.cpp
+    bench_SystemModel.cpp
     bench_Format.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
@@ -136,7 +137,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     )
 endif()
 
-# Output location
-set_target_properties(TaskSmackBenchmarks PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
+# Output location – use a config-specific subdirectory under multi-config
+# generators (Visual Studio, Ninja Multi-Config) to avoid Debug/Release
+# binary collisions; single-config generators (Ninja) get a flat bin/ path
+# so PGO scripts and docs remain correct.
+get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_is_multi_config)
+    set_target_properties(TaskSmackBenchmarks PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
+    )
+else()
+    set_target_properties(TaskSmackBenchmarks PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+endif()
+unset(_is_multi_config)
