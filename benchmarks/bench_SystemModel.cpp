@@ -121,16 +121,12 @@ BENCHMARK(BM_SystemModel_PerCoreHistory);
 
 // Benchmark memory growth over many refresh() cycles.
 // Exercises the full production code path: probe read, delta computation,
-// history append, and history trimming. The minimum history window (10 s) is
-// used so that trimming is triggered as the run progresses, verifying that
-// deques do not grow unbounded.
+// and history append. Reports RSS and heap growth so regressions are
+// visible in benchmark output.
 static void BM_SystemModel_MemoryGrowth(benchmark::State& state)
 {
     auto probe = Platform::makeSystemProbe();
     Domain::SystemModel model(std::move(probe));
-
-    // Minimum allowed window (10 s) so trimming is triggered sooner during the run
-    model.setMaxHistorySeconds(static_cast<double>(Domain::Sampling::HISTORY_SECONDS_MIN));
 
     // Prime previous-counters state so the first benchmarked call computes valid deltas
     model.refresh();

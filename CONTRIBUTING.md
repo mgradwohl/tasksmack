@@ -416,7 +416,7 @@ By default, benchmarks output to console. You can also:
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
-| `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read and history trimming path |
+| `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
 | `BM_Format_*` | UI formatting functions |
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
