@@ -121,7 +121,9 @@ BENCHMARK(BM_SystemModel_PerCoreHistory);
 
 // Benchmark memory growth over many refresh() cycles.
 // Exercises the full production code path: probe read, delta computation,
-// and history append. Reports RSS and heap growth so regressions are
+// and history append. History accumulates monotonically across iterations
+// because 500 tight back-to-back calls do not span enough wall-clock time
+// to trigger trimming. Reports RSS and heap growth so regressions are
 // visible in benchmark output.
 static void BM_SystemModel_MemoryGrowth(benchmark::State& state)
 {
