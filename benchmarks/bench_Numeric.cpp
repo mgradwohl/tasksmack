@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <random>
+#include <vector>
 
 namespace
 {
