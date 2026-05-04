@@ -475,8 +475,14 @@ main() {
     local jinja_ver
     jinja_ver="$(get_jinja2_version)"
     if [[ -z "${jinja_ver}" ]]; then
-        echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
-        all_ok=1
+        # Distinguish between "Python not found/too old" and "jinja2 not installed":
+        # if find_python fails here, the Python check above already flagged the issue.
+        if ! find_python &>/dev/null; then
+            echo -e "${YELLOW}jinja2${NC}: skipped (requires Python >= ${MIN_PYTHON_VERSION})"
+        else
+            echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
+            all_ok=1
+        fi
     else
         echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
     fi

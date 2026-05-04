@@ -70,12 +70,12 @@ _python_meets_min() {
 # Find the first Python >= 3.14 interpreter in PATH.
 # Tries 'python3' then 'python' to handle pyenv/custom installs where either
 # may point to the qualifying version.
-# Prints the absolute path on success; returns 1 if no qualifying interpreter found.
+# Prints the resolved filesystem path on success; returns 1 if no qualifying interpreter found.
 find_python() {
     local exe
     for exe in python3 python; do
         if _python_meets_min "$exe"; then
-            command -v "$exe"
+            type -P "$exe"
             return 0
         fi
     done
