@@ -7,6 +7,10 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/common.sh
+source "$SCRIPT_DIR/common.sh"
+
 # Required versions (minimum)
 MIN_CMAKE_VERSION="3.29"
 MIN_CLANG_VERSION="22"
@@ -207,35 +211,12 @@ get_python3_version() {
     fi
 }
 
-# Get working Python 3 command
-get_python_cmd() {
-    if command -v python3 &>/dev/null; then
-        echo "python3"
-    elif command -v python &>/dev/null; then
-        # Check if python is Python 3
-        local ver
-        ver=$(python --version 2>/dev/null | grep -oE 'Python [0-9]+' | grep -oE '[0-9]+' | head -1)
-        if [[ "$ver" == "3" ]]; then
-            echo "python"
-        else
-            echo ""
-        fi
-    else
-        echo ""
-    fi
-}
-
 # Check if jinja2 Python module is installed
 get_jinja2_version() {
-    local py_cmd
-    py_cmd="$(get_python_cmd)"
+    local py_path
+    py_path="$(find_python 2>/dev/null)" || return 0
 
-    if [[ -z "${py_cmd}" ]]; then
-        echo ""
-        return 1
-    fi
-
-    "${py_cmd}" - <<'EOF' 2>/dev/null
+    "$py_path" - <<'EOF' 2>/dev/null
 try:
     import jinja2
     print(getattr(jinja2, "__version__", "unknown"))
@@ -473,10 +454,15 @@ main() {
         echo -e "${RED}python3${NC}: not found"
         all_ok=1
     else
-        local py_cmd
-        py_cmd="$(get_python_cmd)"
+        # Use find_python() for the canonical path (>= 3.14); fall back to any python3/python
+        # for display when the found version is too old.
         local py_path
-        py_path="$(command -v "${py_cmd}" 2>/dev/null || true)"
+        py_path="$(find_python 2>/dev/null || true)"
+        if [[ -z "${py_path}" ]]; then
+            py_path="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+        fi
+        local py_cmd
+        py_cmd="$(basename "${py_path:-python3}")"
         if version_at_least "${MIN_PYTHON_VERSION}" "${py_ver}"; then
             echo -e "${GREEN}${py_cmd}${NC}: ${py_ver} (${py_path})"
         else
@@ -489,8 +475,14 @@ main() {
     local jinja_ver
     jinja_ver="$(get_jinja2_version)"
     if [[ -z "${jinja_ver}" ]]; then
-        echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
-        all_ok=1
+        # Distinguish between "Python not found/too old" and "jinja2 not installed":
+        # if find_python fails here, the Python check above already flagged the issue.
+        if ! find_python &>/dev/null; then
+            echo -e "${YELLOW}jinja2${NC}: skipped (requires Python >= ${MIN_PYTHON_VERSION})"
+        else
+            echo -e "${RED}jinja2${NC}: Python module not found (pip install jinja2)"
+            all_ok=1
+        fi
     else
         echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
     fi

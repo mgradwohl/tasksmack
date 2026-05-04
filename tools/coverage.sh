@@ -64,7 +64,11 @@ fi
 
 # Step 1: Configure and build with coverage
 echo "==> Configuring coverage build..."
-cmake --preset coverage
+PYTHON_EXE="$(find_python)" || {
+    echo "Error: Python 3.14 or newer not found in PATH. Install Python 3.14 or newer." >&2
+    exit 1
+}
+cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
 
 echo "==> Building..."
 cmake --build --preset coverage

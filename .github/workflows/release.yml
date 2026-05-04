@@ -10,6 +10,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  LLVM_VERSION: '22'
+  LLVM_SEMVER_VERSION: '22.1.0'
+
 jobs:
   build-linux:
     name: Build Linux Packages
@@ -23,6 +27,11 @@ jobs:
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -31,7 +40,7 @@ jobs:
           max-size: 500M
 
       - name: Configure
-        run: cmake --preset release
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)"
 
       - name: Build
         run: cmake --build --preset release
@@ -61,21 +70,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
         with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Install Python dependencies for GLAD
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install jinja2
-
-      - name: Install LLVM / Ninja / ccache
-        shell: pwsh
-        run: choco install llvm ninja ccache -y
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
