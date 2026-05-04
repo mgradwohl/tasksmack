@@ -83,9 +83,10 @@ static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_LatestSnapshot);
 
-// Benchmark history() – returns all retained snapshots in chronological order.
-// Used for graph rendering. Copies a deque<StorageSnapshot>.
-static void BM_StorageModel_History(benchmark::State& state)
+// Benchmark historyTimestamps() – returns the shared timestamp axis used by
+// all chart series. Called once per frame by StorageSection before reading
+// any per-disk or aggregate series.
+static void BM_StorageModel_HistoryTimestamps(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
     Domain::StorageModel model(std::move(probe));
@@ -98,12 +99,12 @@ static void BM_StorageModel_History(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.history();
-        benchmark::DoNotOptimize(hist.data());
-        benchmark::DoNotOptimize(hist.size());
+        auto ts = model.historyTimestamps();
+        benchmark::DoNotOptimize(ts.data());
+        benchmark::DoNotOptimize(ts.size());
     }
 }
-BENCHMARK(BM_StorageModel_History);
+BENCHMARK(BM_StorageModel_HistoryTimestamps);
 
 // Benchmark totalReadHistory() and totalWriteHistory()
 // Used by SystemMetricsPanel to render aggregate I/O charts
@@ -188,12 +189,11 @@ static void BM_StorageModel_MemoryGrowth(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_MemoryGrowth)->Iterations(500);
 
-// Benchmark history() copy overhead with varying amounts of retained snapshots.
-// StorageModel trims by wall-clock time, so back-to-back sample() calls do not
-// trigger trimming regardless of the configured window. Instead this benchmark
-// fixes the window at 1 hour (so nothing is ever trimmed) and varies the number
-// of pre-seeded samples to directly control history depth. The copy overhead is
-// what panel rendering code pays on every frame.
+// Benchmark the combined copy overhead of all four StorageSection history accessors
+// called on every render frame: historyTimestamps(), totalReadHistory(),
+// totalWriteHistory(), and perDiskHistory(). History depth is controlled by
+// varying the number of pre-seeded samples (trimming is disabled so the full
+// depth is retained).
 static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
 {
     const auto sampleCount = static_cast<int>(state.range(0));
@@ -212,14 +212,19 @@ static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.history();
-        benchmark::DoNotOptimize(hist.data());
-        benchmark::DoNotOptimize(hist.size());
+        auto ts = model.historyTimestamps();
+        auto readHist = model.totalReadHistory();
+        auto writeHist = model.totalWriteHistory();
+        auto perDisk = model.perDiskHistory();
+        benchmark::DoNotOptimize(ts.data());
+        benchmark::DoNotOptimize(readHist.data());
+        benchmark::DoNotOptimize(writeHist.data());
+        benchmark::DoNotOptimize(perDisk.data());
     }
 
     // Report actual history depth
-    auto hist = model.history();
-    state.counters["history_size"] = benchmark::Counter(static_cast<double>(hist.size()));
+    auto ts = model.historyTimestamps();
+    state.counters["history_size"] = benchmark::Counter(static_cast<double>(ts.size()));
     state.counters["sample_count"] = benchmark::Counter(static_cast<double>(sampleCount));
 }
 // 10, 60, 300 samples mirrors realistic history depths at 1 s / 1 min / 5 min of uptime
