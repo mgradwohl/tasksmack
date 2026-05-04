@@ -77,6 +77,14 @@ if [[ -z "$PYTHON_EXE" ]]; then
     echo "Error: Python 3 not found in PATH. Install Python 3.14 or newer." >&2
     exit 1
 fi
+# Enforce minimum Python version (3.14+) to match project requirements.
+PYTHON_VER="$("$PYTHON_EXE" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PYTHON_MAJOR="${PYTHON_VER%%.*}"
+PYTHON_MINOR="${PYTHON_VER##*.}"
+if (( PYTHON_MAJOR < 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR < 14) )); then
+    echo "Error: Python ${PYTHON_VER} found but Python 3.14 or newer is required." >&2
+    exit 1
+fi
 cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
 
 echo "==> Building..."
