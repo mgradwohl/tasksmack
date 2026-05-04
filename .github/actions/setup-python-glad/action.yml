@@ -11,6 +11,7 @@ runs:
         cache: 'pip'
 
     - name: Install Python dependencies for GLAD
+      shell: pwsh
       run: |
         python -m pip install --upgrade pip
         python -m pip install jinja2
