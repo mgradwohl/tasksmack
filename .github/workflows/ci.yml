@@ -13,6 +13,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
+  LLVM_SEMVER_VERSION: '22.1.0'
 
 jobs:
   validate-environment:
@@ -48,6 +49,8 @@ jobs:
 
       - name: Setup Windows LLVM
         uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -129,6 +132,8 @@ jobs:
 
       - name: Setup Windows LLVM
         uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23

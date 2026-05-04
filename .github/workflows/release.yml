@@ -12,6 +12,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
+  LLVM_SEMVER_VERSION: '22.1.0'
 
 jobs:
   build-linux:
@@ -74,6 +75,8 @@ jobs:
 
       - name: Setup Windows LLVM
         uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
