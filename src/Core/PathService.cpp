@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <filesystem>
 #include <string>
 #include <system_error>
 
@@ -30,7 +31,7 @@ namespace
 std::filesystem::path toAbsolute(const std::filesystem::path& raw)
 {
     std::error_code ec;
-    std::filesystem::path abs = std::filesystem::absolute(raw, ec);
+    const std::filesystem::path abs = std::filesystem::absolute(raw, ec);
     if (!ec)
     {
         return abs.lexically_normal();
@@ -40,7 +41,7 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
     if (raw.is_relative())
     {
         std::error_code cwdEc;
-        std::filesystem::path cwd = std::filesystem::current_path(cwdEc);
+        const std::filesystem::path cwd = std::filesystem::current_path(cwdEc);
         if (!cwdEc)
         {
             return (cwd / raw).lexically_normal();
@@ -66,7 +67,7 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
                          "Returning lexically-normalized raw path.",
                          rawStr);
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch)
         {}
     }
     catch (...)
@@ -77,7 +78,7 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
                          "non-representable characters); both absolute() and current_path() failed. "
                          "Returning lexically-normalized raw path.");
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch)
         {}
     }
     return raw.lexically_normal();

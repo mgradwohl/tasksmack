@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -86,7 +88,7 @@ std::vector<DRMGPUProbe::DRMCard> DRMGPUProbe::discoverDRMCards() const
     };
 
     // Iterate over DRM card entries
-    Fs::directory_iterator dirIter(m_DrmBasePath, fsErr);
+    const Fs::directory_iterator dirIter(m_DrmBasePath, fsErr);
     if (fsErr)
     {
         spdlog::debug("DRMGPUProbe: failed to open {} for iteration: {}", m_DrmBasePath, fsErr.message());
