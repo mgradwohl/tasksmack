@@ -236,8 +236,7 @@ template<typename T> [[nodiscard]] constexpr T clampMaxSaneRateBps(T value) noex
         // +inf → MAX; NaN and -inf → MIN.
         if (!std::isfinite(value))
         {
-            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(MAX_SANE_RATE_BPS_MAX)
-                                                         : static_cast<T>(MAX_SANE_RATE_BPS_MIN);
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(MAX_SANE_RATE_BPS_MAX) : static_cast<T>(MAX_SANE_RATE_BPS_MIN);
         }
     }
     return std::clamp(value, static_cast<T>(MAX_SANE_RATE_BPS_MIN), static_cast<T>(MAX_SANE_RATE_BPS_MAX));
