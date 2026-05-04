@@ -47,7 +47,8 @@ static void BM_GPUProbe_ReadCounters(benchmark::State& state)
 
     // Must enumerate before reading counters so the DXGI→LUID map is ready
     // on Windows (no-op on Linux).
-    probe->enumerateGPUs();
+    auto gpus = probe->enumerateGPUs();
+    benchmark::DoNotOptimize(gpus);
 
     BenchmarkUtils::MemoryDeltaTracker memTracker;
 
