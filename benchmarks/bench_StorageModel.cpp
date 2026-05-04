@@ -66,7 +66,8 @@ static void BM_StorageModel_Sample(benchmark::State& state)
 BENCHMARK(BM_StorageModel_Sample);
 
 // Benchmark latestSnapshot() – read-only copy returned to the UI thread.
-// Should be fast (shared_mutex read lock + shallow copy).
+// Acquires a shared_mutex read lock and returns StorageSnapshot by value,
+// which includes a deep copy of the per-disk vector.
 static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();

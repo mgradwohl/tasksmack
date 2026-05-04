@@ -311,24 +311,20 @@ TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesInRange)
 {
     EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT),
               INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_DEFAULT);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN),
-              INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX),
-              INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
+    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
+    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
 }
 
 TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesBelowMin)
 {
     EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{0}), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
     EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{-1}), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN - 1),
-              INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
+    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN - 1), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MIN);
 }
 
 TEST(SamplingConfigTest, ClampIntegratedGpuVramThresholdBytesAboveMax)
 {
-    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX + 1),
-              INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
+    EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX + 1), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
     EXPECT_EQ(clampIntegratedGpuVramThresholdBytes(int64_t{1024} * 1024 * 1024 * 16), INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
 }
 

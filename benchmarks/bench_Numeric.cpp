@@ -9,11 +9,17 @@
 
 #include <benchmark/benchmark.h>
 
+#include <array>
 #include <cstdint>
 #include <random>
 
 namespace
 {
+
+// Pre-generate a pool of values so that RNG overhead is excluded from the
+// timed loop. Pool size is a power of two to use cheap bitwise masking.
+constexpr size_t kPoolSize = 1024;
+constexpr size_t kPoolMask = kPoolSize - 1;
 
 // =============================================================================
 // toDouble Benchmarks
@@ -24,11 +30,17 @@ static void BM_Numeric_ToDouble_Int(benchmark::State& state)
 {
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(-1000000, 1000000);
+    std::array<int, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const int value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::toDouble(value));
+        benchmark::DoNotOptimize(Domain::Numeric::toDouble(values[idx & kPoolMask]));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_ToDouble_Int);
@@ -38,11 +50,17 @@ static void BM_Numeric_ToDouble_UInt64(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<std::uint64_t> dist(0, UINT64_MAX / 2);
+    std::array<std::uint64_t, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const auto value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::toDouble(value));
+        benchmark::DoNotOptimize(Domain::Numeric::toDouble(values[idx & kPoolMask]));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_ToDouble_UInt64);
@@ -52,11 +70,17 @@ static void BM_Numeric_ToDouble_Float(benchmark::State& state)
 {
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-100.0F, 100.0F);
+    std::array<float, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const float value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::toDouble(value));
+        benchmark::DoNotOptimize(Domain::Numeric::toDouble(values[idx & kPoolMask]));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_ToDouble_Float);
@@ -70,11 +94,17 @@ static void BM_Numeric_ClampPercentToFloat_InRange(benchmark::State& state)
 {
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> dist(0.0, 100.0);
+    std::array<double, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const double value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::clampPercentToFloat(value));
+        benchmark::DoNotOptimize(Domain::Numeric::clampPercentToFloat(values[idx & kPoolMask]));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_ClampPercentToFloat_InRange);
@@ -84,11 +114,17 @@ static void BM_Numeric_ClampPercentToFloat_OutOfRange(benchmark::State& state)
 {
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> dist(-200.0, 200.0);
+    std::array<double, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const double value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::clampPercentToFloat(value));
+        benchmark::DoNotOptimize(Domain::Numeric::clampPercentToFloat(values[idx & kPoolMask]));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_ClampPercentToFloat_OutOfRange);
@@ -103,11 +139,17 @@ static void BM_Numeric_NarrowOr_InRange(benchmark::State& state)
     std::mt19937_64 rng(42);
     // Values that fit in int (typical case – 99.9% of process counters)
     std::uniform_int_distribution<std::int64_t> dist(0, 1000000);
+    std::array<std::int64_t, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const std::int64_t value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::narrowOr<int>(value, -1));
+        benchmark::DoNotOptimize(Domain::Numeric::narrowOr<int>(values[idx & kPoolMask], -1));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_NarrowOr_InRange);
@@ -130,11 +172,17 @@ static void BM_Numeric_NarrowOr_UInt8(benchmark::State& state)
 {
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> dist(0, 300); // Mix of in-range and overflow
+    std::array<int, kPoolSize> values{};
+    for (auto& v : values)
+    {
+        v = dist(rng);
+    }
 
+    size_t idx = 0;
     for (auto _ : state)
     {
-        const int value = dist(rng);
-        benchmark::DoNotOptimize(Domain::Numeric::narrowOr<std::uint8_t>(value, std::uint8_t{0}));
+        benchmark::DoNotOptimize(Domain::Numeric::narrowOr<std::uint8_t>(values[idx & kPoolMask], std::uint8_t{0}));
+        ++idx;
     }
 }
 BENCHMARK(BM_Numeric_NarrowOr_UInt8);
@@ -149,28 +197,39 @@ static void BM_Numeric_ProcessSnapshotOperations(benchmark::State& state)
 {
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<std::uint64_t> counterDist(0, 1ULL << 32);
-    std::uniform_real_distribution<double> percentDist(0.0, 120.0);   // May be slightly out of range
+    std::uniform_real_distribution<double> percentDist(0.0, 120.0); // May be slightly out of range
     std::uniform_int_distribution<std::int64_t> pidDist(1, 4000000);
 
+    std::array<std::uint64_t, kPoolSize> userTimes{};
+    std::array<std::uint64_t, kPoolSize> sysTimes{};
+    std::array<std::uint64_t, kPoolSize> rssValues{};
+    std::array<double, kPoolSize> cpuPercents{};
+    std::array<double, kPoolSize> memPercents{};
+    std::array<std::int64_t, kPoolSize> pids{};
+
+    for (size_t i = 0; i < kPoolSize; ++i)
+    {
+        userTimes[i] = counterDist(rng);
+        sysTimes[i] = counterDist(rng);
+        rssValues[i] = counterDist(rng);
+        cpuPercents[i] = percentDist(rng);
+        memPercents[i] = percentDist(rng);
+        pids[i] = pidDist(rng);
+    }
+
+    size_t idx = 0;
     for (auto _ : state)
     {
-        // These conversions are called inside ProcessModel::computeSnapshot()
-        const auto userTime = counterDist(rng);
-        const auto sysTime = counterDist(rng);
-        const auto rssBytes = counterDist(rng);
-
-        const auto cpuPercent = percentDist(rng);
-        const auto memPercent = percentDist(rng);
-
-        const auto pid = pidDist(rng);
+        const size_t i = idx & kPoolMask;
+        ++idx;
 
         // Typical operations in computeSnapshot
-        const auto cpuF = Domain::Numeric::clampPercentToFloat(cpuPercent);
-        const auto memF = Domain::Numeric::clampPercentToFloat(memPercent);
-        const auto userD = Domain::Numeric::toDouble(userTime);
-        const auto sysD = Domain::Numeric::toDouble(sysTime);
-        const auto rssD = Domain::Numeric::toDouble(rssBytes);
-        const auto pidI = Domain::Numeric::narrowOr<std::int32_t>(pid, -1);
+        const auto cpuF = Domain::Numeric::clampPercentToFloat(cpuPercents[i]);
+        const auto memF = Domain::Numeric::clampPercentToFloat(memPercents[i]);
+        const auto userD = Domain::Numeric::toDouble(userTimes[i]);
+        const auto sysD = Domain::Numeric::toDouble(sysTimes[i]);
+        const auto rssD = Domain::Numeric::toDouble(rssValues[i]);
+        const auto pidI = Domain::Numeric::narrowOr<std::int32_t>(pids[i], -1);
 
         benchmark::DoNotOptimize(cpuF);
         benchmark::DoNotOptimize(memF);
