@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace
@@ -195,6 +196,7 @@ static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
     auto counters = model.readProcessGPUCounters();
     state.counters["gpu_process_entries"] = benchmark::Counter(static_cast<double>(counters.size()));
 
+    BenchmarkUtils::reportMemoryCounters(state);
     BenchmarkUtils::reportMemoryDelta(state, memTracker);
 }
 BENCHMARK(BM_GPUModel_ProcessGpuCounters);
