@@ -64,28 +64,10 @@ fi
 
 # Step 1: Configure and build with coverage
 echo "==> Configuring coverage build..."
-# Find the first Python interpreter that satisfies the >= 3.14 requirement.
-# Check 'python3' and 'python' in order; either may point to a qualifying interpreter
-# (e.g. on pyenv/custom installs 'python3' can be older while 'python' is 3.14+).
-_python_meets_min() {
-    local exe="$1"
-    command -v "$exe" &>/dev/null || return 1
-    local ver
-    ver="$("$exe" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return 1
-    local major="${ver%%.*}" minor="${ver##*.}"
-    (( major > 3 || (major == 3 && minor >= 14) ))
-}
-PYTHON_EXE=""
-for _candidate in python3 python; do
-    if _python_meets_min "$_candidate"; then
-        PYTHON_EXE="$(command -v "$_candidate")"
-        break
-    fi
-done
-if [[ -z "$PYTHON_EXE" ]]; then
+PYTHON_EXE="$(find_python)" || {
     echo "Error: Python 3.14 or newer not found in PATH. Install Python 3.14 or newer." >&2
     exit 1
-fi
+}
 cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
 
 echo "==> Building..."

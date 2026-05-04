@@ -55,3 +55,29 @@ find_llvm_tool() {
 
     return 1
 }
+
+# Returns 0 if the given executable exists and is Python >= 3.14 (project minimum).
+# Usage: _python_meets_min python3
+_python_meets_min() {
+    local exe="$1"
+    command -v "$exe" &>/dev/null || return 1
+    local ver
+    ver="$("$exe" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return 1
+    local major="${ver%%.*}" minor="${ver##*.}"
+    (( major > 3 || (major == 3 && minor >= 14) ))
+}
+
+# Find the first Python >= 3.14 interpreter in PATH.
+# Tries 'python3' then 'python' to handle pyenv/custom installs where either
+# may point to the qualifying version.
+# Prints the absolute path on success; returns 1 if no qualifying interpreter found.
+find_python() {
+    local exe
+    for exe in python3 python; do
+        if _python_meets_min "$exe"; then
+            command -v "$exe"
+            return 0
+        fi
+    done
+    return 1
+}
