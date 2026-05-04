@@ -36,10 +36,17 @@ static void BM_GPUProbe_Enumerate(benchmark::State& state)
 }
 BENCHMARK(BM_GPUProbe_Enumerate);
 
-// Benchmark raw GPU counter read (hot path – called every refresh cycle)
+// Benchmark raw GPU counter read (hot path – called every refresh cycle).
+// enumerateGPUs() is called first to match the production code path; on
+// Windows this populates the DXGI→LUID map that readGPUCounters() relies on
+// to merge per-adapter PDH utilization data.
 static void BM_GPUProbe_ReadCounters(benchmark::State& state)
 {
     auto probe = Platform::makeGPUProbe();
+
+    // Must enumerate before reading counters so the DXGI→LUID map is ready
+    // on Windows (no-op on Linux).
+    probe->enumerateGPUs();
 
     BenchmarkUtils::MemoryDeltaTracker memTracker;
 

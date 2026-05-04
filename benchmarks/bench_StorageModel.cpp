@@ -42,7 +42,8 @@ static void BM_DiskProbe_Read(benchmark::State& state)
 BENCHMARK(BM_DiskProbe_Read);
 
 // Benchmark StorageModel::sample() – full pipeline including delta computation
-// and history append. Called from the background sampler thread.
+// and history append. Currently called from the update loop on the main thread
+// (BackgroundSampler exists but is not yet active in production).
 static void BM_StorageModel_Sample(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
@@ -186,36 +187,41 @@ static void BM_StorageModel_MemoryGrowth(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_MemoryGrowth)->Iterations(500);
 
-// Benchmark with varying history window sizes.
-// Larger windows retain more snapshots, increasing memory and copy overhead.
-static void BM_StorageModel_HistoryWindowSize(benchmark::State& state)
+// Benchmark history() copy overhead with varying amounts of retained snapshots.
+// StorageModel trims by wall-clock time, so back-to-back sample() calls do not
+// trigger trimming regardless of the configured window. Instead this benchmark
+// fixes the window at 1 hour (so nothing is ever trimmed) and varies the number
+// of pre-seeded samples to directly control history depth. The copy overhead is
+// what panel rendering code pays on every frame.
+static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
 {
-    const auto windowSeconds = static_cast<double>(state.range(0));
+    const auto sampleCount = static_cast<int>(state.range(0));
 
     auto probe = Platform::makeDiskProbe();
     Domain::StorageModel model(std::move(probe));
-    model.setMaxHistorySeconds(windowSeconds);
 
-    // Prime with enough samples to saturate the window
-    for (int i = 0; i < 20; ++i)
+    // Keep all samples for the full duration of this benchmark
+    model.setMaxHistorySeconds(3600.0);
+
+    // Pre-seed the desired number of snapshots
+    for (int i = 0; i < sampleCount; ++i)
     {
         model.sample();
     }
 
     for (auto _ : state)
     {
-        model.sample();
         auto hist = model.history();
         benchmark::DoNotOptimize(hist.data());
         benchmark::DoNotOptimize(hist.size());
     }
 
-    // Report the actual retained history size
+    // Report actual history depth
     auto hist = model.history();
     state.counters["history_size"] = benchmark::Counter(static_cast<double>(hist.size()));
-    state.counters["window_sec"] = benchmark::Counter(windowSeconds);
+    state.counters["sample_count"] = benchmark::Counter(static_cast<double>(sampleCount));
 }
-// Test 10s (minimal), 60s (1 min), 300s (default 5 min)
-BENCHMARK(BM_StorageModel_HistoryWindowSize)->Arg(10)->Arg(60)->Arg(300)->Unit(benchmark::kMicrosecond);
+// 10, 60, 300 samples mirrors realistic history depths at 1 s / 1 min / 5 min of uptime
+BENCHMARK(BM_StorageModel_HistoryCopyOverhead)->Arg(10)->Arg(60)->Arg(300)->Unit(benchmark::kMicrosecond);
 
 } // namespace
