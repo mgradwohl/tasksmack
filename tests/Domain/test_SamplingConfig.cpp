@@ -3,7 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace Domain::Sampling
 {
@@ -265,6 +267,14 @@ TEST(SamplingConfigTest, ClampMinTimeForRateSecondsAboveMax)
     EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(100.0), MIN_TIME_FOR_RATE_SECONDS_MAX);
 }
 
+TEST(SamplingConfigTest, ClampMinTimeForRateSecondsNonFinite)
+{
+    // NaN and -inf clamp to MIN; +inf clamps to MAX
+    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(std::numeric_limits<double>::quiet_NaN()), MIN_TIME_FOR_RATE_SECONDS_MIN);
+    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(std::numeric_limits<double>::infinity()), MIN_TIME_FOR_RATE_SECONDS_MAX);
+    EXPECT_DOUBLE_EQ(clampMinTimeForRateSeconds(-std::numeric_limits<double>::infinity()), MIN_TIME_FOR_RATE_SECONDS_MIN);
+}
+
 // ========== clampMaxSaneRateBps Tests ==========
 
 TEST(SamplingConfigTest, MaxSaneRateBpsDefaultInRange)
@@ -291,6 +301,14 @@ TEST(SamplingConfigTest, ClampMaxSaneRateBpsAboveMax)
 {
     EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(MAX_SANE_RATE_BPS_MAX + 1.0), MAX_SANE_RATE_BPS_MAX);
     EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(1.0e20), MAX_SANE_RATE_BPS_MAX);
+}
+
+TEST(SamplingConfigTest, ClampMaxSaneRateBpsNonFinite)
+{
+    // NaN and -inf clamp to MIN; +inf clamps to MAX
+    EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(std::numeric_limits<double>::quiet_NaN()), MAX_SANE_RATE_BPS_MIN);
+    EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(std::numeric_limits<double>::infinity()), MAX_SANE_RATE_BPS_MAX);
+    EXPECT_DOUBLE_EQ(clampMaxSaneRateBps(-std::numeric_limits<double>::infinity()), MAX_SANE_RATE_BPS_MIN);
 }
 
 TEST(SamplingConfigTest, ClampMaxSaneRateBpsBoundary)
@@ -354,6 +372,14 @@ TEST(SamplingConfigTest, ClampChartSmoothFactorAboveMax)
     EXPECT_DOUBLE_EQ(clampChartSmoothFactor(CHART_SMOOTH_FACTOR_MAX + 0.01), CHART_SMOOTH_FACTOR_MAX);
     EXPECT_DOUBLE_EQ(clampChartSmoothFactor(1.0), CHART_SMOOTH_FACTOR_MAX);
     EXPECT_DOUBLE_EQ(clampChartSmoothFactor(2.0), CHART_SMOOTH_FACTOR_MAX);
+}
+
+TEST(SamplingConfigTest, ClampChartSmoothFactorNonFinite)
+{
+    // NaN and -inf clamp to MIN; +inf clamps to MAX
+    EXPECT_DOUBLE_EQ(clampChartSmoothFactor(std::numeric_limits<double>::quiet_NaN()), CHART_SMOOTH_FACTOR_MIN);
+    EXPECT_DOUBLE_EQ(clampChartSmoothFactor(std::numeric_limits<double>::infinity()), CHART_SMOOTH_FACTOR_MAX);
+    EXPECT_DOUBLE_EQ(clampChartSmoothFactor(-std::numeric_limits<double>::infinity()), CHART_SMOOTH_FACTOR_MIN);
 }
 
 TEST(SamplingConfigTest, ClampChartSmoothFactorBoundary)
@@ -445,6 +471,14 @@ TEST(SamplingConfigTest, ClampProgressColorLowThresholdAboveMax)
     EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(1000.0), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
 }
 
+TEST(SamplingConfigTest, ClampProgressColorLowThresholdNonFinite)
+{
+    // NaN and -inf clamp to MIN; +inf clamps to MAX
+    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(std::numeric_limits<double>::quiet_NaN()), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
+    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(std::numeric_limits<double>::infinity()), PROGRESS_COLOR_LOW_THRESHOLD_MAX);
+    EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(-std::numeric_limits<double>::infinity()), PROGRESS_COLOR_LOW_THRESHOLD_MIN);
+}
+
 TEST(SamplingConfigTest, ClampProgressColorLowThresholdBoundary)
 {
     EXPECT_DOUBLE_EQ(clampProgressColorLowThreshold(0.0), 0.0);
@@ -476,6 +510,14 @@ TEST(SamplingConfigTest, ClampProgressColorHighThresholdAboveMax)
 {
     EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(101.0), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
     EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(1000.0), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
+}
+
+TEST(SamplingConfigTest, ClampProgressColorHighThresholdNonFinite)
+{
+    // NaN and -inf clamp to MIN; +inf clamps to MAX
+    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(std::numeric_limits<double>::quiet_NaN()), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
+    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(std::numeric_limits<double>::infinity()), PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
+    EXPECT_DOUBLE_EQ(clampProgressColorHighThreshold(-std::numeric_limits<double>::infinity()), PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
 }
 
 TEST(SamplingConfigTest, ClampProgressColorHighThresholdBoundary)

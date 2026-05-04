@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <type_traits>
 
 namespace Domain::Sampling
 {
@@ -213,11 +215,31 @@ template<typename T> [[nodiscard]] constexpr T clampSocketStatsCacheTtlMs(T valu
 
 template<typename T> [[nodiscard]] constexpr T clampMinTimeForRateSeconds(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // Guard against NaN and infinity: std::clamp has undefined behavior with NaN.
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MAX)
+                                                         : static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MIN), static_cast<T>(MIN_TIME_FOR_RATE_SECONDS_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampMaxSaneRateBps(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // Guard against NaN and infinity: std::clamp has undefined behavior with NaN.
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(MAX_SANE_RATE_BPS_MAX)
+                                                         : static_cast<T>(MAX_SANE_RATE_BPS_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(MAX_SANE_RATE_BPS_MIN), static_cast<T>(MAX_SANE_RATE_BPS_MAX));
 }
 
@@ -229,6 +251,16 @@ template<typename T> [[nodiscard]] constexpr T clampIntegratedGpuVramThresholdBy
 
 template<typename T> [[nodiscard]] constexpr T clampChartSmoothFactor(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // Guard against NaN and infinity: std::clamp has undefined behavior with NaN.
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(CHART_SMOOTH_FACTOR_MAX)
+                                                         : static_cast<T>(CHART_SMOOTH_FACTOR_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(CHART_SMOOTH_FACTOR_MIN), static_cast<T>(CHART_SMOOTH_FACTOR_MAX));
 }
 
@@ -244,11 +276,31 @@ template<typename T> [[nodiscard]] constexpr T clampChartTauMsMax(T value) noexc
 
 template<typename T> [[nodiscard]] constexpr T clampProgressColorLowThreshold(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // Guard against NaN and infinity: std::clamp has undefined behavior with NaN.
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MAX)
+                                                         : static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MIN), static_cast<T>(PROGRESS_COLOR_LOW_THRESHOLD_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampProgressColorHighThreshold(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // Guard against NaN and infinity: std::clamp has undefined behavior with NaN.
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MAX)
+                                                         : static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MIN), static_cast<T>(PROGRESS_COLOR_HIGH_THRESHOLD_MAX));
 }
 
