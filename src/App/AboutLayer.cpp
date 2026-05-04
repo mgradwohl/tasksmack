@@ -203,7 +203,7 @@ void AboutLayer::loadIcon()
 
     constexpr std::array<const char*, 2> sizes = {"tasksmack-256.png", "tasksmack-128.png"};
 
-    for (const auto file : sizes)
+    for (const auto* const file : sizes)
     {
         const auto iconPath = iconsDir / file;
 
