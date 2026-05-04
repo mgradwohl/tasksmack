@@ -29,6 +29,7 @@ jobs:
           llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-format: 'true'
           install-clang-tidy: 'true'
+          install-clangd: 'true'
           install-coverage-tools: 'true'
 
       - name: Setup Python for GLAD
