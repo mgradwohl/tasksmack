@@ -27,16 +27,8 @@ jobs:
           install-clang-tidy: 'true'
           install-coverage-tools: 'true'
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Install Python dependencies for GLAD
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install jinja2
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Validate prerequisites
         run: ./tools/check-prereqs.sh
@@ -49,26 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install LLVM / Ninja / ccache
-        shell: pwsh
-        run: |
-          choco install llvm --version 22.1.0 -y
-          choco install ninja ccache -y
-          # Refresh PATH so subsequent steps find clang, ninja, ccache without a new shell
-          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Install Python dependencies for GLAD
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install jinja2
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Validate prerequisites
         shell: pwsh
@@ -82,6 +59,7 @@ jobs:
       contents: read
       actions: write
     strategy:
+      fail-fast: true
       matrix:
         build_type: [debug, release]
     name: Build & Test (Linux ${{ matrix.build_type }})
@@ -97,6 +75,9 @@ jobs:
           key: linux-${{ matrix.build_type }}
           max-size: 500M
 
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
@@ -105,7 +86,7 @@ jobs:
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
-        run: cmake --preset ${{ matrix.build_type }}
+        run: cmake --preset ${{ matrix.build_type }} -DPython3_EXECUTABLE="$(which python)"
 
       - name: Build
         run: cmake --build --preset ${{ matrix.build_type }}
@@ -129,34 +110,18 @@ jobs:
       contents: read
       actions: write
     strategy:
+      fail-fast: true
       matrix:
         build_type: [debug, release]
     name: Build & Test (Windows ${{ matrix.build_type }})
     steps:
       - uses: actions/checkout@v6
 
-      # Pin the Python used for GLAD and install jinja2 into that interpreter.
-      # The configure step passes Python3_EXECUTABLE to CMake so GLAD uses the
-      # setup-python interpreter rather than relying on unrelated runner discovery.
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-          cache: 'pip'
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
-      - name: Install Python dependencies for GLAD
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install jinja2
-
-      - name: Install LLVM / Ninja / ccache
-        shell: pwsh
-        run: |
-          choco install llvm --version 22.1.0 -y
-          choco install ninja ccache -y
-          # Refresh PATH so subsequent steps find clang, ninja, ccache without a new shell
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -209,7 +174,7 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
-    needs: [validate-environment]
+    needs: [validate-environment, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -223,16 +188,8 @@ jobs:
         with:
           install-clang-tidy: 'true'
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-          cache: 'pip'
-
-      - name: Install Python dependencies for GLAD
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install jinja2
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -272,7 +229,7 @@ jobs:
           retention-days: 14
 
   include-analysis:
-    needs: [validate-environment]
+    needs: [validate-environment, build-linux]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -284,6 +241,9 @@ jobs:
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Cache IWYU build
         id: cache-iwyu
@@ -328,7 +288,7 @@ jobs:
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure (debug preset)
-        run: cmake --preset debug
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
 
       - name: Build (debug preset)
         run: cmake --build --preset debug
@@ -426,7 +386,7 @@ jobs:
           retention-days: 14
 
   coverage:
-    needs: [validate-environment]
+    needs: [validate-environment, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -439,6 +399,9 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           install-coverage-tools: 'true'
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -513,7 +476,7 @@ jobs:
           retention-days: 30
 
   sanitizers:
-    needs: [validate-environment]
+    needs: [validate-environment, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -529,6 +492,9 @@ jobs:
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
 
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -543,7 +509,7 @@ jobs:
           restore-keys: ${{ runner.os }}-fetchcontent-
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset ${{ matrix.preset }} -DPython3_EXECUTABLE="$(which python)"
 
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}

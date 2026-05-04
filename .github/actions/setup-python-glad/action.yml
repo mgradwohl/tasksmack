@@ -1,0 +1,17 @@
+name: 'Setup Python for GLAD'
+description: 'Install pinned Python 3.14 with pip cache and install jinja2 for GLAD code generation'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Install Python dependencies for GLAD
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install jinja2
