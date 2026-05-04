@@ -1,5 +1,10 @@
 name: 'Setup Windows LLVM'
-description: 'Install LLVM 22, Ninja, and ccache on Windows via Chocolatey and add to PATH'
+description: 'Install LLVM, Ninja, and ccache on Windows via Chocolatey and add to PATH'
+inputs:
+  llvm-version:
+    description: 'Full LLVM semver version to install (e.g. 22.1.0)'
+    required: false
+    default: '22.1.0'
 
 runs:
   using: 'composite'
@@ -7,7 +12,7 @@ runs:
     - name: Install LLVM / Ninja / ccache
       shell: pwsh
       run: |
-        choco install llvm --version 22.1.0 -y
+        choco install llvm --version ${{ inputs.llvm-version }} -y
         choco install ninja ccache -y
         # Refresh PATH so subsequent steps find clang, ninja, ccache without a new shell
         $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"

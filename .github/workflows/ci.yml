@@ -11,6 +11,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  LLVM_VERSION: '22'
+
 jobs:
   validate-environment:
     runs-on: ubuntu-24.04
@@ -23,6 +26,7 @@ jobs:
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
         with:
+          llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-format: 'true'
           install-clang-tidy: 'true'
           install-coverage-tools: 'true'
@@ -68,6 +72,8 @@ jobs:
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -186,6 +192,7 @@ jobs:
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
         with:
+          llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-tidy: 'true'
 
       - name: Setup Python for GLAD
@@ -241,6 +248,8 @@ jobs:
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -250,17 +259,17 @@ jobs:
         uses: actions/cache@v5
         with:
           path: /tmp/iwyu-install
-          key: iwyu-llvm22-${{ runner.os }}-v1
+          key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ runner.os }}-v1
 
       - name: Build include-what-you-use from source
         if: steps.cache-iwyu.outputs.cache-hit != 'true'
         run: |
-          git clone --branch clang_22 --depth 1 \
+          git clone --branch clang_${{ env.LLVM_VERSION }} --depth 1 \
             https://github.com/include-what-you-use/include-what-you-use.git /tmp/iwyu-src
           cmake -G "Ninja" \
-            -DCMAKE_C_COMPILER=clang-22 \
-            -DCMAKE_CXX_COMPILER=clang++-22 \
-            -DCMAKE_PREFIX_PATH=/usr/lib/llvm-22 \
+            -DCMAKE_C_COMPILER=clang-${{ env.LLVM_VERSION }} \
+            -DCMAKE_CXX_COMPILER=clang++-${{ env.LLVM_VERSION }} \
+            -DCMAKE_PREFIX_PATH=/usr/lib/llvm-${{ env.LLVM_VERSION }} \
             -DCMAKE_INSTALL_PREFIX=/tmp/iwyu-install \
             -S /tmp/iwyu-src \
             -B /tmp/iwyu-build
@@ -398,6 +407,7 @@ jobs:
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
         with:
+          llvm-version: ${{ env.LLVM_VERSION }}
           install-coverage-tools: 'true'
 
       - name: Setup Python for GLAD
@@ -491,6 +501,8 @@ jobs:
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad

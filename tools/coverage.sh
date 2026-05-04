@@ -64,7 +64,13 @@ fi
 
 # Step 1: Configure and build with coverage
 echo "==> Configuring coverage build..."
-cmake --preset coverage
+# Prefer 'python' (set by actions/setup-python in CI) and fall back to python3 for local use.
+PYTHON_EXE="$(command -v python || command -v python3 || true)"
+if [[ -z "$PYTHON_EXE" ]]; then
+    echo "Error: Neither 'python' nor 'python3' found in PATH." >&2
+    exit 1
+fi
+cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
 
 echo "==> Building..."
 cmake --build --preset coverage

@@ -16,7 +16,7 @@ inputs:
   install-clangd:
     description: 'Install clangd'
     required: false
-    default: 'true'
+    default: 'false'
   install-coverage-tools:
     description: 'Install llvm-profdata and llvm-cov for coverage'
     required: false
@@ -55,8 +55,8 @@ runs:
         sudo ./llvm.sh ${{ inputs.llvm-version }}
         rm -f llvm.sh
 
-        # Build package list - always include GUI dependencies and Python for GLAD
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev python3 python3-jinja2 libc++-${{ inputs.llvm-version }}-dev libc++abi-${{ inputs.llvm-version }}-dev libfreetype6-dev"
+        # Build package list - always include GUI dependencies
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${{ inputs.llvm-version }}-dev libc++abi-${{ inputs.llvm-version }}-dev libfreetype6-dev"
 
         if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
