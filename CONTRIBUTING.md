@@ -420,6 +420,11 @@ By default, benchmarks output to console. You can also:
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
 | `BM_Format_*` | UI formatting functions |
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
+| `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
+| `BM_StorageModel_MemoryGrowth` | Memory growth over repeated `sample()` cycles |
+| `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance |
+| `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
+| `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 
 ### Memory Tracking
 
