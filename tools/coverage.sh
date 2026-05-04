@@ -64,25 +64,26 @@ fi
 
 # Step 1: Configure and build with coverage
 echo "==> Configuring coverage build..."
-# Prefer 'python3' (guaranteed Python 3) and fall back to 'python' only when it is
-# actually Python 3 (on some systems 'python' still points to Python 2).
-if command -v python3 &>/dev/null; then
-    PYTHON_EXE="$(command -v python3)"
-elif command -v python &>/dev/null && python --version 2>&1 | grep -qE '^Python 3\.'; then
-    PYTHON_EXE="$(command -v python)"
-else
-    PYTHON_EXE=""
-fi
+# Find the first Python interpreter that satisfies the >= 3.14 requirement.
+# Check 'python3' and 'python' in order; either may point to a qualifying interpreter
+# (e.g. on pyenv/custom installs 'python3' can be older while 'python' is 3.14+).
+_python_meets_min() {
+    local exe="$1"
+    command -v "$exe" &>/dev/null || return 1
+    local ver
+    ver="$("$exe" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || return 1
+    local major="${ver%%.*}" minor="${ver##*.}"
+    (( major > 3 || (major == 3 && minor >= 14) ))
+}
+PYTHON_EXE=""
+for _candidate in python3 python; do
+    if _python_meets_min "$_candidate"; then
+        PYTHON_EXE="$(command -v "$_candidate")"
+        break
+    fi
+done
 if [[ -z "$PYTHON_EXE" ]]; then
-    echo "Error: Python 3 not found in PATH. Install Python 3.14 or newer." >&2
-    exit 1
-fi
-# Enforce minimum Python version (3.14+) to match project requirements.
-PYTHON_VER="$("$PYTHON_EXE" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-PYTHON_MAJOR="${PYTHON_VER%%.*}"
-PYTHON_MINOR="${PYTHON_VER##*.}"
-if (( PYTHON_MAJOR < 3 || (PYTHON_MAJOR == 3 && PYTHON_MINOR < 14) )); then
-    echo "Error: Python ${PYTHON_VER} found but Python 3.14 or newer is required." >&2
+    echo "Error: Python 3.14 or newer not found in PATH. Install Python 3.14 or newer." >&2
     exit 1
 fi
 cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
