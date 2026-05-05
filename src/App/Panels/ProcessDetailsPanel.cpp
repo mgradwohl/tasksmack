@@ -1171,7 +1171,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                         ImGui::Separator();
                         ImGui::TextColored(
                             theme.scheme().chartCpu, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
-                        ImGui::TextColored(theme.accentColor(2), "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
+                        ImGui::TextColored(theme.accentColor(2), "Avg Received: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -1557,11 +1557,14 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             .color = theme.scheme().gpuUtilization,
         };
 
+        const double gpuMemMax = seriesMax(gpuMemVec, static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
-            .tooltipText = {},
-            .value01 = 0.0,
+            .tooltipText = std::format("GPU Memory: {}", UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes)),
+            .value01 = (gpuMemMax > 0.0)
+                           ? std::clamp(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes) / gpuMemMax, 0.0, 1.0)
+                           : 0.0,
             .color = theme.scheme().gpuMemory,
         };
 
