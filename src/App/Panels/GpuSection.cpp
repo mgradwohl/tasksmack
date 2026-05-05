@@ -318,13 +318,12 @@ void renderGpuSection(RenderContext& ctx)
                                .color = theme.scheme().gpuUtilization});
         if (snap.memoryTotalBytes > 0)
         {
-            const auto memUsedBytes =
-                static_cast<std::uint64_t>((smoothed.memoryPercent / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+            // Use sampled bytes directly to avoid stale values when DXGI budget changes between samples
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {}",
                                                               UI::Format::bytesUsedTotalPercentCompact(
-                                                                  memUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
+                                                                  snap.memoryUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }

@@ -778,19 +778,21 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             const double virtNowVal = virtData.empty() ? 0.0 : virtData.back();
 
             std::vector<NowBar> memoryBars;
+            // Tooltip shows percent-only to stay consistent with the bar, which is driven by history samples.
+            // Using live smoothed bytes here would mix sources and can disagree with the displayed bar value.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
-                                  .tooltipText = std::format("Memory Used: {}", UI::Format::formatBytes(m_SmoothedUsage.residentBytes)),
+                                  .tooltipText = std::format("Memory Used: {}", UI::Format::percentCompact(usedNow)),
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
                                   .label = "Shared",
-                                  .tooltipText = std::format("Shared: {}", UI::Format::formatBytes(static_cast<double>(proc.sharedBytes))),
+                                  .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
                                   .value01 = UI::Format::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
-                                  .tooltipText = std::format("Virtual: {}", UI::Format::formatBytes(m_SmoothedUsage.virtualBytes)),
+                                  .tooltipText = std::format("Virtual: {}", UI::Format::percentCompact(virtNowVal)),
                                   .value01 = UI::Format::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 

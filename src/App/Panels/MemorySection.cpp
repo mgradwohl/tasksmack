@@ -229,12 +229,12 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     if (ctx.smoothedMemory != nullptr && snap.swapTotalBytes > 0)
     {
         const double swapPercentClamped = std::clamp(ctx.smoothedMemory->swapPercent, 0.0, 100.0);
-        const auto swapBytes = static_cast<std::uint64_t>((swapPercentClamped / 100.0) * static_cast<double>(snap.swapTotalBytes));
+        // Tooltip is percent-only: swap/page-file total can change at runtime, so back-calculating
+        // bytes from the current total would produce stale values for older samples.
         memoryBars.push_back(
             {.valueText = UI::Format::percentCompact(swapPercentClamped),
              .label = "Swap Used",
-             .tooltipText =
-                 std::format("Swap Used: {}", UI::Format::bytesUsedTotalPercentCompact(swapBytes, snap.swapTotalBytes, swapPercentClamped)),
+             .tooltipText = std::format("Swap Used: {}", UI::Format::percentCompact(swapPercentClamped)),
              .value01 = UI::Format::percent01(swapPercentClamped),
              .color = theme.scheme().chartIo});
     }
