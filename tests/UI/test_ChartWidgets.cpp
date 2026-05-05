@@ -60,13 +60,13 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
 
 TEST(NowBarTest, DefaultTooltipTextIsEmpty)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .color = {}};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .color = {}};
     EXPECT_TRUE(bar.tooltipText.empty());
 }
 
 TEST(NowBarTest, DefaultValue01IsZero)
 {
-    const NowBar bar{.valueText = "0%", .label = "CPU", .color = {}};
+    const NowBar bar{.valueText = "0%", .label = "CPU", .tooltipText = {}, .color = {}};
     EXPECT_DOUBLE_EQ(bar.value01, 0.0);
 }
 
