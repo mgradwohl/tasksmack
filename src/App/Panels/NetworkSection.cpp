@@ -333,10 +333,8 @@ void renderNetworkSection(RenderContext& ctx)
             else
             {
                 // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count,
-                                 theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count,
-                                 theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
+                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
             }
 
             if (ImPlot::IsPlotHovered())
