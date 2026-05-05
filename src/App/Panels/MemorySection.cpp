@@ -175,8 +175,6 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                         const double pct = static_cast<double>(cachedHist[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
-                            // Physical RAM total is constant (hardware), so back-calculating bytes from
-                            // the historical percent is exact
                             const auto cachedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
                             ImGui::TextColored(theme.scheme().chartCpu,
                                                "Cached: %s",

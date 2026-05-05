@@ -258,7 +258,7 @@ void renderGpuSection(RenderContext& ctx)
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
                         // Fetch only the single snapshot needed for the hovered index.
-                        // GPUModel::history() copies the full vector; snapshotAt() is O(1) under the lock.
+                        // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
                         const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
 
                         ImGui::BeginTooltip();

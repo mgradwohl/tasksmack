@@ -269,7 +269,7 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
 struct NowBar
 {
     std::string valueText;
-    std::string label;       // Primary tooltip text (e.g., "CPU Total")
+    std::string label;       // Label used in fallback tooltip construction (e.g., "CPU Total")
     std::string tooltipText; // Rich tooltip text shown on bar hover (e.g., "CPU Total: 45%");
                              // falls back to label, then to valueText when empty
     double value01 = 0.0;
