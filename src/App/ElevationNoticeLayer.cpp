@@ -105,21 +105,18 @@ void ElevationNoticeLayer::renderDialog()
 
         // Platform-specific body text
 #ifdef __linux__
-        constexpr std::string_view bodyText =
-            "TaskSmack is running without elevated privileges.\n\n"
-            "File descriptor counts and I/O statistics are\n"
-            "unavailable for processes owned by other users.\n\n"
-            "For complete data, run:\n"
-            "    sudo tasksmack";
+        constexpr std::string_view bodyText = "TaskSmack is running without elevated privileges.\n\n"
+                                              "File descriptor counts and I/O statistics are\n"
+                                              "unavailable for processes owned by other users.\n\n"
+                                              "For complete data, run:\n"
+                                              "    sudo tasksmack";
 #elif defined(_WIN32)
-        constexpr std::string_view bodyText =
-            "TaskSmack is running without Administrator privileges.\n\n"
-            "Per-process network statistics are unavailable.\n\n"
-            "For complete data, run TaskSmack as Administrator.";
+        constexpr std::string_view bodyText = "TaskSmack is running without Administrator privileges.\n\n"
+                                              "Per-process network statistics are unavailable.\n\n"
+                                              "For complete data, run TaskSmack as Administrator.";
 #else
-        constexpr std::string_view bodyText =
-            "TaskSmack is running without elevated privileges.\n\n"
-            "Some per-process data may be unavailable.";
+        constexpr std::string_view bodyText = "TaskSmack is running without elevated privileges.\n\n"
+                                              "Some per-process data may be unavailable.";
 #endif
 
         ImGui::TextUnformatted(bodyText.data());

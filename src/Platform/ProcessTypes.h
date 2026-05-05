@@ -59,17 +59,17 @@ struct ProcessCapabilities
     bool hasHandleCount = false; // Whether handle/FD count is available
     bool hasUserSystemTime = true;
     bool hasStartTime = true;
-    bool hasUser = false;            // Whether process owner/user is available
-    bool hasCommand = false;         // Whether full command line is available
-    bool hasNice = false;            // Whether nice/priority value is available
-    bool hasPageFaults = false;      // Whether page fault count is available
-    bool hasPeakRss = false;         // Whether peak working set is available
-    bool hasCpuAffinity = false;     // Whether CPU affinity mask is available
-    bool hasNetworkCounters = false;    // Whether per-process network counters are available
-    bool hasPowerUsage = false;         // Whether power consumption metrics are available
-    bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
-    bool hasReducedPrivileges = false;  // Whether running without elevated privileges (sudo/admin)
-                                        // When true, some per-process data (FD counts, I/O) may be unavailable
+    bool hasUser = false;              // Whether process owner/user is available
+    bool hasCommand = false;           // Whether full command line is available
+    bool hasNice = false;              // Whether nice/priority value is available
+    bool hasPageFaults = false;        // Whether page fault count is available
+    bool hasPeakRss = false;           // Whether peak working set is available
+    bool hasCpuAffinity = false;       // Whether CPU affinity mask is available
+    bool hasNetworkCounters = false;   // Whether per-process network counters are available
+    bool hasPowerUsage = false;        // Whether power consumption metrics are available
+    bool hasStatus = false;            // Whether process status (Suspended, Efficiency Mode) is available
+    bool hasReducedPrivileges = false; // Whether running without elevated privileges (sudo/admin)
+                                       // When true, some per-process data (FD counts, I/O) may be unavailable
 };
 
 } // namespace Platform
