@@ -217,6 +217,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                               .color = theme.scheme().chartMemory});
 
         const double cachedPercentClamped = std::clamp(ctx.smoothedMemory->cachedPercent, 0.0, 100.0);
+        // Use the actual sampled bytes and raw snapshot percent for the tooltip so the byte and
+        // percent values are internally consistent; the bar height/valueText show the smoothed
+        // (EMA) value which is a visual artifact and intentionally differs from the raw sample.
         memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercentClamped),
                               .label = "Memory Cached",
                               .tooltipText = std::format("Memory Cached: {}",

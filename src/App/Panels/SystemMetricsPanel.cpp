@@ -736,7 +736,6 @@ void SystemMetricsPanel::renderOverview()
             std::vector<NowBar> bars;
             bars.push_back({.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
                             .label = "Power Draw",
-                            .tooltipText = std::format("Power Draw: {}", UI::Format::formatPowerCompact(m_SmoothedPower.watts)),
                             .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
                             .color = theme.scheme().chartCpu});
 
@@ -745,7 +744,6 @@ void SystemMetricsPanel::renderOverview()
                 bars.push_back(
                     {.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
                      .label = "Battery Charge",
-                     .tooltipText = std::format("Battery Charge: {}", UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent)),
                      .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
                      .color = theme.scheme().chartMemory});
             }
