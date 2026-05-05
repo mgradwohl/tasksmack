@@ -636,22 +636,18 @@ void SystemMetricsPanel::renderOverview()
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
                        .label = "CPU Total",
-                       .tooltipText = std::format("CPU Total: {}", UI::Format::percentCompact(m_SmoothedCpu.total)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
                        .label = "User",
-                       .tooltipText = std::format("User: {}", UI::Format::percentCompact(m_SmoothedCpu.user)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
                        .label = "System",
-                       .tooltipText = std::format("System: {}", UI::Format::percentCompact(m_SmoothedCpu.system)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
                        .label = "I/O Wait",
-                       .tooltipText = std::format("I/O Wait: {}", UI::Format::percentCompact(m_SmoothedCpu.iowait)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
 
