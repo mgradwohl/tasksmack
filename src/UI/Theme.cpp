@@ -40,7 +40,7 @@ Theme::Theme()
 void Theme::loadDefaultFallbackTheme()
 {
     // Create a minimal fallback theme in case TOML files aren't found
-    ColorScheme fallback;
+    ColorScheme fallback{};
     fallback.name = "Fallback";
 
     // Named color constants to avoid repeating raw ImVec4 literals throughout this function
