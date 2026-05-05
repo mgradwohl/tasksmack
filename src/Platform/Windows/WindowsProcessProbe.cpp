@@ -865,12 +865,12 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasNetworkCounters = m_HasNetworkCounters,
         .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
         .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
-        .hasReducedPrivileges =
-            reducedPrivileges &&
-            m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
         .hasPublisher = true,                  // From GetFileVersionInfo on process image path
         .hasProcessType = true,                // Classified from path + GetGuiResources
         .hasGdiObjects = true,                 // From GetGuiResources(GR_GDIOBJECTS)
+        .hasReducedPrivileges =
+            reducedPrivileges &&
+            m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
     };
 }
 
