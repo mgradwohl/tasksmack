@@ -1002,6 +1002,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     const double gdiMax = seriesMax(gdiData, m_SmoothedUsage.gdiObjectCount);
     const NowBar gdiBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI"),
                         .label = "GDI Objects",
+                        .tooltipText = std::format("GDI Objects: {}",
+                                                   UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))),
                         .value01 = (gdiMax > 0.0) ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
                         .color = theme.accentColor(4)};
 #endif

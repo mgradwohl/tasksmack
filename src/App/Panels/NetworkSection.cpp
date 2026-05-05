@@ -283,10 +283,12 @@ void renderNetworkSection(RenderContext& ctx)
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
+                         .tooltipText = std::format("{}: {}", sentBarLabel, UI::Format::formatBytesPerSec(smoothedSent)),
                          .value01 = std::clamp(smoothedSent / netMax, 0.0, 1.0),
                          .color = theme.scheme().chartNetTx};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
                          .label = recvBarLabel,
+                         .tooltipText = std::format("{}: {}", recvBarLabel, UI::Format::formatBytesPerSec(smoothedRecv)),
                          .value01 = std::clamp(smoothedRecv / netMax, 0.0, 1.0),
                          .color = theme.scheme().chartNetRx};
 
