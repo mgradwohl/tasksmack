@@ -97,6 +97,7 @@ class ProcessDetailsPanel : public Panel
     std::deque<double> m_PowerHistory;     // Power usage history (watts)
     std::deque<double> m_GpuUtilHistory;   // GPU utilization % history
     std::deque<double> m_GpuMemHistory;    // GPU memory bytes history
+    std::deque<double> m_GdiHistory;       // GDI object count history (Windows-only)
     std::deque<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0;
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
@@ -137,6 +138,7 @@ class ProcessDetailsPanel : public Panel
         double powerWatts = 0.0;
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
+        double gdiObjectCount = 0.0;
         bool initialized = false;
     } m_SmoothedUsage;
 

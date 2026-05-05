@@ -21,6 +21,7 @@
 #include <sddl.h>
 #include <tlhelp32.h>
 #include <winternl.h>
+#include <winver.h>
 // clang-format on
 // NOLINTEND(misc-include-cleaner)
 
@@ -30,9 +31,13 @@
 #include "WinString.h"
 #include "WindowsProcAddress.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
+#include <cwctype>
 #include <limits>
 #include <optional>
 #include <string>
@@ -164,15 +169,28 @@ namespace
         return {};
     }
 
-    std::array<WCHAR, MAX_PATH> path{};
-    // MAX_PATH is 260 on Windows; use it as fallback if conversion somehow fails
-    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), DWORD{MAX_PATH});
+    // Start at MAX_PATH and grow up to the Windows long-path limit (32767 chars).
+    // QueryFullProcessImageNameW sets the buffer size to the number of chars written
+    // (excluding the null terminator) on success, or leaves it unchanged on failure.
+    constexpr DWORD kInitialSize = MAX_PATH;
+    constexpr DWORD kMaxLongPath = 32767;
 
-    if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
+    std::wstring path(kInitialSize, L'\0');
+    for (;;)
     {
-        return WinString::wideToUtf8(path.data());
+        DWORD size = static_cast<DWORD>(path.size());
+        if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
+        {
+            path.resize(size);
+            return WinString::wideToUtf8(path);
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || path.size() >= kMaxLongPath)
+        {
+            return {};
+        }
+        const DWORD newSize = std::min(static_cast<DWORD>(path.size()) * 2, kMaxLongPath);
+        path.assign(newSize, L'\0');
     }
-    return {};
 }
 
 using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
@@ -306,6 +324,224 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 
     // No special status
     return {};
+}
+
+/// Query GDI object count for a process via GetGuiResources.
+/// Requires a handle opened with at least PROCESS_QUERY_INFORMATION.
+/// Returns std::nullopt when hQuery is null (process not accessible with required rights).
+/// Returns 0 when the process is accessible but owns no GDI objects.
+/// Note: GetGuiResources returns 0 on error as well as on genuine zero; SetLastError(0) before
+/// the call lets us distinguish the two cases via GetLastError() afterwards.
+[[nodiscard]] std::optional<std::int32_t> getProcessGdiObjectCount(HANDLE hQuery)
+{
+    if (hQuery == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    SetLastError(0);
+    const DWORD count = GetGuiResources(hQuery, GR_GDIOBJECTS);
+    if (count == 0 && GetLastError() != 0)
+    {
+        // GetGuiResources failed (e.g. insufficient access rights on this handle type).
+        return std::nullopt;
+    }
+    return Domain::Numeric::narrowOr<std::int32_t>(count, std::int32_t{0});
+}
+
+/// Read the CompanyName from a PE file's version info (publisher/vendor).
+/// Enumerates all language/codepage pairs from VarFileInfo\Translation so that
+/// localised executables with non-English version resources are handled correctly.
+/// Results are cached by executable path; version resources do not change at runtime.
+/// Returns empty string if not available or on failure.
+[[nodiscard]] std::string getFilePublisher(const std::wstring& imagePath)
+{
+    if (imagePath.empty())
+    {
+        return {};
+    }
+
+    // Cache publisher by executable path — version info is static for a given binary.
+    // Normalise to lowercase before lookup so that different-cased paths for the same
+    // binary (which QueryFullProcessImageNameW does not guarantee to be stable) share
+    // a single cache entry.
+    // NOTE: not guarded by a mutex. enumerate() is invoked on the main thread and
+    // BackgroundSampler (which would require a lock) is not yet active. If concurrent
+    // enumeration is enabled in the future, this cache must be protected by a mutex.
+    static std::unordered_map<std::wstring, std::string> s_cache;
+    std::wstring cacheKey(imagePath);
+    std::ranges::transform(cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
+    {
+        return it->second;
+    }
+
+    // GetFileVersionInfoSizeW requires a LPDWORD that receives an internal handle.
+    // The handle is always set to 0 on Windows NT and later, but must be provided.
+    DWORD unused = 0;
+    const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.c_str(), &unused);
+    if (infoSize == 0)
+    {
+        s_cache.emplace(cacheKey, std::string{});
+        return {};
+    }
+
+    std::vector<BYTE> buffer(infoSize);
+    if (GetFileVersionInfoW(imagePath.c_str(), 0, infoSize, buffer.data()) == 0)
+    {
+        s_cache.emplace(cacheKey, std::string{});
+        return {};
+    }
+
+    // Helper: query CompanyName using a specific translation path (e.g. \StringFileInfo\040904B0\CompanyName).
+    // The pointer returned by VerQueryValueW is into buffer, valid while buffer is alive.
+    const auto queryCompanyName = [&](const wchar_t* translationPath) -> std::string
+    {
+        LPVOID companyNamePtr = nullptr;
+        UINT companyNameLen = 0;
+        if (VerQueryValueW(buffer.data(), translationPath, &companyNamePtr, &companyNameLen) != 0 && companyNameLen > 0 &&
+            companyNamePtr != nullptr)
+        {
+            // StringFileInfo queries return wchar_t strings per the Windows API contract.
+            // LPVOID is void* so an explicit cast is required; this is safe here.
+            const wchar_t* companyName = static_cast<const wchar_t*>(companyNamePtr);
+            return WinString::wideToUtf8(companyName);
+        }
+        return {};
+    };
+
+    std::string result;
+
+    // Enumerate actual translation pairs from VarFileInfo\Translation.
+    // Each entry is a DWORD: low WORD = language ID, high WORD = code page.
+    LPVOID translationData = nullptr;
+    UINT translationSize = 0;
+    if (VerQueryValueW(buffer.data(), L"\\VarFileInfo\\Translation", &translationData, &translationSize) != 0 &&
+        translationData != nullptr && translationSize >= sizeof(DWORD))
+    {
+        const UINT entryCount = translationSize / sizeof(DWORD);
+        // LPVOID is void* — cast to DWORD* to iterate over translation pairs; safe per MSDN.
+        const auto* entries = static_cast<const DWORD*>(translationData);
+        for (UINT i = 0; i < entryCount && result.empty(); ++i)
+        {
+            const WORD langId = LOWORD(entries[i]);
+            const WORD codePage = HIWORD(entries[i]);
+            WCHAR pathBuf[64] = {};
+            swprintf_s(pathBuf, std::size(pathBuf), L"\\StringFileInfo\\%04X%04X\\CompanyName", langId, codePage);
+            result = queryCompanyName(pathBuf);
+        }
+    }
+
+    // Fallback: try common English translation IDs for executables without VarFileInfo\Translation.
+    if (result.empty())
+    {
+        result = queryCompanyName(L"\\StringFileInfo\\040904B0\\CompanyName");
+    }
+    if (result.empty())
+    {
+        result = queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
+    }
+
+    s_cache.emplace(cacheKey, result);
+    return result;
+}
+
+/// Read the publisher of a process from its PE file version information.
+/// Uses a growing buffer for QueryFullProcessImageNameW to support long-path executables.
+[[nodiscard]] std::string getProcessPublisher(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    // Grow the buffer up to the Windows long-path limit (32767 wide chars) if needed,
+    // matching the pattern used in WindowsPathProvider for GetModuleFileNameW.
+    constexpr DWORD kInitialSize = MAX_PATH;
+    constexpr DWORD kMaxLongPath = 32767;
+
+    std::wstring imagePath(kInitialSize, L'\0');
+    for (;;)
+    {
+        DWORD size = static_cast<DWORD>(imagePath.size());
+        if (QueryFullProcessImageNameW(hProcess, 0, imagePath.data(), &size) != 0)
+        {
+            imagePath.resize(size);
+            break;
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || static_cast<DWORD>(imagePath.size()) >= kMaxLongPath)
+        {
+            return {};
+        }
+        const DWORD newSize = std::min(static_cast<DWORD>(imagePath.size()) * 2, kMaxLongPath);
+        imagePath.assign(static_cast<std::size_t>(newSize), L'\0');
+    }
+
+    return getFilePublisher(imagePath);
+}
+
+/// Classify a process as "App", "Background Process", or "Windows Process".
+/// - "App": has USER objects (owns an interactive UI window)
+/// - "Windows Process": core OS components in the Windows system directories
+/// - "Background Process": everything else (services, daemons, headless apps)
+///
+/// hQuery must be opened with at least PROCESS_QUERY_INFORMATION (required by
+/// GetGuiResources); it may be null, in which case the USER-objects check is skipped.
+///
+/// Limitations: console apps host their window in conhost.exe, so they return
+/// zero USER objects and are classified as "Background Process" even if
+/// user-facing. Services with message-only windows may be misclassified as "App".
+[[nodiscard]] std::string classifyProcessType(HANDLE hQuery, DWORD pid, std::string_view imagePath)
+{
+    // PID 0 (Idle) and PID 4 (System) are always Windows processes.
+    if (pid == 0 || pid == 4)
+    {
+        return "Windows Process";
+    }
+
+    // Check USER objects first: a non-zero count means the process owns an active
+    // UI window. Inbox apps like Notepad and Paint live in System32, so this check
+    // must come before the directory heuristic to classify them as "App" correctly.
+    if (hQuery != nullptr)
+    {
+        const DWORD userObjects = GetGuiResources(hQuery, GR_USEROBJECTS);
+        if (userObjects > 0)
+        {
+            return "App";
+        }
+    }
+
+    // Check whether the executable lives in a Windows system directory.
+    // Use case-insensitive comparison because QueryFullProcessImageNameW can
+    // return paths with arbitrary casing (e.g. C:\WINDOWS\System32\...).
+    if (!imagePath.empty())
+    {
+        std::string lowerPath(imagePath);
+        for (auto& c : lowerPath)
+        {
+            // Cast to unsigned char before tolower to avoid UB on signed char values.
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+
+        // Anchor to the drive root: check that the path starts with <letter>:\windows\
+        // so that a user directory that happens to contain the word "windows" (e.g.
+        // C:\Users\awindows\System32\) cannot false-match the heuristic.
+        const bool isInWindowsDir =
+            lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
+        const bool isInSystemDir =
+            lowerPath.contains("\\system32\\") || lowerPath.contains("\\syswow64\\") || lowerPath.contains("\\systemapps\\");
+
+        if (isInWindowsDir && isInSystemDir)
+        {
+            return "Windows Process";
+        }
+    }
+
+    // If we could inspect USER objects (hQuery != null) and the process had none,
+    // it is definitely not a GUI app: classify it as Background Process.
+    // If we could NOT open the process, we cannot rule out that it owns UI windows,
+    // so return an empty string to indicate the classification is unknown.
+    return (hQuery != nullptr) ? "Background Process" : "";
 }
 
 } // namespace
@@ -529,6 +765,23 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.cpuAffinityMask = 0;
     }
 
+    // Get GDI object count (best-effort; zero for protected/system processes).
+    // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
+    // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
+    HANDLE hQueryInfo = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
+
+    // Get publisher/vendor from PE file version info (best-effort; cached by exe path)
+    counters.publisher = getProcessPublisher(hProcess);
+
+    // Classify process type (App / Background Process / Windows Process)
+    counters.processType = classifyProcessType(hQueryInfo, static_cast<DWORD>(pid), counters.command);
+
+    if (hQueryInfo != nullptr)
+    {
+        CloseHandle(hQueryInfo);
+    }
+
     CloseHandle(hProcess);
     return true;
 }
@@ -552,6 +805,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasNetworkCounters = m_HasNetworkCounters,
         .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
         .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPublisher = true,                  // From GetFileVersionInfo on process image path
+        .hasProcessType = true,                // Classified from path + GetGuiResources
+        .hasGdiObjects = true,                 // From GetGuiResources(GR_GDIOBJECTS)
     };
 }
 
