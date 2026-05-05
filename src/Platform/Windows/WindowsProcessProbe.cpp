@@ -332,9 +332,10 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         return {};
     }
 
-    // GetFileVersionInfoSizeW returns required buffer size
-    DWORD dummy = 0;
-    const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.data(), &dummy);
+    // GetFileVersionInfoSizeW requires a LPDWORD parameter that receives the handle used
+    // internally. This handle is always set to 0 (unused since Windows NT) but must be provided.
+    DWORD unused = 0;
+    const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.data(), &unused);
     if (infoSize == 0)
     {
         return {};
@@ -346,29 +347,31 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         return {};
     }
 
-    // Query the CompanyName string from the version resource.
-    // Language/codepage 0x0409 (English/US) with 0x04B0 (Unicode) is most common.
-    LPVOID companyNamePtr = nullptr;
-    UINT companyNameLen = 0;
-
-    if (VerQueryValueW(buffer.data(), L"\\StringFileInfo\\040904B0\\CompanyName", &companyNamePtr, &companyNameLen) != 0 &&
-        companyNameLen > 0 && companyNamePtr != nullptr)
+    // Helper to query CompanyName for a given translation string (language/codepage).
+    // companyNamePtr points into buffer and is only valid while buffer is alive.
+    const auto queryCompanyName = [&](const wchar_t* translationPath) -> std::string
     {
-        // companyNamePtr points into buffer (not separately allocated); safe until buffer leaves scope.
-        // VerQueryValueW always returns a wide string for StringFileInfo queries.
-        const auto* companyName = static_cast<const wchar_t*>(companyNamePtr); // Safe: VerQueryValueW guarantees wchar_t for StringFileInfo
-        return WinString::wideToUtf8(companyName);
+        LPVOID companyNamePtr = nullptr;
+        UINT companyNameLen = 0;
+        if (VerQueryValueW(buffer.data(), translationPath, &companyNamePtr, &companyNameLen) != 0 && companyNameLen > 0 &&
+            companyNamePtr != nullptr)
+        {
+            // StringFileInfo queries return wchar_t strings per the Windows API contract.
+            // LPVOID is void* so an explicit cast is required; this is safe here.
+            const wchar_t* companyName = static_cast<const wchar_t*>(companyNamePtr);
+            return WinString::wideToUtf8(companyName);
+        }
+        return {};
+    };
+
+    // Try English/US Unicode (0x0409 / 0x04B0) first — most common
+    if (auto result = queryCompanyName(L"\\StringFileInfo\\040904B0\\CompanyName"); !result.empty())
+    {
+        return result;
     }
 
-    // Fallback: try Windows-1252 code page variant
-    if (VerQueryValueW(buffer.data(), L"\\StringFileInfo\\040904E4\\CompanyName", &companyNamePtr, &companyNameLen) != 0 &&
-        companyNameLen > 0 && companyNamePtr != nullptr)
-    {
-        const auto* companyName = static_cast<const wchar_t*>(companyNamePtr); // Safe: VerQueryValueW guarantees wchar_t for StringFileInfo
-        return WinString::wideToUtf8(companyName);
-    }
-
-    return {};
+    // Fallback: Windows-1252 code page (0x0409 / 0x04E4)
+    return queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
 }
 
 /// Read the publisher of a process from its PE file version information

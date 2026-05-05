@@ -468,7 +468,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     const auto computeLabelColumnWidth = []() -> float
     {
-        constexpr std::array<const char*, 12> labels = {
+        // Use std::to_array for automatic size deduction — no manual count to maintain.
+        constexpr auto labels = std::to_array<const char*>({
             "Name",
             "PID",
             "Parent PID",
@@ -481,7 +482,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Priority",
             "Publisher",
             "Type",
-        };
+        });
 
         float maxTextWidth = 0.0F;
         for (const char* label : labels)
@@ -594,7 +595,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         identityRows.push_back({"Publisher", {proc.publisher, theme.scheme().textMuted}});
     }
-    const float identityRowCount = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(identityRows.size()));
+    const float identityRowCount = static_cast<float>(identityRows.size());
     const float leftHeight = (rowHeight * identityRowCount) + basePadding;
 
     // Build runtime rows (conditionally include Type if available)
@@ -624,7 +625,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
         runtimeRows.push_back({"Type", {proc.processType, typeColor}});
     }
-    const float runtimeRowCount = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(runtimeRows.size()));
+    const float runtimeRowCount = static_cast<float>(runtimeRows.size());
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
 
     // Identity section: Who is this process?
@@ -983,8 +984,6 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                         .color = theme.accentColor(4)};
 #endif
 
-    constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
-
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
@@ -1050,6 +1049,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
 #ifdef _WIN32
+    // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects
+    constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
     renderHistoryWithNowBars(
         "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
 #else
