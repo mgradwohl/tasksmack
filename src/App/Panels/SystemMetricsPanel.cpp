@@ -746,11 +746,12 @@ void SystemMetricsPanel::renderOverview()
 
             if (snap.power.hasBattery)
             {
-                bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
-                                .label = "Battery Charge",
-                                .tooltipText = std::format("Battery Charge: {}", UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent)),
-                                .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
-                                .color = theme.scheme().chartMemory});
+                bars.push_back(
+                    {.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
+                     .label = "Battery Charge",
+                     .tooltipText = std::format("Battery Charge: {}", UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent)),
+                     .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
+                     .color = theme.scheme().chartMemory});
             }
 
             auto plot = [&]()
@@ -971,19 +972,22 @@ void SystemMetricsPanel::renderOverview()
 
         const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.threads), "threads"),
                                 .label = "Threads",
-                                .tooltipText = std::format("Threads: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
+                                .tooltipText =
+                                    std::format("Threads: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
                                 .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedResources.threads / threadMax, 0.0, 1.0) : 0.0,
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
                                .label = "Page Faults",
-                               .tooltipText = std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults)),
+                               .tooltipText =
+                                   std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults)),
                                .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedResources.pageFaults / faultMax, 0.0, 1.0) : 0.0,
                                .color = theme.accentColor(3)};
-        const NowBar handlesBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.handles), handleLabel),
-                                .label = handleLabel,
-                                .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
-                                .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedResources.handles / handleMax, 0.0, 1.0) : 0.0,
-                                .color = theme.scheme().chartMemory};
+        const NowBar handlesBar{
+            .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.handles), handleLabel),
+            .label = handleLabel,
+            .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
+            .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedResources.handles / handleMax, 0.0, 1.0) : 0.0,
+            .color = theme.scheme().chartMemory};
 
         auto plot = [&]()
         {

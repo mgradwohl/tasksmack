@@ -273,9 +273,10 @@ void renderGpuSection(RenderContext& ctx)
                             {
                                 const auto memUsedBytes =
                                     static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
-                                ImGui::TextColored(theme.scheme().gpuMemory,
-                                                   "Memory: %s",
-                                                   UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, pct).c_str());
+                                ImGui::TextColored(
+                                    theme.scheme().gpuMemory,
+                                    "Memory: %s",
+                                    UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, pct).c_str());
                             }
                             else
                             {
@@ -315,13 +316,13 @@ void renderGpuSection(RenderContext& ctx)
         {
             const auto memUsedBytes =
                 static_cast<std::uint64_t>((smoothed.memoryPercent / 100.0) * static_cast<double>(snap.memoryTotalBytes));
-            gpuCoreBars.push_back(
-                {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                 .label = "GPU Memory",
-                 .tooltipText = std::format("GPU Memory: {}",
-                                            UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
-                 .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                 .color = theme.scheme().gpuMemory});
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                                   .label = "GPU Memory",
+                                   .tooltipText = std::format("GPU Memory: {}",
+                                                              UI::Format::bytesUsedTotalPercentCompact(
+                                                                  memUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
+                                   .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                                   .color = theme.scheme().gpuMemory});
         }
         else
         {

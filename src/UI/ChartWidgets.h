@@ -451,7 +451,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      "",
                                      !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
                                      : bars[i].label.empty()      ? bars[i].valueText.c_str()
-                                                                   : bars[i].label.c_str());
+                                                                  : bars[i].label.c_str());
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -503,7 +503,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      "",
                                      !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
                                      : bars[i].label.empty()      ? bars[i].valueText.c_str()
-                                                                   : bars[i].label.c_str());
+                                                                  : bars[i].label.c_str());
             ImGui::EndGroup();
             ImGui::PopID();
 
