@@ -60,19 +60,19 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
 
 TEST(NowBarTest, DefaultTooltipTextIsEmpty)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .value01 = 0.5};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .value01 = 0.5, .color = {}};
     EXPECT_TRUE(bar.tooltipText.empty());
 }
 
 TEST(NowBarTest, DefaultValue01IsZero)
 {
-    const NowBar bar{.valueText = "0%", .label = "CPU"};
+    const NowBar bar{.valueText = "0%", .label = "CPU", .tooltipText = {}, .value01 = 0.0, .color = {}};
     EXPECT_DOUBLE_EQ(bar.value01, 0.0);
 }
 
 TEST(NowBarTest, TooltipTextStoresArbitraryContent)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50% (4 cores)", .value01 = 0.5};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50% (4 cores)", .value01 = 0.5, .color = {}};
     EXPECT_EQ(bar.tooltipText, "CPU Total: 50% (4 cores)");
 }
 
@@ -84,19 +84,19 @@ TEST(NowBarTest, TooltipTextStoresArbitraryContent)
 
 TEST(NowBarTest, SelectTooltipPrefersTooltipText)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50%", .value01 = 0.5};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50%", .value01 = 0.5, .color = {}};
     EXPECT_EQ(selectNowBarTooltip(bar), "CPU Total: 50%");
 }
 
 TEST(NowBarTest, SelectTooltipFallsBackToLabelWhenTooltipTextEmpty)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .value01 = 0.5};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .value01 = 0.5, .color = {}};
     EXPECT_EQ(selectNowBarTooltip(bar), "CPU");
 }
 
 TEST(NowBarTest, SelectTooltipFallsBackToValueTextWhenBothEmpty)
 {
-    const NowBar bar{.valueText = "50%", .value01 = 0.5};
+    const NowBar bar{.valueText = "50%", .label = {}, .tooltipText = {}, .value01 = 0.5, .color = {}};
     EXPECT_EQ(selectNowBarTooltip(bar), "50%");
 }
 

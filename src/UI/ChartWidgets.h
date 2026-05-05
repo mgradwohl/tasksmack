@@ -458,14 +458,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
             }
 
-            drawVerticalBarWithValue("##NowBar",
-                                     bars[i].value01,
-                                     bars[i].color,
-                                     plotHeight,
-                                     widthPerBar,
-                                     "",
-                                     "",
-                                     selectNowBarTooltip(bars[i]).data());
+            drawVerticalBarWithValue(
+                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", selectNowBarTooltip(bars[i]).data());
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -508,14 +502,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             ImGui::BeginGroup();
-            drawVerticalBarWithValue("##NowBar",
-                                     bars[i].value01,
-                                     bars[i].color,
-                                     plotHeight,
-                                     widthPerBar,
-                                     "",
-                                     "",
-                                     selectNowBarTooltip(bars[i]).data());
+            drawVerticalBarWithValue(
+                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", selectNowBarTooltip(bars[i]).data());
             ImGui::EndGroup();
             ImGui::PopID();
 
