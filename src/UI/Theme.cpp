@@ -153,6 +153,15 @@ void Theme::loadDefaultFallbackTheme()
     fallback.closeButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
     fallback.closeButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
 
+    // Network chart colors (TX = blue like CPU; RX = green like memory, both safe distinct defaults)
+    fallback.chartNetTx = blue;
+    fallback.chartNetRx = green;
+    fallback.chartNetTxFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
+    fallback.chartNetRxFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
+
+    // Priority badge text color (white for contrast on any colored badge)
+    fallback.priorityBadgeTextColor = ImVec4(1.0F, 1.0F, 1.0F, 1.0F);
+
     // Priority slider gradient endpoints
     fallback.priorityHighColor = ImVec4(1.0F, 0.3F, 0.2F, 1.0F);
     fallback.priorityNormalColor = ImVec4(0.5F, 0.8F, 0.2F, 1.0F);

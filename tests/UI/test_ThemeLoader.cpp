@@ -1286,5 +1286,118 @@ modal_window_dim_background = "#0000004D"
     expectColorNear(theme->chartIoWrite, theme->chartMemory);
 }
 
+// ========== Network Chart Color Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
+{
+    // Prepend a [meta] block and add net_tx/net_rx to k_FullThemeTomlBody
+    const std::string toml = R"(
+[meta]
+name = "Net Color Theme"
+description = "Tests net_tx/net_rx parsing"
+
+)" + std::string(k_FullThemeTomlBody) + R"(
+[charts]
+cpu    = "#0078D4"
+memory = "#10893E"
+io     = "#E74856"
+io_write = "#F7630C"
+net_tx = "#FFC107"
+net_rx = "#AB47BC"
+)";
+    createThemeFile("net-colors.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "net-colors.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // #FFC107 = (255/255, 193/255, 7/255)
+    expectColorNear(theme->chartNetTx, ImVec4(0xFF / 255.0F, 0xC1 / 255.0F, 0x07 / 255.0F, 1.0F));
+    // #AB47BC = (171/255, 71/255, 188/255)
+    expectColorNear(theme->chartNetRx, ImVec4(0xAB / 255.0F, 0x47 / 255.0F, 0xBC / 255.0F, 1.0F));
+
+    // net_tx and net_rx must be distinct from each other
+    EXPECT_FALSE(theme->chartNetTx.x == theme->chartNetRx.x && theme->chartNetTx.y == theme->chartNetRx.y &&
+                 theme->chartNetTx.z == theme->chartNetRx.z)
+        << "chartNetTx and chartNetRx must be visually distinct";
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallBackToCpuMemoryWhenAbsent)
+{
+    // k_FullThemeTomlBody has no net_tx/net_rx entries.
+    // chartNetTx should fall back to chartCpu; chartNetRx to chartMemory.
+    const std::string toml = std::string("[meta]\nname = \"Fallback Net\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("fallback-net.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "fallback-net.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // When absent, net_tx falls back to chartCpu (#0078D4)
+    expectColorNear(theme->chartNetTx, theme->chartCpu);
+    // When absent, net_rx falls back to chartMemory (#10893E)
+    expectColorNear(theme->chartNetRx, theme->chartMemory);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallBackToLineColorWhenAbsent)
+{
+    // Provide net_tx/net_rx line colors but omit the fill variants.
+    // chartNetTxFill should fall back to chartNetTx; chartNetRxFill to chartNetRx.
+    const std::string toml = R"(
+[meta]
+name = "Net Fill Fallback"
+)" + std::string(k_FullThemeTomlBody) + R"(
+[charts]
+cpu    = "#0078D4"
+memory = "#10893E"
+io     = "#E74856"
+io_write = "#F7630C"
+net_tx = "#FFC107"
+net_rx = "#AB47BC"
+# net_tx_fill and net_rx_fill intentionally absent — should fall back to line colors
+)";
+    createThemeFile("net-fill-fallback.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "net-fill-fallback.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // Fill falls back to the line color (alpha may differ from a real 0.3-alpha fill,
+    // but the fallback path in ThemeLoader passes the line color as-is)
+    expectColorNear(theme->chartNetTxFill, theme->chartNetTx);
+    expectColorNear(theme->chartNetRxFill, theme->chartNetRx);
+}
+
+// ========== Priority Badge Text Color Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_ParsedWhenPresent)
+{
+    const std::string toml = std::string("[meta]\nname = \"Badge Color\"\n\n") + k_FullThemeTomlBody + R"(
+[priority]
+high   = "#E74856"
+normal = "#10893E"
+low    = "#8E8CD8"
+badge_text_color = "#1A1A1A"
+)";
+    createThemeFile("badge-color.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "badge-color.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // #1A1A1A = (26/255, 26/255, 26/255) — near-black for light themes
+    expectColorNear(theme->priorityBadgeTextColor, ImVec4(0x1A / 255.0F, 0x1A / 255.0F, 0x1A / 255.0F, 1.0F));
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_DefaultsToWhiteWhenAbsent)
+{
+    // k_FullThemeTomlBody has no [priority] section, so badge_text_color is absent.
+    // It should default to white (1,1,1,1).
+    const std::string toml = std::string("[meta]\nname = \"No Badge Color\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("no-badge-color.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "no-badge-color.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // Default badge text color must be fully opaque white
+    expectColorNear(theme->priorityBadgeTextColor, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
+}
+
 } // namespace
 } // namespace UI
