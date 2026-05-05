@@ -36,7 +36,7 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
     EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
-    EXPECT_EQ(toIndex(ProcessColumn::Type), 7);         // Process type — after State(5) and Status(6)
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 7);        // Process type — after State(5) and Status(6)
     EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 18); // GDI count — after Handles(17)
 }
 

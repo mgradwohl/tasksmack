@@ -528,8 +528,8 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
     // C:\Windows\System32\svchost.exe. An accessible instance must be classified
     // as "Windows Process". This tests the *outcome* without duplicating the path
     // heuristic logic: if classifyProcessType's detection breaks, this fails.
-    const auto svchostIt = std::find_if(processes.begin(), processes.end(),
-                                        [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
+    const auto svchostIt = std::find_if(
+        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
 
     // Every Windows system has at least one accessible svchost.exe instance.
     ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
