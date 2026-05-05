@@ -70,11 +70,11 @@ idle = "#808080"       # Gray - idle kernel thread (I)
 cpu = "#0078D4"       # Windows Blue - CPU usage line
 memory = "#10893E"    # Green - memory usage line
 io = "#E74856"        # Red - I/O read usage line
-io_write = "#F7630C"        # Orange - I/O write usage line
+io_write = "#26C6DA"        # Cyan - I/O write usage line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
 memory_fill = "#10893E4D"    # Green with 30% alpha - memory fill
 io_fill = "#E748564D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#F7630C4D"   # Orange with 30% alpha - I/O write fill
+io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
 peak_line = "#FFB900B3"      # Gold with 70% alpha - peak reference line
 
 # =============================================================================

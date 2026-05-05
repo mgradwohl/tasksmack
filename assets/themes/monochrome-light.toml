@@ -69,12 +69,12 @@ idle = "#A5D6A7"       # I - Very light green - idle kernel thread
 [charts]
 cpu = "#2E7D32"       # Dark green - CPU usage line
 memory = "#4CAF50"    # Medium green - memory usage line
-io = "#388E3C"        # Medium-dark green - I/O read usage line
-io_write = "#8BD88B"        # Very light green - I/O write usage line
+io = "#1B5E20"        # Darkest green - I/O read usage line (maximum contrast)
+io_write = "#00BCD4"        # Cyan - I/O write usage line (maximum contrast)
 cpu_fill = "#2E7D324D"       # Dark green with 30% alpha - CPU fill
 memory_fill = "#4CAF504D"    # Medium green with 30% alpha - memory fill
-io_fill = "#388E3C4D"        # Medium-dark green with 30% alpha - I/O read fill
-io_write_fill = "#8BD88B4D"   # Very light green with 30% alpha - I/O write fill
+io_fill = "#1B5E204D"        # Darkest green with 30% alpha - I/O read fill
+io_write_fill = "#00BCD44D"   # Cyan with 30% alpha - I/O write fill
 peak_line = "#4CAF50B3"      # Medium green with 70% alpha - peak reference line
 
 # =============================================================================

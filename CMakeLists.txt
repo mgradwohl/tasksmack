@@ -336,7 +336,7 @@ endif()
 # FreeType for improved font rendering (always use FetchContent to avoid noisy Findfreetype warnings)
 
 # Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
-set(FETCHCONTENT_TRY_FIND_PACKAGE_freetype FALSE)
+set(FETCHCONTENT_TRY_FIND_PACKAGE_FREETYPE FALSE)
 
 FetchContent_Declare(
     freetype

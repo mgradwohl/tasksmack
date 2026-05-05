@@ -58,7 +58,7 @@ text_info = "#1C71D8"      # Blue - informational text
 running = "#26A269"    # Green - active/running (R)
 sleeping = "#1C71D8"   # Blue - sleeping (S)
 disk_sleep = "#E66100" # Orange - uninterruptible I/O (D)
-zombie = "#C01C28"     # Red - defunct process (Z)
+zombie = "#A51D2D"     # Magenta - defunct process (Z) - distinct from charts.io red
 stopped = "#8E44AD"    # Purple - stopped/traced (T/t)
 idle = "#A0A0A0"       # Gray - idle kernel thread (I)
 
@@ -70,11 +70,11 @@ idle = "#A0A0A0"       # Gray - idle kernel thread (I)
 cpu = "#3584E4"       # Blue - CPU usage line
 memory = "#26A269"    # Green - memory usage line
 io = "#C01C28"        # Red - I/O read usage line
-io_write = "#FFC533"        # Yellow - I/O write usage line
+io_write = "#00BCD4"        # Cyan - I/O write usage line
 cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#26A2694D"    # Green with 30% alpha - memory fill
 io_fill = "#C01C284D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#FFC5334D"   # Yellow with 30% alpha - I/O write fill
+io_write_fill = "#00BCD44D"   # Cyan with 30% alpha - I/O write fill
 peak_line = "#E5A50AB3"      # Gold with 70% alpha - peak reference line
 
 # =============================================================================
