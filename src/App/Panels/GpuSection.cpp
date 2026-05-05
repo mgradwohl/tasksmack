@@ -170,13 +170,13 @@ void renderGpuSection(RenderContext& ctx)
         auto powerHist = ctx.gpuModel->powerHistory(snap.gpuId);
         auto fanHist = ctx.gpuModel->fanSpeedHistory(snap.gpuId);
 
-        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
+        // Per-GPU timestamps: only includes samples when this GPU was present,
+        // so they stay aligned with the per-GPU history vectors even when the GPU
+        // was intermittently absent (which would cause the global gpuTimestamps to
+        // include samples this GPU never recorded).
+        auto perGpuTimestamps = ctx.gpuModel->historyTimestamps(snap.gpuId);
 
-        // Track offset from the full GPU snapshot history so that hover-tooltip index
-        // lookups via snapshotAt() use absolute history indices, not plot-crop indices.
-        // After cropFrontToSize the plot shows the last `alignedCount` samples; the
-        // oldest of those lives at absolute index (fullHistorySize - alignedCount).
-        const size_t gpuHistoryOffset = utilHist.size() - alignedCount;
+        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
 
         // Crop histories to aligned size using existing helper
         cropFrontToSize(utilHist, alignedCount);
@@ -188,7 +188,7 @@ void renderGpuSection(RenderContext& ctx)
         cropFrontToSize(powerHist, alignedCount);
         cropFrontToSize(fanHist, alignedCount);
 
-        std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
+        std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
         // Get max clock for normalization
         const float maxClockMHz =
@@ -265,8 +265,9 @@ void renderGpuSection(RenderContext& ctx)
                     {
                         // Fetch only the single snapshot needed for the hovered index.
                         // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
-                        // Add gpuHistoryOffset so the plot-crop index maps to an absolute history index.
-                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal + gpuHistoryOffset);
+                        // perGpuTimestamps and the GPU history are always the same length and aligned
+                        // sample-for-sample, so *idxVal maps directly to the correct history entry.
+                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
 
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
@@ -388,7 +389,7 @@ void renderGpuSection(RenderContext& ctx)
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
                                       .label = "GPU Power",
-                                      .tooltipText = std::format("GPU Power: {}", UI::Format::formatPowerCompact(smoothed.powerWatts)),
+                                      .tooltipText = std::format("GPU Power: {:.2f} W", smoothed.powerWatts),
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }

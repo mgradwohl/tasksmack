@@ -105,9 +105,11 @@ void GPUModel::refresh()
                                               static_cast<std::ptrdiff_t>(m_HistoryTimestamps.size() - GPU_HISTORY_CAPACITY));
             }
 
-            // Push to history under lock protection
-            for (const auto& [gpuId, snapshot] : m_Snapshots)
+            // Push to history under lock protection — stamp capture time first so that
+            // per-GPU timestamps stay aligned with each GPU's own history entries.
+            for (auto& [gpuId, snapshot] : m_Snapshots)
             {
+                snapshot.captureTimeSec = nowSec;
                 auto histIt = m_Histories.find(gpuId);
                 if (histIt != m_Histories.end())
                 {
@@ -321,6 +323,23 @@ std::vector<double> GPUModel::historyTimestamps() const
 {
     const std::shared_lock lock(m_Mutex);
     return m_HistoryTimestamps;
+}
+
+std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+    std::vector<double> result;
+    result.reserve(it->second.size());
+    for (std::size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(it->second[i].captureTimeSec);
+    }
+    return result;
 }
 
 void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)

@@ -77,8 +77,12 @@ class GPUModel
     [[nodiscard]] std::vector<float> powerHistory(std::string_view gpuId) const;
     [[nodiscard]] std::vector<float> fanSpeedHistory(std::string_view gpuId) const;
 
-    // Get timestamps for GPU history
+    // Get global timestamps for all GPU history samples (one per refresh call)
     [[nodiscard]] std::vector<double> historyTimestamps() const;
+
+    // Get per-GPU timestamps (only samples where the GPU was present).
+    // Length matches the per-GPU history vectors (utilizationHistory, etc.).
+    [[nodiscard]] std::vector<double> historyTimestamps(std::string_view gpuId) const;
 
     // GPU info (static, rarely changes)
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;

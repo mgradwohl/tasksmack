@@ -10,6 +10,9 @@ namespace Domain
 // Immutable snapshot of a single GPU at a point in time
 struct GPUSnapshot
 {
+    // Sample time (seconds since epoch, set by GPUModel::refresh())
+    double captureTimeSec = 0.0;
+
     // Identity
     std::string gpuId;  // Unique identifier (e.g., "GPU0", "GPU1")
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
