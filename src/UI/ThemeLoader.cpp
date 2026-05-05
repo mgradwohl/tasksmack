@@ -291,11 +291,17 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartIo = getColor(tbl, "charts.io");
         scheme.chartIoWrite = getColor(tbl, "charts.io_write", scheme.chartMemory);
 
+        // Network chart colors; fall back to chartCpu/accents[2] for backward compat
+        scheme.chartNetTx = getColor(tbl, "charts.net_tx", scheme.chartCpu);
+        scheme.chartNetRx = getColor(tbl, "charts.net_rx", scheme.accents[2]);
+
         // Chart fill colors (with fallback to line colors for backward compatibility)
         scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", scheme.chartCpu);
         scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
         scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
         scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", scheme.chartIoWrite);
+        scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", scheme.chartNetTx);
+        scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", scheme.chartNetRx);
 
         // CPU breakdown
         scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");
@@ -338,6 +344,8 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.priorityHighColor = getColor(tbl, "priority.high", ImVec4(1.0F, 0.3F, 0.2F, 1.0F));
         scheme.priorityNormalColor = getColor(tbl, "priority.normal", ImVec4(0.5F, 0.8F, 0.2F, 1.0F));
         scheme.priorityLowColor = getColor(tbl, "priority.low", ImVec4(0.4F, 0.4F, 0.8F, 1.0F));
+        // Badge text: white on dark themes, near-black on light; defaults to white for safety
+        scheme.priorityBadgeTextColor = getColor(tbl, "priority.badge_text_color", ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
 
         // Window colors
         scheme.windowBg = getColor(tbl, "ui.window.background");

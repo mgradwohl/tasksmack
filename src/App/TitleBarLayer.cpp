@@ -353,8 +353,8 @@ void TitleBarLayer::renderTitleBar()
     {
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
-        // Make icon clickable with invisible button
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
+        // Make icon clickable with invisible button (transparent normal state; hover/active use theme colors)
+        ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.windowBg, 0.0F));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
         if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
@@ -432,7 +432,7 @@ void TitleBarLayer::renderTitleBar()
     // Use transparent background for buttons; only show colors on hover/active states
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
+    ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.windowBg, 0.0F));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 
