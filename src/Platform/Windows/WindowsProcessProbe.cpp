@@ -523,7 +523,11 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
 
-        const bool isInWindowsDir = lowerPath.contains("\\windows\\");
+        // Anchor to the drive root: check that the path starts with <letter>:\windows\
+        // so that a user directory that happens to contain the word "windows" (e.g.
+        // C:\Users\awindows\System32\) cannot false-match the heuristic.
+        const bool isInWindowsDir =
+            lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
         const bool isInSystemDir =
             lowerPath.contains("\\system32\\") || lowerPath.contains("\\syswow64\\") || lowerPath.contains("\\systemapps\\");
 

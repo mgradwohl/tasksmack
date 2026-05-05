@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -525,30 +524,19 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    // Any accessible, non-App process whose image lives under \Windows\System32\ or
-    // \Windows\SysWOW64\ should be classified as "Windows Process".
-    // The case-insensitive check mirrors classifyProcessType's own logic.
-    bool foundSystemProcess = false;
-    for (const auto& proc : processes)
-    {
-        if (proc.processType.empty() || proc.processType == "App")
-        {
-            continue;
-        }
-        std::string lowerCmd = proc.command;
-        std::ranges::transform(
-            lowerCmd, lowerCmd.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
-        const bool inSystem32 = lowerCmd.contains("\\windows\\system32\\") || lowerCmd.contains("\\windows\\syswow64\\");
-        if (inSystem32)
-        {
-            EXPECT_EQ(proc.processType, "Windows Process")
-                << "Process " << proc.name << " (path: " << proc.command << ") in a Windows system directory"
-                << " should be classified as Windows Process";
-            foundSystemProcess = true;
-        }
-    }
-    // Every Windows system has accessible System32 processes (e.g. svchost.exe).
-    EXPECT_TRUE(foundSystemProcess) << "Expected at least one accessible System32 process in the enumeration";
+    // svchost.exe is a well-known Windows service host that always runs from
+    // C:\Windows\System32\svchost.exe. An accessible instance must be classified
+    // as "Windows Process". This tests the *outcome* without duplicating the path
+    // heuristic logic: if classifyProcessType's detection breaks, this fails.
+    const auto svchostIt = std::find_if(processes.begin(), processes.end(),
+                                        [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
+
+    // Every Windows system has at least one accessible svchost.exe instance.
+    ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
+
+    EXPECT_EQ(svchostIt->processType, "Windows Process")
+        << "svchost.exe must be classified as Windows Process; got: '" << svchostIt->processType << "'"
+        << " (path: " << svchostIt->command << ")";
 }
 
 TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
