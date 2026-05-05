@@ -73,11 +73,17 @@ struct ColorScheme
     ImVec4 chartIo;      // I/O read usage line
     ImVec4 chartIoWrite; // I/O write usage line (distinct from read)
 
+    // Network chart line colors (dedicated, separate from CPU to avoid cross-chart confusion)
+    ImVec4 chartNetTx; // Network transmit (sent) line
+    ImVec4 chartNetRx; // Network receive line
+
     // Chart fill colors (semi-transparent versions for shaded plots)
     ImVec4 chartCpuFill;     // CPU usage fill
     ImVec4 chartMemoryFill;  // Memory usage fill
     ImVec4 chartIoFill;      // I/O read usage fill
     ImVec4 chartIoWriteFill; // I/O write usage fill
+    ImVec4 chartNetTxFill;   // Network transmit fill
+    ImVec4 chartNetRxFill;   // Network receive fill
 
     // CPU breakdown colors
     ImVec4 cpuUser;   // User CPU time
@@ -117,9 +123,10 @@ struct ColorScheme
     ImVec4 closeButtonActive;
 
     // Priority slider gradient endpoint colors
-    ImVec4 priorityHighColor;   // nice < 0 end (high priority; default: red/orange)
-    ImVec4 priorityNormalColor; // nice == 0 mid (normal priority; default: green)
-    ImVec4 priorityLowColor;    // nice > 0 end (low priority; default: blue)
+    ImVec4 priorityHighColor;      // nice < 0 end (high priority; default: red/orange)
+    ImVec4 priorityNormalColor;    // nice == 0 mid (normal priority; default: green)
+    ImVec4 priorityLowColor;       // nice > 0 end (low priority; default: blue)
+    ImVec4 priorityBadgeTextColor; // text drawn on the priority badge (white on dark themes, near-black on light)
 
     // ImGui style colors (base colors for UI chrome)
     ImVec4 windowBg;

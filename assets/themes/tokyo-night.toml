@@ -1,0 +1,185 @@
+# Tokyo Night Theme
+# Dark urban night sky - deep navy with vibrant city-light accents
+# Inspired by the Tokyo Night color palette
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Tokyo Night"
+description = "Dark urban night sky - deep navy with vibrant city-light accents"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#7AA2F7",  # Blue
+    "#F7768E",  # Red/Pink
+    "#9ECE6A",  # Green
+    "#BB9AF7",  # Purple/Magenta
+    "#E0AF68",  # Yellow/Amber
+    "#7DCFFF",  # Cyan
+    "#FF9E64",  # Orange
+    "#2AC3DE",  # Teal
+]
+
+[progress]
+low = "#9ECE6A"       # 0-50%   - Green (healthy)
+medium = "#E0AF68"    # 50-80%  - Amber (caution)
+high = "#F7768E"      # 80-100% - Red/Pink (critical)
+
+[semantic]
+text_primary = "#C0CAF5"
+text_disabled = "#565F89"
+text_muted = "#A9B1D6"
+text_error = "#F7768E"
+text_warning = "#E0AF68"
+text_success = "#9ECE6A"
+text_info = "#7AA2F7"
+
+[status]
+running = "#9ECE6A"
+sleeping = "#7AA2F7"
+disk_sleep = "#E0AF68"
+zombie = "#F7768E"
+stopped = "#BB9AF7"
+idle = "#414868"
+
+[charts]
+cpu = "#7AA2F7"
+memory = "#9ECE6A"
+io = "#F7768E"
+io_write = "#FF9E64"
+net_tx = "#E0AF68"
+net_rx = "#BB9AF7"
+cpu_fill = "#7AA2F74D"
+memory_fill = "#9ECE6A4D"
+io_fill = "#F7768E4D"
+io_write_fill = "#FF9E644D"
+net_tx_fill = "#E0AF684D"
+net_rx_fill = "#BB9AF74D"
+peak_line = "#C0CAF5B3"
+
+[charts.gpu]
+utilization = "#BB9AF7"
+utilization_fill = "#BB9AF74D"
+memory = "#2AC3DE"
+memory_fill = "#2AC3DE4D"
+temperature = "#E0AF68"
+power = "#9ECE6A"
+encoder = "#7DCFFF"
+decoder = "#BB9AF7"
+clock = "#7AA2F7"
+clock_fill = "#7AA2F7CC"
+fan = "#565F89"
+
+[cpu_breakdown]
+user = "#7AA2F7"
+system = "#F7768E"
+iowait = "#E0AF68"
+idle = "#414868"
+user_fill = "#7AA2F759"
+system_fill = "#F7768E59"
+iowait_fill = "#E0AF6859"
+idle_fill = "#41486833"
+
+[priority]
+high   = "#F7768E"
+normal = "#9ECE6A"
+low    = "#7AA2F7"
+badge_text_color = "#FFFFFF"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#4A7825"
+hovered = "#9ECE6A"
+active = "#38601C"
+
+[ui.window]
+background = "#1A1B26"
+child_background = "#16161E00"
+popup_background = "#16161EF0"
+border = "#29303E80"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#292E42"
+background_hovered = "#343B58"
+background_active = "#414868"
+
+[ui.title]
+background = "#16161E"
+background_active = "#292E42"
+background_collapsed = "#16161E80"
+
+[ui.bars]
+menu = "#16161E"
+status = "#1A1B26"
+
+[ui.scrollbar]
+background = "#1A1B2680"
+grab = "#292E42"
+grab_hovered = "#414868"
+grab_active = "#565F89"
+
+[ui.controls]
+check_mark = "#9ECE6A"
+slider_grab = "#7AA2F7"
+slider_grab_active = "#6A92E7"
+
+[ui.button]
+normal = "#292E42"
+hovered = "#343B58"
+active = "#7AA2F7"
+
+[ui.header]
+normal = "#292E4280"
+hovered = "#343B58"
+active = "#292E42"
+
+[ui.separator]
+normal = "#41486880"
+hovered = "#7AA2F7"
+active = "#7DCFFF"
+
+[ui.resize_grip]
+normal = "#7AA2F733"
+hovered = "#7AA2F7"
+active = "#7DCFFF"
+
+[ui.tab]
+normal = "#16161E"
+hovered = "#292E42"
+active = "#1A1B26"
+active_overline = "#7AA2F7"
+unfocused = "#16161E"
+unfocused_active = "#1A1B26"
+unfocused_active_overline = "#7AA2F780"
+
+[ui.docking]
+preview = "#7AA2F7B3"
+empty_background = "#1A1B26"
+
+[ui.plot]
+lines = "#7AA2F7"
+lines_hovered = "#F7768E"
+histogram = "#9ECE6A"
+histogram_hovered = "#E0AF68"
+
+[ui.table]
+header_background = "#292E42"
+border_strong = "#343B58"
+border_light = "#292E42"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF08"
+
+[ui.misc]
+text_selected_background = "#7AA2F759"
+drag_drop_target = "#E0AF68"
+nav_highlight = "#7AA2F7"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#CCCCCC33"
+modal_window_dim_background = "#00000099"

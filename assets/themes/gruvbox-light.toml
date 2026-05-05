@@ -1,0 +1,185 @@
+# Gruvbox Light Theme
+# Retro groove light theme with warm earthy tones
+# Inverted Gruvbox palette for bright environments
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Gruvbox Light"
+description = "Retro groove light theme with warm earthy tones"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#076678",  # Dark Blue
+    "#9D0006",  # Dark Red
+    "#79740E",  # Dark Olive Green
+    "#8F3F71",  # Dark Purple
+    "#B57614",  # Dark Amber
+    "#427B58",  # Dark Aqua/Teal
+    "#AF3A03",  # Dark Orange
+    "#928374",  # Neutral Gray
+]
+
+[progress]
+low = "#79740E"       # 0-50%   - Dark olive green (healthy)
+medium = "#B57614"    # 50-80%  - Dark amber (caution)
+high = "#9D0006"      # 80-100% - Dark red (critical)
+
+[semantic]
+text_primary = "#3C3836"
+text_disabled = "#928374"
+text_muted = "#7C6F64"
+text_error = "#9D0006"
+text_warning = "#B57614"
+text_success = "#79740E"
+text_info = "#076678"
+
+[status]
+running = "#79740E"
+sleeping = "#076678"
+disk_sleep = "#B57614"
+zombie = "#9D0006"
+stopped = "#8F3F71"
+idle = "#928374"
+
+[charts]
+cpu = "#076678"
+memory = "#79740E"
+io = "#9D0006"
+io_write = "#AF3A03"
+net_tx = "#B57614"
+net_rx = "#8F3F71"
+cpu_fill = "#0766784D"
+memory_fill = "#79740E4D"
+io_fill = "#9D00064D"
+io_write_fill = "#AF3A034D"
+net_tx_fill = "#B576144D"
+net_rx_fill = "#8F3F714D"
+peak_line = "#3C3836B3"
+
+[charts.gpu]
+utilization = "#8F3F71"
+utilization_fill = "#8F3F714D"
+memory = "#427B58"
+memory_fill = "#427B584D"
+temperature = "#B57614"
+power = "#79740E"
+encoder = "#427B58"
+decoder = "#9D0006"
+clock = "#076678"
+clock_fill = "#076678CC"
+fan = "#928374"
+
+[cpu_breakdown]
+user = "#076678"
+system = "#9D0006"
+iowait = "#B57614"
+idle = "#D5C4A1"
+user_fill = "#07667859"
+system_fill = "#9D000659"
+iowait_fill = "#B5761459"
+idle_fill = "#D5C4A133"
+
+[priority]
+high   = "#9D0006"
+normal = "#79740E"
+low    = "#076678"
+badge_text_color = "#1A1A1A"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#79740E"
+hovered = "#929A14"
+active = "#5F5C0A"
+
+[ui.window]
+background = "#FBF1C7"
+child_background = "#EBDBB200"
+popup_background = "#EBDBB2F0"
+border = "#A8998480"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#EBDBB2"
+background_hovered = "#D5C4A1"
+background_active = "#BDAE93"
+
+[ui.title]
+background = "#EBDBB2"
+background_active = "#D5C4A1"
+background_collapsed = "#EBDBB280"
+
+[ui.bars]
+menu = "#EBDBB2"
+status = "#E2D5A5"
+
+[ui.scrollbar]
+background = "#FBF1C780"
+grab = "#D5C4A1"
+grab_hovered = "#A89984"
+grab_active = "#928374"
+
+[ui.controls]
+check_mark = "#076678"
+slider_grab = "#076678"
+slider_grab_active = "#065566"
+
+[ui.button]
+normal = "#EBDBB2"
+hovered = "#D5C4A1"
+active = "#076678"
+
+[ui.header]
+normal = "#EBDBB2"
+hovered = "#D5C4A1"
+active = "#BDAE93"
+
+[ui.separator]
+normal = "#A8998480"
+hovered = "#076678"
+active = "#427B58"
+
+[ui.resize_grip]
+normal = "#07667833"
+hovered = "#076678"
+active = "#427B58"
+
+[ui.tab]
+normal = "#EBDBB2"
+hovered = "#D5C4A1"
+active = "#FBF1C7"
+active_overline = "#076678"
+unfocused = "#FBF1C7"
+unfocused_active = "#EBDBB2"
+unfocused_active_overline = "#07667880"
+
+[ui.docking]
+preview = "#076678B3"
+empty_background = "#FBF1C7"
+
+[ui.plot]
+lines = "#076678"
+lines_hovered = "#9D0006"
+histogram = "#79740E"
+histogram_hovered = "#B57614"
+
+[ui.table]
+header_background = "#F5EDD0"
+border_strong = "#D5C4A1"
+border_light = "#E5D8B5"
+row_background = "#00000000"
+row_background_alt = "#00000008"
+
+[ui.misc]
+text_selected_background = "#07667859"
+drag_drop_target = "#B57614"
+nav_highlight = "#076678"
+nav_windowing_highlight = "#00000066"
+nav_windowing_dim_background = "#00000033"
+modal_window_dim_background = "#00000099"

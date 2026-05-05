@@ -71,10 +71,14 @@ cpu = "#81C784"       # Bright green - CPU usage line
 memory = "#4CAF50"    # Medium green - memory usage line
 io = "#2E7D32"        # Dark green - I/O read usage line (good contrast)
 io_write = "#26C6DA"        # Cyan - I/O write usage line (good contrast)
+net_tx = "#A5D6A7"          # Lightest green - Network transmit (sent) line
+net_rx = "#1B5E20"          # Darkest green - Network receive line (maximum contrast)
 cpu_fill = "#81C7844D"       # Bright green with 30% alpha - CPU fill
 memory_fill = "#4CAF504D"    # Medium green with 30% alpha - memory fill
 io_fill = "#2E7D324D"        # Dark green with 30% alpha - I/O read fill
 io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
+net_tx_fill = "#A5D6A74D"    # Lightest green with 30% alpha - Network TX fill
+net_rx_fill = "#1B5E204D"    # Darkest green with 30% alpha - Network RX fill
 peak_line = "#9CCC65B3"      # Yellow-green with 70% alpha - peak reference line
 
 # =============================================================================
@@ -82,17 +86,17 @@ peak_line = "#9CCC65B3"      # Yellow-green with 70% alpha - peak reference line
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#A5D6A7"           # Purple - GPU utilization line
-utilization_fill = "#A5D6A74D"    # Purple with 30% alpha - GPU fill
-memory = "#66BB6A"                # Red - GPU memory line
-memory_fill = "#66BB6A4D"         # Red with 30% alpha - GPU memory fill
-temperature = "#9CCC65"           # Gold - GPU temperature line
-power = "#4CAF50"                 # Green - GPU power draw line
-encoder = "#81C784"               # Teal - GPU encoder utilization
-decoder = "#66BB6A"               # Magenta - GPU decoder utilization
-clock = "#64B5F6"             # Light Blue - GPU clock speed line
-clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
-fan = "#78909C"                # Blue Gray - GPU fan speed line
+utilization = "#A5D6A7"           # Pale green - GPU utilization line
+utilization_fill = "#A5D6A74D"    # Pale green with 30% alpha - GPU fill
+memory = "#66BB6A"                # Light green - GPU memory line
+memory_fill = "#66BB6A4D"         # Light green with 30% alpha - GPU memory fill
+temperature = "#9CCC65"           # Yellow-green - GPU temperature line
+power = "#4CAF50"                 # Medium green - GPU power draw line
+encoder = "#B9F6CA"               # Bright glow - GPU encoder utilization (distinct)
+decoder = "#1B5E20"               # Darkest green - GPU decoder utilization (distinct)
+clock = "#C8E6C9"             # Very pale green - GPU clock speed line (theme-native)
+clock_fill = "#C8E6C9CC"      # Very pale green with 80% alpha - GPU clock fill
+fan = "#388E3C"               # Medium-dark green - GPU fan speed line (theme-native)
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -109,9 +113,10 @@ iowait_fill = "#B9F6CA59"    # Glow with 35% alpha - iowait fill
 idle_fill = "#2E7D3233"      # Dim green with 20% alpha - idle fill
 
 [priority]
-high   = "#FF4D33"     # Red/orange (high priority)
-normal = "#80CC33"     # Green (normal priority)
-low    = "#6666CC"     # Blue/gray (low priority)
+high   = "#B9F6CA"     # Bright glow (most attention-grabbing in all-green context)
+normal = "#4CAF50"     # Medium green
+low    = "#2E7D32"     # Dim green (least prominent)
+badge_text_color = "#FFFFFF"  # White - readable on all priority badge colors
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover

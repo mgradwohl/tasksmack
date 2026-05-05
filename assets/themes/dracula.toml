@@ -1,0 +1,185 @@
+# Dracula Theme
+# Iconic dark purple theme with vivid neon accents
+# Based on the Dracula color palette (draculatheme.com)
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Dracula"
+description = "Iconic dark purple theme with vivid neon accents"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#FF79C6",  # Pink
+    "#8BE9FD",  # Cyan
+    "#BD93F9",  # Purple
+    "#50FA7B",  # Green
+    "#FFB86C",  # Orange
+    "#FF5555",  # Red
+    "#F1FA8C",  # Yellow
+    "#6272A4",  # Comment (muted blue)
+]
+
+[progress]
+low = "#50FA7B"       # 0-50%   - Green (healthy)
+medium = "#FFB86C"    # 50-80%  - Orange (caution)
+high = "#FF5555"      # 80-100% - Red (critical)
+
+[semantic]
+text_primary = "#F8F8F2"
+text_disabled = "#6272A4"
+text_muted = "#6272A4"
+text_error = "#FF5555"
+text_warning = "#FFB86C"
+text_success = "#50FA7B"
+text_info = "#8BE9FD"
+
+[status]
+running = "#50FA7B"
+sleeping = "#8BE9FD"
+disk_sleep = "#FFB86C"
+zombie = "#FF5555"
+stopped = "#FF79C6"
+idle = "#6272A4"
+
+[charts]
+cpu = "#8BE9FD"
+memory = "#50FA7B"
+io = "#FF5555"
+io_write = "#FF79C6"
+net_tx = "#FFB86C"
+net_rx = "#BD93F9"
+cpu_fill = "#8BE9FD4D"
+memory_fill = "#50FA7B4D"
+io_fill = "#FF55554D"
+io_write_fill = "#FF79C64D"
+net_tx_fill = "#FFB86C4D"
+net_rx_fill = "#BD93F94D"
+peak_line = "#F8F8F2B3"
+
+[charts.gpu]
+utilization = "#BD93F9"
+utilization_fill = "#BD93F94D"
+memory = "#F1FA8C"
+memory_fill = "#F1FA8C4D"
+temperature = "#FFB86C"
+power = "#50FA7B"
+encoder = "#8BE9FD"
+decoder = "#FF79C6"
+clock = "#6272A4"
+clock_fill = "#6272A4CC"
+fan = "#44475A"
+
+[cpu_breakdown]
+user = "#8BE9FD"
+system = "#FF5555"
+iowait = "#FFB86C"
+idle = "#44475A"
+user_fill = "#8BE9FD59"
+system_fill = "#FF555559"
+iowait_fill = "#FFB86C59"
+idle_fill = "#44475A33"
+
+[priority]
+high   = "#FF5555"
+normal = "#50FA7B"
+low    = "#BD93F9"
+badge_text_color = "#FFFFFF"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#279847"
+hovered = "#50FA7B"
+active = "#1D7A39"
+
+[ui.window]
+background = "#282A36"
+child_background = "#21222C00"
+popup_background = "#21222CF0"
+border = "#6272A480"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#44475A"
+background_hovered = "#525563"
+background_active = "#6272A4"
+
+[ui.title]
+background = "#21222C"
+background_active = "#44475A"
+background_collapsed = "#21222C80"
+
+[ui.bars]
+menu = "#21222C"
+status = "#282A36"
+
+[ui.scrollbar]
+background = "#28293680"
+grab = "#44475A"
+grab_hovered = "#6272A4"
+grab_active = "#BD93F9"
+
+[ui.controls]
+check_mark = "#50FA7B"
+slider_grab = "#BD93F9"
+slider_grab_active = "#FF79C6"
+
+[ui.button]
+normal = "#44475A"
+hovered = "#6272A4"
+active = "#BD93F9"
+
+[ui.header]
+normal = "#44475A80"
+hovered = "#6272A4"
+active = "#44475A"
+
+[ui.separator]
+normal = "#6272A480"
+hovered = "#BD93F9"
+active = "#FF79C6"
+
+[ui.resize_grip]
+normal = "#BD93F933"
+hovered = "#BD93F9"
+active = "#FF79C6"
+
+[ui.tab]
+normal = "#21222C"
+hovered = "#44475A"
+active = "#282A36"
+active_overline = "#BD93F9"
+unfocused = "#21222C"
+unfocused_active = "#282A36"
+unfocused_active_overline = "#BD93F980"
+
+[ui.docking]
+preview = "#BD93F9B3"
+empty_background = "#282A36"
+
+[ui.plot]
+lines = "#8BE9FD"
+lines_hovered = "#FF5555"
+histogram = "#50FA7B"
+histogram_hovered = "#F1FA8C"
+
+[ui.table]
+header_background = "#44475A"
+border_strong = "#525563"
+border_light = "#44475A"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF08"
+
+[ui.misc]
+text_selected_background = "#6272A459"
+drag_drop_target = "#F1FA8C"
+nav_highlight = "#BD93F9"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#CCCCCC33"
+modal_window_dim_background = "#00000099"

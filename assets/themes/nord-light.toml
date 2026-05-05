@@ -1,0 +1,185 @@
+# Nord Light Theme
+# Arctic polar palette - airy Snow Storm tones
+# Light variant of Nord using Snow Storm backgrounds with dark Polar Night text
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Nord Light"
+description = "Arctic polar palette - airy Snow Storm tones"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#5E81AC",  # Frost 4 (deep blue)
+    "#B05E28",  # Muted orange
+    "#4F8A3C",  # Muted green
+    "#7D4A8A",  # Muted purple
+    "#C97710",  # Amber
+    "#A63B41",  # Muted red
+    "#6D8EB8",  # Slate blue
+    "#8B7200",  # Dark gold
+]
+
+[progress]
+low = "#4F8A3C"       # 0-50%   - Muted green (healthy)
+medium = "#D08770"    # 50-80%  - Aurora Orange (caution)
+high = "#BF616A"      # 80-100% - Aurora Red (critical)
+
+[semantic]
+text_primary = "#2E3440"
+text_disabled = "#4C566A"
+text_muted = "#4C566A"
+text_error = "#BF616A"
+text_warning = "#D08770"
+text_success = "#4F8A3C"
+text_info = "#5E81AC"
+
+[status]
+running = "#4F8A3C"
+sleeping = "#5E81AC"
+disk_sleep = "#C97710"
+zombie = "#BF616A"
+stopped = "#B05E28"
+idle = "#9AA3B0"
+
+[charts]
+cpu = "#5E81AC"
+memory = "#4F8A3C"
+io = "#A63B41"
+io_write = "#00838F"
+net_tx = "#6D8EB8"
+net_rx = "#C97710"
+cpu_fill = "#5E81AC4D"
+memory_fill = "#4F8A3C4D"
+io_fill = "#A63B414D"
+io_write_fill = "#00838F4D"
+net_tx_fill = "#6D8EB84D"
+net_rx_fill = "#C977104D"
+peak_line = "#2E3440B3"
+
+[charts.gpu]
+utilization = "#7D4A8A"
+utilization_fill = "#7D4A8A4D"
+memory = "#C97710"
+memory_fill = "#C977104D"
+temperature = "#B36B00"
+power = "#4F8A3C"
+encoder = "#00838F"
+decoder = "#A63B41"
+clock = "#5E81AC"
+clock_fill = "#5E81ACCC"
+fan = "#4C566A"
+
+[cpu_breakdown]
+user = "#5E81AC"
+system = "#A63B41"
+iowait = "#C97710"
+idle = "#9AA3B0"
+user_fill = "#5E81AC59"
+system_fill = "#A63B4159"
+iowait_fill = "#C9771059"
+idle_fill = "#9AA3B033"
+
+[priority]
+high   = "#BF616A"
+normal = "#4F8A3C"
+low    = "#5E81AC"
+badge_text_color = "#1A1A1A"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#4F8A3C"
+hovered = "#66A852"
+active = "#3A6E2C"
+
+[ui.window]
+background = "#ECEFF4"
+child_background = "#ECEFF400"
+popup_background = "#E5E9F0F0"
+border = "#B0BCC880"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#E5E9F0"
+background_hovered = "#D8DEE9"
+background_active = "#CAD3E0"
+
+[ui.title]
+background = "#E5E9F0"
+background_active = "#D8DEE9"
+background_collapsed = "#E5E9F080"
+
+[ui.bars]
+menu = "#E5E9F0"
+status = "#DDE3EE"
+
+[ui.scrollbar]
+background = "#ECEFF480"
+grab = "#B0BCC8"
+grab_hovered = "#8E9EAE"
+grab_active = "#6D8090"
+
+[ui.controls]
+check_mark = "#5E81AC"
+slider_grab = "#5E81AC"
+slider_grab_active = "#4E71A0"
+
+[ui.button]
+normal = "#D8DEE9"
+hovered = "#CAD3E0"
+active = "#5E81AC"
+
+[ui.header]
+normal = "#D8DEE9"
+hovered = "#CAD3E0"
+active = "#B9C5D5"
+
+[ui.separator]
+normal = "#B0BCC880"
+hovered = "#5E81AC"
+active = "#4E71A0"
+
+[ui.resize_grip]
+normal = "#B0BCC833"
+hovered = "#5E81AC"
+active = "#4E71A0"
+
+[ui.tab]
+normal = "#E5E9F0"
+hovered = "#D8DEE9"
+active = "#ECEFF4"
+active_overline = "#5E81AC"
+unfocused = "#ECEFF4"
+unfocused_active = "#E5E9F0"
+unfocused_active_overline = "#5E81AC80"
+
+[ui.docking]
+preview = "#5E81ACB3"
+empty_background = "#ECEFF4"
+
+[ui.plot]
+lines = "#5E81AC"
+lines_hovered = "#BF616A"
+histogram = "#4F8A3C"
+histogram_hovered = "#D08770"
+
+[ui.table]
+header_background = "#F5F5F5"
+border_strong = "#D0D8E0"
+border_light = "#E0E8F0"
+row_background = "#00000000"
+row_background_alt = "#00000008"
+
+[ui.misc]
+text_selected_background = "#5E81AC59"
+drag_drop_target = "#D08770"
+nav_highlight = "#5E81AC"
+nav_windowing_highlight = "#00000066"
+nav_windowing_dim_background = "#00000033"
+modal_window_dim_background = "#00000099"
