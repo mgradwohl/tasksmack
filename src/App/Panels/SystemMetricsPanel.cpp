@@ -618,6 +618,7 @@ void SystemMetricsPanel::renderOverview()
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(cpuTimeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
                         ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
@@ -635,18 +636,22 @@ void SystemMetricsPanel::renderOverview()
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
                        .label = "CPU Total",
+                       .tooltipText = std::format("CPU Total: {}", UI::Format::percentCompact(m_SmoothedCpu.total)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
                        .label = "User",
+                       .tooltipText = std::format("User: {}", UI::Format::percentCompact(m_SmoothedCpu.user)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
                        .label = "System",
+                       .tooltipText = std::format("System: {}", UI::Format::percentCompact(m_SmoothedCpu.system)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
                        .label = "I/O Wait",
+                       .tooltipText = std::format("I/O Wait: {}", UI::Format::percentCompact(m_SmoothedCpu.iowait)),
                        .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
 
@@ -735,6 +740,7 @@ void SystemMetricsPanel::renderOverview()
             std::vector<NowBar> bars;
             bars.push_back({.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
                             .label = "Power Draw",
+                            .tooltipText = std::format("Power Draw: {}", UI::Format::formatPowerCompact(m_SmoothedPower.watts)),
                             .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
                             .color = theme.scheme().chartCpu});
 
@@ -742,6 +748,7 @@ void SystemMetricsPanel::renderOverview()
             {
                 bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
                                 .label = "Battery Charge",
+                                .tooltipText = std::format("Battery Charge: {}", UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent)),
                                 .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
                                 .color = theme.scheme().chartMemory});
             }
@@ -964,14 +971,17 @@ void SystemMetricsPanel::renderOverview()
 
         const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.threads), "threads"),
                                 .label = "Threads",
+                                .tooltipText = std::format("Threads: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads))),
                                 .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedResources.threads / threadMax, 0.0, 1.0) : 0.0,
                                 .color = theme.scheme().chartCpu};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
                                .label = "Page Faults",
+                               .tooltipText = std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults)),
                                .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedResources.pageFaults / faultMax, 0.0, 1.0) : 0.0,
                                .color = theme.accentColor(3)};
         const NowBar handlesBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedResources.handles), handleLabel),
                                 .label = handleLabel,
+                                .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles))),
                                 .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedResources.handles / handleMax, 0.0, 1.0) : 0.0,
                                 .color = theme.scheme().chartMemory};
 
@@ -1108,6 +1118,7 @@ void SystemMetricsPanel::renderCpuSection()
                             ImGui::BeginTooltip();
                             const auto ageText = formatAgeSeconds(timeSec);
                             ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::Separator();
                             ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
                             ImGui::EndTooltip();
                         }

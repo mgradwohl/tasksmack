@@ -268,8 +268,19 @@ void renderGpuSection(RenderContext& ctx)
                         }
                         if (*idxVal < memHist.size())
                         {
-                            ImGui::TextColored(
-                                theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
+                            const double pct = static_cast<double>(memHist[*idxVal]);
+                            if (snap.memoryTotalBytes > 0)
+                            {
+                                const auto memUsedBytes =
+                                    static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+                                ImGui::TextColored(theme.scheme().gpuMemory,
+                                                   "Memory: %s",
+                                                   UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, pct).c_str());
+                            }
+                            else
+                            {
+                                ImGui::TextColored(theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(pct).c_str());
+                            }
                         }
                         if (caps.hasClockSpeeds && *idxVal < clockHist.size())
                         {
@@ -297,17 +308,35 @@ void renderGpuSection(RenderContext& ctx)
         std::vector<NowBar> gpuCoreBars;
         gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
                                .label = "GPU Utilization",
+                               .tooltipText = std::format("GPU Utilization: {}", UI::Format::percentCompact(smoothed.utilizationPercent)),
                                .value01 = UI::Format::percent01(smoothed.utilizationPercent),
                                .color = theme.scheme().gpuUtilization});
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                               .label = "GPU Memory",
-                               .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                               .color = theme.scheme().gpuMemory});
+        if (snap.memoryTotalBytes > 0)
+        {
+            const auto memUsedBytes =
+                static_cast<std::uint64_t>((smoothed.memoryPercent / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+            gpuCoreBars.push_back(
+                {.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                 .label = "GPU Memory",
+                 .tooltipText = std::format("GPU Memory: {}",
+                                            UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
+                 .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                 .color = theme.scheme().gpuMemory});
+        }
+        else
+        {
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                                   .label = "GPU Memory",
+                                   .tooltipText = std::format("GPU Memory: {}", UI::Format::percentCompact(smoothed.memoryPercent)),
+                                   .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                                   .color = theme.scheme().gpuMemory});
+        }
         if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
         {
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
             gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
                                    .label = "GPU Clock",
+                                   .tooltipText = std::format("GPU Clock: {} MHz", snap.gpuClockMHz),
                                    .value01 = UI::Format::percent01(clockPercent),
                                    .color = theme.scheme().gpuClock});
         }
@@ -315,10 +344,12 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.encoderUtilPercent),
                                    .label = "Encoder",
+                                   .tooltipText = std::format("Encoder: {}", UI::Format::percentCompact(snap.encoderUtilPercent)),
                                    .value01 = UI::Format::percent01(snap.encoderUtilPercent),
                                    .color = theme.scheme().gpuEncoder});
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.decoderUtilPercent),
                                    .label = "Decoder",
+                                   .tooltipText = std::format("Decoder: {}", UI::Format::percentCompact(snap.decoderUtilPercent)),
                                    .value01 = UI::Format::percent01(snap.decoderUtilPercent),
                                    .color = theme.scheme().gpuDecoder});
         }
@@ -332,6 +363,7 @@ void renderGpuSection(RenderContext& ctx)
             const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
                                       .label = "GPU Temperature",
+                                      .tooltipText = std::format("GPU Temperature: {}°C", static_cast<int>(smoothed.temperatureC)),
                                       .value01 = UI::Format::percent01(tempPercent),
                                       .color = theme.scheme().gpuTemperature});
         }
@@ -340,6 +372,7 @@ void renderGpuSection(RenderContext& ctx)
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
                                       .label = "GPU Power",
+                                      .tooltipText = std::format("GPU Power: {}", UI::Format::formatPowerCompact(smoothed.powerWatts)),
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }
@@ -347,6 +380,7 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedRPMPercent),
                                       .label = "GPU Fan Speed",
+                                      .tooltipText = std::format("GPU Fan Speed: {}%", snap.fanSpeedRPMPercent),
                                       .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedRPMPercent)),
                                       .color = theme.scheme().gpuFan});
         }

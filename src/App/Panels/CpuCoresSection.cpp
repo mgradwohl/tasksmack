@@ -170,10 +170,13 @@ void renderCpuCoresSection(RenderContext& ctx)
                                         ImGui::BeginTooltip();
                                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                                         ImGui::TextUnformatted(ageText.c_str());
+                                        ImGui::Separator();
                                         if (*idxVal < sampleData.size())
                                         {
                                             ImGui::TextColored(
-                                                themeRef.scheme().chartCpu, "CPU: %.1f%%", static_cast<double>(sampleData[*idxVal]));
+                                                themeRef.scheme().chartCpu,
+                                                "CPU: %s",
+                                                UI::Format::percentCompact(static_cast<double>(sampleData[*idxVal])).c_str());
                                         }
                                         ImGui::EndTooltip();
                                     }
@@ -187,6 +190,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                                   : snap.cpuPerCore[coreIdx].totalPercent;
                         const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
                                          .label = std::format("Core {}", coreIdx),
+                                         .tooltipText = std::format("Core {}: {}", coreIdx, UI::Format::percentCompact(smoothed)),
                                          .value01 = UI::Format::percent01(smoothed),
                                          .color = theme.progressColor(smoothed)};
 

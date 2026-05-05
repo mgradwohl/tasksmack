@@ -268,7 +268,8 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
 struct NowBar
 {
     std::string valueText;
-    std::string label; // Tooltip label (e.g., "CPU Total", "Memory")
+    std::string label;       // Primary tooltip text (e.g., "CPU Total")
+    std::string tooltipText; // Rich tooltip text shown on bar hover (e.g., "CPU Total: 45%"); falls back to label
     double value01 = 0.0;
     ImVec4 color;
 };
@@ -448,7 +449,9 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      widthPerBar,
                                      "",
                                      "",
-                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
+                                     !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
+                                     : bars[i].label.empty()      ? bars[i].valueText.c_str()
+                                                                   : bars[i].label.c_str());
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -498,7 +501,9 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      widthPerBar,
                                      "",
                                      "",
-                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
+                                     !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
+                                     : bars[i].label.empty()      ? bars[i].valueText.c_str()
+                                                                   : bars[i].label.c_str());
             ImGui::EndGroup();
             ImGui::PopID();
 
