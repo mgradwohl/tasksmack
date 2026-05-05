@@ -33,9 +33,12 @@ class UserConfigSaveLoadFixture : public ::testing::Test
         m_OriginalPath = UserConfig::get().configPath();
 
         // Create a unique temp directory exclusive to this test process.
+        // Use a retry loop so we never share state with another parallel test process.
+        // ctest runs each test case in a separate process with -j$(nproc).
         const auto base = std::filesystem::temp_directory_path() / "tasksmack_ucsl_";
         std::random_device rd;
-        for (;;)
+        constexpr int kMaxRetries = 100;
+        for (int attempt = 0; attempt < kMaxRetries; ++attempt)
         {
             m_TempDir = base;
             m_TempDir += std::to_string(rd());
@@ -43,6 +46,10 @@ class UserConfigSaveLoadFixture : public ::testing::Test
             if (std::filesystem::create_directory(m_TempDir, ec) && !ec)
             {
                 break;
+            }
+            if (attempt == kMaxRetries - 1)
+            {
+                FAIL() << "Failed to create temp directory after " << kMaxRetries << " attempts";
             }
         }
 
