@@ -332,7 +332,7 @@ void renderNetworkSection(RenderContext& ctx)
             {
                 // Just total
                 plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
+                plotLineWithFill("Received", netTimes.data(), recvData.data(), count, theme.accentColor(2));
             }
 
             if (ImPlot::IsPlotHovered())
@@ -371,7 +371,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.accentColor(2),
-                                               "Recv: %s",
+                                               "Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                         }
                         ImGui::EndTooltip();

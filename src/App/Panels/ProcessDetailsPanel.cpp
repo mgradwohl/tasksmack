@@ -1560,6 +1560,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
+            .tooltipText = {},
             .value01 = 0.0,
             .color = theme.scheme().gpuMemory,
         };
