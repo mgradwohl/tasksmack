@@ -123,10 +123,10 @@ struct ColorScheme
     ImVec4 closeButtonActive;
 
     // Priority slider gradient endpoint colors
-    ImVec4 priorityHighColor;        // nice < 0 end (high priority; default: red/orange)
-    ImVec4 priorityNormalColor;      // nice == 0 mid (normal priority; default: green)
-    ImVec4 priorityLowColor;         // nice > 0 end (low priority; default: blue)
-    ImVec4 priorityBadgeTextColor;   // text drawn on the priority badge (white on dark themes, near-black on light)
+    ImVec4 priorityHighColor;      // nice < 0 end (high priority; default: red/orange)
+    ImVec4 priorityNormalColor;    // nice == 0 mid (normal priority; default: green)
+    ImVec4 priorityLowColor;       // nice > 0 end (low priority; default: blue)
+    ImVec4 priorityBadgeTextColor; // text drawn on the priority badge (white on dark themes, near-black on light)
 
     // ImGui style colors (base colors for UI chrome)
     ImVec4 windowBg;

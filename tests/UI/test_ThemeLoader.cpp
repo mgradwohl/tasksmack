@@ -1296,7 +1296,8 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
 name = "Net Color Theme"
 description = "Tests net_tx/net_rx parsing"
 
-)" + std::string(k_FullThemeTomlBody) + R"(
+)" + std::string(k_FullThemeTomlBody) +
+                             R"(
 [charts]
 cpu    = "#0078D4"
 memory = "#10893E"
@@ -1344,7 +1345,8 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallBackToLineColorWhenAb
     const std::string toml = R"(
 [meta]
 name = "Net Fill Fallback"
-)" + std::string(k_FullThemeTomlBody) + R"(
+)" + std::string(k_FullThemeTomlBody) +
+                             R"(
 [charts]
 cpu    = "#0078D4"
 memory = "#10893E"

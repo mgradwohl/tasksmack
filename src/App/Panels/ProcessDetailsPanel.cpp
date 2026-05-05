@@ -1132,7 +1132,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
 
-            plotLineWithFill("Received", timeData.data(), recvData.data(), plotCount, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+            plotLineWithFill(
+                "Received", timeData.data(), recvData.data(), plotCount, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1146,7 +1147,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::TextColored(
                             theme.scheme().chartNetTx, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
-                        ImGui::TextColored(theme.scheme().chartNetRx, "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
+                        ImGui::TextColored(
+                            theme.scheme().chartNetRx, "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
