@@ -169,8 +169,7 @@ modal_window_dim_background = "#0000004D"
 // Build a full-valid theme body that also includes net_tx and net_rx in [charts].
 // Used by tests that need a complete theme WITH network chart color keys present.
 // The keys are injected before [cpu_breakdown] (which immediately follows [charts]).
-[[nodiscard]] auto buildFullThemeWithNet(std::string_view netTx = "#FFC107",
-                                         std::string_view netRx = "#AB47BC") -> std::string
+[[nodiscard]] auto buildFullThemeWithNet(std::string_view netTx = "#FFC107", std::string_view netRx = "#AB47BC") -> std::string
 {
     std::string body = k_FullThemeTomlBody;
     const std::size_t insertPos = body.find("[cpu_breakdown]");
@@ -179,8 +178,7 @@ modal_window_dim_background = "#0000004D"
     {
         throw std::runtime_error("buildFullThemeWithNet: k_FullThemeTomlBody is missing [cpu_breakdown]");
     }
-    const std::string netLines =
-        std::string("net_tx = \"") + std::string(netTx) + "\"\n" + "net_rx = \"" + std::string(netRx) + "\"\n";
+    const std::string netLines = std::string("net_tx = \"") + std::string(netTx) + "\"\n" + "net_rx = \"" + std::string(netRx) + "\"\n";
     body.insert(insertPos, netLines);
     return body;
 }
@@ -1315,9 +1313,8 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
     // Use a fully-valid theme body (all required sections) and inject net_tx/net_rx
     // into the existing [charts] block to avoid the incomplete-theme warnings that
     // a minimal [meta]+[charts] stub would trigger.
-    const std::string toml =
-        std::string("[meta]\nname = \"Net Color Theme\"\ndescription = \"Tests net_tx/net_rx parsing\"\n\n") +
-        buildFullThemeWithNet("#FFC107", "#AB47BC");
+    const std::string toml = std::string("[meta]\nname = \"Net Color Theme\"\ndescription = \"Tests net_tx/net_rx parsing\"\n\n") +
+                             buildFullThemeWithNet("#FFC107", "#AB47BC");
     createThemeFile("net-colors.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-colors.toml");
@@ -1358,8 +1355,7 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLin
     // Provide net_tx/net_rx line colors but omit the fill variants (net_tx_fill / net_rx_fill).
     // ThemeLoader defaults to the line color scaled to ~0.35 alpha, matching plotLineWithFill.
     // Use a fully-valid base theme to avoid spurious "required key missing" warnings.
-    const std::string toml =
-        std::string("[meta]\nname = \"Net Fill Fallback\"\n\n") + buildFullThemeWithNet("#FFC107", "#AB47BC");
+    const std::string toml = std::string("[meta]\nname = \"Net Fill Fallback\"\n\n") + buildFullThemeWithNet("#FFC107", "#AB47BC");
     createThemeFile("net-fill-fallback.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-fill-fallback.toml");
