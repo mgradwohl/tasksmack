@@ -796,6 +796,17 @@ struct AlignedBytesParts
     return std::format("{:.2Lf} µW", watts * 1'000'000.0);
 }
 
+/// Format power value as formatPowerCompact but shows "0.00 W" for non-positive values.
+/// Use this when a zero reading is valid and distinguishable from an unavailable reading.
+[[nodiscard]] inline auto formatPowerOrZero(double watts) -> std::string
+{
+    if (watts <= 0.0)
+    {
+        return "0.00 W";
+    }
+    return formatPowerCompact(watts);
+}
+
 // ============================================================================
 // UI Numeric Utilities (for ImGui/ImPlot interop)
 // ============================================================================

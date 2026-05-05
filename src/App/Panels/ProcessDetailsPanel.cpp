@@ -1297,9 +1297,9 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     // Use smoothed value for NowBar
     const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
 
-    const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
+    const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = "Power Usage",
-                          .tooltipText = std::format("Power: {}", UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts)),
+                          .tooltipText = std::format("Power: {}", UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts)),
                           .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
                           .color = theme.scheme().textInfo};
 

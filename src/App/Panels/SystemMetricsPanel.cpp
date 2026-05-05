@@ -738,7 +738,7 @@ void SystemMetricsPanel::renderOverview()
 
             // Build NowBars
             std::vector<NowBar> bars;
-            bars.push_back({.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
+            bars.push_back({.valueText = UI::Format::formatPowerOrZero(m_SmoothedPower.watts),
                             .label = "Power Draw",
                             .tooltipText = {},
                             .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),

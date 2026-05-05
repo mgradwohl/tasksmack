@@ -1069,6 +1069,37 @@ TEST(FormatTest, FormatPowerCompactHandlesMilliwatts)
 }
 
 // =============================================================================
+// formatPowerOrZero Tests
+// =============================================================================
+
+TEST(FormatTest, FormatPowerOrZeroHandlesZero)
+{
+    const auto result = UI::Format::formatPowerOrZero(0.0);
+    EXPECT_EQ(result, "0.00 W");
+}
+
+TEST(FormatTest, FormatPowerOrZeroHandlesNegative)
+{
+    const auto result = UI::Format::formatPowerOrZero(-5.0);
+    EXPECT_EQ(result, "0.00 W");
+}
+
+TEST(FormatTest, FormatPowerOrZeroHandlesPositiveWatts)
+{
+    const auto result = UI::Format::formatPowerOrZero(15.5);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains('W'));
+    EXPECT_NE(result, "0.00 W");
+}
+
+TEST(FormatTest, FormatPowerOrZeroHandlesMilliwatts)
+{
+    const auto result = UI::Format::formatPowerOrZero(0.015);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains("mW"));
+}
+
+// =============================================================================
 // Count Per Second Formatting Tests
 // =============================================================================
 

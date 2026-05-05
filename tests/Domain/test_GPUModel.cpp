@@ -843,6 +843,56 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
     EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
 }
 
+TEST(GPUModelTest, PerGpuTimestampsStayAlignedWhenGpuAbsent)
+{
+    // Regression test: when a GPU is intermittently absent (readGPUCounters does not
+    // return it for some refreshes), historyTimestamps(gpuId) must only contain
+    // timestamps from refreshes where the GPU was present, staying aligned with
+    // utilizationHistory(gpuId). Using the global historyTimestamps() instead would
+    // produce an off-by-sample hover mismatch in GpuSection charts.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+
+    // Refresh 1: GPU0 present
+    rawProbe->withUtilization("GPU0", 20.0);
+    model.refresh();
+
+    // Refresh 2: GPU0 present
+    rawProbe->withUtilization("GPU0", 30.0);
+    model.refresh();
+
+    // Refresh 3: GPU0 absent (simulate intermittent disappearance)
+    rawProbe->clearGPUs();
+    model.refresh();
+
+    // Refresh 4: GPU0 present again
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+    model.refresh();
+
+    // Global timestamps capture every refresh (4 entries)
+    const auto globalTs = model.historyTimestamps();
+    EXPECT_EQ(globalTs.size(), 4u);
+
+    // Per-GPU timestamps skip the refresh where GPU0 was absent (3 entries)
+    const auto perGpuTs = model.historyTimestamps("GPU0");
+    EXPECT_EQ(perGpuTs.size(), 3u);
+
+    // Per-GPU timestamps must stay aligned with the per-GPU history vectors
+    const auto utilHist = model.utilizationHistory("GPU0");
+    EXPECT_EQ(perGpuTs.size(), utilHist.size());
+
+    // The absent refresh's global timestamp (globalTs[2]) must not appear in per-GPU timestamps.
+    // perGpuTs should correspond to globalTs[0], globalTs[1], and globalTs[3].
+    ASSERT_GE(globalTs.size(), 4u);
+    ASSERT_EQ(perGpuTs.size(), 3u);
+    EXPECT_DOUBLE_EQ(perGpuTs[0], globalTs[0]);
+    EXPECT_DOUBLE_EQ(perGpuTs[1], globalTs[1]);
+    EXPECT_DOUBLE_EQ(perGpuTs[2], globalTs[3]);
+}
+
 // =============================================================================
 // Multi-GPU History Tests
 // =============================================================================
