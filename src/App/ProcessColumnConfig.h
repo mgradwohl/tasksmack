@@ -19,10 +19,12 @@ enum class ProcessColumn : std::uint8_t
     Name,
     User,
     PPID,
-    // State - what is it doing?
+    Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
+               // State - what is it doing?
     State,
     Status,
-    // Resource usage - how much is it consuming?
+    Type, // Process type: App / Background Process / Windows Process (Windows-only)
+          // Resource usage - how much is it consuming?
     CpuPercent,
     MemPercent,
     Resident,
@@ -34,7 +36,8 @@ enum class ProcessColumn : std::uint8_t
     Affinity,
     Threads,
     Handles,
-    // Time metrics
+    GdiObjects, // GDI object count (Windows-only)
+                // Time metrics
     CpuTime,
     StartTime,
     // I/O - disk activity
@@ -64,9 +67,11 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::Name,
             ProcessColumn::User,
             ProcessColumn::PPID,
+            ProcessColumn::Publisher,
             // State
             ProcessColumn::State,
             ProcessColumn::Status,
+            ProcessColumn::Type,
             // Resources
             ProcessColumn::CpuPercent,
             ProcessColumn::MemPercent,
@@ -79,6 +84,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::Affinity,
             ProcessColumn::Threads,
             ProcessColumn::Handles,
+            ProcessColumn::GdiObjects,
             // Time
             ProcessColumn::CpuTime,
             ProcessColumn::StartTime,
@@ -138,12 +144,16 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="User", .menuName="User", .configKey="user", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Process owner"},
         // PPID
         {.name="PPID", .menuName="Parent PID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
+        // Publisher (Windows-only)
+        {.name="Publisher", .menuName="Publisher", .configKey="publisher", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Software publisher or vendor name from the process executable (Windows only)"},
 
         // === State ===
         // State
         {.name="S", .menuName="State", .configKey="state", .defaultWidth=25.0F, .defaultVisible=true, .canHide=true, .description="Process state (R=Running, S=Sleeping, etc.)"},
         // Status
         {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
+        // Type (Windows-only)
+        {.name="Type", .menuName="Type", .configKey="type", .defaultWidth=120.0F, .defaultVisible=false, .canHide=true, .description="Process type: App (has UI), Background Process, or Windows Process (Windows only)"},
 
         // === Resources ===
         // CPU%
@@ -169,6 +179,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="THR", .menuName="Threads", .configKey="threads", .defaultWidth=45.0F, .defaultVisible=false, .canHide=true, .description="Thread count"},
         // Handles (Windows) / File Descriptors (Linux)
         {.name="Handles", .menuName="Handles/FDs", .configKey="handles", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Handle count (Windows) / File descriptor count (Linux)"},
+        // GDI Objects (Windows-only)
+        {.name="GDI", .menuName="GDI Objects", .configKey="gdi_objects", .defaultWidth=50.0F, .defaultVisible=false, .canHide=true, .description="GDI object count (Windows only) — number of GDI handles used by the process"},
 
         // === Time ===
         // TIME+

@@ -792,6 +792,12 @@ void ProcessesPanel::renderContent()
                                           }
                                           case ProcessColumn::GpuDevice:
                                               return compare(procA.gpuDevices, procB.gpuDevices);
+                                          case ProcessColumn::Publisher:
+                                              return compare(procA.publisher, procB.publisher);
+                                          case ProcessColumn::Type:
+                                              return compare(procA.processType, procB.processType);
+                                          case ProcessColumn::GdiObjects:
+                                              return compare(procA.gdiObjectCount, procB.gdiObjectCount);
                                           default:
                                               return false;
                                           }
@@ -1300,6 +1306,71 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             else
             {
                 ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::Publisher:
+        {
+            if (!proc.publisher.empty())
+            {
+                // Capture available width before rendering so the comparison
+                // uses the full cell width rather than the post-render remainder.
+                const float availWidth = ImGui::GetContentRegionAvail().x;
+                ImGui::TextUnformatted(proc.publisher.c_str());
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && ImGui::CalcTextSize(proc.publisher.c_str()).x > availWidth)
+                {
+                    ImGui::SetTooltip("%s", proc.publisher.c_str());
+                }
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::Type:
+        {
+            if (!proc.processType.empty())
+            {
+                const auto& scheme = UI::Theme::get().scheme();
+                ImVec4 typeColor;
+                if (proc.processType == "App")
+                {
+                    typeColor = scheme.statusRunning;
+                }
+                else if (proc.processType == "Windows Process")
+                {
+                    typeColor = scheme.textInfo;
+                }
+                else
+                {
+                    typeColor = scheme.textMuted;
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
+                ImGui::TextUnformatted(proc.processType.c_str());
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::GdiObjects:
+        {
+            // Show "-" only when the probe could not read the count (process not accessible).
+            // A count of 0 is a valid result for non-GUI background processes and is shown as "0".
+            if (proc.gdiObjectCount.has_value())
+            {
+                const std::string text = UI::Format::formatIntLocalized(*proc.gdiObjectCount);
+                renderRightAlignedText(text);
+            }
+            else
+            {
+                renderRightAlignedText("-");
             }
             break;
         }

@@ -721,7 +721,15 @@ target_link_libraries(TaskSmack PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(TaskSmack PRIVATE iphlpapi ws2_32 dxgi gdi32)
+    set(TASKSMACK_WINDOWS_SYSTEM_LIBS
+        iphlpapi
+        ws2_32
+        dxgi
+        gdi32
+        version
+    )
+
+    target_link_libraries(TaskSmack PRIVATE ${TASKSMACK_WINDOWS_SYSTEM_LIBS})
 elseif(UNIX AND NOT APPLE)
     target_link_libraries(TaskSmack PRIVATE dl)
 endif()

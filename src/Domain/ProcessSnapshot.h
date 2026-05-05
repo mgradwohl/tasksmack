@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,12 @@ struct ProcessSnapshot
     double gpuEncoderUtil = 0.0;      // Aggregate encoder utilization
     double gpuDecoderUtil = 0.0;      // Aggregate decoder utilization
 
+    // GDI object count (Windows-only; 0 if not available)
+    // GDI object count (optional, Windows-only via GetGuiResources).
+    // std::nullopt means the probe could not open the process with the required rights.
+    // A stored value of 0 means the process is accessible but owns no GDI objects.
+    std::optional<std::int32_t> gdiObjectCount;
+
     // Strings at the end (reduce padding and improve cache for hot integer/float fields)
     std::string name;
     std::string command;      // Full command line
@@ -56,6 +63,8 @@ struct ProcessSnapshot
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
     std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
+    std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
+    std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
 
     // GPU engines (union of active engines across all GPUs)
     std::vector<std::string> gpuEngines; // ["3D", "Compute"]

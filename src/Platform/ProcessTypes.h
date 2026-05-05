@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace Platform
@@ -48,6 +49,18 @@ struct ProcessCounters
     // On Windows: from PROCESS_POWER_THROTTLING_STATE
     // On Linux: from powercap sysfs (per-package energy counters)
     std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
+
+    // Publisher / vendor info (optional, Windows-only via PE version info)
+    std::string publisher; // CompanyName from PE file version info (empty if not available)
+
+    // Process type classification (optional, Windows-only)
+    // Values: "App", "Background Process", "Windows Process" (empty if not available)
+    std::string processType;
+
+    // GDI object count (optional, Windows-only via GetGuiResources).
+    // std::nullopt means the probe could not open the process with the required rights.
+    // A stored value of 0 means the process is accessible but owns no GDI objects.
+    std::optional<std::int32_t> gdiObjectCount;
 };
 
 /// Reports what this platform's probe supports.
@@ -68,6 +81,9 @@ struct ProcessCapabilities
     bool hasNetworkCounters = false;   // Whether per-process network counters are available
     bool hasPowerUsage = false;        // Whether power consumption metrics are available
     bool hasStatus = false;            // Whether process status (Suspended, Efficiency Mode) is available
+    bool hasPublisher = false;         // Whether publisher/vendor string is available (Windows PE version info)
+    bool hasProcessType = false;       // Whether process type classification is available (Windows: App/Background/Windows)
+    bool hasGdiObjects = false;        // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false; // True when elevation would restore currently unavailable data.
                                        // Linux: non-root (geteuid() != 0); FD counts (/proc/[pid]/fd) and I/O
                                        //        stats for processes owned by other users are unavailable.

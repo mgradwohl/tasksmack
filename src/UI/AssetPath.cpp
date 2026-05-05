@@ -44,7 +44,9 @@ std::filesystem::path selectAssetsDir(const std::filesystem::path& exeDir,
 
     // lexically_normal() resolves ".." without requiring the path to exist;
     // existence is validated below via probeExists.
-    const std::array<std::filesystem::path, 3> candidates = {
+    // For debug/developer workflows, prefer <exeDir>/bin/assets when present.
+    const std::array<std::filesystem::path, 4> candidates = {
+        exeDir / "bin" / "assets",
         exeDir / "assets",
         exeDir / dataDir / appName / "assets",
         (exeDir / ".." / dataDir / appName / "assets").lexically_normal(),
@@ -59,13 +61,14 @@ std::filesystem::path selectAssetsDir(const std::filesystem::path& exeDir,
         }
     }
 
-    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", candidates[0].string());
-    return candidates[0];
+    const std::filesystem::path fallback = exeDir / "assets";
+    spdlog::warn("Assets directory not found in any expected location; defaulting to {}", fallback.string());
+    return fallback;
 }
 
 std::filesystem::path findAssetsDir()
 {
-    // Cache the resolved directory: filesystem probing (three exists() checks) is done
+    // Cache the resolved directory: filesystem probing (four exists() checks) is done
     // only once per process, even when multiple layers call findAssetsDir().
     // Use the error_code overload so filesystem errors (e.g. permission denied) are
     // treated as a non-match rather than propagating as exceptions.

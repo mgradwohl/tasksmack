@@ -284,11 +284,11 @@ void renderNetworkSection(RenderContext& ctx)
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
                          .value01 = std::clamp(smoothedSent / netMax, 0.0, 1.0),
-                         .color = theme.scheme().chartCpu};
+                         .color = theme.scheme().chartNetTx};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
                          .label = recvBarLabel,
                          .value01 = std::clamp(smoothedRecv / netMax, 0.0, 1.0),
-                         .color = theme.accentColor(2)};
+                         .color = theme.scheme().chartNetRx};
 
     // Determine plot title based on selection
     std::string plotTitle = "Total";
@@ -298,8 +298,8 @@ void renderNetworkSection(RenderContext& ctx)
     }
 
     // Colors for interface-specific lines (lighter/dashed to distinguish from total)
-    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartCpu, 0.7F);
-    const auto ifaceRecvColor = UI::withAlpha(theme.accentColor(2), 0.7F);
+    const auto ifaceSentColor = UI::withAlpha(theme.scheme().chartNetTx, 0.7F);
+    const auto ifaceRecvColor = UI::withAlpha(theme.scheme().chartNetRx, 0.7F);
 
     auto plot = [&]()
     {
@@ -316,21 +316,33 @@ void renderNetworkSection(RenderContext& ctx)
             // When an interface is selected, show both total (muted) and interface (bright)
             if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
             {
-                // Total lines (muted, in background)
-                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
-                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
+                // Total lines (muted, in background) — scale fill alpha to match the muted line alpha
+                const auto ifaceSentFill = UI::withAlpha(theme.scheme().chartNetTxFill, theme.scheme().chartNetTxFill.w * 0.7F);
+                const auto ifaceRecvFill = UI::withAlpha(theme.scheme().chartNetRxFill, theme.scheme().chartNetRxFill.w * 0.7F);
+                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor, ifaceSentFill);
+                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
                 const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
-                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.accentColor(2));
+                plotLineWithFill(ifaceSentLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceSentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 theme.scheme().chartNetTxFill);
+                plotLineWithFill(ifaceRecvLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceRecvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 theme.scheme().chartNetRxFill);
             }
             else
             {
                 // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.accentColor(2));
+                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
+                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
             }
 
             if (ImPlot::IsPlotHovered())
@@ -356,19 +368,19 @@ void renderNetworkSection(RenderContext& ctx)
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                             ImGui::Spacing();
                             ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
-                            ImGui::TextColored(theme.scheme().chartCpu,
+                            ImGui::TextColored(theme.scheme().chartNetTx,
                                                "  Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.accentColor(2),
+                            ImGui::TextColored(theme.scheme().chartNetRx,
                                                "  Recv: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
                         }
                         else
                         {
-                            ImGui::TextColored(theme.scheme().chartCpu,
+                            ImGui::TextColored(theme.scheme().chartNetTx,
                                                "Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
-                            ImGui::TextColored(theme.accentColor(2),
+                            ImGui::TextColored(theme.scheme().chartNetRx,
                                                "Recv: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                         }
@@ -484,7 +496,7 @@ void renderNetworkSection(RenderContext& ctx)
                 ImGui::TableNextColumn();
                 if (iface.txBytesPerSec > 0.0 || hasActivity)
                 {
-                    ImGui::TextColored(theme.scheme().chartCpu, "%s", UI::Format::formatBytesPerSec(iface.txBytesPerSec).c_str());
+                    ImGui::TextColored(theme.scheme().chartNetTx, "%s", UI::Format::formatBytesPerSec(iface.txBytesPerSec).c_str());
                 }
                 else
                 {
@@ -495,7 +507,7 @@ void renderNetworkSection(RenderContext& ctx)
                 ImGui::TableNextColumn();
                 if (iface.rxBytesPerSec > 0.0 || hasActivity)
                 {
-                    ImGui::TextColored(theme.accentColor(2), "%s", UI::Format::formatBytesPerSec(iface.rxBytesPerSec).c_str());
+                    ImGui::TextColored(theme.scheme().chartNetRx, "%s", UI::Format::formatBytesPerSec(iface.rxBytesPerSec).c_str());
                 }
                 else
                 {

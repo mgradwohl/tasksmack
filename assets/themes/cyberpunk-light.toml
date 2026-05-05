@@ -69,11 +69,15 @@ idle = "#999999"       # Light gray - idle kernel thread (I)
 cpu = "#1976D2"       # Blue - CPU usage line
 memory = "#388E3C"    # Green - memory usage line
 io = "#D32F2F"        # Red - I/O read usage line
-io_write = "#FF00FF"        # Magenta - I/O write usage line
+io_write = "#FF7A1A"        # Hot Orange - I/O write usage line (distinct from Red)
+net_tx = "#815CFF"          # Vivid Violet - Network transmit (sent) line
+net_rx = "#00D7FF"          # Electric Cyan - Network receive line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
 memory_fill = "#388E3C4D"    # Green with 30% alpha - memory fill
 io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#FF00FF4D"   # Magenta with 30% alpha - I/O write fill
+io_write_fill = "#FF7A1A4D"   # Hot Orange with 30% alpha - I/O write fill
+net_tx_fill = "#815CFF4D"    # Vivid Violet with 30% alpha - Network TX fill
+net_rx_fill = "#00D7FF4D"    # Electric Cyan with 30% alpha - Network RX fill
 peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
 
 # =============================================================================
@@ -83,15 +87,15 @@ peak_line = "#F57C00B3"      # Orange with 70% alpha - peak reference line
 [charts.gpu]
 utilization = "#7B1FA2"           # Purple - GPU utilization line
 utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
-memory = "#D32F2F"                # Red - GPU memory line
-memory_fill = "#D32F2F4D"         # Red with 30% alpha - GPU memory fill
+memory = "#FFE433"                # Laser Yellow - GPU memory line (distinct from io Red)
+memory_fill = "#FFE4334D"         # Laser Yellow with 30% alpha - GPU memory fill
 temperature = "#F57C00"           # Gold - GPU temperature line
 power = "#388E3C"                 # Green - GPU power draw line
 encoder = "#0097A7"               # Teal - GPU encoder utilization
 decoder = "#C2185B"               # Magenta - GPU decoder utilization
-clock = "#64B5F6"             # Light Blue - GPU clock speed line
-clock_fill = "#64B5F6CC"      # Light Blue with 80% alpha - GPU clock fill
-fan = "#78909C"                # Blue Gray - GPU fan speed line
+clock = "#815CFF"             # Vivid Violet - GPU clock speed line (theme-native)
+clock_fill = "#815CFFCC"      # Vivid Violet with 80% alpha - GPU clock fill
+fan = "#F44BFF"               # Magenta - GPU fan speed line (theme-native)
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
@@ -108,9 +112,10 @@ iowait_fill = "#F57C0059"    # Orange with 35% alpha - iowait fill
 idle_fill = "#B0B0B033"      # Light gray with 20% alpha - idle fill
 
 [priority]
-high   = "#FF4D33"     # Red/orange (high priority)
-normal = "#80CC33"     # Green (normal priority)
-low    = "#6666CC"     # Blue/gray (low priority)
+high   = "#FF315A"     # Crimson Neon (accents[7])
+normal = "#7DFF5A"     # Neon Lime (accents[3])
+low    = "#815CFF"     # Vivid Violet (accents[2])
+badge_text_color = "#1A1A1A"  # Near-black - readable on all priority badge colors (light theme)
 
 [buttons.close]
 hovered = "#CC1A1A"     # Dark red hover
@@ -172,9 +177,9 @@ grab_active = "#777777"
 # Checkboxes, sliders, etc.
 # =============================================================================
 [ui.controls]
-check_mark = "#388E3C"
-slider_grab = "#7C4DFF"
-slider_grab_active = "#5E35B1"
+check_mark = "#815CFF"
+slider_grab = "#815CFF"
+slider_grab_active = "#6B4CE6"
 
 # =============================================================================
 # BUTTON COLORS
