@@ -137,7 +137,7 @@ void ElevationNoticeLayer::renderDialog()
         // Right-align OK button
         const float buttonWidth = 100.0F;
         const float availX = ImGui::GetContentRegionAvail().x;
-        const float offset = std::max(0.0F, availX - buttonWidth);
+        const float offset = std::max(0.0F, (availX - buttonWidth));
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);

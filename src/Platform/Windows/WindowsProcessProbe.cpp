@@ -19,7 +19,6 @@
 #include <mstcpip.h>
 #include <psapi.h>
 #include <sddl.h>
-#include <shlobj.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 // clang-format on
@@ -537,9 +536,21 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
     // Reduced privileges: EStats-based network counters require Administrator.
-    // IsUserAnAdmin() checks if the current process token has the Administrators group enabled.
-    // This is safe to call repeatedly; the result is constant for the lifetime of the process.
-    const bool reducedPrivileges = (IsUserAnAdmin() == FALSE);
+    // Use GetTokenInformation(TokenElevation) to check if the current process token is elevated.
+    // This is safe to call repeatedly; the elevation state is constant for the lifetime of the process.
+    // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
+    bool reducedPrivileges = true; // Conservative default: assume non-elevated
+    HANDLE hToken = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) != 0)
+    {
+        TOKEN_ELEVATION elevation{};
+        DWORD dwSize = sizeof(elevation);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize) != 0)
+        {
+            reducedPrivileges = (elevation.TokenIsElevated == 0);
+        }
+        CloseHandle(hToken);
+    }
 
     return ProcessCapabilities{
         .hasIoCounters = true,

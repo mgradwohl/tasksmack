@@ -4,7 +4,6 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
-#include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
@@ -54,14 +53,11 @@ void ShellLayer::onAttach()
 
     // Cache privilege status and trigger the startup notice if needed.
     // The notice fires once per session unless the user has dismissed it permanently.
-    if (const auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
+    m_HasReducedPrivileges = m_ProcessesPanel.hasReducedPrivileges();
+    if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
     {
-        m_HasReducedPrivileges = processModel->capabilities().hasReducedPrivileges;
-        if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
-        {
-            Core::OpenElevationNoticeEvent evt;
-            Core::Application::get().raiseEvent(evt);
-        }
+        Core::OpenElevationNoticeEvent evt;
+        Core::Application::get().raiseEvent(evt);
     }
 }
 
