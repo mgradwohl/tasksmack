@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <thread>
 
 namespace UI
