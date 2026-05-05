@@ -7,10 +7,14 @@
 namespace Domain
 {
 
-// Immutable snapshot of a single GPU at a point in time
+// Snapshot of a single GPU at a point in time.
+// Fields come from the platform probe and are treated as read-only once pushed
+// into the history ring buffer.  captureTimeSec is the exception: it is 0 after
+// computeSnapshot() and is stamped with the wall-clock time by GPUModel::refresh()
+// just before the snapshot is pushed, so every entry carries its own timestamp.
 struct GPUSnapshot
 {
-    // Sample time (seconds since epoch, set by GPUModel::refresh())
+    // Sample time (seconds since epoch, stamped by GPUModel::refresh() before push)
     double captureTimeSec = 0.0;
 
     // Identity

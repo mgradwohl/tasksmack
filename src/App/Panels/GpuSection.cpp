@@ -389,7 +389,7 @@ void renderGpuSection(RenderContext& ctx)
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
                                       .label = "GPU Power",
-                                      .tooltipText = std::format("GPU Power: {:.2f} W", smoothed.powerWatts),
+                                      .tooltipText = std::format("GPU Power: {:.2Lf} W", smoothed.powerWatts),
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }

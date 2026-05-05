@@ -128,6 +128,15 @@ class UserConfig
         return m_ConfigPath;
     }
 
+    /// Override the config file path.
+    /// Resets the loaded flag so the next load() call reads from the new path.
+    /// Useful for isolated testing (each test can point to its own temp file).
+    void setConfigPath(const std::filesystem::path& path)
+    {
+        m_ConfigPath = path;
+        m_IsLoaded = false;
+    }
+
   private:
     UserConfig();
     ~UserConfig() = default;

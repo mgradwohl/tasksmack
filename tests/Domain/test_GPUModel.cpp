@@ -703,6 +703,147 @@ TEST(GPUModelTest, HistoryTimestampsEmptyWhenNoRefresh)
 }
 
 // =============================================================================
+// Per-GPU historyTimestamps(gpuId) Tests
+// =============================================================================
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsEmptyForUnknownGpu)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_TRUE(model.historyTimestamps("GPU_UNKNOWN").empty());
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsEmptyWhenNoRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    // No refresh called
+
+    EXPECT_TRUE(model.historyTimestamps("GPU0").empty());
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsLengthMatchesHistory)
+{
+    // historyTimestamps(gpuId) must return the same number of entries
+    // as the per-GPU utilization history so indices stay aligned.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 4; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    const auto utilHist = model.utilizationHistory("GPU0");
+    EXPECT_EQ(timestamps.size(), utilHist.size());
+    EXPECT_EQ(timestamps.size(), 4u);
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsAreMonotonicallyIncreasing)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 0.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 3; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 20.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    ASSERT_GE(timestamps.size(), 2u);
+    for (std::size_t i = 1; i < timestamps.size(); ++i)
+    {
+        EXPECT_GT(timestamps[i], timestamps[i - 1]);
+    }
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithSnapshotAt)
+{
+    // Verify that historyTimestamps("GPU0")[i] matches snapshotAt("GPU0", i).captureTimeSec.
+    // This is the alignment property that GpuSection relies on for tooltip timestamps.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 0.0);
+
+    Domain::GPUModel model(std::move(probe));
+    constexpr int kSamples = 5;
+    for (int i = 0; i < kSamples; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    ASSERT_EQ(static_cast<int>(timestamps.size()), kSamples);
+    for (std::size_t i = 0; i < timestamps.size(); ++i)
+    {
+        const auto snap = model.snapshotAt("GPU0", i);
+        ASSERT_TRUE(snap.has_value());
+        EXPECT_DOUBLE_EQ(timestamps[i], snap->captureTimeSec);
+    }
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsCappedAtCapacity)
+{
+    // After pushing more samples than GPU_HISTORY_CAPACITY, historyTimestamps(gpuId)
+    // returns exactly GPU_HISTORY_CAPACITY entries (ring-buffer wraparound).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 5;
+    for (std::size_t i = 0; i < overCapacity; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i));
+        model.refresh();
+    }
+
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), Domain::GPU_HISTORY_CAPACITY);
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
+{
+    // Two GPUs accumulate their own per-GPU timestamp vectors; they must have
+    // the same length as their own history even when one GPU has fewer samples.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA")
+        .withGPU("GPU1", "GPU One", "VendorB");
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 3; ++i)
+    {
+        rawProbe->withUtilization("GPU0", 10.0).withUtilization("GPU1", 20.0);
+        model.refresh();
+    }
+
+    const auto ts0 = model.historyTimestamps("GPU0");
+    const auto ts1 = model.historyTimestamps("GPU1");
+    EXPECT_EQ(ts0.size(), 3u);
+    EXPECT_EQ(ts1.size(), 3u);
+
+    // Each set of timestamps must match its own history length.
+    EXPECT_EQ(ts0.size(), model.utilizationHistory("GPU0").size());
+    EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
+}
+
+// =============================================================================
 // Multi-GPU History Tests
 // =============================================================================
 

@@ -21,6 +21,48 @@ namespace
 
 // ========== Test Fixtures ==========
 
+/// Fixture for UserConfigSaveLoad tests (ShowPrivilegeNotice round-trips).
+/// Redirects the UserConfig singleton to an isolated temp directory so that
+/// parallel ctest invocations don't race on the real platform config file.
+class UserConfigSaveLoadFixture : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        // Save the original path so TearDown can restore it.
+        m_OriginalPath = UserConfig::get().configPath();
+
+        // Create a unique temp directory exclusive to this test process.
+        const auto base = std::filesystem::temp_directory_path() / "tasksmack_ucsl_";
+        std::random_device rd;
+        for (;;)
+        {
+            m_TempDir = base;
+            m_TempDir += std::to_string(rd());
+            std::error_code ec;
+            if (std::filesystem::create_directory(m_TempDir, ec) && !ec)
+            {
+                break;
+            }
+        }
+
+        UserConfig::get().setConfigPath(m_TempDir / "config.toml");
+    }
+
+    void TearDown() override
+    {
+        // Restore the real platform config path.
+        UserConfig::get().setConfigPath(m_OriginalPath);
+
+        // Remove the temp directory.
+        std::error_code ec;
+        std::filesystem::remove_all(m_TempDir, ec);
+    }
+
+    std::filesystem::path m_TempDir;
+    std::filesystem::path m_OriginalPath;
+};
+
 /// Fixture for UserConfig persistence tests
 /// Creates a temporary config directory for each test
 class UserConfigPersistenceTest : public ::testing::Test
@@ -561,43 +603,32 @@ TEST(UserSettingsTest, ShowPrivilegeNoticeDefaultsToTrue)
     EXPECT_TRUE(settings.showPrivilegeNotice);
 }
 
-TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeFalseIsSavedAndLoaded)
+TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeFalseIsSavedAndLoaded)
 {
-    // Round-trips show_privilege_notice = false via save() + load().
-    // Uses round-trip only (no direct file read) to avoid CodeQL tainted-path findings;
-    // the config path is derived from a platform environment variable.
+    // Round-trips show_privilege_notice = false via save() + load() using an isolated
+    // temp config file so parallel ctest runs don't race on the real platform config.
     auto& config = UserConfig::get();
-    const bool originalValue = config.settings().showPrivilegeNotice;
 
-    // Set false, save, reset in-memory to true, then load — must round-trip to false
+    // Set false, save, reset in-memory to true, then load — must round-trip to false.
     config.settings().showPrivilegeNotice = false;
     config.save();
     config.settings().showPrivilegeNotice = true;
     config.load();
     EXPECT_FALSE(config.settings().showPrivilegeNotice);
-
-    // Restore original state so later tests are not affected
-    config.settings().showPrivilegeNotice = originalValue;
-    config.save();
 }
 
-TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
+TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
 {
-    // Mirror of the false variant: round-trips show_privilege_notice = true via save() + load().
-    // Uses round-trip only (no direct file read) to avoid CodeQL tainted-path findings.
+    // Mirror of the false variant: round-trips show_privilege_notice = true via save() + load()
+    // using an isolated temp config file so parallel ctest runs don't race on the real platform config.
     auto& config = UserConfig::get();
-    const bool originalValue = config.settings().showPrivilegeNotice;
 
-    // Set true, save, reset in-memory to false, then load — must round-trip to true
+    // Set true, save, reset in-memory to false, then load — must round-trip to true.
     config.settings().showPrivilegeNotice = true;
     config.save();
     config.settings().showPrivilegeNotice = false;
     config.load();
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
-
-    // Restore original state so later tests are not affected
-    config.settings().showPrivilegeNotice = originalValue;
-    config.save();
 }
 
 } // namespace
