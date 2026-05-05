@@ -577,7 +577,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasNetworkCounters = m_HasNetworkCounters,
         .hasPowerUsage = m_HasPowerMonitoring,     // Available if energy monitoring detected
         .hasStatus = true,                         // From NtQueryInformationProcess ProcessExtendedBasicInformation
-        .hasReducedPrivileges = reducedPrivileges, // Non-admin: EStats network data unavailable
+        .hasReducedPrivileges = reducedPrivileges && m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
     };
 }
 
@@ -737,9 +737,15 @@ bool WindowsProcessProbe::detectNetworkCounters()
 
     // Access denied or not supported means we can't use EStats
     // ERROR_NOT_FOUND is expected for the dummy row and is OK
-    if (status == ERROR_ACCESS_DENIED || status == ERROR_NOT_SUPPORTED)
+    if (status == ERROR_ACCESS_DENIED)
     {
         spdlog::debug("Per-process network counters not available (EStats requires administrator privileges)");
+        m_NetworkCountersAccessDenied = true;
+        return false;
+    }
+    if (status == ERROR_NOT_SUPPORTED)
+    {
+        spdlog::debug("Per-process network counters not available (EStats not supported on this system)");
         return false;
     }
 

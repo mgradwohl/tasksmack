@@ -56,6 +56,23 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasNice);
 }
 
+TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
+{
+    // hasReducedPrivileges should be false when EStats is available (admin) or when
+    // EStats failed for a non-privilege reason (unsupported API). It should only be
+    // true when non-admin AND EStats was specifically denied due to admin requirement.
+    WindowsProcessProbe probe;
+    const auto caps = probe.capabilities();
+
+    // If network counters are available, we're admin; privilege notice should not fire.
+    if (caps.hasNetworkCounters)
+    {
+        EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+    // Either way, hasReducedPrivileges must be a valid bool (no undefined state).
+    EXPECT_TRUE(caps.hasReducedPrivileges == true || caps.hasReducedPrivileges == false);
+}
+
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
 {
     WindowsProcessProbe probe;

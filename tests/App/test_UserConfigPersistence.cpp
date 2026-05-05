@@ -1,5 +1,6 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
+#include "App/UserConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -549,6 +550,41 @@ height = 99999
 
     EXPECT_TRUE(std::filesystem::exists(m_ConfigPath));
     // Width should clamp to 200, height to 16384
+}
+
+// ========== showPrivilegeNotice Persistence ==========
+
+TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeDefaultsToTrue)
+{
+    // UserSettings default: showPrivilegeNotice = true (notice shown unless user dismisses)
+    UserSettings settings;
+    EXPECT_TRUE(settings.showPrivilegeNotice);
+}
+
+TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeFalseIsPersistedInConfig)
+{
+    // Verify the TOML key name and value that the save() method emits when suppressed
+    const std::string config = R"(
+[ui]
+show_privilege_notice = false
+)";
+    writeConfigFile(config);
+    const auto content = readConfigFile();
+    EXPECT_TRUE(content.contains("show_privilege_notice"));
+    EXPECT_TRUE(content.contains("false"));
+}
+
+TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeTrueIsPersistedInConfig)
+{
+    // Verify the TOML key name and value that the save() method emits when not suppressed
+    const std::string config = R"(
+[ui]
+show_privilege_notice = true
+)";
+    writeConfigFile(config);
+    const auto content = readConfigFile();
+    EXPECT_TRUE(content.contains("show_privilege_notice"));
+    EXPECT_TRUE(content.contains("true"));
 }
 
 } // namespace

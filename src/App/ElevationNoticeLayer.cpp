@@ -110,7 +110,7 @@ void ElevationNoticeLayer::renderDialog()
                                               "File descriptor counts and I/O statistics are\n"
                                               "unavailable for processes owned by other users.\n\n"
                                               "For complete data, run:\n"
-                                              "    sudo tasksmack";
+                                              "    sudo TaskSmack";
 #elif defined(_WIN32)
         constexpr std::string_view bodyText = "TaskSmack is running without Administrator privileges.\n\n"
                                               "Per-process network statistics are unavailable.\n\n"

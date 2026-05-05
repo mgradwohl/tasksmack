@@ -63,6 +63,10 @@ class ShellLayer : public Core::Layer
     // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
     // Used by renderStatusBar() to show a persistent lock indicator.
     bool m_HasReducedPrivileges = false;
+
+    // Deferred startup notice: set in onAttach() if the privilege notice should fire.
+    // Dispatched in the first onUpdate() call, after all layers are fully stacked.
+    bool m_PendingPrivilegeNotice = false;
 };
 
 } // namespace App
