@@ -1560,8 +1560,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
-            .tooltipText = std::format("GPU Memory: {}", UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes)),
-            .value01 = 0.0, // Auto-scale by setting to 0
+            .value01 = 0.0,
             .color = theme.scheme().gpuMemory,
         };
 

@@ -320,11 +320,11 @@ void renderNetworkSection(RenderContext& ctx)
             {
                 // Total lines (muted, in background)
                 plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
-                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
+                plotLineWithFill("Received (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-                const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
+                const auto ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
                 plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartCpu);
                 plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.accentColor(2));
             }
@@ -354,7 +354,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "  Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
                             ImGui::TextColored(ifaceRecvColor,
-                                               "  Recv: %s",
+                                               "  Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                             ImGui::Spacing();
                             ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
@@ -362,7 +362,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "  Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.accentColor(2),
-                                               "  Recv: %s",
+                                               "  Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
                         }
                         else
