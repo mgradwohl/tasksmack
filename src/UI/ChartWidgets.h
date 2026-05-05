@@ -275,6 +275,21 @@ struct NowBar
     ImVec4 color;
 };
 
+// Returns the tooltip string to display for a NowBar, using the fallback chain:
+//   tooltipText (if non-empty) -> label (if non-empty) -> valueText
+[[nodiscard]] inline std::string_view selectNowBarTooltip(const NowBar& bar) noexcept
+{
+    if (!bar.tooltipText.empty())
+    {
+        return bar.tooltipText;
+    }
+    if (!bar.label.empty())
+    {
+        return bar.label;
+    }
+    return bar.valueText;
+}
+
 struct TimeAxisConfig
 {
     double xMin = 0.0;
@@ -450,9 +465,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      widthPerBar,
                                      "",
                                      "",
-                                     !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
-                                     : bars[i].label.empty()      ? bars[i].valueText.c_str()
-                                                                  : bars[i].label.c_str());
+                                     selectNowBarTooltip(bars[i]).data());
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -502,9 +515,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      widthPerBar,
                                      "",
                                      "",
-                                     !bars[i].tooltipText.empty() ? bars[i].tooltipText.c_str()
-                                     : bars[i].label.empty()      ? bars[i].valueText.c_str()
-                                                                  : bars[i].label.c_str());
+                                     selectNowBarTooltip(bars[i]).data());
             ImGui::EndGroup();
             ImGui::PopID();
 

@@ -80,5 +80,25 @@ TEST(NowBarTest, TooltipTextStoresArbitraryContent)
 // (tooltipText -> label -> valueText) requires a live ImGui context and
 // is exercised by the chart rendering paths in the panel integration.
 
+// ========== selectNowBarTooltip ==========
+
+TEST(NowBarTest, SelectTooltipPrefersTooltipText)
+{
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50%", .value01 = 0.5};
+    EXPECT_EQ(selectNowBarTooltip(bar), "CPU Total: 50%");
+}
+
+TEST(NowBarTest, SelectTooltipFallsBackToLabelWhenTooltipTextEmpty)
+{
+    const NowBar bar{.valueText = "50%", .label = "CPU", .value01 = 0.5};
+    EXPECT_EQ(selectNowBarTooltip(bar), "CPU");
+}
+
+TEST(NowBarTest, SelectTooltipFallsBackToValueTextWhenBothEmpty)
+{
+    const NowBar bar{.valueText = "50%", .value01 = 0.5};
+    EXPECT_EQ(selectNowBarTooltip(bar), "50%");
+}
+
 } // namespace
 } // namespace UI::Widgets
