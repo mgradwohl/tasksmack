@@ -292,6 +292,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartIoWrite = getColor(tbl, "charts.io_write", scheme.chartMemory);
 
         // Network chart colors; fall back to chartCpu/accents[2] for backward compat
+        // Note: all themes define exactly 8 accent colors; accents[2] is always valid
         scheme.chartNetTx = getColor(tbl, "charts.net_tx", scheme.chartCpu);
         scheme.chartNetRx = getColor(tbl, "charts.net_rx", scheme.accents[2]);
 

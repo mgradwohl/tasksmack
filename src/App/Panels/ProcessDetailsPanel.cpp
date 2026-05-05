@@ -1995,11 +1995,12 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 arrowRight(badgeX + PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
+    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
+    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+
     // Draw badge text using the theme-specified badge text color (white on dark themes, near-black on light)
     const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((PRIORITY_BADGE_HEIGHT - textSize.y) * 0.5F));
-    drawList->AddText(textPos,
-                      ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor),
-                      valueText.c_str());
+    drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
 }
 
 void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
@@ -2029,10 +2030,13 @@ void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const Priority
     const float thumbRadius = PRIORITY_SLIDER_HEIGHT * 0.6F;
     const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (PRIORITY_SLIDER_HEIGHT * 0.5F));
 
+    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
+    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+
     // Thumb outline
     drawList->AddCircleFilled(thumbCenter, thumbRadius + PRIORITY_THUMB_OUTLINE_THICKNESS, ImGui::GetColorU32(ImGuiCol_Border));
     // Thumb fill: uses the badge text color (white on dark, near-black on light) for matching contrast
-    drawList->AddCircleFilled(thumbCenter, thumbRadius, ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor));
+    drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
 
 void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext& ctx)

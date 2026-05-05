@@ -353,7 +353,10 @@ void TitleBarLayer::renderTitleBar()
     {
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
-        // Make icon clickable with invisible button (transparent normal state; hover/active use theme colors)
+        // Make icon clickable with invisible button.
+        // We use windowBg with zero alpha rather than a literal ImVec4(0,0,0,0) so that
+        // if ImGui ever composites the RGB channel even at alpha=0, we still blend with
+        // the actual window background color rather than black.
         ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.windowBg, 0.0F));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
@@ -429,7 +432,8 @@ void TitleBarLayer::renderTitleBar()
     const float rightX = static_cast<float>(windowWidth);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
-    // Use transparent background for buttons; only show colors on hover/active states
+    // windowBg with zero alpha gives a transparent resting state; if ImGui ever composites
+    // the RGB channel at alpha=0, we blend against the actual window background color.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.windowBg, 0.0F));
