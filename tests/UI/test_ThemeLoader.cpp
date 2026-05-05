@@ -1314,11 +1314,12 @@ net_rx = "#AB47BC"
     // #AB47BC = (171/255, 71/255, 188/255)
     expectColorNear(theme->chartNetRx, ImVec4(0xAB / 255.0F, 0x47 / 255.0F, 0xBC / 255.0F, 1.0F));
 
-    // net_tx and net_rx must be distinct from each other (epsilon-based, not bitwise ==)
+    // net_tx and net_rx must be distinct from each other (epsilon-based, all 4 channels)
     constexpr float k_DistinctTolerance = 0.01F;
     const bool sameColor = (std::abs(theme->chartNetTx.x - theme->chartNetRx.x) < k_DistinctTolerance &&
                             std::abs(theme->chartNetTx.y - theme->chartNetRx.y) < k_DistinctTolerance &&
-                            std::abs(theme->chartNetTx.z - theme->chartNetRx.z) < k_DistinctTolerance);
+                            std::abs(theme->chartNetTx.z - theme->chartNetRx.z) < k_DistinctTolerance &&
+                            std::abs(theme->chartNetTx.w - theme->chartNetRx.w) < k_DistinctTolerance);
     EXPECT_FALSE(sameColor) << "chartNetTx and chartNetRx must be visually distinct";
 }
 
