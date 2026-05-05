@@ -878,4 +878,95 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
     EXPECT_EQ(counters2.size(), 1);
 }
 
+// =============================================================================
+// snapshotAt Tests
+// =============================================================================
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptForUnknownGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_FALSE(model.snapshotAt("GPU_UNKNOWN", 0).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptForOutOfRangeIndex)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 42.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh(); // 1 sample
+
+    EXPECT_FALSE(model.snapshotAt("GPU0", 1).has_value()); // index 1 is out of range
+    EXPECT_FALSE(model.snapshotAt("GPU0", 999).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptWhenNoRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    // No refresh called
+
+    EXPECT_FALSE(model.snapshotAt("GPU0", 0).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsCorrectSampleByIndex)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh(); // index 0: util=10
+
+    rawProbe->withUtilization("GPU0", 20.0);
+    model.refresh(); // index 1: util=20
+
+    rawProbe->withUtilization("GPU0", 30.0);
+    model.refresh(); // index 2: util=30
+
+    auto s0 = model.snapshotAt("GPU0", 0);
+    auto s1 = model.snapshotAt("GPU0", 1);
+    auto s2 = model.snapshotAt("GPU0", 2);
+
+    ASSERT_TRUE(s0.has_value());
+    ASSERT_TRUE(s1.has_value());
+    ASSERT_TRUE(s2.has_value());
+
+    EXPECT_DOUBLE_EQ(s0->utilizationPercent, 10.0);
+    EXPECT_DOUBLE_EQ(s1->utilizationPercent, 20.0);
+    EXPECT_DOUBLE_EQ(s2->utilizationPercent, 30.0);
+}
+
+TEST(GPUModelTest, SnapshotAtIsLighterThanFullHistoryCopy)
+{
+    // Verify snapshotAt returns just one snapshot while history() returns all.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 5; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    auto fullHistory = model.history("GPU0");
+    ASSERT_EQ(fullHistory.size(), 5);
+
+    for (std::size_t i = 0; i < 5; ++i)
+    {
+        auto snap = model.snapshotAt("GPU0", i);
+        ASSERT_TRUE(snap.has_value());
+        EXPECT_DOUBLE_EQ(snap->utilizationPercent, fullHistory[i].utilizationPercent);
+    }
+}
+
 } // namespace

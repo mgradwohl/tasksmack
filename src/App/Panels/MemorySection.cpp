@@ -213,7 +213,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                               .label = "Memory Used",
                               .tooltipText = std::format("Memory Used: {}",
                                                          UI::Format::bytesUsedTotalPercentCompact(
-                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent)),
+                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, usedPercentClamped)),
                               .value01 = UI::Format::percent01(usedPercentClamped),
                               .color = theme.scheme().chartMemory});
 
@@ -222,7 +222,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                               .label = "Memory Cached",
                               .tooltipText = std::format("Memory Cached: {}",
                                                          UI::Format::bytesUsedTotalPercentCompact(
-                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, snap.memoryCachedPercent)),
+                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, cachedPercentClamped)),
                               .value01 = UI::Format::percent01(cachedPercentClamped),
                               .color = theme.scheme().chartCpu});
     }
