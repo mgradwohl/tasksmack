@@ -100,12 +100,12 @@ memory = "#00E676"           # Memory line color
 memory_fill = "#00E6764D"    # Memory fill
 io = "#FF7043"               # I/O read line color
 io_fill = "#FF70434D"        # I/O read fill
-io_write = "#AB47BC"         # I/O write line color (fallback: io color)
-io_write_fill = "#AB47BC4D"  # I/O write fill      (fallback: io_fill color)
+io_write = "#AB47BC"         # I/O write line color (fallback: memory color)
+io_write_fill = "#AB47BC4D"  # I/O write fill      (fallback: io_write line color)
 net_tx = "#FFC107"           # Network send (TX) line color (fallback: cpu color)
-net_tx_fill = "#FFC1074D"    # Network send (TX) fill       (fallback: net_tx with 0.35 alpha)
+net_tx_fill = "#FFC1074D"    # Network send (TX) fill       (fallback: net_tx with ~0.35 alpha)
 net_rx = "#00E676"           # Network receive (RX) line color (fallback: memory color)
-net_rx_fill = "#00E6764D"    # Network receive (RX) fill       (fallback: net_rx with 0.35 alpha)
+net_rx_fill = "#00E6764D"    # Network receive (RX) fill       (fallback: net_rx with ~0.35 alpha)
 peak_line = "#FFD54FB3"      # Peak reference line (e.g., peak memory)
 ```
 

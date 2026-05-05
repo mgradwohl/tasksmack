@@ -153,9 +153,11 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
-    # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot)
+    # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
+    # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
+    ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
 )
 

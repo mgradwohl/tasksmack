@@ -25,6 +25,8 @@ void expectColorNear(const ImVec4& actual, const ImVec4& expected, float toleran
 // Shared minimal-valid theme body (all required sections, no [meta]).
 // Used by tests that need a complete theme without a meta section, or that
 // prepend their own [meta] block on top of this body.
+// Note: this body intentionally omits net_tx/net_rx so tests can verify the
+// fallback behavior when those keys are absent.
 constexpr const char* k_FullThemeTomlBody = R"(
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
@@ -163,6 +165,20 @@ nav_windowing_highlight = "#FFFFFFB3"
 nav_windowing_dim_background = "#0000004D"
 modal_window_dim_background = "#0000004D"
 )";
+
+// Build a full-valid theme body that also includes net_tx and net_rx in [charts].
+// Used by tests that need a complete theme WITH network chart color keys present.
+// The keys are injected before [cpu_breakdown] (which immediately follows [charts]).
+[[nodiscard]] auto buildFullThemeWithNet(std::string_view netTx = "#FFC107",
+                                         std::string_view netRx = "#AB47BC") -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    const std::size_t insertPos = body.find("[cpu_breakdown]");
+    const std::string netLines =
+        std::string("net_tx = \"") + std::string(netTx) + "\"\n" + "net_rx = \"" + std::string(netRx) + "\"\n";
+    body.insert(insertPos, netLines);
+    return body;
+}
 
 // ========== hexToImVec4 Tests ==========
 
@@ -1291,20 +1307,13 @@ modal_window_dim_background = "#0000004D"
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
 {
-    // Standalone minimal TOML — avoids duplicate [charts] error that would occur
-    // if we appended a second [charts] block after k_FullThemeTomlBody.
-    createThemeFile("net-colors.toml", R"(
-[meta]
-name = "Net Color Theme"
-description = "Tests net_tx/net_rx parsing"
-
-[charts]
-cpu = "#0078D4"
-memory = "#10893E"
-io = "#E74856"
-net_tx = "#FFC107"
-net_rx = "#AB47BC"
-)");
+    // Use a fully-valid theme body (all required sections) and inject net_tx/net_rx
+    // into the existing [charts] block to avoid the incomplete-theme warnings that
+    // a minimal [meta]+[charts] stub would trigger.
+    const std::string toml =
+        std::string("[meta]\nname = \"Net Color Theme\"\ndescription = \"Tests net_tx/net_rx parsing\"\n\n") +
+        buildFullThemeWithNet("#FFC107", "#AB47BC");
+    createThemeFile("net-colors.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-colors.toml");
     ASSERT_TRUE(theme.has_value());
@@ -1339,32 +1348,30 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallsBackToCpuMemoryWhenAbsen
     expectColorNear(theme->chartNetRx, theme->chartMemory);
 }
 
-TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToLineColorWhenAbsent)
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLineColorWhenAbsent)
 {
-    // Provide net_tx/net_rx line colors but omit the fill variants.
-    // chartNetTxFill should fall back to chartNetTx; chartNetRxFill to chartNetRx.
-    // Use a standalone TOML — appending a second [charts] block after k_FullThemeTomlBody
-    // would cause a toml++ duplicate-table parse error.
-    createThemeFile("net-fill-fallback.toml", R"(
-[meta]
-name = "Net Fill Fallback"
-
-[charts]
-cpu = "#0078D4"
-memory = "#10893E"
-io = "#E74856"
-net_tx = "#FFC107"
-net_rx = "#AB47BC"
-# net_tx_fill and net_rx_fill intentionally absent — should fall back to line colors
-)");
+    // Provide net_tx/net_rx line colors but omit the fill variants (net_tx_fill / net_rx_fill).
+    // ThemeLoader defaults to the line color scaled to ~0.35 alpha, matching plotLineWithFill.
+    // Use a fully-valid base theme to avoid spurious "required key missing" warnings.
+    const std::string toml =
+        std::string("[meta]\nname = \"Net Fill Fallback\"\n\n") + buildFullThemeWithNet("#FFC107", "#AB47BC");
+    createThemeFile("net-fill-fallback.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-fill-fallback.toml");
     ASSERT_TRUE(theme.has_value());
 
-    // Fill falls back to the line color (alpha may differ from a real 0.3-alpha fill,
-    // but the fallback path in ThemeLoader passes the line color as-is)
-    expectColorNear(theme->chartNetTxFill, theme->chartNetTx);
-    expectColorNear(theme->chartNetRxFill, theme->chartNetRx);
+    // Fill RGB matches the line color; alpha is scaled to ~0.35 (line alpha * 0.35).
+    constexpr float k_AlphaScale = 0.35F;
+    constexpr float k_Tolerance = 0.01F;
+    EXPECT_NEAR(theme->chartNetTxFill.x, theme->chartNetTx.x, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.y, theme->chartNetTx.y, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.z, theme->chartNetTx.z, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.w, (theme->chartNetTx.w * k_AlphaScale), k_Tolerance);
+
+    EXPECT_NEAR(theme->chartNetRxFill.x, theme->chartNetRx.x, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.y, theme->chartNetRx.y, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.z, theme->chartNetRx.z, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.w, (theme->chartNetRx.w * k_AlphaScale), k_Tolerance);
 }
 
 // ========== Priority Badge Text Color Tests ==========

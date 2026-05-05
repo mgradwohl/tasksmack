@@ -297,13 +297,16 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartNetTx = getColor(tbl, "charts.net_tx", scheme.chartCpu);
         scheme.chartNetRx = getColor(tbl, "charts.net_rx", scheme.chartMemory);
 
-        // Chart fill colors (with fallback to line colors for backward compatibility)
+        // Chart fill colors: fall back to the line color at ~0.35 alpha (matching plotLineWithFill's
+        // implicit fill behavior) so themes that omit fill keys get a translucent fill, not an opaque one.
         scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", scheme.chartCpu);
         scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
         scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
         scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", scheme.chartIoWrite);
-        scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", scheme.chartNetTx);
-        scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", scheme.chartNetRx);
+        scheme.chartNetTxFill =
+            getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
+        scheme.chartNetRxFill =
+            getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
 
         // CPU breakdown
         scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");
