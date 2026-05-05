@@ -64,7 +64,11 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
     WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
 
-    // If network counters are available, we're admin; privilege notice should not fire.
+    // Network counters and reduced-privileges are mutually exclusive:
+    // if EStats is working we're admin, so there can be no privilege data gap.
+    EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+
+    // Stronger check: if network counters are available, privilege notice must not fire.
     if (caps.hasNetworkCounters)
     {
         EXPECT_FALSE(caps.hasReducedPrivileges);

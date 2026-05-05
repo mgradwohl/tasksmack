@@ -554,37 +554,65 @@ height = 99999
 
 // ========== showPrivilegeNotice Persistence ==========
 
-TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeDefaultsToTrue)
+TEST(UserSettingsTest, ShowPrivilegeNoticeDefaultsToTrue)
 {
     // UserSettings default: showPrivilegeNotice = true (notice shown unless user dismisses)
-    UserSettings settings;
+    const UserSettings settings;
     EXPECT_TRUE(settings.showPrivilegeNotice);
 }
 
-TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeFalseIsPersistedInConfig)
+TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeFalseIsSavedAndLoaded)
 {
-    // Verify the TOML key name and value that the save() method emits when suppressed
-    const std::string config = R"(
-[ui]
-show_privilege_notice = false
-)";
-    writeConfigFile(config);
-    const auto content = readConfigFile();
-    EXPECT_TRUE(content.contains("show_privilege_notice"));
-    EXPECT_TRUE(content.contains("false"));
+    // Test that UserConfig::save() emits show_privilege_notice = false and
+    // UserConfig::load() restores it correctly. Uses the real singleton config path;
+    // acceptable in CI where the config directory starts fresh each run.
+    auto& config = UserConfig::get();
+    const bool originalValue = config.settings().showPrivilegeNotice;
+
+    // Set false, save, verify the file contains the expected key/value
+    config.settings().showPrivilegeNotice = false;
+    config.save();
+
+    {
+        std::ifstream file(config.configPath());
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(content.contains("show_privilege_notice = false"));
+    }
+
+    // Reset in-memory to true, then load from file — must read back false
+    config.settings().showPrivilegeNotice = true;
+    config.load();
+    EXPECT_FALSE(config.settings().showPrivilegeNotice);
+
+    // Restore original state so later tests are not affected
+    config.settings().showPrivilegeNotice = originalValue;
+    config.save();
 }
 
-TEST_F(UserConfigPersistenceTest, ShowPrivilegeNoticeTrueIsPersistedInConfig)
+TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
 {
-    // Verify the TOML key name and value that the save() method emits when not suppressed
-    const std::string config = R"(
-[ui]
-show_privilege_notice = true
-)";
-    writeConfigFile(config);
-    const auto content = readConfigFile();
-    EXPECT_TRUE(content.contains("show_privilege_notice"));
-    EXPECT_TRUE(content.contains("true"));
+    // Mirror of the false variant: save true and verify it round-trips through load().
+    auto& config = UserConfig::get();
+    const bool originalValue = config.settings().showPrivilegeNotice;
+
+    // Set true, save, verify the file contains the expected key/value
+    config.settings().showPrivilegeNotice = true;
+    config.save();
+
+    {
+        std::ifstream file(config.configPath());
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(content.contains("show_privilege_notice = true"));
+    }
+
+    // Reset in-memory to false, then load from file — must read back true
+    config.settings().showPrivilegeNotice = false;
+    config.load();
+    EXPECT_TRUE(config.settings().showPrivilegeNotice);
+
+    // Restore original state so later tests are not affected
+    config.settings().showPrivilegeNotice = originalValue;
+    config.save();
 }
 
 } // namespace

@@ -68,9 +68,12 @@ struct ProcessCapabilities
     bool hasNetworkCounters = false;   // Whether per-process network counters are available
     bool hasPowerUsage = false;        // Whether power consumption metrics are available
     bool hasStatus = false;            // Whether process status (Suspended, Efficiency Mode) is available
-    bool hasReducedPrivileges = false; // Whether running without elevated privileges (sudo on Linux, Administrator on Windows)
-                                       // Linux: FD counts (/proc/[pid]/fd) and I/O stats for other-user processes unavailable
-                                       // Windows: Per-process network counters (EStats) unavailable due to privilege
+    bool hasReducedPrivileges = false; // True when elevation would restore currently unavailable data.
+                                       // Linux: non-root (geteuid() != 0); FD counts (/proc/[pid]/fd) and I/O
+                                       //        stats for processes owned by other users are unavailable.
+                                       // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
+                                       //          Remains false when EStats is simply unsupported, because
+                                       //          running as Administrator would not restore those counters.
 };
 
 } // namespace Platform
