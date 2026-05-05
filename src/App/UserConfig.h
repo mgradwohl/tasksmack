@@ -134,6 +134,7 @@ class UserConfig
     void setConfigPath(const std::filesystem::path& path)
     {
         m_ConfigPath = path;
+        m_Settings = UserSettings{};
         m_IsLoaded = false;
     }
 

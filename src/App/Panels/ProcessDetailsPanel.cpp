@@ -1330,7 +1330,7 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
                             ImGui::TextColored(
-                                theme.scheme().textInfo, "Power: %s", UI::Format::formatPowerCompact(powerData[*idxVal]).c_str());
+                                theme.scheme().textInfo, "Power: %s", UI::Format::formatPowerOrZero(powerData[*idxVal]).c_str());
                             ImGui::EndTooltip();
                         }
                     }
