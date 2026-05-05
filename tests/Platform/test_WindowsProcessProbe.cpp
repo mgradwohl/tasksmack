@@ -465,8 +465,7 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
     const DWORD userObjects = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
     if (userObjects > 0)
     {
-        EXPECT_EQ(it->processType, "App")
-            << "Process with USER objects (" << userObjects << ") should be classified as App";
+        EXPECT_EQ(it->processType, "App") << "Process with USER objects (" << userObjects << ") should be classified as App";
     }
     else
     {
@@ -486,9 +485,8 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.
     // If the probe can open it and read version resources, the publisher must be
     // "Microsoft Corporation" — this verifies that VarFileInfo\Translation lookup works.
-    const auto svchostIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) {
-        return p.name == "svchost.exe" && !p.publisher.empty();
-    });
+    const auto svchostIt = std::find_if(
+        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
 
     if (svchostIt != processes.end())
     {
@@ -500,9 +498,8 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     {
         // Fallback: at least one process should have a publisher
         const auto anyIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
-        EXPECT_NE(anyIt, processes.end())
-            << "At least one process should have a publisher field populated; "
-            << "if svchost.exe was inaccessible this may indicate a permissions issue";
+        EXPECT_NE(anyIt, processes.end()) << "At least one process should have a publisher field populated; "
+                                          << "if svchost.exe was inaccessible this may indicate a permissions issue";
     }
 }
 
@@ -539,7 +536,8 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
             continue;
         }
         std::string lowerCmd = proc.command;
-        std::ranges::transform(lowerCmd, lowerCmd.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+        std::ranges::transform(
+            lowerCmd, lowerCmd.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
         const bool inSystem32 = lowerCmd.contains("\\windows\\system32\\") || lowerCmd.contains("\\windows\\syswow64\\");
         if (inSystem32)
         {
