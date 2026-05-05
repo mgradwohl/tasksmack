@@ -58,12 +58,12 @@ void renderDiskCell(std::string_view deviceName,
 
     const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(currentRead),
                          .label = "Read",
-                         .tooltipText = std::format("Read: {}", UI::Format::formatBytesPerSec(currentRead)),
+                         .tooltipText = {},
                          .value01 = std::clamp(currentRead / readMax, 0.0, 1.0),
                          .color = theme.scheme().chartIo};
     const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(currentWrite),
                           .label = "Write",
-                          .tooltipText = std::format("Write: {}", UI::Format::formatBytesPerSec(currentWrite)),
+                          .tooltipText = {},
                           .value01 = std::clamp(currentWrite / writeMax, 0.0, 1.0),
                           .color = theme.scheme().chartIoWrite};
 
@@ -282,12 +282,12 @@ void renderStorageSection(RenderContext& ctx)
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = "Disk Read",
-                             .tooltipText = std::format("Disk Read: {}", UI::Format::formatBytesPerSec(smoothedRead)),
+                             .tooltipText = {},
                              .value01 = std::clamp(smoothedRead / diskMax, 0.0, 1.0),
                              .color = theme.scheme().chartIo};
         const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(smoothedWrite),
                               .label = "Disk Write",
-                              .tooltipText = std::format("Disk Write: {}", UI::Format::formatBytesPerSec(smoothedWrite)),
+                              .tooltipText = {},
                               .value01 = std::clamp(smoothedWrite / diskMax, 0.0, 1.0),
                               .color = theme.scheme().chartIoWrite};
 

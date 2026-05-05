@@ -969,4 +969,42 @@ TEST(GPUModelTest, SnapshotAtIsLighterThanFullHistoryCopy)
     }
 }
 
+TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
+{
+    // Push more samples than GPU_HISTORY_CAPACITY to verify the ring-buffer
+    // wraparound: index 0 should return the oldest *retained* sample, not the
+    // original first sample, and the last index should return the newest sample.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+
+    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 10;
+    for (std::size_t i = 0; i < overCapacity; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i));
+        model.refresh();
+    }
+
+    // History should be capped at GPU_HISTORY_CAPACITY, not overCapacity.
+    auto fullHistory = model.history("GPU0");
+    ASSERT_EQ(fullHistory.size(), Domain::GPU_HISTORY_CAPACITY);
+
+    // Index 0 is the oldest retained sample (value = overCapacity - GPU_HISTORY_CAPACITY).
+    const double expectedOldest = static_cast<double>(overCapacity - Domain::GPU_HISTORY_CAPACITY);
+    auto s0 = model.snapshotAt("GPU0", 0);
+    ASSERT_TRUE(s0.has_value());
+    EXPECT_DOUBLE_EQ(s0->utilizationPercent, expectedOldest);
+
+    // Last index is the newest sample (value = overCapacity - 1).
+    const double expectedNewest = static_cast<double>(overCapacity - 1);
+    auto sLast = model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY - 1);
+    ASSERT_TRUE(sLast.has_value());
+    EXPECT_DOUBLE_EQ(sLast->utilizationPercent, expectedNewest);
+
+    // One past the last index is out of range.
+    EXPECT_FALSE(model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY).has_value());
+}
+
 } // namespace

@@ -636,18 +636,22 @@ void SystemMetricsPanel::renderOverview()
     std::vector<NowBar> cpuBars;
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.total),
                        .label = "CPU Total",
+                       .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
                        .color = theme.progressColor(m_SmoothedCpu.total)});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.user),
                        .label = "User",
+                       .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.user),
                        .color = theme.scheme().cpuUser});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.system),
                        .label = "System",
+                       .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.system),
                        .color = theme.scheme().cpuSystem});
     cpuBars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedCpu.iowait),
                        .label = "I/O Wait",
+                       .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.iowait),
                        .color = theme.scheme().cpuIowait});
 
@@ -736,16 +740,17 @@ void SystemMetricsPanel::renderOverview()
             std::vector<NowBar> bars;
             bars.push_back({.valueText = UI::Format::formatPowerCompact(m_SmoothedPower.watts),
                             .label = "Power Draw",
+                            .tooltipText = {},
                             .value01 = std::clamp(std::abs(m_SmoothedPower.watts) / powerMaxAbs, 0.0, 1.0),
                             .color = theme.scheme().chartCpu});
 
             if (snap.power.hasBattery)
             {
-                bars.push_back(
-                    {.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
-                     .label = "Battery Charge",
-                     .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
-                     .color = theme.scheme().chartMemory});
+                bars.push_back({.valueText = UI::Format::percentCompact(m_SmoothedPower.batteryChargePercent),
+                                .label = "Battery Charge",
+                                .tooltipText = {},
+                                .value01 = UI::Format::percent01(m_SmoothedPower.batteryChargePercent),
+                                .color = theme.scheme().chartMemory});
             }
 
             auto plot = [&]()

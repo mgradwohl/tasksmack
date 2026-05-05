@@ -172,6 +172,12 @@ void renderGpuSection(RenderContext& ctx)
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
 
+        // Track offset from the full GPU snapshot history so that hover-tooltip index
+        // lookups via snapshotAt() use absolute history indices, not plot-crop indices.
+        // After cropFrontToSize the plot shows the last `alignedCount` samples; the
+        // oldest of those lives at absolute index (fullHistorySize - alignedCount).
+        const size_t gpuHistoryOffset = utilHist.size() - alignedCount;
+
         // Crop histories to aligned size using existing helper
         cropFrontToSize(utilHist, alignedCount);
         cropFrontToSize(memHist, alignedCount);
@@ -259,7 +265,8 @@ void renderGpuSection(RenderContext& ctx)
                     {
                         // Fetch only the single snapshot needed for the hovered index.
                         // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
-                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
+                        // Add gpuHistoryOffset so the plot-crop index maps to an absolute history index.
+                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal + gpuHistoryOffset);
 
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));

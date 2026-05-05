@@ -190,7 +190,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                                   : snap.cpuPerCore[coreIdx].totalPercent;
                         const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
                                          .label = std::format("Core {}", coreIdx),
-                                         .tooltipText = std::format("Core {}: {}", coreIdx, UI::Format::percentCompact(smoothed)),
+                                         .tooltipText = {},
                                          .value01 = UI::Format::percent01(smoothed),
                                          .color = theme.progressColor(smoothed)};
 

@@ -58,7 +58,7 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
 
 // ========== NowBar ==========
 
-TEST(NowBarTest, DefaultTooltipTextIsEmpty)
+TEST(NowBarTest, ExplicitEmptyTooltipTextIsEmpty)
 {
     const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .color = {}};
     EXPECT_TRUE(bar.tooltipText.empty());
