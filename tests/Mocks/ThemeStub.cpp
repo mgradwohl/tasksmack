@@ -14,10 +14,15 @@
 namespace UI
 {
 
-// No-op constructor: skips font initialization and fallback theme loading.
+// Defaulted constructor: member variables are initialized from their in-class defaults
+// (e.g. m_CurrentThemeIndex = 0, m_CurrentFontSize = Medium).  This intentionally
+// skips the initializeFontSizes() / loadDefaultFallbackTheme() calls in the real
+// Theme::Theme() body, which is what makes this safe as a test stub.
 Theme::Theme() = default;
 
-// No-op private helpers (called only by the real constructor).
+// No-op private helpers.  Defined here so the linker finds them if any other
+// translation unit (transitively) references them; the defaulted constructor above
+// does not call them.
 void Theme::initializeFontSizes() {}
 
 void Theme::loadDefaultFallbackTheme() {}

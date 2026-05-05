@@ -174,6 +174,11 @@ modal_window_dim_background = "#0000004D"
 {
     std::string body = k_FullThemeTomlBody;
     const std::size_t insertPos = body.find("[cpu_breakdown]");
+    // k_FullThemeTomlBody must contain [cpu_breakdown] — fail fast if it's been removed.
+    if (insertPos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithNet: k_FullThemeTomlBody is missing [cpu_breakdown]");
+    }
     const std::string netLines =
         std::string("net_tx = \"") + std::string(netTx) + "\"\n" + "net_rx = \"" + std::string(netRx) + "\"\n";
     body.insert(insertPos, netLines);
