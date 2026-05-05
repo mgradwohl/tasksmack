@@ -299,10 +299,10 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 
         // Chart fill colors: fall back to the line color at ~0.35 alpha (matching plotLineWithFill's
         // implicit fill behavior) so themes that omit fill keys get a translucent fill, not an opaque one.
-        scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", scheme.chartCpu);
-        scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
-        scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
-        scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", scheme.chartIoWrite);
+        scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", withAlpha(scheme.chartCpu, (scheme.chartCpu.w * 0.35F)));
+        scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", withAlpha(scheme.chartMemory, (scheme.chartMemory.w * 0.35F)));
+        scheme.chartIoFill = getColor(tbl, "charts.io_fill", withAlpha(scheme.chartIo, (scheme.chartIo.w * 0.35F)));
+        scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", withAlpha(scheme.chartIoWrite, (scheme.chartIoWrite.w * 0.35F)));
         scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
         scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
 
