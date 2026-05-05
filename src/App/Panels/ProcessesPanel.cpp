@@ -1310,7 +1310,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             if (!proc.publisher.empty())
             {
                 ImGui::TextUnformatted(proc.publisher.c_str());
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && ImGui::CalcTextSize(proc.publisher.c_str()).x > ImGui::GetContentRegionAvail().x)
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) &&
+                    ImGui::CalcTextSize(proc.publisher.c_str()).x > ImGui::GetContentRegionAvail().x)
                 {
                     ImGui::SetTooltip("%s", proc.publisher.c_str());
                 }

@@ -453,10 +453,9 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
     EXPECT_FALSE(it->processType.empty()) << "Process type should not be empty for accessible processes";
 
     // The process type must be one of the three expected values
-    const bool validType = (it->processType == "App") || (it->processType == "Background Process") ||
-                           (it->processType == "Windows Process");
-    EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: "
-                           << it->processType;
+    const bool validType =
+        (it->processType == "App") || (it->processType == "Background Process") || (it->processType == "Windows Process");
+    EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: " << it->processType;
 }
 
 TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
@@ -481,8 +480,8 @@ TEST(WindowsProcessProbeTest, AllEnumeratedProcessTypesAreValid)
         // processType is either empty (for protected/inaccessible processes) or one of the three valid values
         if (!proc.processType.empty())
         {
-            const bool validType = (proc.processType == "App") || (proc.processType == "Background Process") ||
-                                   (proc.processType == "Windows Process");
+            const bool validType =
+                (proc.processType == "App") || (proc.processType == "Background Process") || (proc.processType == "Windows Process");
             EXPECT_TRUE(validType) << "Process " << proc.name << " (PID " << proc.pid << ") has invalid type: " << proc.processType;
         }
     }

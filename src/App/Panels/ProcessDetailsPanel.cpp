@@ -453,7 +453,8 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.gpuUtilPercent =
         UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
-    m_SmoothedUsage.gdiObjectCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized));
+    m_SmoothedUsage.gdiObjectCount =
+        std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized));
     m_SmoothedUsage.initialized = true;
 }
 
@@ -1051,8 +1052,12 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
 #ifdef _WIN32
     // 4 NowBars on Windows: Threads, Handles, Page Faults, GDI Objects
     constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
-    renderHistoryWithNowBars(
-        "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("ProcessResourceHistory",
+                             HISTORY_PLOT_HEIGHT_DEFAULT,
+                             plot,
+                             {threadsBar, handlesBar, faultsBar, gdiBar},
+                             false,
+                             RESOURCE_NOW_BAR_COLUMNS);
 #else
     renderHistoryWithNowBars(
         "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);

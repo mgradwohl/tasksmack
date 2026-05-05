@@ -414,8 +414,8 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // This catches smss.exe, csrss.exe, wininit.exe, services.exe, lsass.exe, etc.
     if (!imagePath.empty())
     {
-        const bool isInSystem32 = imagePath.contains("\\System32\\") || imagePath.contains("\\SysWOW64\\") ||
-                                  imagePath.contains("\\SystemApps\\");
+        const bool isInSystem32 =
+            imagePath.contains("\\System32\\") || imagePath.contains("\\SysWOW64\\") || imagePath.contains("\\SystemApps\\");
         // Restrict to paths that are also under the Windows directory to avoid
         // false-positives from user apps installed in non-standard paths.
         const bool isInWindowsDir = imagePath.contains("\\Windows\\");
@@ -688,11 +688,11 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
-        .hasPowerUsage = m_HasPowerMonitoring,  // Available if energy monitoring detected
-        .hasStatus = true,                      // From NtQueryInformationProcess ProcessExtendedBasicInformation
-        .hasPublisher = true,                   // From GetFileVersionInfo on process image path
-        .hasProcessType = true,                 // Classified from path + GetGuiResources
-        .hasGdiObjects = true,                  // From GetGuiResources(GR_GDIOBJECTS)
+        .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
+        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPublisher = true,                  // From GetFileVersionInfo on process image path
+        .hasProcessType = true,                // Classified from path + GetGuiResources
+        .hasGdiObjects = true,                 // From GetGuiResources(GR_GDIOBJECTS)
     };
 }
 

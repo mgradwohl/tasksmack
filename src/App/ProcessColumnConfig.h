@@ -20,11 +20,11 @@ enum class ProcessColumn : std::uint8_t
     User,
     PPID,
     Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
-    // State - what is it doing?
+               // State - what is it doing?
     State,
     Status,
     Type, // Process type: App / Background Process / Windows Process (Windows-only)
-    // Resource usage - how much is it consuming?
+          // Resource usage - how much is it consuming?
     CpuPercent,
     MemPercent,
     Resident,
@@ -37,7 +37,7 @@ enum class ProcessColumn : std::uint8_t
     Threads,
     Handles,
     GdiObjects, // GDI object count (Windows-only)
-    // Time metrics
+                // Time metrics
     CpuTime,
     StartTime,
     // I/O - disk activity
