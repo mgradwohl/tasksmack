@@ -502,6 +502,13 @@ void UserConfig::save()
     file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
     file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
+    file.close();
+
+    if (!file)
+    {
+        spdlog::error("Failed to write config to {}: stream error after write", m_ConfigPath.string());
+        return;
+    }
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
 
