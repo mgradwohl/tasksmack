@@ -13,6 +13,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <format>
 #include <vector>
 
 namespace App::MemorySection
@@ -231,12 +232,11 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         const double swapPercentClamped = std::clamp(ctx.smoothedMemory->swapPercent, 0.0, 100.0);
         // Tooltip is percent-only: swap/page-file total can change at runtime, so back-calculating
         // bytes from the current total would produce stale values for older samples.
-        memoryBars.push_back(
-            {.valueText = UI::Format::percentCompact(swapPercentClamped),
-             .label = "Swap Used",
-             .tooltipText = std::format("Swap Used: {}", UI::Format::percentCompact(swapPercentClamped)),
-             .value01 = UI::Format::percent01(swapPercentClamped),
-             .color = theme.scheme().chartIo});
+        memoryBars.push_back({.valueText = UI::Format::percentCompact(swapPercentClamped),
+                              .label = "Swap Used",
+                              .tooltipText = std::format("Swap Used: {}", UI::Format::percentCompact(swapPercentClamped)),
+                              .value01 = UI::Format::percent01(swapPercentClamped),
+                              .color = theme.scheme().chartIo});
     }
 
     renderHistoryWithNowBars(

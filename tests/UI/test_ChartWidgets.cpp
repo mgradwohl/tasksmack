@@ -76,10 +76,6 @@ TEST(NowBarTest, TooltipTextStoresArbitraryContent)
     EXPECT_EQ(bar.tooltipText, "CPU Total: 50% (4 cores)");
 }
 
-// Note: the renderHistoryWithNowBars tooltip-text fallback logic
-// (tooltipText -> label -> valueText) requires a live ImGui context and
-// is exercised by the chart rendering paths in the panel integration.
-
 // ========== selectNowBarTooltip ==========
 
 TEST(NowBarTest, SelectTooltipPrefersTooltipText)

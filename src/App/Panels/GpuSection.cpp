@@ -169,7 +169,6 @@ void renderGpuSection(RenderContext& ctx)
         auto tempHist = ctx.gpuModel->temperatureHistory(snap.gpuId);
         auto powerHist = ctx.gpuModel->powerHistory(snap.gpuId);
         auto fanHist = ctx.gpuModel->fanSpeedHistory(snap.gpuId);
-        auto snapHistory = ctx.gpuModel->history(snap.gpuId);
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
 
@@ -271,15 +270,17 @@ void renderGpuSection(RenderContext& ctx)
                         {
                             const double pct = static_cast<double>(memHist[*idxVal]);
                             // Prefer historical snapshot bytes so the display stays accurate even if
-                            // the GPU memory budget changes between samples (e.g. Windows DXGI)
+                            // the GPU memory budget changes between samples (e.g. Windows DXGI).
+                            // Fetch lazily here (inside the hover block) to avoid copying the full
+                            // snapshot history vector on every render frame.
+                            const auto snapHistory = ctx.gpuModel->history(snap.gpuId);
                             if (*idxVal < snapHistory.size() && snapHistory[*idxVal].memoryTotalBytes > 0)
                             {
                                 const auto& histSnap = snapHistory[*idxVal];
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,
                                     "Memory: %s",
-                                    UI::Format::bytesUsedTotalPercentCompact(
-                                        histSnap.memoryUsedBytes, histSnap.memoryTotalBytes, pct)
+                                    UI::Format::bytesUsedTotalPercentCompact(histSnap.memoryUsedBytes, histSnap.memoryTotalBytes, pct)
                                         .c_str());
                             }
                             else
@@ -318,12 +319,15 @@ void renderGpuSection(RenderContext& ctx)
                                .color = theme.scheme().gpuUtilization});
         if (snap.memoryTotalBytes > 0)
         {
-            // Use sampled bytes directly to avoid stale values when DXGI budget changes between samples
+            // Use snap bytes and derive percent from them so bytes and percent in the tooltip
+            // are consistent with each other (avoids impossible combinations when smoothing lags snap)
+            const double snapMemPercent =
+                (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {}",
                                                               UI::Format::bytesUsedTotalPercentCompact(
-                                                                  snap.memoryUsedBytes, snap.memoryTotalBytes, smoothed.memoryPercent)),
+                                                                  snap.memoryUsedBytes, snap.memoryTotalBytes, snapMemPercent)),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }

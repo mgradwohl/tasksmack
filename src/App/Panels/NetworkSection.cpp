@@ -279,7 +279,7 @@ void renderNetworkSection(RenderContext& ctx)
     // Determine labels based on selection
     const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
     const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
-    const std::string recvBarLabel = showingInterface ? std::format("{} Recv", ifaceDisplayName) : "Network Received";
+    const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
