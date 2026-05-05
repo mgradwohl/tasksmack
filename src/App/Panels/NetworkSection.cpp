@@ -325,10 +325,18 @@ void renderNetworkSection(RenderContext& ctx)
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
                 const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
-                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count,
-                                 theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
-                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count,
-                                 theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+                plotLineWithFill(ifaceSentLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceSentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 theme.scheme().chartNetTxFill);
+                plotLineWithFill(ifaceRecvLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceRecvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 theme.scheme().chartNetRxFill);
             }
             else
             {

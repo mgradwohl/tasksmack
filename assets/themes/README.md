@@ -98,8 +98,14 @@ cpu = "#42A5F5"              # CPU line color
 cpu_fill = "#42A5F54D"       # CPU fill (with alpha)
 memory = "#00E676"           # Memory line color
 memory_fill = "#00E6764D"    # Memory fill
-io = "#FF7043"               # I/O line color
-io_fill = "#FF70434D"        # I/O fill
+io = "#FF7043"               # I/O read line color
+io_fill = "#FF70434D"        # I/O read fill
+io_write = "#AB47BC"         # I/O write line color (fallback: io color)
+io_write_fill = "#AB47BC4D"  # I/O write fill      (fallback: io_fill color)
+net_tx = "#FFC107"           # Network send (TX) line color (fallback: cpu color)
+net_tx_fill = "#FFC1074D"    # Network send (TX) fill       (fallback: net_tx with 0.35 alpha)
+net_rx = "#00E676"           # Network receive (RX) line color (fallback: memory color)
+net_rx_fill = "#00E6764D"    # Network receive (RX) fill       (fallback: net_rx with 0.35 alpha)
 peak_line = "#FFD54FB3"      # Peak reference line (e.g., peak memory)
 ```
 
@@ -143,6 +149,13 @@ idle_fill = "#80808033"   # Idle fill (20% alpha)
 normal = "#00ACC1"
 hovered = "#26C6DA"
 active = "#00838F"
+```
+
+### `[priority]` - Priority Badge Colors
+
+```toml
+[priority]
+badge_text_color = "#FFFFFF"  # Text color drawn on priority indicator badges
 ```
 
 ### `[ui.*]` - ImGui UI Element Colors
