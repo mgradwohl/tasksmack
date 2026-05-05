@@ -203,6 +203,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        version
     )
 endif()
 

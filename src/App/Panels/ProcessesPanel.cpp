@@ -1309,9 +1309,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             if (!proc.publisher.empty())
             {
+                // Capture available width before rendering so the comparison
+                // uses the full cell width rather than the post-render remainder.
+                const float availWidth = ImGui::GetContentRegionAvail().x;
                 ImGui::TextUnformatted(proc.publisher.c_str());
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) &&
-                    ImGui::CalcTextSize(proc.publisher.c_str()).x > ImGui::GetContentRegionAvail().x)
+                    ImGui::CalcTextSize(proc.publisher.c_str()).x > availWidth)
                 {
                     ImGui::SetTooltip("%s", proc.publisher.c_str());
                 }
@@ -1354,8 +1357,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::GdiObjects:
         {
-            const std::string text =
-                UI::Format::formatOrDash(proc.gdiObjectCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            // GDI object count of 0 is a valid result for non-GUI processes;
+            // show the integer directly rather than formatOrDash which hides zero.
+            const std::string text = UI::Format::formatIntLocalized(proc.gdiObjectCount);
             renderRightAlignedText(text);
             break;
         }

@@ -8,8 +8,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -456,6 +458,11 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
     const bool validType =
         (it->processType == "App") || (it->processType == "Background Process") || (it->processType == "Windows Process");
     EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: " << it->processType;
+
+    // The test runner is a console app: its window belongs to conhost.exe, so
+    // GetGuiResources(GR_USEROBJECTS) returns 0 and it is classified as "Background Process".
+    EXPECT_EQ(it->processType, "Background Process")
+        << "Console test runner should be classified as Background Process (UI window is owned by conhost.exe)";
 }
 
 TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
@@ -487,6 +494,39 @@ TEST(WindowsProcessProbeTest, AllEnumeratedProcessTypesAreValid)
     }
 }
 
+TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    // Any accessible, non-App process whose image lives under \Windows\System32\ or
+    // \Windows\SysWOW64\ should be classified as "Windows Process".
+    // The case-insensitive check mirrors classifyProcessType's own logic.
+    bool foundSystemProcess = false;
+    for (const auto& proc : processes)
+    {
+        if (proc.processType.empty() || proc.processType == "App")
+        {
+            continue;
+        }
+        std::string lowerCmd = proc.command;
+        for (auto& c : lowerCmd)
+        {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        const bool inSystem32 = lowerCmd.contains("\\windows\\system32\\") || lowerCmd.contains("\\windows\\syswow64\\");
+        if (inSystem32)
+        {
+            EXPECT_EQ(proc.processType, "Windows Process")
+                << "Process " << proc.name << " (path: " << proc.command << ") in a Windows system directory"
+                << " should be classified as Windows Process";
+            foundSystemProcess = true;
+        }
+    }
+    // Every Windows system has accessible System32 processes (e.g. svchost.exe).
+    EXPECT_TRUE(foundSystemProcess) << "Expected at least one accessible System32 process in the enumeration";
+}
+
 TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 {
     WindowsProcessProbe probe;
@@ -497,8 +537,11 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 
     ASSERT_NE(it, processes.end());
 
-    // GDI count for our process should be non-negative
-    EXPECT_GE(it->gdiObjectCount, 0) << "GDI object count should be non-negative";
+    // Compare the probe result directly against the Win32 API for our own process,
+    // which the probe can open with PROCESS_QUERY_INFORMATION since it is our own handle.
+    const DWORD expected = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    EXPECT_EQ(static_cast<DWORD>(it->gdiObjectCount), expected)
+        << "GDI object count from probe should match GetGuiResources for the current process";
 }
 
 } // namespace Platform
