@@ -1323,7 +1323,7 @@ net_rx = "#AB47BC"
     EXPECT_FALSE(sameColor) << "chartNetTx and chartNetRx must be visually distinct";
 }
 
-TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallBackToCpuMemoryWhenAbsent)
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallsBackToCpuMemoryWhenAbsent)
 {
     // k_FullThemeTomlBody has no net_tx/net_rx entries.
     // chartNetTx should fall back to chartCpu; chartNetRx to chartMemory.
@@ -1339,7 +1339,7 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallBackToCpuMemoryWhenAbsent
     expectColorNear(theme->chartNetRx, theme->chartMemory);
 }
 
-TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallBackToLineColorWhenAbsent)
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToLineColorWhenAbsent)
 {
     // Provide net_tx/net_rx line colors but omit the fill variants.
     // chartNetTxFill should fall back to chartNetTx; chartNetRxFill to chartNetRx.
