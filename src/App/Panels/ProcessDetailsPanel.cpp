@@ -780,23 +780,17 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             std::vector<NowBar> memoryBars;
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
-                                  .tooltipText = std::format("Memory Used: {} ({})",
-                                                             UI::Format::formatBytes(m_SmoothedUsage.residentBytes),
-                                                             UI::Format::percentCompact(usedNow)),
+                                  .tooltipText = std::format("Memory Used: {}", UI::Format::formatBytes(m_SmoothedUsage.residentBytes)),
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
                                   .label = "Shared",
-                                  .tooltipText = std::format("Shared: {} ({})",
-                                                             UI::Format::formatBytes(static_cast<double>(proc.sharedBytes)),
-                                                             UI::Format::percentCompact(sharedNow)),
+                                  .tooltipText = std::format("Shared: {}", UI::Format::formatBytes(static_cast<double>(proc.sharedBytes))),
                                   .value01 = UI::Format::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
-                                  .tooltipText = std::format("Virtual: {} ({})",
-                                                             UI::Format::formatBytes(m_SmoothedUsage.virtualBytes),
-                                                             UI::Format::percentCompact(virtNowVal)),
+                                  .tooltipText = std::format("Virtual: {}", UI::Format::formatBytes(m_SmoothedUsage.virtualBytes)),
                                   .value01 = UI::Format::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 

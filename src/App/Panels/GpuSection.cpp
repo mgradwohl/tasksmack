@@ -169,6 +169,7 @@ void renderGpuSection(RenderContext& ctx)
         auto tempHist = ctx.gpuModel->temperatureHistory(snap.gpuId);
         auto powerHist = ctx.gpuModel->powerHistory(snap.gpuId);
         auto fanHist = ctx.gpuModel->fanSpeedHistory(snap.gpuId);
+        auto snapHistory = ctx.gpuModel->history(snap.gpuId);
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
 
@@ -269,14 +270,17 @@ void renderGpuSection(RenderContext& ctx)
                         if (*idxVal < memHist.size())
                         {
                             const double pct = static_cast<double>(memHist[*idxVal]);
-                            if (snap.memoryTotalBytes > 0)
+                            // Prefer historical snapshot bytes so the display stays accurate even if
+                            // the GPU memory budget changes between samples (e.g. Windows DXGI)
+                            if (*idxVal < snapHistory.size() && snapHistory[*idxVal].memoryTotalBytes > 0)
                             {
-                                const auto memUsedBytes =
-                                    static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+                                const auto& histSnap = snapHistory[*idxVal];
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,
                                     "Memory: %s",
-                                    UI::Format::bytesUsedTotalPercentCompact(memUsedBytes, snap.memoryTotalBytes, pct).c_str());
+                                    UI::Format::bytesUsedTotalPercentCompact(
+                                        histSnap.memoryUsedBytes, histSnap.memoryTotalBytes, pct)
+                                        .c_str());
                             }
                             else
                             {

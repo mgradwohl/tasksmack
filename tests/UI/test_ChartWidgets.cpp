@@ -56,5 +56,29 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
     EXPECT_DOUBLE_EQ(smoothTowards(current, target, 0.25), 12.5);
 }
 
+// ========== NowBar ==========
+
+TEST(NowBarTest, DefaultTooltipTextIsEmpty)
+{
+    const NowBar bar{.valueText = "50%", .label = "CPU", .value01 = 0.5};
+    EXPECT_TRUE(bar.tooltipText.empty());
+}
+
+TEST(NowBarTest, DefaultValue01IsZero)
+{
+    const NowBar bar{.valueText = "0%", .label = "CPU"};
+    EXPECT_DOUBLE_EQ(bar.value01, 0.0);
+}
+
+TEST(NowBarTest, TooltipTextStoresArbitraryContent)
+{
+    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = "CPU Total: 50% (4 cores)", .value01 = 0.5};
+    EXPECT_EQ(bar.tooltipText, "CPU Total: 50% (4 cores)");
+}
+
+// Note: the renderHistoryWithNowBars tooltip-text fallback logic
+// (tooltipText -> label -> valueText) requires a live ImGui context and
+// is exercised by the chart rendering paths in the panel integration.
+
 } // namespace
 } // namespace UI::Widgets

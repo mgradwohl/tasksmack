@@ -157,6 +157,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                         const double pct = static_cast<double>(memHist[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
+                            // Physical RAM total is constant (hardware), so back-calculating bytes from
+                            // the historical percent is exact
                             const auto usedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
                             ImGui::TextColored(theme.scheme().chartMemory,
                                                "Used: %s",
@@ -172,6 +174,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                         const double pct = static_cast<double>(cachedHist[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
+                            // Physical RAM total is constant (hardware), so back-calculating bytes from
+                            // the historical percent is exact
                             const auto cachedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
                             ImGui::TextColored(theme.scheme().chartCpu,
                                                "Cached: %s",
@@ -185,17 +189,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     if (*idxVal < swapHist.size())
                     {
                         const double pct = static_cast<double>(swapHist[*idxVal]);
-                        if (snap.swapTotalBytes > 0)
-                        {
-                            const auto swapBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.swapTotalBytes));
-                            ImGui::TextColored(theme.scheme().chartIo,
-                                               "Swap: %s",
-                                               UI::Format::bytesUsedTotalPercentCompact(swapBytes, snap.swapTotalBytes, pct).c_str());
-                        }
-                        else
-                        {
-                            ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(pct).c_str());
-                        }
+                        // Swap/page-file size can change at runtime; show percent only to avoid
+                        // stale byte calculations using a total that may have changed
+                        ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(pct).c_str());
                     }
                     ImGui::EndTooltip();
                 }
