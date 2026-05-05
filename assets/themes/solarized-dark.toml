@@ -1,0 +1,185 @@
+# Solarized Dark Theme
+# Ethan Schoonover's precision color scheme for dark backgrounds
+# Carefully tuned color relationships with semantic meaning
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Solarized Dark"
+description = "Ethan Schoonover's precision color scheme for dark backgrounds"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#268BD2",  # Blue
+    "#859900",  # Green
+    "#2AA198",  # Cyan
+    "#B58900",  # Yellow
+    "#CB4B16",  # Orange
+    "#6C71C4",  # Violet
+    "#D33682",  # Magenta
+    "#DC322F",  # Red
+]
+
+[progress]
+low = "#859900"       # 0-50%   - Green (healthy)
+medium = "#B58900"    # 50-80%  - Yellow (caution)
+high = "#DC322F"      # 80-100% - Red (critical)
+
+[semantic]
+text_primary = "#839496"
+text_disabled = "#586E75"
+text_muted = "#586E75"
+text_error = "#DC322F"
+text_warning = "#B58900"
+text_success = "#859900"
+text_info = "#268BD2"
+
+[status]
+running = "#859900"
+sleeping = "#268BD2"
+disk_sleep = "#B58900"
+zombie = "#DC322F"
+stopped = "#D33682"
+idle = "#586E75"
+
+[charts]
+cpu = "#268BD2"
+memory = "#859900"
+io = "#DC322F"
+io_write = "#CB4B16"
+net_tx = "#2AA198"
+net_rx = "#6C71C4"
+cpu_fill = "#268BD24D"
+memory_fill = "#8599004D"
+io_fill = "#DC322F4D"
+io_write_fill = "#CB4B164D"
+net_tx_fill = "#2AA1984D"
+net_rx_fill = "#6C71C44D"
+peak_line = "#93A1A1B3"
+
+[charts.gpu]
+utilization = "#6C71C4"
+utilization_fill = "#6C71C44D"
+memory = "#D33682"
+memory_fill = "#D336824D"
+temperature = "#B58900"
+power = "#859900"
+encoder = "#2AA198"
+decoder = "#D33682"
+clock = "#268BD2"
+clock_fill = "#268BD2CC"
+fan = "#586E75"
+
+[cpu_breakdown]
+user = "#268BD2"
+system = "#DC322F"
+iowait = "#B58900"
+idle = "#586E75"
+user_fill = "#268BD259"
+system_fill = "#DC322F59"
+iowait_fill = "#B5890059"
+idle_fill = "#586E7533"
+
+[priority]
+high   = "#DC322F"
+normal = "#859900"
+low    = "#268BD2"
+badge_text_color = "#FFFFFF"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#859900"
+hovered = "#9AAF00"
+active = "#6A7A00"
+
+[ui.window]
+background = "#002B36"
+child_background = "#002B3600"
+popup_background = "#073642F0"
+border = "#586E7580"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#073642"
+background_hovered = "#0D4555"
+background_active = "#14576A"
+
+[ui.title]
+background = "#073642"
+background_active = "#073642"
+background_collapsed = "#07364280"
+
+[ui.bars]
+menu = "#073642"
+status = "#073642"
+
+[ui.scrollbar]
+background = "#002B3680"
+grab = "#073642"
+grab_hovered = "#586E75"
+grab_active = "#839496"
+
+[ui.controls]
+check_mark = "#268BD2"
+slider_grab = "#268BD2"
+slider_grab_active = "#2075BA"
+
+[ui.button]
+normal = "#073642"
+hovered = "#0D4555"
+active = "#268BD2"
+
+[ui.header]
+normal = "#07364280"
+hovered = "#0D4555"
+active = "#073642"
+
+[ui.separator]
+normal = "#586E7580"
+hovered = "#268BD2"
+active = "#2AA198"
+
+[ui.resize_grip]
+normal = "#268BD233"
+hovered = "#268BD2"
+active = "#2AA198"
+
+[ui.tab]
+normal = "#073642"
+hovered = "#0D4555"
+active = "#002B36"
+active_overline = "#268BD2"
+unfocused = "#002B36"
+unfocused_active = "#073642"
+unfocused_active_overline = "#268BD280"
+
+[ui.docking]
+preview = "#268BD2B3"
+empty_background = "#002B36"
+
+[ui.plot]
+lines = "#268BD2"
+lines_hovered = "#DC322F"
+histogram = "#859900"
+histogram_hovered = "#B58900"
+
+[ui.table]
+header_background = "#073642"
+border_strong = "#0D4555"
+border_light = "#073642"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF06"
+
+[ui.misc]
+text_selected_background = "#268BD259"
+drag_drop_target = "#B58900"
+nav_highlight = "#268BD2"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#CCCCCC33"
+modal_window_dim_background = "#00000099"

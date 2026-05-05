@@ -1,0 +1,185 @@
+# Mocha Theme
+# Catppuccin Mocha - warm dark background with pastel neon accents
+# Part of the Catppuccin color scheme family (catppuccin.com)
+#
+# Color format: "#RRGGBB" or "#RRGGBBAA" (with alpha)
+# Alpha: 00 = transparent, FF = opaque
+
+[meta]
+name = "Mocha"
+description = "Catppuccin Mocha - warm dark background with pastel neon accents"
+author = "TaskSmack"
+version = "1.0"
+
+[accents]
+colors = [
+    "#89B4FA",  # Blue
+    "#F38BA8",  # Red/Pink
+    "#A6E3A1",  # Green
+    "#CBA6F7",  # Mauve
+    "#FAB387",  # Peach
+    "#F5C2E7",  # Pink (Flamingo)
+    "#F9E2AF",  # Yellow
+    "#74C7EC",  # Sapphire
+]
+
+[progress]
+low = "#A6E3A1"       # 0-50%   - Green (healthy)
+medium = "#FAB387"    # 50-80%  - Peach (caution)
+high = "#F38BA8"      # 80-100% - Red/Pink (critical)
+
+[semantic]
+text_primary = "#CDD6F4"
+text_disabled = "#6C7086"
+text_muted = "#9399B2"
+text_error = "#F38BA8"
+text_warning = "#FAB387"
+text_success = "#A6E3A1"
+text_info = "#89B4FA"
+
+[status]
+running = "#A6E3A1"
+sleeping = "#89B4FA"
+disk_sleep = "#FAB387"
+zombie = "#F38BA8"
+stopped = "#CBA6F7"
+idle = "#585B70"
+
+[charts]
+cpu = "#89B4FA"
+memory = "#A6E3A1"
+io = "#F38BA8"
+io_write = "#FAB387"
+net_tx = "#CBA6F7"
+net_rx = "#94E2D5"
+cpu_fill = "#89B4FA4D"
+memory_fill = "#A6E3A14D"
+io_fill = "#F38BA84D"
+io_write_fill = "#FAB3874D"
+net_tx_fill = "#CBA6F74D"
+net_rx_fill = "#94E2D54D"
+peak_line = "#CDD6F4B3"
+
+[charts.gpu]
+utilization = "#CBA6F7"
+utilization_fill = "#CBA6F74D"
+memory = "#F9E2AF"
+memory_fill = "#F9E2AF4D"
+temperature = "#FAB387"
+power = "#A6E3A1"
+encoder = "#74C7EC"
+decoder = "#F5C2E7"
+clock = "#89B4FA"
+clock_fill = "#89B4FACC"
+fan = "#585B70"
+
+[cpu_breakdown]
+user = "#89B4FA"
+system = "#F38BA8"
+iowait = "#FAB387"
+idle = "#45475A"
+user_fill = "#89B4FA59"
+system_fill = "#F38BA859"
+iowait_fill = "#FAB38759"
+idle_fill = "#45475A33"
+
+[priority]
+high   = "#F38BA8"
+normal = "#A6E3A1"
+low    = "#89B4FA"
+badge_text_color = "#FFFFFF"
+
+[buttons.close]
+hovered = "#CC1A1A"
+active  = "#E63333"
+
+[buttons.success]
+normal = "#A6E3A1"
+hovered = "#BAF0BB"
+active = "#85C992"
+
+[ui.window]
+background = "#1E1E2E"
+child_background = "#18182500"
+popup_background = "#181825F0"
+border = "#45475A80"
+border_shadow = "#00000000"
+
+[ui.frame]
+background = "#313244"
+background_hovered = "#45475A"
+background_active = "#585B70"
+
+[ui.title]
+background = "#181825"
+background_active = "#313244"
+background_collapsed = "#18182580"
+
+[ui.bars]
+menu = "#181825"
+status = "#1E1E2E"
+
+[ui.scrollbar]
+background = "#1E1E2E80"
+grab = "#45475A"
+grab_hovered = "#585B70"
+grab_active = "#6C7086"
+
+[ui.controls]
+check_mark = "#A6E3A1"
+slider_grab = "#CBA6F7"
+slider_grab_active = "#89B4FA"
+
+[ui.button]
+normal = "#313244"
+hovered = "#45475A"
+active = "#CBA6F7"
+
+[ui.header]
+normal = "#31324480"
+hovered = "#45475A"
+active = "#313244"
+
+[ui.separator]
+normal = "#45475A80"
+hovered = "#89B4FA"
+active = "#74C7EC"
+
+[ui.resize_grip]
+normal = "#CBA6F733"
+hovered = "#CBA6F7"
+active = "#89B4FA"
+
+[ui.tab]
+normal = "#181825"
+hovered = "#313244"
+active = "#1E1E2E"
+active_overline = "#CBA6F7"
+unfocused = "#181825"
+unfocused_active = "#1E1E2E"
+unfocused_active_overline = "#CBA6F780"
+
+[ui.docking]
+preview = "#CBA6F7B3"
+empty_background = "#1E1E2E"
+
+[ui.plot]
+lines = "#89B4FA"
+lines_hovered = "#F38BA8"
+histogram = "#A6E3A1"
+histogram_hovered = "#FAB387"
+
+[ui.table]
+header_background = "#313244"
+border_strong = "#45475A"
+border_light = "#313244"
+row_background = "#00000000"
+row_background_alt = "#FFFFFF08"
+
+[ui.misc]
+text_selected_background = "#89B4FA59"
+drag_drop_target = "#FAB387"
+nav_highlight = "#CBA6F7"
+nav_windowing_highlight = "#FFFFFFB3"
+nav_windowing_dim_background = "#CCCCCC33"
+modal_window_dim_background = "#00000099"

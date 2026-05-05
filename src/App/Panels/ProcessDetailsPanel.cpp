@@ -1112,12 +1112,12 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
                          .label = "Network Sent",
                          .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
-                         .color = theme.scheme().chartCpu};
+                         .color = theme.scheme().chartNetTx};
 
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
                          .label = "Network Received",
                          .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
-                         .color = theme.accentColor(2)};
+                         .color = theme.scheme().chartNetRx};
 
     auto plot = [&]()
     {
@@ -1130,9 +1130,10 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+            plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
 
-            plotLineWithFill("Received", timeData.data(), recvData.data(), plotCount, theme.accentColor(2));
+            plotLineWithFill(
+                "Received", timeData.data(), recvData.data(), plotCount, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1145,8 +1146,9 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                         const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::TextColored(
-                            theme.scheme().chartCpu, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
-                        ImGui::TextColored(theme.accentColor(2), "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
+                            theme.scheme().chartNetTx, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
+                        ImGui::TextColored(
+                            theme.scheme().chartNetRx, "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -1995,9 +1997,12 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
     const ImVec2 arrowRight(badgeX + PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
-    // Draw badge text (white for contrast)
+    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
+    const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+
+    // Draw badge text using the theme-specified badge text color (white on dark themes, near-black on light)
     const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((PRIORITY_BADGE_HEIGHT - textSize.y) * 0.5F));
-    drawList->AddText(textPos, IM_COL32(255, 255, 255, 255), valueText.c_str());
+    drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
 }
 
 void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
@@ -2027,10 +2032,13 @@ void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const Priority
     const float thumbRadius = PRIORITY_SLIDER_HEIGHT * 0.6F;
     const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (PRIORITY_SLIDER_HEIGHT * 0.5F));
 
+    // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
+    const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
+
     // Thumb outline
     drawList->AddCircleFilled(thumbCenter, thumbRadius + PRIORITY_THUMB_OUTLINE_THICKNESS, ImGui::GetColorU32(ImGuiCol_Border));
-    // Thumb fill (white)
-    drawList->AddCircleFilled(thumbCenter, thumbRadius, IM_COL32(255, 255, 255, 255));
+    // Thumb fill: uses the badge text color (white on dark, near-black on light) for matching contrast
+    drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
 
 void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext& ctx)

@@ -3,8 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <thread>
 
 namespace UI
@@ -24,6 +26,8 @@ void expectColorNear(const ImVec4& actual, const ImVec4& expected, float toleran
 // Shared minimal-valid theme body (all required sections, no [meta]).
 // Used by tests that need a complete theme without a meta section, or that
 // prepend their own [meta] block on top of this body.
+// Note: this body intentionally omits net_tx/net_rx so tests can verify the
+// fallback behavior when those keys are absent.
 constexpr const char* k_FullThemeTomlBody = R"(
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
@@ -162,6 +166,23 @@ nav_windowing_highlight = "#FFFFFFB3"
 nav_windowing_dim_background = "#0000004D"
 modal_window_dim_background = "#0000004D"
 )";
+
+// Build a full-valid theme body that also includes net_tx and net_rx in [charts].
+// Used by tests that need a complete theme WITH network chart color keys present.
+// The keys are injected before [cpu_breakdown] (which immediately follows [charts]).
+[[nodiscard]] auto buildFullThemeWithNet(std::string_view netTx = "#FFC107", std::string_view netRx = "#AB47BC") -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    const std::size_t insertPos = body.find("[cpu_breakdown]");
+    // k_FullThemeTomlBody must contain [cpu_breakdown] — fail fast if it's been removed.
+    if (insertPos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithNet: k_FullThemeTomlBody is missing [cpu_breakdown]");
+    }
+    const std::string netLines = std::string("net_tx = \"") + std::string(netTx) + "\"\n" + "net_rx = \"" + std::string(netRx) + "\"\n";
+    body.insert(insertPos, netLines);
+    return body;
+}
 
 // ========== hexToImVec4 Tests ==========
 
@@ -1284,6 +1305,109 @@ modal_window_dim_background = "#0000004D"
 
     // chartIoWrite falls back to chartMemory (#10893E) when io_write is absent
     expectColorNear(theme->chartIoWrite, theme->chartMemory);
+}
+
+// ========== Network Chart Color Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
+{
+    // Use a fully-valid theme body (all required sections) and inject net_tx/net_rx
+    // into the existing [charts] block to avoid the incomplete-theme warnings that
+    // a minimal [meta]+[charts] stub would trigger.
+    const std::string toml = std::string("[meta]\nname = \"Net Color Theme\"\ndescription = \"Tests net_tx/net_rx parsing\"\n\n") +
+                             buildFullThemeWithNet("#FFC107", "#AB47BC");
+    createThemeFile("net-colors.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "net-colors.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // #FFC107 = (255/255, 193/255, 7/255)
+    expectColorNear(theme->chartNetTx, ImVec4(0xFF / 255.0F, 0xC1 / 255.0F, 0x07 / 255.0F, 1.0F));
+    // #AB47BC = (171/255, 71/255, 188/255)
+    expectColorNear(theme->chartNetRx, ImVec4(0xAB / 255.0F, 0x47 / 255.0F, 0xBC / 255.0F, 1.0F));
+
+    // net_tx and net_rx must be distinct from each other (epsilon-based, all 4 channels)
+    constexpr float k_DistinctTolerance = 0.01F;
+    const bool sameColor = (std::abs(theme->chartNetTx.x - theme->chartNetRx.x) < k_DistinctTolerance &&
+                            std::abs(theme->chartNetTx.y - theme->chartNetRx.y) < k_DistinctTolerance &&
+                            std::abs(theme->chartNetTx.z - theme->chartNetRx.z) < k_DistinctTolerance &&
+                            std::abs(theme->chartNetTx.w - theme->chartNetRx.w) < k_DistinctTolerance);
+    EXPECT_FALSE(sameColor) << "chartNetTx and chartNetRx must be visually distinct";
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_FallsBackToCpuMemoryWhenAbsent)
+{
+    // k_FullThemeTomlBody has no net_tx/net_rx entries.
+    // chartNetTx should fall back to chartCpu; chartNetRx to chartMemory.
+    const std::string toml = std::string("[meta]\nname = \"Fallback Net\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("fallback-net.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "fallback-net.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // When absent, net_tx falls back to chartCpu (#0078D4)
+    expectColorNear(theme->chartNetTx, theme->chartCpu);
+    // When absent, net_rx falls back to chartMemory (#10893E)
+    expectColorNear(theme->chartNetRx, theme->chartMemory);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallsBackToAlphaScaledLineColorWhenAbsent)
+{
+    // Provide net_tx/net_rx line colors but omit the fill variants (net_tx_fill / net_rx_fill).
+    // ThemeLoader defaults to the line color scaled to ~0.35 alpha, matching plotLineWithFill.
+    // Use a fully-valid base theme to avoid spurious "required key missing" warnings.
+    const std::string toml = std::string("[meta]\nname = \"Net Fill Fallback\"\n\n") + buildFullThemeWithNet("#FFC107", "#AB47BC");
+    createThemeFile("net-fill-fallback.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "net-fill-fallback.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // Fill RGB matches the line color; alpha is scaled to ~0.35 (line alpha * 0.35).
+    constexpr float k_AlphaScale = 0.35F;
+    constexpr float k_Tolerance = 0.01F;
+    EXPECT_NEAR(theme->chartNetTxFill.x, theme->chartNetTx.x, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.y, theme->chartNetTx.y, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.z, theme->chartNetTx.z, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetTxFill.w, (theme->chartNetTx.w * k_AlphaScale), k_Tolerance);
+
+    EXPECT_NEAR(theme->chartNetRxFill.x, theme->chartNetRx.x, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.y, theme->chartNetRx.y, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.z, theme->chartNetRx.z, k_Tolerance);
+    EXPECT_NEAR(theme->chartNetRxFill.w, (theme->chartNetRx.w * k_AlphaScale), k_Tolerance);
+}
+
+// ========== Priority Badge Text Color Tests ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_ParsedWhenPresent)
+{
+    const std::string toml = std::string("[meta]\nname = \"Badge Color\"\n\n") + k_FullThemeTomlBody + R"(
+[priority]
+high   = "#E74856"
+normal = "#10893E"
+low    = "#8E8CD8"
+badge_text_color = "#1A1A1A"
+)";
+    createThemeFile("badge-color.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "badge-color.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // #1A1A1A = (26/255, 26/255, 26/255) — near-black for light themes
+    expectColorNear(theme->priorityBadgeTextColor, ImVec4(0x1A / 255.0F, 0x1A / 255.0F, 0x1A / 255.0F, 1.0F));
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_DefaultsToWhiteWhenAbsent)
+{
+    // k_FullThemeTomlBody has no [priority] section, so badge_text_color is absent.
+    // It should default to white (1,1,1,1).
+    const std::string toml = std::string("[meta]\nname = \"No Badge Color\"\n\n") + k_FullThemeTomlBody;
+    createThemeFile("no-badge-color.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "no-badge-color.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // Default badge text color must be fully opaque white
+    expectColorNear(theme->priorityBadgeTextColor, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
 }
 
 } // namespace
