@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -54,6 +55,11 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
     EXPECT_TRUE(caps.hasNice);
+
+    // New capabilities for issues #184, #185, #195
+    EXPECT_TRUE(caps.hasPublisher);
+    EXPECT_TRUE(caps.hasProcessType);
+    EXPECT_TRUE(caps.hasGdiObjects);
 }
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
@@ -429,5 +435,137 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 //     // All enumerations should have succeeded
 //     EXPECT_GT(successCount.load(), 0);
 // }
+
+// =============================================================================
+// Publisher, Type, and GDI Object Tests (Issues #184, #185, #195)
+// =============================================================================
+
+TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+
+    ASSERT_NE(it, processes.end());
+
+    // Our test process should have a non-empty processType
+    EXPECT_FALSE(it->processType.empty()) << "Process type should not be empty for accessible processes";
+
+    // The process type must be one of the three expected values
+    const bool validType =
+        (it->processType == "App") || (it->processType == "Background Process") || (it->processType == "Windows Process");
+    EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: " << it->processType;
+
+    // The classification must be consistent with what Win32 itself reports for our process.
+    // classifyProcessType() checks GR_USEROBJECTS first, so if the process owns USER objects
+    // it is classified as "App"; otherwise the path heuristic determines the result.
+    const DWORD userObjects = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+    if (userObjects > 0)
+    {
+        EXPECT_EQ(it->processType, "App") << "Process with USER objects (" << userObjects << ") should be classified as App";
+    }
+    else
+    {
+        // No USER objects: path heuristic applies. Our test binary is not under Windows\System32,
+        // so it must be classified as Background Process.
+        EXPECT_EQ(it->processType, "Background Process")
+            << "Console test runner with no USER objects should be classified as Background Process";
+    }
+}
+
+TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    // svchost.exe (Service Host) is always running on Windows and its image
+    // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.
+    // If the probe can open it and read version resources, the publisher must be
+    // "Microsoft Corporation" — this verifies that VarFileInfo\Translation lookup works.
+    const auto svchostIt = std::find_if(
+        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
+
+    if (svchostIt != processes.end())
+    {
+        EXPECT_EQ(svchostIt->publisher, "Microsoft Corporation")
+            << "svchost.exe must be published by Microsoft Corporation; "
+            << "got: '" << svchostIt->publisher << "' — check VarFileInfo\\Translation lookup";
+    }
+    else
+    {
+        // Fallback: at least one process should have a publisher
+        const auto anyIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+        EXPECT_NE(anyIt, processes.end()) << "At least one process should have a publisher field populated; "
+                                          << "if svchost.exe was inaccessible this may indicate a permissions issue";
+    }
+}
+
+TEST(WindowsProcessProbeTest, AllEnumeratedProcessTypesAreValid)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    for (const auto& proc : processes)
+    {
+        // processType is either empty (for protected/inaccessible processes) or one of the three valid values
+        if (!proc.processType.empty())
+        {
+            const bool validType =
+                (proc.processType == "App") || (proc.processType == "Background Process") || (proc.processType == "Windows Process");
+            EXPECT_TRUE(validType) << "Process " << proc.name << " (PID " << proc.pid << ") has invalid type: " << proc.processType;
+        }
+    }
+}
+
+TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    // svchost.exe always runs from C:\Windows\System32\svchost.exe.
+    // classifyProcessType checks USER objects before the path heuristic (so that
+    // inbox apps like Notepad that live in System32 are correctly classified as
+    // "App"). Some svchost.exe instances own USER objects (message-only windows)
+    // and will therefore be classified as "App". The invariant we can reliably
+    // assert is that no accessible svchost.exe is a "Background Process" —
+    // the path heuristic must recognise it as a system binary.
+    const auto svchostIt = std::find_if(
+        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
+
+    // Every Windows system has at least one accessible svchost.exe instance.
+    ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
+
+    const bool isSystemBinary = (svchostIt->processType == "Windows Process") || (svchostIt->processType == "App");
+    EXPECT_TRUE(isSystemBinary) << "svchost.exe must be classified as 'Windows Process' or 'App', not 'Background Process'; "
+                                << "got: '" << svchostIt->processType << "' (path: " << svchostIt->command << ")";
+}
+
+TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+
+    ASSERT_NE(it, processes.end());
+
+    // The test process can always be opened with PROCESS_QUERY_INFORMATION (it is our own handle),
+    // so the probe must return a value (not nullopt).
+    ASSERT_TRUE(it->gdiObjectCount.has_value())
+        << "GDI count should be readable for our own process (opened with PROCESS_QUERY_INFORMATION)";
+
+    // Compare the probe result directly against the Win32 API for our own process.
+    SetLastError(0);
+    const DWORD expected = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    // Only compare when GetGuiResources itself succeeds (returns non-zero or no error).
+    if (expected != 0 || GetLastError() == 0)
+    {
+        EXPECT_EQ(static_cast<DWORD>(*it->gdiObjectCount), expected)
+            << "GDI object count from probe should match GetGuiResources for the current process";
+    }
+}
 
 } // namespace Platform

@@ -1755,3 +1755,121 @@ TEST(ProcessModelTest, WhenRefreshedMultipleTimes_ThenSnapshotVersionMonotonical
     EXPECT_LT(versionBefore, versionAfterFirst);
     EXPECT_LT(versionAfterFirst, versionAfterSecond);
 }
+
+// =============================================================================
+// Publisher, Type, and GDI Object Passthrough Tests (Issues #184, #185, #195)
+// =============================================================================
+
+TEST(ProcessModelTest, WhenProbeReturnsPublisher_ThenSnapshotContainsPublisher)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.publisher = "Test Corporation";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].publisher, "Test Corporation");
+}
+
+TEST(ProcessModelTest, WhenProbeReturnsEmptyPublisher_ThenSnapshotPublisherIsEmpty)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.publisher = "";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_TRUE(snaps[0].publisher.empty());
+}
+
+TEST(ProcessModelTest, WhenProbeReturnsProcessType_ThenSnapshotContainsProcessType)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.processType = "App";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].processType, "App");
+}
+
+TEST(ProcessModelTest, WhenProbeReturnsBackgroundProcessType_ThenSnapshotContainsIt)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "svc", 'R', 1000, 500);
+    counter.processType = "Background Process";
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].processType, "Background Process");
+}
+
+TEST(ProcessModelTest, WhenProbeReturnsGdiObjectCount_ThenSnapshotContainsCount)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "app", 'R', 1000, 500);
+    counter.gdiObjectCount = std::int32_t{42};
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    ASSERT_TRUE(snaps[0].gdiObjectCount.has_value());
+    EXPECT_EQ(*snaps[0].gdiObjectCount, 42);
+}
+
+TEST(ProcessModelTest, WhenProbeReturnsZeroGdiObjectCount_ThenSnapshotCountIsZero)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "proc", 'R', 1000, 500);
+    counter.gdiObjectCount = std::int32_t{0};
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    ASSERT_TRUE(snaps[0].gdiObjectCount.has_value());
+    EXPECT_EQ(*snaps[0].gdiObjectCount, 0);
+}
+
+TEST(ProcessModelTest, WhenProbeCannotReadGdiObjectCount_ThenSnapshotCountIsNullopt)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters counter = makeCounter(100, "locked", 'R', 1000, 500);
+    counter.gdiObjectCount = std::nullopt;
+    probe->setCounters({counter});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_FALSE(snaps[0].gdiObjectCount.has_value());
+}
