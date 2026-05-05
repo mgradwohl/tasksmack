@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 // NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
+#include <optional>
 #include <ranges>
 #include <shared_mutex>
 #include <string>
@@ -156,6 +157,17 @@ std::vector<GPUSnapshot> GPUModel::history(std::string_view gpuId) const
     const std::size_t copied = it->second.copyTo(result.data(), result.size());
     result.resize(copied);
     return result;
+}
+
+std::optional<GPUSnapshot> GPUModel::snapshotAt(std::string_view gpuId, std::size_t index) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end() || index >= it->second.size())
+    {
+        return std::nullopt;
+    }
+    return it->second[index];
 }
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const

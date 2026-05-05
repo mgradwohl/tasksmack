@@ -257,11 +257,9 @@ void renderGpuSection(RenderContext& ctx)
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
-                        // Fetch snapshot history lazily — only when the user actually hovers
-                        // the plot.  GPUModel::history() returns a full copy so we defer
-                        // that allocation until it is actually needed.
-                        // (important on Windows DXGI where memoryTotalBytes is a dynamic budget).
-                        const auto snapHistory = ctx.gpuModel->history(snap.gpuId);
+                        // Fetch only the single snapshot needed for the hovered index.
+                        // GPUModel::history() copies the full vector; snapshotAt() is O(1) under the lock.
+                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
 
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
@@ -275,13 +273,12 @@ void renderGpuSection(RenderContext& ctx)
                         if (*idxVal < memHist.size())
                         {
                             const double pct = static_cast<double>(memHist[*idxVal]);
-                            if (*idxVal < snapHistory.size() && snapHistory[*idxVal].memoryTotalBytes > 0)
+                            if (histSnap.has_value() && histSnap->memoryTotalBytes > 0)
                             {
-                                const auto& histSnap = snapHistory[*idxVal];
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,
                                     "Memory: %s",
-                                    UI::Format::bytesUsedTotalPercentCompact(histSnap.memoryUsedBytes, histSnap.memoryTotalBytes, pct)
+                                    UI::Format::bytesUsedTotalPercentCompact(histSnap->memoryUsedBytes, histSnap->memoryTotalBytes, pct)
                                         .c_str());
                             }
                             else
@@ -320,16 +317,15 @@ void renderGpuSection(RenderContext& ctx)
                                .color = theme.scheme().gpuUtilization});
         if (snap.memoryTotalBytes > 0)
         {
-            // Keep the bar/value text smoothed for visual stability, but make the tooltip
-            // internally consistent by formatting both bytes and percent from the same raw
-            // snapshot.
-            const double rawMemoryPercent =
-                (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
+            // The bar height and valueText use the smoothed percent for visual stability.
+            // The tooltip leads with the same smoothed percent (consistent with what the bar shows)
+            // and appends the actual sampled bytes as supplementary information.
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
-                                   .tooltipText = std::format("GPU Memory: {} ({})",
-                                                              UI::Format::formatBytes(snap.memoryUsedBytes),
-                                                              UI::Format::percentCompact(rawMemoryPercent)),
+                                   .tooltipText = std::format("GPU Memory: {} ({} / {})",
+                                                              UI::Format::percentCompact(smoothed.memoryPercent),
+                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
+                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }

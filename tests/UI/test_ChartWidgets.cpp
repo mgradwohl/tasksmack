@@ -60,13 +60,13 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
 
 TEST(NowBarTest, DefaultTooltipTextIsEmpty)
 {
-    const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .color = {}};
+    const NowBar bar{.valueText = "50%", .label = "CPU", .color = {}};
     EXPECT_TRUE(bar.tooltipText.empty());
 }
 
 TEST(NowBarTest, DefaultValue01IsZero)
 {
-    const NowBar bar{.valueText = "0%", .label = "CPU", .tooltipText = {}, .color = {}};
+    const NowBar bar{.valueText = "0%", .label = "CPU", .color = {}};
     EXPECT_DOUBLE_EQ(bar.value01, 0.0);
 }
 
@@ -84,10 +84,10 @@ TEST(NowBarTest, SelectTooltipPrefersTooltipText)
     EXPECT_EQ(selectNowBarTooltip(bar), "CPU Total: 50%");
 }
 
-TEST(NowBarTest, SelectTooltipFallsBackToLabelWhenTooltipTextEmpty)
+TEST(NowBarTest, SelectTooltipFallsBackToLabelColonValueWhenTooltipTextEmpty)
 {
     const NowBar bar{.valueText = "50%", .label = "CPU", .tooltipText = {}, .value01 = 0.5, .color = {}};
-    EXPECT_EQ(selectNowBarTooltip(bar), "CPU");
+    EXPECT_EQ(selectNowBarTooltip(bar), "CPU: 50%");
 }
 
 TEST(NowBarTest, SelectTooltipFallsBackToValueTextWhenBothEmpty)

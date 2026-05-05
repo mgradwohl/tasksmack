@@ -207,24 +207,24 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     if (ctx.smoothedMemory != nullptr && snap.memoryTotalBytes > 0)
     {
         const double usedPercentClamped = std::clamp(ctx.smoothedMemory->usedPercent, 0.0, 100.0);
-        const auto usedBytes = static_cast<std::uint64_t>((usedPercentClamped / 100.0) * static_cast<double>(snap.memoryTotalBytes));
-        memoryBars.push_back(
-            {.valueText = UI::Format::percentCompact(usedPercentClamped),
-             .label = "Memory Used",
-             .tooltipText = std::format("Memory Used: {}",
-                                        UI::Format::bytesUsedTotalPercentCompact(usedBytes, snap.memoryTotalBytes, usedPercentClamped)),
-             .value01 = UI::Format::percent01(usedPercentClamped),
-             .color = theme.scheme().chartMemory});
+        // Use the actual sampled bytes from the snapshot rather than back-calculating from the
+        // smoothed (EMA) percent, which would give a synthetic value that never existed in the model.
+        memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
+                              .label = "Memory Used",
+                              .tooltipText = std::format("Memory Used: {}",
+                                                         UI::Format::bytesUsedTotalPercentCompact(
+                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent)),
+                              .value01 = UI::Format::percent01(usedPercentClamped),
+                              .color = theme.scheme().chartMemory});
 
         const double cachedPercentClamped = std::clamp(ctx.smoothedMemory->cachedPercent, 0.0, 100.0);
-        const auto cachedBytes = static_cast<std::uint64_t>((cachedPercentClamped / 100.0) * static_cast<double>(snap.memoryTotalBytes));
-        memoryBars.push_back(
-            {.valueText = UI::Format::percentCompact(cachedPercentClamped),
-             .label = "Memory Cached",
-             .tooltipText = std::format("Memory Cached: {}",
-                                        UI::Format::bytesUsedTotalPercentCompact(cachedBytes, snap.memoryTotalBytes, cachedPercentClamped)),
-             .value01 = UI::Format::percent01(cachedPercentClamped),
-             .color = theme.scheme().chartCpu});
+        memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercentClamped),
+                              .label = "Memory Cached",
+                              .tooltipText = std::format("Memory Cached: {}",
+                                                         UI::Format::bytesUsedTotalPercentCompact(
+                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, snap.memoryCachedPercent)),
+                              .value01 = UI::Format::percent01(cachedPercentClamped),
+                              .color = theme.scheme().chartCpu});
     }
 
     if (ctx.smoothedMemory != nullptr && snap.swapTotalBytes > 0)

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <string_view>
 #include <unordered_map>
@@ -60,6 +61,11 @@ class GPUModel
 
     // Get history for specific GPU (returns copy for thread safety)
     [[nodiscard]] std::vector<GPUSnapshot> history(std::string_view gpuId) const;
+
+    // Get a single historical snapshot by logical index (0 = oldest).
+    // Returns nullopt if gpuId is unknown or index is out of range.
+    // Prefer this over history() when only one sample is needed (avoids copying the full vector).
+    [[nodiscard]] std::optional<GPUSnapshot> snapshotAt(std::string_view gpuId, std::size_t index) const;
 
     // Get flattened history arrays for specific GPU (for chart plotting)
     [[nodiscard]] std::vector<float> utilizationHistory(std::string_view gpuId) const;

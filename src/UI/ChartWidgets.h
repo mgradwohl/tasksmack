@@ -277,12 +277,17 @@ struct NowBar
 };
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
-//   tooltipText (if non-empty) -> label (if non-empty) -> valueText
-[[nodiscard]] inline std::string_view selectNowBarTooltip(const NowBar& bar) noexcept
+//   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText
+// Callers should invoke this only when the bar is actually hovered to avoid per-frame allocations.
+[[nodiscard]] inline std::string selectNowBarTooltip(const NowBar& bar)
 {
     if (!bar.tooltipText.empty())
     {
         return bar.tooltipText;
+    }
+    if (!bar.label.empty() && !bar.valueText.empty())
+    {
+        return std::format("{}: {}", bar.label, bar.valueText);
     }
     if (!bar.label.empty())
     {
@@ -459,8 +464,14 @@ inline void renderHistoryWithNowBars(const char* tableId,
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
             }
 
-            drawVerticalBarWithValue(
-                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", selectNowBarTooltip(bars[i]).data());
+            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            if (ImGui::IsItemHovered())
+            {
+                const std::string tooltip = selectNowBarTooltip(bars[i]);
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tooltip.c_str());
+                ImGui::EndTooltip();
+            }
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -503,8 +514,14 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             ImGui::BeginGroup();
-            drawVerticalBarWithValue(
-                "##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "", selectNowBarTooltip(bars[i]).data());
+            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            if (ImGui::IsItemHovered())
+            {
+                const std::string tooltip = selectNowBarTooltip(bars[i]);
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tooltip.c_str());
+                ImGui::EndTooltip();
+            }
             ImGui::EndGroup();
             ImGui::PopID();
 
