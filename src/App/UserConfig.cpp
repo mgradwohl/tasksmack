@@ -348,6 +348,12 @@ void UserConfig::load()
             m_Settings.windowMaximized = *val;
         }
 
+        // Privilege notice: suppress startup dialog if user dismissed it permanently
+        if (auto val = config["ui"]["show_privilege_notice"].value<bool>())
+        {
+            m_Settings.showPrivilegeNotice = *val;
+        }
+
         // Process panel column visibility
         if (auto* cols = config["process_columns"].as_table())
         {
@@ -375,7 +381,7 @@ void UserConfig::load()
     }
 }
 
-void UserConfig::save() const
+void UserConfig::save()
 {
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
@@ -463,6 +469,7 @@ void UserConfig::save() const
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(m_Settings.chartTauMsMax)},
              {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
              {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
+             {"show_privilege_notice", m_Settings.showPrivilegeNotice},
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
@@ -491,11 +498,23 @@ void UserConfig::save() const
     file << "#   [ui] chart_smooth_factor: exponential smoothing for charts (0.0-0.95); 0=no smoothing, 0.95=max smoothing\n";
     file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
     file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
+    file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
     file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
     file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
+    file.close();
+
+    if (!file)
+    {
+        spdlog::error("Failed to write config to {}: stream error after write", m_ConfigPath.string());
+        return;
+    }
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
+
+    // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
+    // or any future live-reload use case).
+    m_IsLoaded = false;
 }
 
 void UserConfig::applyToApplication() const

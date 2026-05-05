@@ -62,6 +62,25 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasGdiObjects);
 }
 
+TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
+{
+    // hasReducedPrivileges should be false when EStats is available (admin) or when
+    // EStats failed for a non-privilege reason (unsupported API). It should only be
+    // true when non-admin AND EStats was specifically denied due to admin requirement.
+    WindowsProcessProbe probe;
+    const auto caps = probe.capabilities();
+
+    // Network counters and reduced-privileges are mutually exclusive:
+    // if EStats is working we're admin, so there can be no privilege data gap.
+    EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+
+    // Stronger check: if network counters are available, privilege notice must not fire.
+    if (caps.hasNetworkCounters)
+    {
+        EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+}
+
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
 {
     WindowsProcessProbe probe;

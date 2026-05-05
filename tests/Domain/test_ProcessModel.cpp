@@ -85,6 +85,30 @@ TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
     EXPECT_TRUE(modelCaps.hasThreadCount);
 }
 
+TEST(ProcessModelTest, WhenProbeReportsReducedPrivileges_ThenCapabilitiesReflectThat)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCapabilities caps;
+    caps.hasReducedPrivileges = true;
+    probe->setCapabilities(caps);
+
+    Domain::ProcessModel model(std::move(probe));
+
+    EXPECT_TRUE(model.capabilities().hasReducedPrivileges);
+}
+
+TEST(ProcessModelTest, WhenProbeReportsFullPrivileges_ThenReducedPrivilegesIsFalse)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCapabilities caps;
+    caps.hasReducedPrivileges = false;
+    probe->setCapabilities(caps);
+
+    Domain::ProcessModel model(std::move(probe));
+
+    EXPECT_FALSE(model.capabilities().hasReducedPrivileges);
+}
+
 // =============================================================================
 // CPU Percentage Calculation Tests
 // =============================================================================

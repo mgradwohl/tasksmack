@@ -72,6 +72,10 @@ struct UserSettings
     std::optional<int> windowPosX;
     std::optional<int> windowPosY;
     bool windowMaximized = false;
+
+    // Whether to show the reduced-privileges notice dialog on startup.
+    // Set to false permanently via "Don't show again" in the dialog.
+    bool showPrivilegeNotice = true;
 };
 
 /**
@@ -96,8 +100,9 @@ class UserConfig
     /// Load settings from config file (call on startup)
     void load();
 
-    /// Save settings to config file
-    void save() const;
+    /// Save settings to config file.
+    /// Resets the loaded flag so a subsequent load() call will re-read from disk.
+    void save();
 
     /// Get current settings
     [[nodiscard]] auto settings() const -> const UserSettings&

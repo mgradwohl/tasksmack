@@ -197,4 +197,18 @@ class OpenAboutEvent : public Event
     EVENT_CLASS_TYPE(OpenAbout)
 };
 
+/// Elevation notice dialog request event - emitted at startup when running without elevated privileges
+class OpenElevationNoticeEvent : public Event
+{
+  public:
+    OpenElevationNoticeEvent() = default;
+
+    [[nodiscard]] auto toString() const -> std::string override
+    {
+        return "OpenElevationNoticeEvent";
+    }
+
+    EVENT_CLASS_TYPE(OpenElevationNotice)
+};
+
 } // namespace Core

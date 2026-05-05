@@ -74,3 +74,4 @@ cast-audit.md
 build.log
 build-logs/
 *.Zone.Identifier
+build_output.txt

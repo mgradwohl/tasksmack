@@ -1,5 +1,6 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
+#include "App/UserConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -549,6 +550,54 @@ height = 99999
 
     EXPECT_TRUE(std::filesystem::exists(m_ConfigPath));
     // Width should clamp to 200, height to 16384
+}
+
+// ========== showPrivilegeNotice Persistence ==========
+
+TEST(UserSettingsTest, ShowPrivilegeNoticeDefaultsToTrue)
+{
+    // UserSettings default: showPrivilegeNotice = true (notice shown unless user dismisses)
+    const UserSettings settings;
+    EXPECT_TRUE(settings.showPrivilegeNotice);
+}
+
+TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeFalseIsSavedAndLoaded)
+{
+    // Round-trips show_privilege_notice = false via save() + load().
+    // Uses round-trip only (no direct file read) to avoid CodeQL tainted-path findings;
+    // the config path is derived from a platform environment variable.
+    auto& config = UserConfig::get();
+    const bool originalValue = config.settings().showPrivilegeNotice;
+
+    // Set false, save, reset in-memory to true, then load — must round-trip to false
+    config.settings().showPrivilegeNotice = false;
+    config.save();
+    config.settings().showPrivilegeNotice = true;
+    config.load();
+    EXPECT_FALSE(config.settings().showPrivilegeNotice);
+
+    // Restore original state so later tests are not affected
+    config.settings().showPrivilegeNotice = originalValue;
+    config.save();
+}
+
+TEST(UserConfigSaveLoadTest, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
+{
+    // Mirror of the false variant: round-trips show_privilege_notice = true via save() + load().
+    // Uses round-trip only (no direct file read) to avoid CodeQL tainted-path findings.
+    auto& config = UserConfig::get();
+    const bool originalValue = config.settings().showPrivilegeNotice;
+
+    // Set true, save, reset in-memory to false, then load — must round-trip to true
+    config.settings().showPrivilegeNotice = true;
+    config.save();
+    config.settings().showPrivilegeNotice = false;
+    config.load();
+    EXPECT_TRUE(config.settings().showPrivilegeNotice);
+
+    // Restore original state so later tests are not affected
+    config.settings().showPrivilegeNotice = originalValue;
+    config.save();
 }
 
 } // namespace

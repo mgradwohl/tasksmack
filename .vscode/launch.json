@@ -5,7 +5,7 @@
             "name": "Debug TaskSmack (Debug)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/debug/TaskSmack",
+            "program": "${workspaceFolder}/build/debug/bin/TaskSmack",
             "windows": {
                 "program": "${workspaceFolder}/build/win-debug/bin/TaskSmack.exe"
             },
@@ -22,7 +22,7 @@
             "name": "Debug TaskSmack (RelWithDebInfo)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/relwithdebinfo/TaskSmack",
+            "program": "${workspaceFolder}/build/relwithdebinfo/bin/TaskSmack",
             "windows": {
                 "program": "${workspaceFolder}/build/win-relwithdebinfo/bin/TaskSmack.exe"
             },
@@ -39,7 +39,7 @@
             "name": "Run TaskSmack (Release)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/release/TaskSmack",
+            "program": "${workspaceFolder}/build/release/bin/TaskSmack",
             "windows": {
                 "program": "${workspaceFolder}/build/win-release/bin/TaskSmack.exe"
             },
@@ -57,7 +57,7 @@
             "name": "Run TaskSmack (Optimized)",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/optimized/TaskSmack",
+            "program": "${workspaceFolder}/build/optimized/bin/TaskSmack",
             "windows": {
                 "program": "${workspaceFolder}/build/win-optimized/bin/TaskSmack.exe"
             },
@@ -75,7 +75,7 @@
             "name": "Debug TaskSmack (ASan+UBSan) [Linux]",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/asan-ubsan/TaskSmack",
+            "program": "${workspaceFolder}/build/asan-ubsan/bin/TaskSmack",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build ASan+UBSan (Linux)",
@@ -93,7 +93,7 @@
             "name": "Debug TaskSmack (TSan) [Linux]",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/tsan/TaskSmack",
+            "program": "${workspaceFolder}/build/tsan/bin/TaskSmack",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build TSan (Linux)",

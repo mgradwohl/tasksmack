@@ -50,6 +50,16 @@ void ShellLayer::onAttach()
     }
 
     spdlog::info("Panels initialized");
+
+    // Cache privilege status and trigger the startup notice if needed.
+    // Elevation state is constant for process lifetime; cache once at startup.
+    // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
+    // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
+    m_HasReducedPrivileges = m_ProcessesPanel.hasReducedPrivileges();
+    if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
+    {
+        m_PendingPrivilegeNotice = true;
+    }
 }
 
 void ShellLayer::onDetach()
@@ -99,6 +109,14 @@ void ShellLayer::onEvent(Core::Event& event)
 
 void ShellLayer::onUpdate(float deltaTime)
 {
+    // Dispatch the startup privilege notice on the first update, after all layers are stacked.
+    if (m_PendingPrivilegeNotice)
+    {
+        m_PendingPrivilegeNotice = false;
+        Core::OpenElevationNoticeEvent evt;
+        Core::Application::get().raiseEvent(evt);
+    }
+
     // Update FPS counter (average over ~0.5 seconds)
     m_FrameTime = deltaTime;
     m_FrameTimeAccumulator += deltaTime;
@@ -326,6 +344,17 @@ void ShellLayer::renderStatusBar() const
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
+        // Show a persistent lock icon when running without elevated privileges
+        if (m_HasReducedPrivileges)
+        {
+            ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Limited data: running without elevated privileges");
+            }
+            ImGui::SameLine();
+        }
+
         ImGui::Text("Ready");
 
         // Right-align FPS display

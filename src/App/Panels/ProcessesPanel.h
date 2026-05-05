@@ -90,6 +90,10 @@ class ProcessesPanel : public Panel
         return m_ProcessModel.get();
     }
 
+    /// Returns true if the process probe reported reduced privileges at startup.
+    /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
+    [[nodiscard]] bool hasReducedPrivileges() const;
+
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
     std::int32_t m_SelectedPid = -1;
