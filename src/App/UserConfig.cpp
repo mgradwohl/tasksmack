@@ -381,7 +381,7 @@ void UserConfig::load()
     }
 }
 
-void UserConfig::save() const
+void UserConfig::save()
 {
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
@@ -504,6 +504,10 @@ void UserConfig::save() const
     file << config;
 
     spdlog::info("Saved config to {}", m_ConfigPath.string());
+
+    // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
+    // or any future live-reload use case).
+    m_IsLoaded = false;
 }
 
 void UserConfig::applyToApplication() const

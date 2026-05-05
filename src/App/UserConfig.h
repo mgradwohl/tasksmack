@@ -100,8 +100,9 @@ class UserConfig
     /// Load settings from config file (call on startup)
     void load();
 
-    /// Save settings to config file
-    void save() const;
+    /// Save settings to config file.
+    /// Resets the loaded flag so a subsequent load() call will re-read from disk.
+    void save();
 
     /// Get current settings
     [[nodiscard]] auto settings() const -> const UserSettings&
