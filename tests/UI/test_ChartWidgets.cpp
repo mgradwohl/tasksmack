@@ -96,5 +96,11 @@ TEST(NowBarTest, SelectTooltipFallsBackToValueTextWhenBothEmpty)
     EXPECT_EQ(selectNowBarTooltip(bar), "50%");
 }
 
+TEST(NowBarTest, SelectTooltipFallsBackToLabelWhenValueTextEmpty)
+{
+    const NowBar bar{.valueText = {}, .label = "CPU", .tooltipText = {}, .value01 = 0.5, .color = {}};
+    EXPECT_EQ(selectNowBarTooltip(bar), "CPU");
+}
+
 } // namespace
 } // namespace UI::Widgets

@@ -944,9 +944,9 @@ TEST(GPUModelTest, SnapshotAtReturnsCorrectSampleByIndex)
     EXPECT_DOUBLE_EQ(s2->utilizationPercent, 30.0);
 }
 
-TEST(GPUModelTest, SnapshotAtIsLighterThanFullHistoryCopy)
+TEST(GPUModelTest, SnapshotAtReturnsValueMatchingHistoryByIndex)
 {
-    // Verify snapshotAt returns just one snapshot while history() returns all.
+    // Verify snapshotAt returns the same value as history() at the same logical index.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);

@@ -271,7 +271,7 @@ struct NowBar
     std::string valueText;
     std::string label;       // Label used in fallback tooltip construction (e.g., "CPU Total")
     std::string tooltipText; // Rich tooltip text shown on bar hover (e.g., "CPU Total: 45%");
-                             // falls back to label, then to valueText when empty
+                             // falls back to "label: valueText", then label, then valueText when empty
     double value01 = 0.0;
     ImVec4 color;
 };

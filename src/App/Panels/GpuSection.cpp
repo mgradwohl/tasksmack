@@ -325,12 +325,15 @@ void renderGpuSection(RenderContext& ctx)
         if (snap.memoryTotalBytes > 0)
         {
             // The bar height and valueText use the smoothed percent for visual stability.
-            // The tooltip leads with the same smoothed percent (consistent with what the bar shows)
-            // and appends the actual sampled bytes as supplementary information.
+            // The tooltip uses the raw snapshot bytes to compute the percentage so that
+            // the percent and byte figures always come from the same sample and cannot
+            // show an impossible combination (e.g. 50% with 8 GiB / 8 GiB).
+            const double rawMemoryPercent =
+                (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {} ({} / {})",
-                                                              UI::Format::percentCompact(smoothed.memoryPercent),
+                                                              UI::Format::percentCompact(rawMemoryPercent),
                                                               UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
                                                               UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
