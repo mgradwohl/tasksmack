@@ -192,6 +192,7 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_PowerHistory.push_back(snapshot->powerWatts);
             m_GpuUtilHistory.push_back(snapshot->gpuUtilPercent);
             m_GpuMemHistory.push_back(Domain::Numeric::toDouble(snapshot->gpuMemoryBytes));
+            m_GdiHistory.push_back(Domain::Numeric::toDouble(snapshot->gdiObjectCount));
             m_Timestamps.push_back(nowSeconds);
 
             // Update peak memory percent (from snapshot's peak value)
@@ -385,6 +386,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_PowerHistory.clear();
         m_GpuUtilHistory.clear();
         m_GpuMemHistory.clear();
+        m_GdiHistory.clear();
         m_Timestamps.clear();
         m_HistoryTimer = 0.0F;
         m_HasSnapshot = false;
@@ -423,6 +425,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetPower = std::max(0.0, snapshot.powerWatts);
     const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
     const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
+    const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(snapshot.gdiObjectCount));
 
     const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 
@@ -450,6 +453,7 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     m_SmoothedUsage.gpuUtilPercent =
         UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
     m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
+    m_SmoothedUsage.gdiObjectCount = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gdiObjectCount, targetGdiObjects, alpha, initialized));
     m_SmoothedUsage.initialized = true;
 }
 
@@ -464,7 +468,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     const auto computeLabelColumnWidth = []() -> float
     {
-        constexpr std::array<const char*, 10> labels = {
+        constexpr std::array<const char*, 12> labels = {
             "Name",
             "PID",
             "Parent PID",
@@ -475,6 +479,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Handles",
             "CPU Time",
             "Priority",
+            "Publisher",
+            "Type",
         };
 
         float maxTextWidth = 0.0F;
@@ -494,8 +500,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
     const float basePadding = ImGui::GetStyle().WindowPadding.y * 2.0F;
-    const float leftHeight = (rowHeight * 5.0F) + basePadding;  // Identity rows
-    const float rightHeight = (rowHeight * 5.0F) + basePadding; // Runtime rows
 
     auto rightAlignedText = [](const std::string& text, const ImVec4& color)
     {
@@ -578,18 +582,56 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const std::string startedText =
         (proc.startTimeEpoch > 0) ? UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch) : std::string("-");
 
+    // Build identity rows (conditionally include Publisher if available)
+    std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> identityRows = {
+        {"Name", {proc.name, theme.scheme().textPrimary}},
+        {"PID", {std::to_string(proc.pid), theme.scheme().textPrimary}},
+        {"Parent PID", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
+        {"User", {userText, theme.scheme().textPrimary}},
+        {"Started", {startedText, theme.scheme().textMuted}},
+    };
+    if (!proc.publisher.empty())
+    {
+        identityRows.push_back({"Publisher", {proc.publisher, theme.scheme().textMuted}});
+    }
+    const float identityRowCount = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(identityRows.size()));
+    const float leftHeight = (rowHeight * identityRowCount) + basePadding;
+
+    // Build runtime rows (conditionally include Type if available)
+    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
+    std::vector<std::pair<std::string, std::pair<std::string, ImVec4>>> runtimeRows = {
+        {"Status", {statusText, statusColor}},
+        {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
+        {handleLabel, {proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-"), theme.scheme().textPrimary}},
+        {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
+        {"Priority", {priorityText, theme.scheme().textPrimary}},
+    };
+    if (!proc.processType.empty())
+    {
+        // Color-code the process type using status colors for visual clarity
+        ImVec4 typeColor;
+        if (proc.processType == "App")
+        {
+            typeColor = theme.scheme().statusRunning;
+        }
+        else if (proc.processType == "Windows Process")
+        {
+            typeColor = theme.scheme().textInfo;
+        }
+        else
+        {
+            typeColor = theme.scheme().textMuted;
+        }
+        runtimeRows.push_back({"Type", {proc.processType, typeColor}});
+    }
+    const float runtimeRowCount = UI::Format::toFloatNarrow(Domain::Numeric::toDouble(runtimeRows.size()));
+    const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
+
     // Identity section: Who is this process?
     ImGui::BeginGroup();
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(halfWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
-    renderInfoTable("BasicInfoLeftTable",
-                    {
-                        {"Name", {proc.name, theme.scheme().textPrimary}},
-                        {"PID", {std::to_string(proc.pid), theme.scheme().textPrimary}},
-                        {"Parent PID", {std::to_string(proc.parentPid), theme.scheme().textPrimary}},
-                        {"User", {userText, theme.scheme().textPrimary}},
-                        {"Started", {startedText, theme.scheme().textMuted}},
-                    });
+    renderInfoTable("BasicInfoLeftTable", identityRows);
     ImGui::EndChild();
     ImGui::EndGroup();
 
@@ -600,18 +642,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(halfWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
-    // Format priority with human-readable label and nice value
-    const std::string priorityText = std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(proc.nice), proc.nice);
-
-    renderInfoTable(
-        "BasicInfoRightTable",
-        {
-            {"Status", {statusText, statusColor}},
-            {"Threads", {proc.threadCount > 0 ? formatCountLocale(proc.threadCount) : std::string("-"), theme.scheme().textPrimary}},
-            {handleLabel, {proc.handleCount > 0 ? formatCountLocale(proc.handleCount) : std::string("-"), theme.scheme().textPrimary}},
-            {"CPU Time", {UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds), theme.scheme().textPrimary}},
-            {"Priority", {priorityText, theme.scheme().textPrimary}},
-        });
+    renderInfoTable("BasicInfoRightTable", runtimeRows);
     ImGui::EndChild();
     ImGui::EndGroup();
 }
@@ -941,6 +972,19 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                            .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
                            .color = theme.scheme().chartIo};
 
+#ifdef _WIN32
+    // GDI objects NowBar (Windows-only)
+    const size_t gdiAlignedCount = std::min(alignedCount, m_GdiHistory.size());
+    std::vector<double> gdiData = tailVector(m_GdiHistory, gdiAlignedCount);
+    const double gdiMax = seriesMax(gdiData, m_SmoothedUsage.gdiObjectCount);
+    const NowBar gdiBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI"),
+                        .label = "GDI Objects",
+                        .value01 = (gdiMax > 0.0) ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
+                        .color = theme.accentColor(4)};
+#endif
+
+    constexpr size_t RESOURCE_NOW_BAR_COLUMNS = 4;
+
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
@@ -958,6 +1002,14 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
             plotLineWithFill(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
 
             plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
+
+#ifdef _WIN32
+            if (!gdiData.empty())
+            {
+                const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiAlignedCount, timeData.size()));
+                plotLineWithFill("GDI Objects", timeData.data(), gdiData.data(), gdiPlotCount, theme.accentColor(4));
+            }
+#endif
 
             if (ImPlot::IsPlotHovered())
             {
@@ -979,6 +1031,14 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                                            UI::Format::formatIntLocalized(std::llround(handleData[*idxVal])).c_str());
                         ImGui::TextColored(
                             theme.accentColor(3), "Page Faults: %s", UI::Format::formatCountPerSecond(faultData[*idxVal]).c_str());
+#ifdef _WIN32
+                        if (*idxVal < gdiData.size())
+                        {
+                            ImGui::TextColored(theme.accentColor(4),
+                                               "GDI Objects: %s",
+                                               UI::Format::formatIntLocalized(std::llround(gdiData[*idxVal])).c_str());
+                        }
+#endif
                         ImGui::EndTooltip();
                     }
                 }
@@ -989,8 +1049,13 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Resources (%zu samples)", alignedCount);
+#ifdef _WIN32
+    renderHistoryWithNowBars(
+        "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar, gdiBar}, false, RESOURCE_NOW_BAR_COLUMNS);
+#else
     renderHistoryWithNowBars(
         "ProcessResourceHistory", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {threadsBar, handlesBar, faultsBar}, false, PROCESS_NOW_BAR_COLUMNS);
+#endif
     ImGui::Spacing();
 }
 
@@ -1582,6 +1647,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     trimDeque(m_PowerHistory);
     trimDeque(m_GpuUtilHistory);
     trimDeque(m_GpuMemHistory);
+    trimDeque(m_GdiHistory);
 
     // Keep all history buffers aligned to the smallest non-empty length.
     size_t minSize = std::numeric_limits<size_t>::max();
@@ -1610,6 +1676,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     updateMin(m_PowerHistory.size());
     updateMin(m_GpuUtilHistory.size());
     updateMin(m_GpuMemHistory.size());
+    updateMin(m_GdiHistory.size());
 
     if (minSize != std::numeric_limits<size_t>::max())
     {
@@ -1638,6 +1705,7 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
         trimToMin(m_PowerHistory);
         trimToMin(m_GpuUtilHistory);
         trimToMin(m_GpuMemHistory);
+        trimToMin(m_GdiHistory);
     }
 }
 

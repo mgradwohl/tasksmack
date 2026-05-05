@@ -48,6 +48,16 @@ struct ProcessCounters
     // On Windows: from PROCESS_POWER_THROTTLING_STATE
     // On Linux: from powercap sysfs (per-package energy counters)
     std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
+
+    // Publisher / vendor info (optional, Windows-only via PE version info)
+    std::string publisher; // CompanyName from PE file version info (empty if not available)
+
+    // Process type classification (optional, Windows-only)
+    // Values: "App", "Background Process", "Windows Process" (empty if not available)
+    std::string processType;
+
+    // GDI object count (optional, Windows-only via GetGuiResources)
+    std::int32_t gdiObjectCount = 0;
 };
 
 /// Reports what this platform's probe supports.
@@ -68,6 +78,9 @@ struct ProcessCapabilities
     bool hasNetworkCounters = false; // Whether per-process network counters are available
     bool hasPowerUsage = false;      // Whether power consumption metrics are available
     bool hasStatus = false;          // Whether process status (Suspended, Efficiency Mode) is available
+    bool hasPublisher = false;       // Whether publisher/vendor string is available (Windows PE version info)
+    bool hasProcessType = false;     // Whether process type classification is available (Windows: App/Background/Windows)
+    bool hasGdiObjects = false;      // Whether GDI object count is available (Windows-only via GetGuiResources)
 };
 
 } // namespace Platform

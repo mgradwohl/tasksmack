@@ -21,6 +21,7 @@
 #include <sddl.h>
 #include <tlhelp32.h>
 #include <winternl.h>
+#include <winver.h>
 // clang-format on
 // NOLINTEND(misc-include-cleaner)
 
@@ -308,6 +309,131 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     return {};
 }
 
+/// Query GDI object count for a process via GetGuiResources
+[[nodiscard]] std::int32_t getProcessGdiObjectCount(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return 0;
+    }
+
+    // GetGuiResources returns the count of GDI objects allocated by the process
+    // It requires PROCESS_QUERY_LIMITED_INFORMATION access (already held by caller)
+    const DWORD count = GetGuiResources(hProcess, GR_GDIOBJECTS);
+    return Domain::Numeric::narrowOr<std::int32_t>(count, std::int32_t{0});
+}
+
+/// Read the CompanyName from a PE file's version info (publisher/vendor)
+/// Returns empty string if not available or on failure.
+[[nodiscard]] std::string getFilePublisher(std::wstring_view imagePath)
+{
+    if (imagePath.empty())
+    {
+        return {};
+    }
+
+    // GetFileVersionInfoSizeW returns required buffer size
+    DWORD dummy = 0;
+    const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.data(), &dummy);
+    if (infoSize == 0)
+    {
+        return {};
+    }
+
+    std::vector<BYTE> buffer(infoSize);
+    if (GetFileVersionInfoW(imagePath.data(), 0, infoSize, buffer.data()) == 0)
+    {
+        return {};
+    }
+
+    // Query the CompanyName string from the version resource.
+    // Language/codepage 0x0409 (English/US) with 0x04B0 (Unicode) is most common.
+    LPVOID companyNamePtr = nullptr;
+    UINT companyNameLen = 0;
+
+    if (VerQueryValueW(buffer.data(), L"\\StringFileInfo\\040904B0\\CompanyName", &companyNamePtr, &companyNameLen) != 0 &&
+        companyNameLen > 0 && companyNamePtr != nullptr)
+    {
+        // companyNamePtr points into buffer (not separately allocated); safe until buffer leaves scope.
+        // VerQueryValueW always returns a wide string for StringFileInfo queries.
+        const auto* companyName = static_cast<const wchar_t*>(companyNamePtr); // Safe: VerQueryValueW guarantees wchar_t for StringFileInfo
+        return WinString::wideToUtf8(companyName);
+    }
+
+    // Fallback: try Windows-1252 code page variant
+    if (VerQueryValueW(buffer.data(), L"\\StringFileInfo\\040904E4\\CompanyName", &companyNamePtr, &companyNameLen) != 0 &&
+        companyNameLen > 0 && companyNamePtr != nullptr)
+    {
+        const auto* companyName = static_cast<const wchar_t*>(companyNamePtr); // Safe: VerQueryValueW guarantees wchar_t for StringFileInfo
+        return WinString::wideToUtf8(companyName);
+    }
+
+    return {};
+}
+
+/// Read the publisher of a process from its PE file version information
+[[nodiscard]] std::string getProcessPublisher(HANDLE hProcess)
+{
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    std::array<WCHAR, MAX_PATH> imagePath{};
+    DWORD size = Domain::Numeric::narrowOr<DWORD>(imagePath.size(), DWORD{MAX_PATH});
+
+    if (QueryFullProcessImageNameW(hProcess, 0, imagePath.data(), &size) == 0)
+    {
+        return {};
+    }
+
+    return getFilePublisher(std::wstring_view(imagePath.data(), size));
+}
+
+/// Classify a process as "App", "Background Process", or "Windows Process".
+/// - "Windows Process": core OS processes (PID 0/4, or in Windows\System32/SysWOW64)
+/// - "App": processes with visible USER objects (they have a UI window)
+/// - "Background Process": everything else (services, daemons, headless apps)
+[[nodiscard]] std::string classifyProcessType(HANDLE hProcess, DWORD pid, std::string_view imagePath)
+{
+    // PID 0 (Idle) and PID 4 (System) are always Windows processes
+    if (pid == 0 || pid == 4)
+    {
+        return "Windows Process";
+    }
+
+    if (hProcess == nullptr)
+    {
+        return {};
+    }
+
+    // Check if the image is in a Windows system directory.
+    // This catches smss.exe, csrss.exe, wininit.exe, services.exe, lsass.exe, etc.
+    if (!imagePath.empty())
+    {
+        const bool isInSystem32 = imagePath.contains("\\System32\\") || imagePath.contains("\\SysWOW64\\") ||
+                                  imagePath.contains("\\SystemApps\\");
+        // Restrict to paths that are also under the Windows directory to avoid
+        // false-positives from user apps installed in non-standard paths.
+        const bool isInWindowsDir = imagePath.contains("\\Windows\\");
+
+        if (isInWindowsDir && isInSystem32)
+        {
+            return "Windows Process";
+        }
+    }
+
+    // GR_USEROBJECTS counts window handles and other user-mode GUI objects.
+    // A process with USER objects has an interactive UI (it is an "App").
+    const DWORD userObjects = GetGuiResources(hProcess, GR_USEROBJECTS);
+    if (userObjects > 0)
+    {
+        return "App";
+    }
+
+    return "Background Process";
+}
+
 } // namespace
 
 WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMonitoring())
@@ -529,6 +655,15 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.cpuAffinityMask = 0;
     }
 
+    // Get GDI object count (best-effort; zero for protected/system processes)
+    counters.gdiObjectCount = getProcessGdiObjectCount(hProcess);
+
+    // Get publisher/vendor from PE file version info (best-effort)
+    counters.publisher = getProcessPublisher(hProcess);
+
+    // Classify process type (App / Background Process / Windows Process)
+    counters.processType = classifyProcessType(hProcess, pid, counters.command);
+
     CloseHandle(hProcess);
     return true;
 }
@@ -550,8 +685,11 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
-        .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
-        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPowerUsage = m_HasPowerMonitoring,  // Available if energy monitoring detected
+        .hasStatus = true,                      // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPublisher = true,                   // From GetFileVersionInfo on process image path
+        .hasProcessType = true,                 // Classified from path + GetGuiResources
+        .hasGdiObjects = true,                  // From GetGuiResources(GR_GDIOBJECTS)
     };
 }
 

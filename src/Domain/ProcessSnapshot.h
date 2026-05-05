@@ -49,6 +49,9 @@ struct ProcessSnapshot
     double gpuEncoderUtil = 0.0;      // Aggregate encoder utilization
     double gpuDecoderUtil = 0.0;      // Aggregate decoder utilization
 
+    // GDI object count (Windows-only; 0 if not available)
+    std::int32_t gdiObjectCount = 0;
+
     // Strings at the end (reduce padding and improve cache for hot integer/float fields)
     std::string name;
     std::string command;      // Full command line
@@ -56,6 +59,8 @@ struct ProcessSnapshot
     std::string displayState; // "Running", "Sleeping", "Zombie", etc.
     std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
+    std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
+    std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
 
     // GPU engines (union of active engines across all GPUs)
     std::vector<std::string> gpuEngines; // ["3D", "Compute"]

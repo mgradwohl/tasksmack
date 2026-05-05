@@ -486,6 +486,9 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.user = current.user;
     snapshot.displayState = translateState(current.state);
     snapshot.status = current.status; // Pass through status from platform probe
+    snapshot.publisher = current.publisher;   // Pass through publisher from platform probe
+    snapshot.processType = current.processType; // Pass through process type from platform probe
+    snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.sharedBytes = current.sharedBytes;

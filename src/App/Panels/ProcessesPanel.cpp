@@ -792,6 +792,12 @@ void ProcessesPanel::renderContent()
                                           }
                                           case ProcessColumn::GpuDevice:
                                               return compare(procA.gpuDevices, procB.gpuDevices);
+                                          case ProcessColumn::Publisher:
+                                              return compare(procA.publisher, procB.publisher);
+                                          case ProcessColumn::Type:
+                                              return compare(procA.processType, procB.processType);
+                                          case ProcessColumn::GdiObjects:
+                                              return compare(procA.gdiObjectCount, procB.gdiObjectCount);
                                           default:
                                               return false;
                                           }
@@ -1296,6 +1302,60 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             {
                 ImGui::TextUnformatted("-");
             }
+            break;
+        }
+
+        case ProcessColumn::Publisher:
+        {
+            if (!proc.publisher.empty())
+            {
+                ImGui::TextUnformatted(proc.publisher.c_str());
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && ImGui::CalcTextSize(proc.publisher.c_str()).x > ImGui::GetContentRegionAvail().x)
+                {
+                    ImGui::SetTooltip("%s", proc.publisher.c_str());
+                }
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::Type:
+        {
+            if (!proc.processType.empty())
+            {
+                const auto& scheme = UI::Theme::get().scheme();
+                ImVec4 typeColor;
+                if (proc.processType == "App")
+                {
+                    typeColor = scheme.statusRunning;
+                }
+                else if (proc.processType == "Windows Process")
+                {
+                    typeColor = scheme.textInfo;
+                }
+                else
+                {
+                    typeColor = scheme.textMuted;
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, typeColor);
+                ImGui::TextUnformatted(proc.processType.c_str());
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::TextUnformatted("-");
+            }
+            break;
+        }
+
+        case ProcessColumn::GdiObjects:
+        {
+            const std::string text =
+                UI::Format::formatOrDash(proc.gdiObjectCount, [](auto value) { return UI::Format::formatIntLocalized(value); });
+            renderRightAlignedText(text);
             break;
         }
 

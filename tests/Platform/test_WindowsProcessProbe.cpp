@@ -54,6 +54,11 @@ TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasUser);
     EXPECT_TRUE(caps.hasCommand);
     EXPECT_TRUE(caps.hasNice);
+
+    // New capabilities for issues #184, #185, #195
+    EXPECT_TRUE(caps.hasPublisher);
+    EXPECT_TRUE(caps.hasProcessType);
+    EXPECT_TRUE(caps.hasGdiObjects);
 }
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
@@ -429,5 +434,72 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 //     // All enumerations should have succeeded
 //     EXPECT_GT(successCount.load(), 0);
 // }
+
+// =============================================================================
+// Publisher, Type, and GDI Object Tests (Issues #184, #185, #195)
+// =============================================================================
+
+TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+
+    ASSERT_NE(it, processes.end());
+
+    // Our test process should have a non-empty processType
+    EXPECT_FALSE(it->processType.empty()) << "Process type should not be empty for accessible processes";
+
+    // The process type must be one of the three expected values
+    const bool validType = (it->processType == "App") || (it->processType == "Background Process") ||
+                           (it->processType == "Windows Process");
+    EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: "
+                           << it->processType;
+}
+
+TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    // At least some processes on a Windows system should have a publisher field populated
+    // (e.g., Microsoft Corporation for OS processes that are accessible)
+    const auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+
+    EXPECT_NE(it, processes.end()) << "At least one process should have a publisher field populated";
+}
+
+TEST(WindowsProcessProbeTest, AllEnumeratedProcessTypesAreValid)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    for (const auto& proc : processes)
+    {
+        // processType is either empty (for protected/inaccessible processes) or one of the three valid values
+        if (!proc.processType.empty())
+        {
+            const bool validType = (proc.processType == "App") || (proc.processType == "Background Process") ||
+                                   (proc.processType == "Windows Process");
+            EXPECT_TRUE(validType) << "Process " << proc.name << " (PID " << proc.pid << ") has invalid type: " << proc.processType;
+        }
+    }
+}
+
+TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
+{
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+
+    ASSERT_NE(it, processes.end());
+
+    // GDI count for our process should be non-negative
+    EXPECT_GE(it->gdiObjectCount, 0) << "GDI object count should be non-negative";
+}
 
 } // namespace Platform
