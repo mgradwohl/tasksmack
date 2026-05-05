@@ -606,9 +606,11 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
-        .hasPowerUsage = m_HasPowerMonitoring,     // Available if energy monitoring detected
-        .hasStatus = true,                         // From NtQueryInformationProcess ProcessExtendedBasicInformation
-        .hasReducedPrivileges = reducedPrivileges && m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
+        .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
+        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasReducedPrivileges =
+            reducedPrivileges &&
+            m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
     };
 }
 
