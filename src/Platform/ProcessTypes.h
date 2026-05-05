@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace Platform
@@ -56,8 +57,10 @@ struct ProcessCounters
     // Values: "App", "Background Process", "Windows Process" (empty if not available)
     std::string processType;
 
-    // GDI object count (optional, Windows-only via GetGuiResources)
-    std::int32_t gdiObjectCount = 0;
+    // GDI object count (optional, Windows-only via GetGuiResources).
+    // std::nullopt means the probe could not open the process with the required rights.
+    // A stored value of 0 means the process is accessible but owns no GDI objects.
+    std::optional<std::int32_t> gdiObjectCount;
 };
 
 /// Reports what this platform's probe supports.

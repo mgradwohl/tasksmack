@@ -459,10 +459,22 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
         (it->processType == "App") || (it->processType == "Background Process") || (it->processType == "Windows Process");
     EXPECT_TRUE(validType) << "Process type should be one of: App, Background Process, Windows Process; got: " << it->processType;
 
-    // The test runner is a console app: its window belongs to conhost.exe, so
-    // GetGuiResources(GR_USEROBJECTS) returns 0 and it is classified as "Background Process".
-    EXPECT_EQ(it->processType, "Background Process")
-        << "Console test runner should be classified as Background Process (UI window is owned by conhost.exe)";
+    // The classification must be consistent with what Win32 itself reports for our process.
+    // classifyProcessType() checks GR_USEROBJECTS first, so if the process owns USER objects
+    // it is classified as "App"; otherwise the path heuristic determines the result.
+    const DWORD userObjects = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+    if (userObjects > 0)
+    {
+        EXPECT_EQ(it->processType, "App")
+            << "Process with USER objects (" << userObjects << ") should be classified as App";
+    }
+    else
+    {
+        // No USER objects: path heuristic applies. Our test binary is not under Windows\System32,
+        // so it must be classified as Background Process.
+        EXPECT_EQ(it->processType, "Background Process")
+            << "Console test runner with no USER objects should be classified as Background Process";
+    }
 }
 
 TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
@@ -470,11 +482,28 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    // At least some processes on a Windows system should have a publisher field populated
-    // (e.g., Microsoft Corporation for OS processes that are accessible)
-    const auto it = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+    // svchost.exe (Service Host) is always running on Windows and its image
+    // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.
+    // If the probe can open it and read version resources, the publisher must be
+    // "Microsoft Corporation" — this verifies that VarFileInfo\Translation lookup works.
+    const auto svchostIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) {
+        return p.name == "svchost.exe" && !p.publisher.empty();
+    });
 
-    EXPECT_NE(it, processes.end()) << "At least one process should have a publisher field populated";
+    if (svchostIt != processes.end())
+    {
+        EXPECT_EQ(svchostIt->publisher, "Microsoft Corporation")
+            << "svchost.exe must be published by Microsoft Corporation; "
+            << "got: '" << svchostIt->publisher << "' — check VarFileInfo\\Translation lookup";
+    }
+    else
+    {
+        // Fallback: at least one process should have a publisher
+        const auto anyIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+        EXPECT_NE(anyIt, processes.end())
+            << "At least one process should have a publisher field populated; "
+            << "if svchost.exe was inaccessible this may indicate a permissions issue";
+    }
 }
 
 TEST(WindowsProcessProbeTest, AllEnumeratedProcessTypesAreValid)
@@ -537,11 +566,20 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 
     ASSERT_NE(it, processes.end());
 
-    // Compare the probe result directly against the Win32 API for our own process,
-    // which the probe can open with PROCESS_QUERY_INFORMATION since it is our own handle.
+    // The test process can always be opened with PROCESS_QUERY_INFORMATION (it is our own handle),
+    // so the probe must return a value (not nullopt).
+    ASSERT_TRUE(it->gdiObjectCount.has_value())
+        << "GDI count should be readable for our own process (opened with PROCESS_QUERY_INFORMATION)";
+
+    // Compare the probe result directly against the Win32 API for our own process.
+    SetLastError(0);
     const DWORD expected = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
-    EXPECT_EQ(static_cast<DWORD>(it->gdiObjectCount), expected)
-        << "GDI object count from probe should match GetGuiResources for the current process";
+    // Only compare when GetGuiResources itself succeeds (returns non-zero or no error).
+    if (expected != 0 || GetLastError() == 0)
+    {
+        EXPECT_EQ(static_cast<DWORD>(*it->gdiObjectCount), expected)
+            << "GDI object count from probe should match GetGuiResources for the current process";
+    }
 }
 
 } // namespace Platform

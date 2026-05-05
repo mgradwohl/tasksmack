@@ -313,18 +313,25 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 }
 
 /// Query GDI object count for a process via GetGuiResources.
-/// Requires a handle opened with at least PROCESS_QUERY_INFORMATION;
-/// returns 0 if hQuery is null or GetGuiResources fails.
-/// NOTE: GetGuiResources returns 0 both for "no GDI objects" and on error — these
-/// two cases cannot be distinguished from the outside.
-[[nodiscard]] std::int32_t getProcessGdiObjectCount(HANDLE hQuery)
+/// Requires a handle opened with at least PROCESS_QUERY_INFORMATION.
+/// Returns std::nullopt when hQuery is null (process not accessible with required rights).
+/// Returns 0 when the process is accessible but owns no GDI objects.
+/// Note: GetGuiResources returns 0 on error as well as on genuine zero; SetLastError(0) before
+/// the call lets us distinguish the two cases via GetLastError() afterwards.
+[[nodiscard]] std::optional<std::int32_t> getProcessGdiObjectCount(HANDLE hQuery)
 {
     if (hQuery == nullptr)
     {
-        return 0;
+        return std::nullopt;
     }
 
+    SetLastError(0);
     const DWORD count = GetGuiResources(hQuery, GR_GDIOBJECTS);
+    if (count == 0 && GetLastError() != 0)
+    {
+        // GetGuiResources failed (e.g. insufficient access rights on this handle type).
+        return std::nullopt;
+    }
     return Domain::Numeric::narrowOr<std::int32_t>(count, std::int32_t{0});
 }
 
