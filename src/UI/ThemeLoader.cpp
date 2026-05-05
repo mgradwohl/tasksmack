@@ -303,10 +303,8 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
         scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", scheme.chartMemory);
         scheme.chartIoFill = getColor(tbl, "charts.io_fill", scheme.chartIo);
         scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", scheme.chartIoWrite);
-        scheme.chartNetTxFill =
-            getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
-        scheme.chartNetRxFill =
-            getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
+        scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
+        scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
 
         // CPU breakdown
         scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");

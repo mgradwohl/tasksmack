@@ -23,9 +23,11 @@ Theme::Theme() = default;
 // No-op private helpers.  Defined here so the linker finds them if any other
 // translation unit (transitively) references them; the defaulted constructor above
 // does not call them.
-void Theme::initializeFontSizes() {}
+void Theme::initializeFontSizes()
+{}
 
-void Theme::loadDefaultFallbackTheme() {}
+void Theme::loadDefaultFallbackTheme()
+{}
 
 auto Theme::get() -> Theme&
 {
@@ -39,8 +41,10 @@ auto Theme::currentThemeId() const -> const std::string&
     return k_Empty;
 }
 
-void Theme::setThemeById(std::string_view /*id*/) {}
+void Theme::setThemeById(std::string_view /*id*/)
+{}
 
-void Theme::setFontSize(FontSize /*size*/) {}
+void Theme::setFontSize(FontSize /*size*/)
+{}
 
 } // namespace UI
