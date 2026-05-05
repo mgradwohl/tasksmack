@@ -316,21 +316,27 @@ void renderNetworkSection(RenderContext& ctx)
             // When an interface is selected, show both total (muted) and interface (bright)
             if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
             {
-                // Total lines (muted, in background)
-                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
-                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
+                // Total lines (muted, in background) — scale fill alpha to match the muted line alpha
+                const auto ifaceSentFill = UI::withAlpha(theme.scheme().chartNetTxFill, theme.scheme().chartNetTxFill.w * 0.7F);
+                const auto ifaceRecvFill = UI::withAlpha(theme.scheme().chartNetRxFill, theme.scheme().chartNetRxFill.w * 0.7F);
+                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor, ifaceSentFill);
+                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
                 const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
-                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartNetTx);
-                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.scheme().chartNetRx);
+                plotLineWithFill(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count,
+                                 theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
+                plotLineWithFill(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count,
+                                 theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
             }
             else
             {
                 // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx);
+                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count,
+                                 theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
+                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count,
+                                 theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
             }
 
             if (ImPlot::IsPlotHovered())

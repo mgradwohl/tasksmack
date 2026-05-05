@@ -252,7 +252,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
     try
     {
         auto tbl = toml::parse_file(path.string());
-        ColorScheme scheme;
+        ColorScheme scheme{};
 
         // Meta
         if (auto* meta = tbl["meta"].as_table())
