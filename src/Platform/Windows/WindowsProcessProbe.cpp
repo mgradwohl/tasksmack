@@ -370,7 +370,8 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // enumeration is enabled in the future, this cache must be protected by a mutex.
     static std::unordered_map<std::wstring, std::string> s_cache;
     std::wstring cacheKey(imagePath);
-    std::ranges::transform(cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    std::ranges::transform(
+        cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
     if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
     {
         return it->second;
@@ -526,8 +527,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         // Anchor to the drive root: check that the path starts with <letter>:\windows\
         // so that a user directory that happens to contain the word "windows" (e.g.
         // C:\Users\awindows\System32\) cannot false-match the heuristic.
-        const bool isInWindowsDir =
-            lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
+        const bool isInWindowsDir = lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
         const bool isInSystemDir =
             lowerPath.contains("\\system32\\") || lowerPath.contains("\\syswow64\\") || lowerPath.contains("\\systemapps\\");
 
@@ -788,6 +788,66 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
+    // Reduced privileges: EStats-based network counters require Administrator.
+    // Use GetTokenInformation(TokenElevation) to check if the current process token is elevated.
+    // This is safe to call repeatedly; the elevation state is constant for the lifetime of the process.
+    // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
+    bool reducedPrivileges = true; // Conservative default: assume non-elevated
+
+    // RAII wrapper for the process token handle — ensures CloseHandle is called on all paths.
+    struct TokenHandle
+    {
+        HANDLE h = nullptr;
+        TokenHandle() = default;
+        explicit TokenHandle(HANDLE hIn) noexcept : h(hIn)
+        {}
+        TokenHandle(const TokenHandle&) = delete;
+        TokenHandle& operator=(const TokenHandle&) = delete;
+        TokenHandle(TokenHandle&& other) noexcept : h(other.h)
+        {
+            other.h = nullptr;
+        }
+        TokenHandle& operator=(TokenHandle&& other) noexcept
+        {
+            if (this != &other)
+            {
+                if (h != nullptr)
+                {
+                    CloseHandle(h);
+                }
+                h = other.h;
+                other.h = nullptr;
+            }
+            return *this;
+        }
+        ~TokenHandle() noexcept
+        {
+            if (h != nullptr)
+            {
+                CloseHandle(h);
+            }
+        }
+    };
+
+    TokenHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.h) != FALSE)
+    {
+        TOKEN_ELEVATION elevation{};
+        DWORD dwSize = sizeof(elevation);
+        if (GetTokenInformation(token.h, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
+        {
+            reducedPrivileges = (elevation.TokenIsElevated == 0);
+        }
+        else
+        {
+            spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
+        }
+    }
+    else
+    {
+        spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
+    }
+
     return ProcessCapabilities{
         .hasIoCounters = true,
         .hasThreadCount = true,
@@ -808,6 +868,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPublisher = true,                  // From GetFileVersionInfo on process image path
         .hasProcessType = true,                // Classified from path + GetGuiResources
         .hasGdiObjects = true,                 // From GetGuiResources(GR_GDIOBJECTS)
+        .hasReducedPrivileges =
+            reducedPrivileges &&
+            m_NetworkCountersAccessDenied, // Non-admin + EStats access-denied: network data unavailable due to privilege
     };
 }
 
@@ -967,9 +1030,15 @@ bool WindowsProcessProbe::detectNetworkCounters()
 
     // Access denied or not supported means we can't use EStats
     // ERROR_NOT_FOUND is expected for the dummy row and is OK
-    if (status == ERROR_ACCESS_DENIED || status == ERROR_NOT_SUPPORTED)
+    if (status == ERROR_ACCESS_DENIED)
     {
         spdlog::debug("Per-process network counters not available (EStats requires administrator privileges)");
+        m_NetworkCountersAccessDenied = true;
+        return false;
+    }
+    if (status == ERROR_NOT_SUPPORTED)
+    {
+        spdlog::debug("Per-process network counters not available (EStats not supported on this system)");
         return false;
     }
 

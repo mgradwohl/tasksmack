@@ -20,7 +20,8 @@ enum class EventType : uint8_t
     ActiveTabChanged,
     ProcessColumnsChanged,
     OpenSettings,
-    OpenAbout
+    OpenAbout,
+    OpenElevationNotice
 };
 
 /// Macro to implement event type boilerplate

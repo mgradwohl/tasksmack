@@ -67,6 +67,16 @@ TEST(LinuxProcessProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasThreadCount);
 }
 
+TEST(LinuxProcessProbeTest, ReducedPrivilegesMatchesEuid)
+{
+    LinuxProcessProbe probe;
+    const auto caps = probe.capabilities();
+
+    // hasReducedPrivileges should be true when running as non-root, false as root
+    const bool expectedReducedPrivileges = (geteuid() != 0);
+    EXPECT_EQ(caps.hasReducedPrivileges, expectedReducedPrivileges);
+}
+
 TEST(LinuxProcessProbeTest, TicksPerSecondIsPositive)
 {
     LinuxProcessProbe probe;

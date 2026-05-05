@@ -276,9 +276,13 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
+    // Reduced privileges: FD counts (/proc/[pid]/fd) and I/O counters (/proc/[pid]/io)
+    // for processes owned by other users are unavailable unless running as root.
+    const bool reducedPrivileges = (geteuid() != 0);
+
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
-                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (own processes only when non-root)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
                                .hasUser = true,       // From /proc/[pid]/status Uid field
@@ -286,10 +290,11 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,       // From /proc/[pid]/stat
                                .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = false,
-                               .hasCpuAffinity = true,                   // From sched_getaffinity
-                               .hasNetworkCounters = hasNetworkCounters, // From Netlink INET_DIAG (if available)
-                               .hasPowerUsage = m_HasPowerCap,           // Available if RAPL is detected
-                               .hasStatus = true};                       // From cgroup freezer state
+                               .hasCpuAffinity = true,                     // From sched_getaffinity
+                               .hasNetworkCounters = hasNetworkCounters,   // From Netlink INET_DIAG (if available)
+                               .hasPowerUsage = m_HasPowerCap,             // Available if RAPL is detected
+                               .hasStatus = true,                          // From cgroup freezer state
+                               .hasReducedPrivileges = reducedPrivileges}; // Non-root: incomplete FD/IO data
 }
 
 uint64_t LinuxProcessProbe::totalCpuTime() const

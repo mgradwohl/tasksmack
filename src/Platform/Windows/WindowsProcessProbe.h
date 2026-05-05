@@ -55,6 +55,7 @@ class WindowsProcessProbe : public IProcessProbe
   private:
     bool m_HasPowerMonitoring = false;
     bool m_HasNetworkCounters = false;
+    bool m_NetworkCountersAccessDenied = false; // True when EStats failed specifically due to access denied (privilege issue)
     mutable std::atomic<uint64_t> m_SyntheticEnergy{0};
     HMODULE m_IphlpModule = nullptr; // Non-null only when loaded by this class (must be freed in destructor)
 

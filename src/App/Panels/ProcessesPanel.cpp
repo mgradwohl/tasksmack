@@ -860,6 +860,11 @@ size_t ProcessesPanel::processCount() const
     return m_ProcessModel ? m_ProcessModel->processCount() : 0;
 }
 
+bool ProcessesPanel::hasReducedPrivileges() const
+{
+    return m_ProcessModel && m_ProcessModel->capabilities().hasReducedPrivileges;
+}
+
 std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
 {
     if (m_ProcessModel)
