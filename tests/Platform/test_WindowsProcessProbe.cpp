@@ -524,19 +524,22 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    // svchost.exe is a well-known Windows service host that always runs from
-    // C:\Windows\System32\svchost.exe. An accessible instance must be classified
-    // as "Windows Process". This tests the *outcome* without duplicating the path
-    // heuristic logic: if classifyProcessType's detection breaks, this fails.
+    // svchost.exe always runs from C:\Windows\System32\svchost.exe.
+    // classifyProcessType checks USER objects before the path heuristic (so that
+    // inbox apps like Notepad that live in System32 are correctly classified as
+    // "App"). Some svchost.exe instances own USER objects (message-only windows)
+    // and will therefore be classified as "App". The invariant we can reliably
+    // assert is that no accessible svchost.exe is a "Background Process" —
+    // the path heuristic must recognise it as a system binary.
     const auto svchostIt = std::find_if(
         processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
 
     // Every Windows system has at least one accessible svchost.exe instance.
     ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
 
-    EXPECT_EQ(svchostIt->processType, "Windows Process")
-        << "svchost.exe must be classified as Windows Process; got: '" << svchostIt->processType << "'"
-        << " (path: " << svchostIt->command << ")";
+    const bool isSystemBinary = (svchostIt->processType == "Windows Process") || (svchostIt->processType == "App");
+    EXPECT_TRUE(isSystemBinary) << "svchost.exe must be classified as 'Windows Process' or 'App', not 'Background Process'; "
+                                << "got: '" << svchostIt->processType << "' (path: " << svchostIt->command << ")";
 }
 
 TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
