@@ -644,14 +644,17 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
                                  .label = "CPU Total",
+                                 .tooltipText = std::format("CPU Total: {}", UI::Format::percentCompact(m_SmoothedUsage.cpuPercent)),
                                  .value01 = UI::Format::percent01(m_SmoothedUsage.cpuPercent),
                                  .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
         const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
                                 .label = "User",
+                                .tooltipText = std::format("User: {}", UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent)),
                                 .value01 = UI::Format::percent01(m_SmoothedUsage.cpuUserPercent),
                                 .color = theme.scheme().cpuUser};
         const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
                                   .label = "System",
+                                  .tooltipText = std::format("System: {}", UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent)),
                                   .value01 = UI::Format::percent01(m_SmoothedUsage.cpuSystemPercent),
                                   .color = theme.scheme().cpuSystem};
 
