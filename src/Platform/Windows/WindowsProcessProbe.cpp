@@ -541,15 +541,23 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
     bool reducedPrivileges = true; // Conservative default: assume non-elevated
     HANDLE hToken = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) != 0)
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) != FALSE)
     {
         TOKEN_ELEVATION elevation{};
         DWORD dwSize = sizeof(elevation);
-        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize) != 0)
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
         {
             reducedPrivileges = (elevation.TokenIsElevated == 0);
         }
+        else
+        {
+            spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
+        }
         CloseHandle(hToken);
+    }
+    else
+    {
+        spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
     }
 
     return ProcessCapabilities{

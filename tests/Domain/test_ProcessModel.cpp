@@ -89,6 +89,7 @@ TEST(ProcessModelTest, WhenProbeReportsReducedPrivileges_ThenCapabilitiesReflect
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Platform::ProcessCapabilities caps;
+    EXPECT_FALSE(caps.hasReducedPrivileges); // Default state: full privileges
     caps.hasReducedPrivileges = true;
     probe->setCapabilities(caps);
 

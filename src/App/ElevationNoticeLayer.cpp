@@ -29,7 +29,8 @@ void ElevationNoticeLayer::onAttach()
     // s_Instance is set by setInstance() immediately after pushLayer() returns.
     // During onAttach(), verify that either the singleton is not yet set (before setInstance),
     // or it already points to this instance (setInstance was called before pushLayer).
-    assert((s_Instance == nullptr || s_Instance == this) && "ElevationNoticeLayer singleton must be nullptr or point to this instance");
+    assert((s_Instance == nullptr || s_Instance == this) &&
+           "ElevationNoticeLayer: expected s_Instance to be null (first initialization) or already set to this instance (setInstance called before pushLayer)");
 }
 
 void ElevationNoticeLayer::onDetach()

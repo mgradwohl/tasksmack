@@ -52,6 +52,7 @@ void ShellLayer::onAttach()
     spdlog::info("Panels initialized");
 
     // Cache privilege status and trigger the startup notice if needed.
+    // Elevation state is constant for process lifetime; cache once at startup.
     // The notice fires once per session unless the user has dismissed it permanently.
     m_HasReducedPrivileges = m_ProcessesPanel.hasReducedPrivileges();
     if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
