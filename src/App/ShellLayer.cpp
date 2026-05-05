@@ -4,6 +4,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
@@ -50,6 +51,18 @@ void ShellLayer::onAttach()
     }
 
     spdlog::info("Panels initialized");
+
+    // Cache privilege status and trigger the startup notice if needed.
+    // The notice fires once per session unless the user has dismissed it permanently.
+    if (const auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
+    {
+        m_HasReducedPrivileges = processModel->capabilities().hasReducedPrivileges;
+        if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
+        {
+            Core::OpenElevationNoticeEvent evt;
+            Core::Application::get().raiseEvent(evt);
+        }
+    }
 }
 
 void ShellLayer::onDetach()
@@ -326,6 +339,17 @@ void ShellLayer::renderStatusBar() const
 
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
+        // Show a persistent lock icon when running without elevated privileges
+        if (m_HasReducedPrivileges)
+        {
+            ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Limited data: running without elevated privileges");
+            }
+            ImGui::SameLine();
+        }
+
         ImGui::Text("Ready");
 
         // Right-align FPS display

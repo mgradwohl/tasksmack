@@ -453,6 +453,7 @@ set(TASKSMACK_SOURCES
     src/UI/ThemeLoader.cpp
     src/UI/IconLoader.cpp
     src/App/AboutLayer.cpp
+    src/App/ElevationNoticeLayer.cpp
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp

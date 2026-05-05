@@ -72,6 +72,10 @@ struct UserSettings
     std::optional<int> windowPosX;
     std::optional<int> windowPosY;
     bool windowMaximized = false;
+
+    // Whether to show the reduced-privileges notice dialog on startup.
+    // Set to false permanently via "Don't show again" in the dialog.
+    bool showPrivilegeNotice = true;
 };
 
 /**

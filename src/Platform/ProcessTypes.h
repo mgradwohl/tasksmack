@@ -65,9 +65,11 @@ struct ProcessCapabilities
     bool hasPageFaults = false;      // Whether page fault count is available
     bool hasPeakRss = false;         // Whether peak working set is available
     bool hasCpuAffinity = false;     // Whether CPU affinity mask is available
-    bool hasNetworkCounters = false; // Whether per-process network counters are available
-    bool hasPowerUsage = false;      // Whether power consumption metrics are available
-    bool hasStatus = false;          // Whether process status (Suspended, Efficiency Mode) is available
+    bool hasNetworkCounters = false;    // Whether per-process network counters are available
+    bool hasPowerUsage = false;         // Whether power consumption metrics are available
+    bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
+    bool hasReducedPrivileges = false;  // Whether running without elevated privileges (sudo/admin)
+                                        // When true, some per-process data (FD counts, I/O) may be unavailable
 };
 
 } // namespace Platform

@@ -19,6 +19,7 @@
 #include <mstcpip.h>
 #include <psapi.h>
 #include <sddl.h>
+#include <shlobj.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 // clang-format on
@@ -535,6 +536,11 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
+    // Reduced privileges: EStats-based network counters require Administrator.
+    // IsUserAnAdmin() checks if the current process token has the Administrators group enabled.
+    // This is safe to call repeatedly; the result is constant for the lifetime of the process.
+    const bool reducedPrivileges = (IsUserAnAdmin() == FALSE);
+
     return ProcessCapabilities{
         .hasIoCounters = true,
         .hasThreadCount = true,
@@ -550,8 +556,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = m_HasNetworkCounters,
-        .hasPowerUsage = m_HasPowerMonitoring, // Available if energy monitoring detected
-        .hasStatus = true,                     // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasPowerUsage = m_HasPowerMonitoring,    // Available if energy monitoring detected
+        .hasStatus = true,                         // From NtQueryInformationProcess ProcessExtendedBasicInformation
+        .hasReducedPrivileges = reducedPrivileges, // Non-admin: EStats network data unavailable
     };
 }
 

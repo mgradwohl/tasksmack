@@ -3,6 +3,7 @@
 #endif
 
 #include "App/AboutLayer.h"
+#include "App/ElevationNoticeLayer.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
 #include "App/TitleBarLayer.h"
@@ -190,6 +191,11 @@ auto runApp() -> int
     // NOTE: SettingsLayer follows the same singleton pattern as AboutLayer.
     auto& settingsLayerRef = appRef.pushLayer<App::SettingsLayer>();
     App::SettingsLayer::setInstance(settingsLayerRef);
+
+    // Elevation notice layer (modal overlay, shown at startup when running without elevated privileges)
+    // NOTE: ElevationNoticeLayer follows the same singleton pattern as AboutLayer.
+    auto& elevationNoticeLayerRef = appRef.pushLayer<App::ElevationNoticeLayer>();
+    App::ElevationNoticeLayer::setInstance(elevationNoticeLayerRef);
 
     // Run the application
     appRef.run();
