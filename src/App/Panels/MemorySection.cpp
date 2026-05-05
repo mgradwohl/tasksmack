@@ -205,13 +205,14 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     if (ctx.smoothedMemory != nullptr && snap.memoryTotalBytes > 0)
     {
         const double usedPercentClamped = std::clamp(ctx.smoothedMemory->usedPercent, 0.0, 100.0);
-        // Use the actual sampled bytes from the snapshot rather than back-calculating from the
-        // smoothed (EMA) percent, which would give a synthetic value that never existed in the model.
+        // Use the actual sampled bytes and raw snapshot percent for the tooltip so the byte and
+        // percent values are internally consistent; the bar height/valueText show the smoothed
+        // (EMA) value which is a visual artifact and intentionally differs from the raw sample.
         memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
                               .label = "Memory Used",
                               .tooltipText = std::format("Memory Used: {}",
                                                          UI::Format::bytesUsedTotalPercentCompact(
-                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, usedPercentClamped)),
+                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent)),
                               .value01 = UI::Format::percent01(usedPercentClamped),
                               .color = theme.scheme().chartMemory});
 
@@ -220,7 +221,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                               .label = "Memory Cached",
                               .tooltipText = std::format("Memory Cached: {}",
                                                          UI::Format::bytesUsedTotalPercentCompact(
-                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, cachedPercentClamped)),
+                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, snap.memoryCachedPercent)),
                               .value01 = UI::Format::percent01(cachedPercentClamped),
                               .color = theme.scheme().chartCpu});
     }
