@@ -69,6 +69,9 @@ void Theme::loadDefaultFallbackTheme()
     fallback.statusRunning = green;
     fallback.statusStopped = red;
     fallback.statusSleeping = yellow;
+    fallback.statusDiskSleep = orange; // Uninterruptible disk sleep
+    fallback.statusZombie = red;       // Defunct/zombie process
+    fallback.statusIdle = gray;        // Idle kernel thread
 
     fallback.chartCpu = blue;
     fallback.chartMemory = green;
@@ -152,6 +155,27 @@ void Theme::loadDefaultFallbackTheme()
     // Close button colors (title bar ×)
     fallback.closeButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
     fallback.closeButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
+
+    // Success button colors (Apply, Resume, etc.)
+    fallback.successButton = ImVec4(0.20F, 0.60F, 0.20F, 1.0F);
+    fallback.successButtonHovered = ImVec4(0.25F, 0.70F, 0.25F, 1.0F);
+    fallback.successButtonActive = ImVec4(0.15F, 0.50F, 0.15F, 1.0F);
+
+    // GPU chart colors (reuse blue/green/orange/red family for readable defaults)
+    fallback.gpuUtilization = blue;
+    fallback.gpuUtilizationFill = ImVec4(0.26F, 0.59F, 0.98F, 0.3F);
+    fallback.gpuMemory = green;
+    fallback.gpuMemoryFill = ImVec4(0.0F, 1.0F, 0.0F, 0.3F);
+    fallback.gpuTemperature = orange;
+    fallback.gpuPower = yellow;
+    fallback.gpuEncoder = ImVec4(0.60F, 0.40F, 0.80F, 1.0F); // purple
+    fallback.gpuDecoder = ImVec4(0.40F, 0.80F, 0.80F, 1.0F); // teal
+    fallback.gpuClock = ImVec4(0.90F, 0.70F, 0.0F, 1.0F);    // amber
+    fallback.gpuClockFill = ImVec4(0.90F, 0.70F, 0.0F, 0.3F);
+    fallback.gpuFan = ImVec4(0.60F, 0.80F, 0.60F, 1.0F); // light green
+
+    // Chart overlay: semi-transparent white line for peak markers
+    fallback.chartPeakLine = ImVec4(1.0F, 1.0F, 1.0F, 0.35F);
 
     // Network chart colors (TX = blue like CPU; RX = green like memory, both safe distinct defaults)
     fallback.chartNetTx = blue;
