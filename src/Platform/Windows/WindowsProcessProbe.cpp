@@ -370,7 +370,8 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // enumeration is enabled in the future, this cache must be protected by a mutex.
     static std::unordered_map<std::wstring, std::string> s_cache;
     std::wstring cacheKey(imagePath);
-    std::ranges::transform(cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    std::ranges::transform(
+        cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
     if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
     {
         return it->second;
@@ -526,8 +527,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         // Anchor to the drive root: check that the path starts with <letter>:\windows\
         // so that a user directory that happens to contain the word "windows" (e.g.
         // C:\Users\awindows\System32\) cannot false-match the heuristic.
-        const bool isInWindowsDir =
-            lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
+        const bool isInWindowsDir = lowerPath.size() > 3 && lowerPath[1] == ':' && lowerPath.substr(2).starts_with("\\windows\\");
         const bool isInSystemDir =
             lowerPath.contains("\\system32\\") || lowerPath.contains("\\syswow64\\") || lowerPath.contains("\\systemapps\\");
 
