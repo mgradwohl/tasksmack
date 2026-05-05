@@ -1290,23 +1290,20 @@ modal_window_dim_background = "#0000004D"
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRx_ParsedWhenPresent)
 {
-    // Prepend a [meta] block and add net_tx/net_rx to k_FullThemeTomlBody
-    const std::string toml = R"(
+    // Standalone minimal TOML — avoids duplicate [charts] error that would occur
+    // if we appended a second [charts] block after k_FullThemeTomlBody.
+    createThemeFile("net-colors.toml", R"(
 [meta]
 name = "Net Color Theme"
 description = "Tests net_tx/net_rx parsing"
 
-)" + std::string(k_FullThemeTomlBody) +
-                             R"(
 [charts]
-cpu    = "#0078D4"
+cpu = "#0078D4"
 memory = "#10893E"
-io     = "#E74856"
-io_write = "#F7630C"
+io = "#E74856"
 net_tx = "#FFC107"
 net_rx = "#AB47BC"
-)";
-    createThemeFile("net-colors.toml", toml);
+)");
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-colors.toml");
     ASSERT_TRUE(theme.has_value());
@@ -1342,21 +1339,20 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_NetTxRxFill_FallBackToLineColorWhenAb
 {
     // Provide net_tx/net_rx line colors but omit the fill variants.
     // chartNetTxFill should fall back to chartNetTx; chartNetRxFill to chartNetRx.
-    const std::string toml = R"(
+    // Use a standalone TOML — appending a second [charts] block after k_FullThemeTomlBody
+    // would cause a toml++ duplicate-table parse error.
+    createThemeFile("net-fill-fallback.toml", R"(
 [meta]
 name = "Net Fill Fallback"
-)" + std::string(k_FullThemeTomlBody) +
-                             R"(
+
 [charts]
-cpu    = "#0078D4"
+cpu = "#0078D4"
 memory = "#10893E"
-io     = "#E74856"
-io_write = "#F7630C"
+io = "#E74856"
 net_tx = "#FFC107"
 net_rx = "#AB47BC"
 # net_tx_fill and net_rx_fill intentionally absent — should fall back to line colors
-)";
-    createThemeFile("net-fill-fallback.toml", toml);
+)");
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "net-fill-fallback.toml");
     ASSERT_TRUE(theme.has_value());
