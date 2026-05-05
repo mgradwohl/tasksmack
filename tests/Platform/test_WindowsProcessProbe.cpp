@@ -69,8 +69,6 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
     {
         EXPECT_FALSE(caps.hasReducedPrivileges);
     }
-    // Either way, hasReducedPrivileges must be a valid bool (no undefined state).
-    EXPECT_TRUE(caps.hasReducedPrivileges == true || caps.hasReducedPrivileges == false);
 }
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)

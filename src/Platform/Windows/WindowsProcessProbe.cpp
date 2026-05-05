@@ -540,12 +540,32 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     // This is safe to call repeatedly; the elevation state is constant for the lifetime of the process.
     // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
     bool reducedPrivileges = true; // Conservative default: assume non-elevated
-    HANDLE hToken = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken) != FALSE)
+
+    // RAII wrapper for the process token handle — ensures CloseHandle is called on all paths.
+    struct TokenHandle
+    {
+        HANDLE h = nullptr;
+        TokenHandle() = default;
+        explicit TokenHandle(HANDLE hIn) noexcept : h(hIn) {}
+        TokenHandle(const TokenHandle&) = delete;
+        TokenHandle& operator=(const TokenHandle&) = delete;
+        TokenHandle(TokenHandle&&) = delete;
+        TokenHandle& operator=(TokenHandle&&) = delete;
+        ~TokenHandle() noexcept
+        {
+            if (h != nullptr)
+            {
+                CloseHandle(h);
+            }
+        }
+    };
+
+    TokenHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.h) != FALSE)
     {
         TOKEN_ELEVATION elevation{};
         DWORD dwSize = sizeof(elevation);
-        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
+        if (GetTokenInformation(token.h, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
         {
             reducedPrivileges = (elevation.TokenIsElevated == 0);
         }
@@ -553,7 +573,6 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         {
             spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
         }
-        CloseHandle(hToken);
     }
     else
     {
