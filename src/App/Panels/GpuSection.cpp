@@ -321,8 +321,7 @@ void renderGpuSection(RenderContext& ctx)
         {
             // Use snap bytes and derive percent from them so bytes and percent in the tooltip
             // are consistent with each other (avoids impossible combinations when smoothing lags snap)
-            const double snapMemPercent =
-                (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
+            const double snapMemPercent = (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {}",
