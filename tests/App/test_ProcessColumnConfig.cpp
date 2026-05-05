@@ -29,11 +29,15 @@ TEST(ProcessColumnConfigTest, AllColumnsArraySizeMatchesCount)
 
 TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
 {
-    // Verify that PID and Name are always the first two columns — these are
-    // stable anchors that are unlikely to move regardless of future additions.
-    // The full sequential contract is covered by ToIndexIsMonotonic below.
+    // Verify the positions of stable anchor columns.
+    // These indices are part of the public table-order contract: identity columns come
+    // first, Windows-only feature columns (Publisher, Type, GdiObjects) follow in
+    // documented order, and no accidental reorder should go undetected.
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
+    EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 7);         // Process type — after State(5) and Status(6)
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 18); // GDI count — after Handles(17)
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)

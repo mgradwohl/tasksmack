@@ -192,7 +192,10 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
             m_PowerHistory.push_back(snapshot->powerWatts);
             m_GpuUtilHistory.push_back(snapshot->gpuUtilPercent);
             m_GpuMemHistory.push_back(Domain::Numeric::toDouble(snapshot->gpuMemoryBytes));
-            m_GdiHistory.push_back(Domain::Numeric::toDouble(snapshot->gdiObjectCount));
+            m_GdiHistory.push_back(snapshot->gdiObjectCount.has_value()
+                                       ? Domain::Numeric::toDouble(*snapshot->gdiObjectCount)
+                                       // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the line.
+                                       : std::numeric_limits<double>::quiet_NaN());
             m_Timestamps.push_back(nowSeconds);
 
             // Update peak memory percent (from snapshot's peak value)
@@ -425,7 +428,10 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
     const double targetPower = std::max(0.0, snapshot.powerWatts);
     const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
     const double targetGpuMem = Domain::Numeric::toDouble(snapshot.gpuMemoryBytes);
-    const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(snapshot.gdiObjectCount));
+    // Use 0 when GDI count is unavailable (nullopt) so the exponential smoother keeps a
+    // neutral baseline rather than tracking stale data. The history chart uses NaN for
+    // nullopt samples instead, so the two representations serve different purposes.
+    const double targetGdiObjects = std::max(0.0, Domain::Numeric::toDouble(snapshot.gdiObjectCount.value_or(0)));
 
     const bool initialized = m_SmoothedUsage.initialized && (deltaTimeSeconds > 0.0F);
 

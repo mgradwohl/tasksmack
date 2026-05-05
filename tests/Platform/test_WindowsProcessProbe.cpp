@@ -539,10 +539,7 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
             continue;
         }
         std::string lowerCmd = proc.command;
-        for (auto& c : lowerCmd)
-        {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
+        std::ranges::transform(lowerCmd, lowerCmd.begin(), [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
         const bool inSystem32 = lowerCmd.contains("\\windows\\system32\\") || lowerCmd.contains("\\windows\\syswow64\\");
         if (inSystem32)
         {

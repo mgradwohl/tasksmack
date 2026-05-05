@@ -729,11 +729,6 @@ if(WIN32)
     )
 
     target_link_libraries(TaskSmack PRIVATE ${TASKSMACK_WINDOWS_SYSTEM_LIBS})
-
-    # WindowsProcessProbe.cpp is also compiled into other targets such as tests
-    # and benchmarks. Apply the same system libraries to targets defined later
-    # in this directory so GetFileVersionInfo* resolves everywhere on Windows.
-    link_libraries(${TASKSMACK_WINDOWS_SYSTEM_LIBS})
 elseif(UNIX AND NOT APPLE)
     target_link_libraries(TaskSmack PRIVATE dl)
 endif()

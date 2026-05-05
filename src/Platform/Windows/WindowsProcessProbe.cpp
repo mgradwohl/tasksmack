@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <limits>
 #include <optional>
 #include <string>
@@ -168,15 +169,28 @@ namespace
         return {};
     }
 
-    std::array<WCHAR, MAX_PATH> path{};
-    // MAX_PATH is 260 on Windows; use it as fallback if conversion somehow fails
-    DWORD size = Domain::Numeric::narrowOr<DWORD>(path.size(), DWORD{MAX_PATH});
+    // Start at MAX_PATH and grow up to the Windows long-path limit (32767 chars).
+    // QueryFullProcessImageNameW sets the buffer size to the number of chars written
+    // (excluding the null terminator) on success, or leaves it unchanged on failure.
+    constexpr DWORD kInitialSize = MAX_PATH;
+    constexpr DWORD kMaxLongPath = 32767;
 
-    if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
+    std::wstring path(kInitialSize, L'\0');
+    for (;;)
     {
-        return WinString::wideToUtf8(path.data());
+        DWORD size = static_cast<DWORD>(path.size());
+        if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
+        {
+            path.resize(size);
+            return WinString::wideToUtf8(path);
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || path.size() >= kMaxLongPath)
+        {
+            return {};
+        }
+        const DWORD newSize = std::min(static_cast<DWORD>(path.size()) * 2, kMaxLongPath);
+        path.assign(newSize, L'\0');
     }
-    return {};
 }
 
 using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
@@ -348,11 +362,16 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     }
 
     // Cache publisher by executable path — version info is static for a given binary.
+    // Normalise to lowercase before lookup so that different-cased paths for the same
+    // binary (which QueryFullProcessImageNameW does not guarantee to be stable) share
+    // a single cache entry.
     // NOTE: not guarded by a mutex. enumerate() is invoked on the main thread and
     // BackgroundSampler (which would require a lock) is not yet active. If concurrent
     // enumeration is enabled in the future, this cache must be protected by a mutex.
     static std::unordered_map<std::wstring, std::string> s_cache;
-    if (const auto it = s_cache.find(imagePath); it != s_cache.end())
+    std::wstring cacheKey(imagePath);
+    std::ranges::transform(cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
     {
         return it->second;
     }
@@ -363,14 +382,14 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.c_str(), &unused);
     if (infoSize == 0)
     {
-        s_cache.emplace(imagePath, std::string{});
+        s_cache.emplace(cacheKey, std::string{});
         return {};
     }
 
     std::vector<BYTE> buffer(infoSize);
     if (GetFileVersionInfoW(imagePath.c_str(), 0, infoSize, buffer.data()) == 0)
     {
-        s_cache.emplace(imagePath, std::string{});
+        s_cache.emplace(cacheKey, std::string{});
         return {};
     }
 
@@ -423,7 +442,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         result = queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
     }
 
-    s_cache.emplace(imagePath, result);
+    s_cache.emplace(cacheKey, result);
     return result;
 }
 
@@ -514,7 +533,11 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         }
     }
 
-    return "Background Process";
+    // If we could inspect USER objects (hQuery != null) and the process had none,
+    // it is definitely not a GUI app: classify it as Background Process.
+    // If we could NOT open the process, we cannot rule out that it owns UI windows,
+    // so return an empty string to indicate the classification is unknown.
+    return (hQuery != nullptr) ? "Background Process" : "";
 }
 
 } // namespace
