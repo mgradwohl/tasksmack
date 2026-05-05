@@ -332,6 +332,7 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
+                                   .tooltipText = std::format("GPU Memory: {}", UI::Format::percentCompact(smoothed.memoryPercent)),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }
