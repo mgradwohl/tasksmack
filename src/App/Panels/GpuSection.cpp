@@ -321,15 +321,15 @@ void renderGpuSection(RenderContext& ctx)
                                .color = theme.scheme().gpuUtilization});
         if (snap.memoryTotalBytes > 0)
         {
-            // Use smoothed.memoryPercent for the bar and value text so the display is stable
-            // across frames.  The raw snap bytes are shown in the tooltip (hover only) and
-            // do not affect bar fill, so a single-frame spike in snap data won't cause the
-            // bar to visually jump.
+            // Keep the bar/value text smoothed for visual stability, but make the tooltip
+            // internally consistent by formatting both bytes and percent from the same raw
+            // snapshot.
+            const double rawMemoryPercent = (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {} ({})",
                                                               UI::Format::formatBytes(snap.memoryUsedBytes),
-                                                              UI::Format::percentCompact(smoothed.memoryPercent)),
+                                                              UI::Format::percentCompact(rawMemoryPercent)),
                                    .value01 = UI::Format::percent01(smoothed.memoryPercent),
                                    .color = theme.scheme().gpuMemory});
         }
