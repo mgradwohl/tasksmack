@@ -549,8 +549,20 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         explicit TokenHandle(HANDLE hIn) noexcept : h(hIn) {}
         TokenHandle(const TokenHandle&) = delete;
         TokenHandle& operator=(const TokenHandle&) = delete;
-        TokenHandle(TokenHandle&&) = delete;
-        TokenHandle& operator=(TokenHandle&&) = delete;
+        TokenHandle(TokenHandle&& other) noexcept : h(other.h) { other.h = nullptr; }
+        TokenHandle& operator=(TokenHandle&& other) noexcept
+        {
+            if (this != &other)
+            {
+                if (h != nullptr)
+                {
+                    CloseHandle(h);
+                }
+                h = other.h;
+                other.h = nullptr;
+            }
+            return *this;
+        }
         ~TokenHandle() noexcept
         {
             if (h != nullptr)
