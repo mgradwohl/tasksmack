@@ -251,19 +251,18 @@ void renderGpuSection(RenderContext& ctx)
                                      theme.scheme().gpuDecoder);
                 }
 
-                // Fetch snapshot history once per frame (outside the hover block) so that
-                // we copy the full GPUSnapshot vector at most once per render, not on every
-                // hovered frame.  The copy is needed to read historical used/total bytes that
-                // are more accurate than converting the percent series with today's budget
-                // (important on Windows DXGI where memoryTotalBytes is a dynamic budget).
-                const auto snapHistory = ctx.gpuModel->history(snap.gpuId);
-
                 // Tooltip on hover
                 if (ImPlot::IsPlotHovered() && !timeData.empty())
                 {
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
+                        // Fetch snapshot history lazily — only when the user actually hovers
+                        // the plot.  GPUModel::history() returns a full copy so we defer
+                        // that allocation until it is actually needed.
+                        // (important on Windows DXGI where memoryTotalBytes is a dynamic budget).
+                        const auto snapHistory = ctx.gpuModel->history(snap.gpuId);
+
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
@@ -324,7 +323,8 @@ void renderGpuSection(RenderContext& ctx)
             // Keep the bar/value text smoothed for visual stability, but make the tooltip
             // internally consistent by formatting both bytes and percent from the same raw
             // snapshot.
-            const double rawMemoryPercent = (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
+            const double rawMemoryPercent =
+                (static_cast<double>(snap.memoryUsedBytes) / static_cast<double>(snap.memoryTotalBytes)) * 100.0;
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
                                    .label = "GPU Memory",
                                    .tooltipText = std::format("GPU Memory: {} ({})",
