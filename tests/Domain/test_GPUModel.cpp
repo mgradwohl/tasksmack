@@ -823,8 +823,7 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
     // the same length as their own history even when one GPU has fewer samples.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
-    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA")
-        .withGPU("GPU1", "GPU One", "VendorB");
+    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA").withGPU("GPU1", "GPU One", "VendorB");
 
     Domain::GPUModel model(std::move(probe));
     for (int i = 0; i < 3; ++i)
