@@ -1217,7 +1217,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
 
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
                          .label = "Network Received",
-                         .tooltipText = std::format("Avg Recv Rate: {}",
+                         .tooltipText = std::format("Avg Received Rate: {}",
                                                     UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit)),
                          .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartNetRx};
