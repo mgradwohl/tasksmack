@@ -181,6 +181,8 @@ jobs:
             escaped_content="${content//'%'/'%25'}"
             escaped_content="${escaped_content//$'\r'/'%0D'}"
             escaped_content="${escaped_content//$'\n'/'%0A'}"
+            escaped_content="${escaped_content//,/%2C}"
+            escaped_content="${escaped_content//:/%3A}"
             echo "::error file=sanitizer-logs/${{ matrix.preset }}.log,line=$line::${escaped_content}"
           done || true
 

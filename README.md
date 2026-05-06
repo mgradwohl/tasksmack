@@ -46,9 +46,9 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 
 ## Documentation
 
-README is the primary landing page today and is intentionally structured so it can be promoted to a GitHub Pages home page later without major rework.
+This README serves as the primary landing page and is intentionally structured so it can be promoted to a GitHub Pages home page later without major rework.
 
-- **Project overview and features:** [README.md](README.md)
+- **Project overview and features:** [TaskSmack](#tasksmack)
 - **Contributor workflow (canonical):** [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Architecture and engineering notes (canonical):** [tasksmack.md](tasksmack.md)
 - **Completed features list (canonical):** [completed-features.md](completed-features.md)
