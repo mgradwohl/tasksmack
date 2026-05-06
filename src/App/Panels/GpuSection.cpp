@@ -105,10 +105,7 @@ void renderGpuSection(RenderContext& ctx)
         return;
     }
 
-    // Get timestamps for history charts
-    const auto gpuTimestamps = ctx.gpuModel->historyTimestamps();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(gpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
     ImGui::Spacing();
@@ -172,8 +169,7 @@ void renderGpuSection(RenderContext& ctx)
 
         // Per-GPU timestamps: only includes samples when this GPU was present,
         // so they stay aligned with the per-GPU history vectors even when the GPU
-        // was intermittently absent (which would cause the global gpuTimestamps to
-        // include samples this GPU never recorded).
+        // was intermittently absent (global timestamps include samples this GPU never recorded).
         auto perGpuTimestamps = ctx.gpuModel->historyTimestamps(snap.gpuId);
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
@@ -189,6 +185,11 @@ void renderGpuSection(RenderContext& ctx)
         cropFrontToSize(fanHist, alignedCount);
 
         std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
+
+        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
+        // stay consistent with the data being plotted even when a GPU is intermittently absent
+        // (global timestamps would include samples this GPU never recorded, causing a mismatch).
+        const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         // Get max clock for normalization
         const float maxClockMHz =
