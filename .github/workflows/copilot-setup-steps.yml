@@ -1,0 +1,127 @@
+name: "Copilot Setup Steps"
+
+# Run automatically when this file changes for easy validation,
+# and allow manual testing through the repository's "Actions" tab.
+on:
+    workflow_dispatch:
+    push:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+    pull_request:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+
+env:
+    LLVM_VERSION: '22'
+
+jobs:
+    # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+    copilot-setup-steps:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+
+        permissions:
+            contents: read
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+
+            # ── APT hygiene ────────────────────────────────────────────────────────
+            - name: Remove stale Microsoft apt sources
+              shell: bash
+              run: |
+                  # Ubuntu 24.04 GitHub runners ship Microsoft apt repos that
+                  # intermittently return 403 Forbidden and abort apt-get update.
+                  sudo rm -f \
+                    /etc/apt/sources.list.d/azure-cli.list \
+                    /etc/apt/sources.list.d/microsoft-prod.list \
+                    /etc/apt/sources.list.d/packages-microsoft-prod.list
+                  sudo find /etc/apt/sources.list.d/ -name '*microsoft*' -delete 2>/dev/null || true
+
+            # ── CMake (>= 3.29) via Kitware APT ───────────────────────────────────
+            - name: Install CMake via Kitware APT
+              shell: bash
+              run: |
+                  sudo apt-get update -y
+                  sudo apt-get install -y ca-certificates gpg wget
+                  wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
+                    | gpg --dearmor - \
+                    | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
+                  echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
+                    | sudo tee /etc/apt/sources.list.d/kitware.list > /dev/null
+                  sudo apt-get update -y
+                  sudo apt-get install -y cmake
+
+            # ── LLVM 22 toolchain ─────────────────────────────────────────────────
+            - name: Install LLVM ${{ env.LLVM_VERSION }}
+              shell: bash
+              run: |
+                  wget https://apt.llvm.org/llvm.sh
+                  chmod +x llvm.sh
+                  sudo ./llvm.sh ${{ env.LLVM_VERSION }}
+                  rm -f llvm.sh
+
+                  sudo apt-get install -y \
+                    clang-format-${{ env.LLVM_VERSION }} \
+                    clang-tidy-${{ env.LLVM_VERSION }} \
+                    clangd-${{ env.LLVM_VERSION }} \
+                    libc++-${{ env.LLVM_VERSION }}-dev \
+                    libc++abi-${{ env.LLVM_VERSION }}-dev \
+                    llvm-${{ env.LLVM_VERSION }}-dev \
+                    ninja-build \
+                    ccache \
+                    libgl1-mesa-dev \
+                    libx11-dev \
+                    libxrandr-dev \
+                    libxinerama-dev \
+                    libxcursor-dev \
+                    libxi-dev \
+                    libxext-dev \
+                    libwayland-dev \
+                    libxkbcommon-dev \
+                    libfreetype6-dev
+
+            - name: Configure LLVM alternatives
+              shell: bash
+              run: |
+                  VER=${{ env.LLVM_VERSION }}
+
+                  sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100
+                  sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-$VER 100
+                  sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-$VER 100
+                  sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-$VER 100
+                  sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-$VER 100
+                  sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-$VER 100
+                  sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-$VER 100
+                  sudo update-alternatives --install /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-$VER 100
+
+                  sudo update-alternatives --set clang /usr/bin/clang-$VER
+                  sudo update-alternatives --set clang++ /usr/bin/clang++-$VER
+                  sudo update-alternatives --set clang-format /usr/bin/clang-format-$VER
+                  sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$VER
+                  sudo update-alternatives --set llvm-profdata /usr/bin/llvm-profdata-$VER
+                  sudo update-alternatives --set llvm-cov /usr/bin/llvm-cov-$VER
+
+                  if [[ -x "/usr/bin/clangd-$VER" ]]; then
+                    sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-$VER 100
+                    sudo update-alternatives --set clangd /usr/bin/clangd-$VER
+                  fi
+
+            # ── Python 3.14 + jinja2 ──────────────────────────────────────────────
+            - name: Setup Python 3.14
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.14'
+                  cache: 'pip'
+
+            - name: Install Python dependencies
+              shell: bash
+              run: |
+                  python -m pip install --upgrade pip
+                  python -m pip install -r requirements.txt
+
+            # ── Verify environment ────────────────────────────────────────────────
+            - name: Validate prerequisites
+              shell: bash
+              run: ./tools/check-prereqs.sh
