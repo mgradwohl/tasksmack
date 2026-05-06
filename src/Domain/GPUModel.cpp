@@ -337,7 +337,7 @@ std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
     result.reserve(it->second.size());
     for (std::size_t i = 0; i < it->second.size(); ++i)
     {
-        result.push_back(it->second[i].captureTimeSec);
+        result.push_back(it->second.ref(i).captureTimeSec);
     }
     return result;
 }

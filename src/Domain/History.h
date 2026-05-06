@@ -64,6 +64,13 @@ template<typename T, std::size_t Capacity> class History
         return m_Data[readIndex];
     }
 
+    /// Access element by logical index without copying (0 = oldest, size()-1 = newest).
+    [[nodiscard]] const T& ref(std::size_t index) const noexcept
+    {
+        const std::size_t readIndex = (m_WriteIndex + Capacity - m_Size + index) % Capacity;
+        return m_Data[readIndex];
+    }
+
     /// Get most recent value (or default if empty).
     [[nodiscard]] T latest() const noexcept(std::is_nothrow_default_constructible_v<T> && std::is_nothrow_copy_constructible_v<T>)
     {

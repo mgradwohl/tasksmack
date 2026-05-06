@@ -796,8 +796,12 @@ struct AlignedBytesParts
     return std::format("{:.2Lf} µW", watts * 1'000'000.0);
 }
 
-/// Format power value as formatPowerCompact but shows "0.00 W" for non-positive values.
-/// Use this when a zero reading is valid and distinguishable from an unavailable reading.
+/// Format power value for per-process consumption contexts.
+/// Returns "0.00 W" for zero; also clamps negative values to "0.00 W" because
+/// per-process energy counters use 0.0 as the sentinel for "not yet measured"
+/// and per-process power is never negative. Do NOT use this formatter for
+/// system/battery power (Domain::PowerStatus::powerWatts), which is signed and
+/// where negative watts indicate battery charging — use formatPowerCompact there.
 [[nodiscard]] inline auto formatPowerOrZero(double watts) -> std::string
 {
     if (watts <= 0.0)
