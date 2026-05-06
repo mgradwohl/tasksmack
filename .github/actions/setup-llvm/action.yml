@@ -49,14 +49,19 @@ runs:
     - name: Install LLVM ${{ inputs.llvm-version }}
       shell: bash
       run: |
+        LLVM_VER="${{ inputs.llvm-version }}"
+        if [[ -z "$LLVM_VER" ]]; then
+          LLVM_VER='22'
+        fi
+
         # Download and run LLVM installer
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh ${{ inputs.llvm-version }}
+        sudo ./llvm.sh "$LLVM_VER"
         rm -f llvm.sh
 
         # Build package list - always include GUI dependencies
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${{ inputs.llvm-version }}-dev libc++abi-${{ inputs.llvm-version }}-dev libfreetype6-dev"
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev"
 
         if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
@@ -65,13 +70,13 @@ runs:
           PACKAGES="$PACKAGES ccache"
         fi
         if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
-          PACKAGES="$PACKAGES clang-format-${{ inputs.llvm-version }}"
+          PACKAGES="$PACKAGES clang-format-${LLVM_VER}"
         fi
         if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
-          PACKAGES="$PACKAGES clang-tidy-${{ inputs.llvm-version }}"
+          PACKAGES="$PACKAGES clang-tidy-${LLVM_VER}"
         fi
         if [[ "${{ inputs.install-clangd }}" == "true" ]]; then
-          PACKAGES="$PACKAGES clangd-${{ inputs.llvm-version }}"
+          PACKAGES="$PACKAGES clangd-${LLVM_VER}"
         fi
 
         # Install packages
@@ -81,7 +86,10 @@ runs:
     - name: Configure LLVM alternatives
       shell: bash
       run: |
-        VER=${{ inputs.llvm-version }}
+        VER="${{ inputs.llvm-version }}"
+        if [[ -z "$VER" ]]; then
+          VER='22'
+        fi
 
         # Core LLVM tools (always configured)
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, 'dev/**' ]
+    branches: [main, 'dev/**']
   pull_request:
-    branches: [ main, 'dev/**' ]
+    branches: [main, 'dev/**']
   workflow_dispatch:
 
 concurrency:
@@ -16,7 +16,39 @@ env:
   LLVM_SEMVER_VERSION: '22.1.0'
 
 jobs:
+  detect-docs-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.set_output.outputs.docs_only }}
+    steps:
+      - name: Detect docs-only pull request changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            docs_only:
+              - '**/*.md'
+              - 'docs/**'
+              - '.github/ISSUE_TEMPLATE/**'
+              - '.github/pull_request_template.md'
+              - '.github/PULL_REQUEST_TEMPLATE/**'
+              - 'LICENSE'
+
+      - name: Normalize docs-only output
+        id: set_output
+        run: |
+          if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
+            echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   validate-environment:
+    needs: [detect-docs-only]
+    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -40,6 +72,8 @@ jobs:
         run: ./tools/check-prereqs.sh
 
   validate-environment-windows:
+    needs: [detect-docs-only]
+    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     permissions:
@@ -60,121 +94,29 @@ jobs:
         run: ./tools/check-prereqs.ps1
 
   build-linux:
-    needs: [validate-environment]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    needs: [detect-docs-only, validate-environment]
+    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
     permissions:
       contents: read
       actions: write
-    strategy:
-      fail-fast: true
-      matrix:
-        build_type: [debug, release]
-    name: Build & Test (Linux ${{ matrix.build_type }})
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: linux-${{ matrix.build_type }}
-          max-size: 500M
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
-        with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Configure
-        run: cmake --preset ${{ matrix.build_type }} -DPython3_EXECUTABLE="$(which python)"
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.build_type }}
-
-      - name: Test
-        run: ctest --preset ${{ matrix.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: linux-${{ matrix.build_type }}-test-results
-          path: build/${{ matrix.build_type }}/test-results.xml
-          retention-days: 30
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-24.04
+      llvm-version: '22'
 
   build-windows:
-    needs: [validate-environment-windows]
-    runs-on: windows-latest
-    timeout-minutes: 20
+    needs: [detect-docs-only, validate-environment-windows]
+    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
     permissions:
       contents: read
       actions: write
-    strategy:
-      fail-fast: true
-      matrix:
-        build_type: [debug, release]
-    name: Build & Test (Windows ${{ matrix.build_type }})
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup Windows LLVM
-        uses: ./.github/actions/setup-windows-llvm
-        with:
-          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: windows-${{ matrix.build_type }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
-        with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Configure
-        shell: pwsh
-        env:
-          LLVM_ROOT: C:\Program Files\LLVM
-        run: |
-          cmake --preset win-${{ matrix.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
-
-      - name: Build
-        shell: pwsh
-        env:
-          LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --build --preset win-${{ matrix.build_type }}
-
-      - name: Test
-        shell: pwsh
-        run: ctest --preset win-${{ matrix.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-${{ matrix.build_type }}-test-results
-          path: build/win-${{ matrix.build_type }}/test-results.xml
-          retention-days: 30
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: windows-latest
+      llvm-semver-version: '22.1.0'
 
   docs-hygiene:
-    needs: [validate-environment]
+    needs: [detect-docs-only]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -186,7 +128,8 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
-    needs: [validate-environment, build-linux]
+    needs: [detect-docs-only, validate-environment, build-linux]
+    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -226,10 +169,6 @@ jobs:
       - name: Run clang-tidy
         shell: bash
         run: |
-          # Capture output with tee for the artifact while preserving clang-tidy.sh's exit code.
-          # `cmd | tee` exits with tee's code when pipefail is not set (the default for GitHub
-          # Actions run steps). PIPESTATUS[0] captures the script's exit code robustly even
-          # when pipefail is not enabled, so a failure is never silently swallowed.
           ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
 
@@ -242,7 +181,7 @@ jobs:
           retention-days: 14
 
   include-analysis:
-    needs: [validate-environment, build-linux]
+    needs: [detect-docs-only, validate-environment, build-linux]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -317,20 +256,14 @@ jobs:
           echo "## Include-What-You-Use Analysis" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Verify iwyu-output.txt exists and has content before processing
           if [[ ! -f iwyu-output.txt ]] || [[ ! -s iwyu-output.txt ]]; then
             echo "⚠️ **Status:** No IWYU output file generated" >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
 
-          # Check if IWYU found any issues
-          # grep -qE: -q for quiet mode (no output), -E for extended regex
-          # Exit codes: 0 = pattern found, 1 = not found, 2 = error (e.g., file I/O or invalid regex).
           if grep -qE "should add these lines:|should remove these lines:" iwyu-output.txt 2>/dev/null; then
             echo "⚠️ **Status:** Include suggestions found (advisory)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-
-            # Count total suggestion lines to detect truncation from head -50
             TOTAL_SUGGESTION_LINES=$(grep -cE "(should add|should remove|has correct)" iwyu-output.txt 2>/dev/null || echo 0)
             TOTAL_SUGGESTION_LINES=$(echo "$TOTAL_SUGGESTION_LINES" | tr -d ' ')
 
@@ -339,23 +272,11 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # If we truncated the suggestions, let the user know how many lines exist in total
             if [[ "$TOTAL_SUGGESTION_LINES" =~ ^[0-9]+$ ]] && [[ "$TOTAL_SUGGESTION_LINES" -gt 50 ]]; then
               echo "_Note: Showing first 50 of $TOTAL_SUGGESTION_LINES suggestion lines. See artifacts for the full report._" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
             fi
 
-            # Count unique files with suggestions
-            # Expected IWYU line format (per-file summary), e.g.:
-            #   path/to/file.cpp should add these lines:
-            #   path/to/file.cpp should remove these lines:
-            # The sed expression removes " should add/remove these lines:..." suffix from each line,
-            # deduplicates filenames, and counts them.
-            #
-            # Use subshell with pipefail to properly capture pipeline errors and exit status
-            # (without pipefail, $? only reflects the last command - wc -l - which rarely fails)
-            # Use anchored sed pattern 's/ should ... these lines:.*$//' to avoid issues if
-            # filename contains " should " in its path
             SUGGESTED_FILES=$(
               set -o pipefail
               grep -E "(should add these lines:|should remove these lines:)" iwyu-output.txt 2>/dev/null \
@@ -364,14 +285,8 @@ jobs:
                 | wc -l
             )
             PIPELINE_STATUS=$?
-
-            # Trim whitespace from wc output (some implementations add leading spaces)
             SUGGESTED_FILES=$(echo "$SUGGESTED_FILES" | tr -d ' ')
 
-            # Check if pipeline failed or output is invalid
-            # Note: while wc -l itself always outputs a count, earlier grep/sed/sort stages can fail,
-            # so we validate the entire pipeline's exit status (PIPELINE_STATUS) and ensure the output is numeric.
-            # Exit code 1 from grep means "no matches" which is valid; only exit codes >= 2 indicate errors.
             if [[ "$PIPELINE_STATUS" -ge 2 ]]; then
               echo "⚠️ Warning: Pipeline command failed; falling back to 0 suggested files." >> $GITHUB_STEP_SUMMARY
               SUGGESTED_FILES=0
@@ -399,278 +314,3 @@ jobs:
           name: iwyu-results
           path: iwyu-output.txt
           retention-days: 14
-
-  coverage:
-    needs: [validate-environment, build-linux]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-coverage-tools: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: linux-coverage
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
-        with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Generate coverage report
-        run: |
-          ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
-
-      - name: Add coverage summary to workflow summary
-        if: always()
-        run: |
-          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ -f coverage-output.txt ]; then
-            echo "### Coverage Summary" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Check coverage threshold
-        if: always()
-        run: |
-          # Extract coverage percentage from llvm-cov output
-          # The TOTAL line format is: "TOTAL    NNN    MMM    XX.XX%"
-          if [ -f coverage-output.txt ]; then
-            COVERAGE=$(grep "^TOTAL" coverage-output.txt | awk '{print $NF}' | sed 's/%//')
-            THRESHOLD=80
-
-            echo "📊 Current coverage: ${COVERAGE}%"
-            echo "🎯 Minimum threshold: ${THRESHOLD}%"
-
-            # Use awk for floating point comparison (bc might not be available)
-            if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
-              echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-              echo "This is a warning only - build will continue"
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-              # Don't fail the build, just warn
-            else
-              echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "❌ Coverage output file not found - cannot check threshold"
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Coverage Check Failed:** Could not find coverage output file" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 30
-
-  sanitizers:
-    needs: [validate-environment, build-linux]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      actions: write
-    strategy:
-      fail-fast: false
-      matrix:
-        preset: [asan-ubsan, tsan]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: linux-${{ matrix.preset }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
-        with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DPython3_EXECUTABLE="$(which python)"
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
-
-      - name: Create output directories
-        run: |
-          mkdir -p sanitizer-logs
-          mkdir -p sanitizer-reports
-
-      - name: Test with sanitizers
-        id: sanitizer-test
-        continue-on-error: true
-        run: |
-          ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
-          echo "test_result=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-
-      - name: Annotate sanitizer failures
-        if: steps.sanitizer-test.outputs.test_result != '0'
-        run: |
-          grep -n "ERROR:" sanitizer-logs/${{ matrix.preset }}.log | while IFS=: read -r line content; do
-            echo "::error file=sanitizer-logs/${{ matrix.preset }}.log,line=$line::$content"
-          done || true
-
-      - name: Generate HTML report
-        if: always()
-        run: |
-          cat > sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <meta charset="UTF-8">
-              <title>${{ matrix.preset }} Sanitizer Report</title>
-              <style>
-                  body {
-                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                      line-height: 1.6;
-                      max-width: 1200px;
-                      margin: 0 auto;
-                      padding: 20px;
-                      background-color: #f5f5f5;
-                  }
-                  .header {
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: white;
-                      padding: 30px;
-                      border-radius: 8px;
-                      margin-bottom: 20px;
-                      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                  }
-                  .header h1 {
-                      margin: 0 0 10px 0;
-                      font-size: 2em;
-                  }
-                  .header .timestamp {
-                      opacity: 0.9;
-                      font-size: 0.9em;
-                  }
-                  .content {
-                      background: white;
-                      padding: 30px;
-                      border-radius: 8px;
-                      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                  }
-                  pre {
-                      background-color: #1e1e1e;
-                      color: #d4d4d4;
-                      padding: 20px;
-                      border-radius: 6px;
-                      overflow-x: auto;
-                      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                      font-size: 14px;
-                      line-height: 1.5;
-                      white-space: pre-wrap;
-                      word-wrap: break-word;
-                  }
-                  .error {
-                      color: #f48771;
-                      font-weight: bold;
-                  }
-                  .warning {
-                      color: #dcdcaa;
-                  }
-              </style>
-          </head>
-          <body>
-              <div class="header">
-                  <h1>${{ matrix.preset }} Sanitizer Report</h1>
-                  <div class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</div>
-              </div>
-              <div class="content">
-                  <h2>Test Output</h2>
-                  <pre>
-          EOF
-
-          if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
-            sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' sanitizer-logs/${{ matrix.preset }}.log >> sanitizer-reports/${{ matrix.preset }}.html
-          else
-            echo "No log file found" >> sanitizer-reports/${{ matrix.preset }}.html
-          fi
-
-          cat >> sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
-                  </pre>
-              </div>
-          </body>
-          </html>
-          EOF
-
-      - name: Add sanitizer summary to workflow summary
-        if: always()
-        run: |
-          echo "## ${{ matrix.preset }} Sanitizer Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ steps.sanitizer-test.outputs.test_result }}" = "0" ]; then
-            echo "✅ **Status:** PASSED - No issues detected" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Status:** FAILED - Issues detected" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Issue Summary" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-
-            if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
-              grep -E "(ERROR|SUMMARY):" sanitizer-logs/${{ matrix.preset }}.log | head -20 >> $GITHUB_STEP_SUMMARY || echo "No specific error patterns found" >> $GITHUB_STEP_SUMMARY
-            fi
-
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full report available in artifacts: \`sanitizer-reports/${{ matrix.preset }}.html\`" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload sanitizer logs and reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.preset }}-report
-          path: |
-            sanitizer-logs/${{ matrix.preset }}.log
-            sanitizer-reports/${{ matrix.preset }}.html
-          retention-days: 14
-
-      - name: Fail job if sanitizer found issues
-        if: steps.sanitizer-test.outputs.test_result != '0'
-        run: |
-          echo "Sanitizer detected issues. Failing the job."
-          exit 1
