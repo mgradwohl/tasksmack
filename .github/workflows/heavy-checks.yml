@@ -93,19 +93,24 @@ jobs:
           if [ -f coverage-output.txt ]; then
             COVERAGE=$(grep "^TOTAL" coverage-output.txt | awk '{print $NF}' | sed 's/%//')
             THRESHOLD=80
+            if [[ "$COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+              echo "📊 Current coverage: ${COVERAGE}%"
+              echo "🎯 Minimum threshold: ${THRESHOLD}%"
 
-            echo "📊 Current coverage: ${COVERAGE}%"
-            echo "🎯 Minimum threshold: ${THRESHOLD}%"
-
-            if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
-              echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-              echo "This is a warning only - build will continue"
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+              if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
+                echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+                echo "This is a warning only - build will continue"
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+              fi
             else
-              echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+              echo "⚠️ Coverage TOTAL line missing or unparsable - cannot check threshold"
               echo "" >> $GITHUB_STEP_SUMMARY
-              echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+              echo "⚠️ **Coverage Warning:** Could not parse TOTAL coverage from \`coverage-output.txt\`; threshold check skipped." >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "❌ Coverage output file not found - cannot check threshold"
