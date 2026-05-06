@@ -105,10 +105,7 @@ void renderGpuSection(RenderContext& ctx)
         return;
     }
 
-    // Get timestamps for history charts
-    const auto gpuTimestamps = ctx.gpuModel->historyTimestamps();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    const auto axisConfig = makeTimeAxisConfig(gpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     ImGui::Text("GPU Monitoring (%zu GPU%s)", gpuSnapshots.size(), gpuSnapshots.size() == 1 ? "" : "s");
     ImGui::Spacing();
@@ -170,7 +167,12 @@ void renderGpuSection(RenderContext& ctx)
         auto powerHist = ctx.gpuModel->powerHistory(snap.gpuId);
         auto fanHist = ctx.gpuModel->fanSpeedHistory(snap.gpuId);
 
-        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), gpuTimestamps.size()});
+        // Per-GPU timestamps: only includes samples when this GPU was present,
+        // so they stay aligned with the per-GPU history vectors even when the GPU
+        // was intermittently absent (global timestamps include samples this GPU never recorded).
+        auto perGpuTimestamps = ctx.gpuModel->historyTimestamps(snap.gpuId);
+
+        const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
 
         // Crop histories to aligned size using existing helper
         cropFrontToSize(utilHist, alignedCount);
@@ -182,7 +184,12 @@ void renderGpuSection(RenderContext& ctx)
         cropFrontToSize(powerHist, alignedCount);
         cropFrontToSize(fanHist, alignedCount);
 
-        std::vector<float> timeData = buildTimeAxis(gpuTimestamps, alignedCount, nowSeconds);
+        std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
+
+        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits
+        // stay consistent with the data being plotted even when a GPU is intermittently absent
+        // (global timestamps would include samples this GPU never recorded, causing a mismatch).
+        const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
         // Get max clock for normalization
         const float maxClockMHz =
@@ -257,6 +264,12 @@ void renderGpuSection(RenderContext& ctx)
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
+                        // Fetch only the single snapshot needed for the hovered index.
+                        // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
+                        // perGpuTimestamps and the GPU history are always the same length and aligned
+                        // sample-for-sample, so *idxVal maps directly to the correct history entry.
+                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
+
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
@@ -268,8 +281,19 @@ void renderGpuSection(RenderContext& ctx)
                         }
                         if (*idxVal < memHist.size())
                         {
-                            ImGui::TextColored(
-                                theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
+                            const double pct = static_cast<double>(memHist[*idxVal]);
+                            if (histSnap.has_value() && histSnap->memoryTotalBytes > 0)
+                            {
+                                ImGui::TextColored(
+                                    theme.scheme().gpuMemory,
+                                    "Memory: %s",
+                                    UI::Format::bytesUsedTotalPercentCompact(histSnap->memoryUsedBytes, histSnap->memoryTotalBytes, pct)
+                                        .c_str());
+                            }
+                            else
+                            {
+                                ImGui::TextColored(theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(pct).c_str());
+                            }
                         }
                         if (caps.hasClockSpeeds && *idxVal < clockHist.size())
                         {
@@ -297,17 +321,37 @@ void renderGpuSection(RenderContext& ctx)
         std::vector<NowBar> gpuCoreBars;
         gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.utilizationPercent),
                                .label = "GPU Utilization",
+                               .tooltipText = {},
                                .value01 = UI::Format::percent01(smoothed.utilizationPercent),
                                .color = theme.scheme().gpuUtilization});
-        gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
-                               .label = "GPU Memory",
-                               .value01 = UI::Format::percent01(smoothed.memoryPercent),
-                               .color = theme.scheme().gpuMemory});
+        if (snap.memoryTotalBytes > 0)
+        {
+            // Use the snapshot's own computed percent and raw byte values so the percent
+            // and byte figures always come from the same sample and cannot show an
+            // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                                   .label = "GPU Memory",
+                                   .tooltipText = std::format("GPU Memory: {} ({} / {})",
+                                                              UI::Format::percentCompact(snap.memoryUsedPercent),
+                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
+                                                              UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
+                                   .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                                   .color = theme.scheme().gpuMemory});
+        }
+        else
+        {
+            gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(smoothed.memoryPercent),
+                                   .label = "GPU Memory",
+                                   .tooltipText = std::format("GPU Memory: {}", UI::Format::percentCompact(smoothed.memoryPercent)),
+                                   .value01 = UI::Format::percent01(smoothed.memoryPercent),
+                                   .color = theme.scheme().gpuMemory});
+        }
         if (caps.hasClockSpeeds && snap.gpuClockMHz > 0)
         {
             const double clockPercent = (static_cast<double>(snap.gpuClockMHz) / static_cast<double>(maxClockMHz)) * 100.0;
             gpuCoreBars.push_back({.valueText = std::format("{} MHz", snap.gpuClockMHz),
                                    .label = "GPU Clock",
+                                   .tooltipText = {},
                                    .value01 = UI::Format::percent01(clockPercent),
                                    .color = theme.scheme().gpuClock});
         }
@@ -315,10 +359,12 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.encoderUtilPercent),
                                    .label = "Encoder",
+                                   .tooltipText = {},
                                    .value01 = UI::Format::percent01(snap.encoderUtilPercent),
                                    .color = theme.scheme().gpuEncoder});
             gpuCoreBars.push_back({.valueText = UI::Format::percentCompact(snap.decoderUtilPercent),
                                    .label = "Decoder",
+                                   .tooltipText = {},
                                    .value01 = UI::Format::percent01(snap.decoderUtilPercent),
                                    .color = theme.scheme().gpuDecoder});
         }
@@ -332,6 +378,7 @@ void renderGpuSection(RenderContext& ctx)
             const double tempPercent = (smoothed.temperatureC / static_cast<double>(maxTempC)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{}°C", static_cast<int>(smoothed.temperatureC)),
                                       .label = "GPU Temperature",
+                                      .tooltipText = {},
                                       .value01 = UI::Format::percent01(tempPercent),
                                       .color = theme.scheme().gpuTemperature});
         }
@@ -340,6 +387,7 @@ void renderGpuSection(RenderContext& ctx)
             const double powerPercent = (smoothed.powerWatts / static_cast<double>(maxPowerW)) * 100.0;
             gpuThermalBars.push_back({.valueText = std::format("{:.1f}W", smoothed.powerWatts),
                                       .label = "GPU Power",
+                                      .tooltipText = std::format("GPU Power: {:.2Lf} W", smoothed.powerWatts),
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }
@@ -347,6 +395,7 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedRPMPercent),
                                       .label = "GPU Fan Speed",
+                                      .tooltipText = {},
                                       .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedRPMPercent)),
                                       .color = theme.scheme().gpuFan});
         }

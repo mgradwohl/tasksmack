@@ -14,6 +14,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 // NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
 #include <ranges>
 #include <shared_mutex>
@@ -104,9 +105,11 @@ void GPUModel::refresh()
                                               static_cast<std::ptrdiff_t>(m_HistoryTimestamps.size() - GPU_HISTORY_CAPACITY));
             }
 
-            // Push to history under lock protection
-            for (const auto& [gpuId, snapshot] : m_Snapshots)
+            // Push to history under lock protection — stamp capture time first so that
+            // per-GPU timestamps stay aligned with each GPU's own history entries.
+            for (auto& [gpuId, snapshot] : m_Snapshots)
             {
+                snapshot.captureTimeSec = nowSec;
                 auto histIt = m_Histories.find(gpuId);
                 if (histIt != m_Histories.end())
                 {
@@ -156,6 +159,17 @@ std::vector<GPUSnapshot> GPUModel::history(std::string_view gpuId) const
     const std::size_t copied = it->second.copyTo(result.data(), result.size());
     result.resize(copied);
     return result;
+}
+
+std::optional<GPUSnapshot> GPUModel::snapshotAt(std::string_view gpuId, std::size_t index) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end() || index >= it->second.size())
+    {
+        return std::nullopt;
+    }
+    return it->second[index];
 }
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
@@ -309,6 +323,23 @@ std::vector<double> GPUModel::historyTimestamps() const
 {
     const std::shared_lock lock(m_Mutex);
     return m_HistoryTimestamps;
+}
+
+std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
+{
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+    std::vector<double> result;
+    result.reserve(it->second.size());
+    for (std::size_t i = 0; i < it->second.size(); ++i)
+    {
+        result.push_back(it->second.ref(i).captureTimeSec);
+    }
+    return result;
 }
 
 void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)

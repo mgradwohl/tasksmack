@@ -7,9 +7,17 @@
 namespace Domain
 {
 
-// Immutable snapshot of a single GPU at a point in time
+// Snapshot of a single GPU at a point in time.
+// Fields come from the platform probe and are treated as read-only once pushed
+// into the history ring buffer.  captureTimeSec is the exception: it is 0 after
+// computeSnapshot() and is stamped by GPUModel::refresh() just before the snapshot
+// is pushed, so every entry carries its own monotonic timestamp.
 struct GPUSnapshot
 {
+    // Sample time in seconds from steady_clock::time_since_epoch() (monotonic, not wall-clock).
+    // Use only for relative age/duration calculations between samples, not as an absolute time.
+    double captureTimeSec = 0.0;
+
     // Identity
     std::string gpuId;  // Unique identifier (e.g., "GPU0", "GPU1")
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")

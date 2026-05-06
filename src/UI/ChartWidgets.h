@@ -268,10 +268,32 @@ inline int formatAxisPercent(double value, char* buff, int size, void* /*userDat
 struct NowBar
 {
     std::string valueText;
-    std::string label; // Tooltip label (e.g., "CPU Total", "Memory")
+    std::string label;       // Label used in fallback tooltip construction (e.g., "CPU Total")
+    std::string tooltipText; // Rich tooltip text shown on bar hover (e.g., "CPU Total: 45%");
+                             // falls back to "label: valueText", then label, then valueText when empty
     double value01 = 0.0;
     ImVec4 color;
 };
+
+// Returns the tooltip string to display for a NowBar, using the fallback chain:
+//   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText
+// Callers should invoke this only when the bar is actually hovered to avoid per-frame allocations.
+[[nodiscard]] inline std::string selectNowBarTooltip(const NowBar& bar)
+{
+    if (!bar.tooltipText.empty())
+    {
+        return bar.tooltipText;
+    }
+    if (!bar.label.empty() && !bar.valueText.empty())
+    {
+        return std::format("{}: {}", bar.label, bar.valueText);
+    }
+    if (!bar.label.empty())
+    {
+        return bar.label;
+    }
+    return bar.valueText;
+}
 
 struct TimeAxisConfig
 {
@@ -441,14 +463,17 @@ inline void renderHistoryWithNowBars(const char* tableId,
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
             }
 
-            drawVerticalBarWithValue("##NowBar",
-                                     bars[i].value01,
-                                     bars[i].color,
-                                     plotHeight,
-                                     widthPerBar,
-                                     "",
-                                     "",
-                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
+            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            if (ImGui::IsItemHovered())
+            {
+                const std::string tooltip = selectNowBarTooltip(bars[i]);
+                if (!tooltip.empty())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(tooltip.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -491,14 +516,17 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             ImGui::BeginGroup();
-            drawVerticalBarWithValue("##NowBar",
-                                     bars[i].value01,
-                                     bars[i].color,
-                                     plotHeight,
-                                     widthPerBar,
-                                     "",
-                                     "",
-                                     bars[i].label.empty() ? bars[i].valueText.c_str() : bars[i].label.c_str());
+            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
+            if (ImGui::IsItemHovered())
+            {
+                const std::string tooltip = selectNowBarTooltip(bars[i]);
+                if (!tooltip.empty())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(tooltip.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
             ImGui::EndGroup();
             ImGui::PopID();
 

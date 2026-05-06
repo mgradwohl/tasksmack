@@ -13,6 +13,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <format>
 #include <vector>
 
 namespace App::MemorySection
@@ -150,18 +151,46 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     ImGui::BeginTooltip();
                     const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                     ImGui::TextUnformatted(ageText.c_str());
+                    ImGui::Separator();
 
                     if (*idxVal < memHist.size())
                     {
-                        ImGui::TextColored(theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(memHist[*idxVal]).c_str());
+                        const double pct = static_cast<double>(memHist[*idxVal]);
+                        if (snap.memoryTotalBytes > 0)
+                        {
+                            // Physical RAM total is constant (hardware), so back-calculating bytes from
+                            // the historical percent is exact
+                            const auto usedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+                            ImGui::TextColored(theme.scheme().chartMemory,
+                                               "Used: %s",
+                                               UI::Format::bytesUsedTotalPercentCompact(usedBytes, snap.memoryTotalBytes, pct).c_str());
+                        }
+                        else
+                        {
+                            ImGui::TextColored(theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(pct).c_str());
+                        }
                     }
                     if (*idxVal < cachedHist.size())
                     {
-                        ImGui::TextColored(theme.scheme().chartCpu, "Cached: %s", UI::Format::percentCompact(cachedHist[*idxVal]).c_str());
+                        const double pct = static_cast<double>(cachedHist[*idxVal]);
+                        if (snap.memoryTotalBytes > 0)
+                        {
+                            const auto cachedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
+                            ImGui::TextColored(theme.scheme().chartCpu,
+                                               "Cached: %s",
+                                               UI::Format::bytesUsedTotalPercentCompact(cachedBytes, snap.memoryTotalBytes, pct).c_str());
+                        }
+                        else
+                        {
+                            ImGui::TextColored(theme.scheme().chartCpu, "Cached: %s", UI::Format::percentCompact(pct).c_str());
+                        }
                     }
                     if (*idxVal < swapHist.size())
                     {
-                        ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(swapHist[*idxVal]).c_str());
+                        const double pct = static_cast<double>(swapHist[*idxVal]);
+                        // Swap/page-file size can change at runtime; show percent only to avoid
+                        // stale byte calculations using a total that may have changed
+                        ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(pct).c_str());
                     }
                     ImGui::EndTooltip();
                 }
@@ -176,14 +205,26 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     if (ctx.smoothedMemory != nullptr && snap.memoryTotalBytes > 0)
     {
         const double usedPercentClamped = std::clamp(ctx.smoothedMemory->usedPercent, 0.0, 100.0);
+        // Use the actual sampled bytes and raw snapshot percent for the tooltip so the byte and
+        // percent values are internally consistent; the bar height/valueText show the smoothed
+        // (EMA) value which is a visual artifact and intentionally differs from the raw sample.
         memoryBars.push_back({.valueText = UI::Format::percentCompact(usedPercentClamped),
                               .label = "Memory Used",
+                              .tooltipText = std::format("Memory Used: {}",
+                                                         UI::Format::bytesUsedTotalPercentCompact(
+                                                             snap.memoryUsedBytes, snap.memoryTotalBytes, snap.memoryUsedPercent)),
                               .value01 = UI::Format::percent01(usedPercentClamped),
                               .color = theme.scheme().chartMemory});
 
         const double cachedPercentClamped = std::clamp(ctx.smoothedMemory->cachedPercent, 0.0, 100.0);
+        // Use the actual sampled bytes and raw snapshot percent for the tooltip so the byte and
+        // percent values are internally consistent; the bar height/valueText show the smoothed
+        // (EMA) value which is a visual artifact and intentionally differs from the raw sample.
         memoryBars.push_back({.valueText = UI::Format::percentCompact(cachedPercentClamped),
                               .label = "Memory Cached",
+                              .tooltipText = std::format("Memory Cached: {}",
+                                                         UI::Format::bytesUsedTotalPercentCompact(
+                                                             snap.memoryCachedBytes, snap.memoryTotalBytes, snap.memoryCachedPercent)),
                               .value01 = UI::Format::percent01(cachedPercentClamped),
                               .color = theme.scheme().chartCpu});
     }
@@ -191,8 +232,11 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     if (ctx.smoothedMemory != nullptr && snap.swapTotalBytes > 0)
     {
         const double swapPercentClamped = std::clamp(ctx.smoothedMemory->swapPercent, 0.0, 100.0);
+        // Tooltip is percent-only: swap/page-file total can change at runtime, so back-calculating
+        // bytes from the current total would produce stale values for older samples.
         memoryBars.push_back({.valueText = UI::Format::percentCompact(swapPercentClamped),
                               .label = "Swap Used",
+                              .tooltipText = std::format("Swap Used: {}", UI::Format::percentCompact(swapPercentClamped)),
                               .value01 = UI::Format::percent01(swapPercentClamped),
                               .color = theme.scheme().chartIo});
     }

@@ -703,6 +703,196 @@ TEST(GPUModelTest, HistoryTimestampsEmptyWhenNoRefresh)
 }
 
 // =============================================================================
+// Per-GPU historyTimestamps(gpuId) Tests
+// =============================================================================
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsEmptyForUnknownGpu)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_TRUE(model.historyTimestamps("GPU_UNKNOWN").empty());
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsEmptyWhenNoRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    // No refresh called
+
+    EXPECT_TRUE(model.historyTimestamps("GPU0").empty());
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsLengthMatchesHistory)
+{
+    // historyTimestamps(gpuId) must return the same number of entries
+    // as the per-GPU utilization history so indices stay aligned.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 4; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    const auto utilHist = model.utilizationHistory("GPU0");
+    EXPECT_EQ(timestamps.size(), utilHist.size());
+    EXPECT_EQ(timestamps.size(), 4u);
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsAreMonotonicallyIncreasing)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 0.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 3; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 20.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    ASSERT_GE(timestamps.size(), 2u);
+    for (std::size_t i = 1; i < timestamps.size(); ++i)
+    {
+        EXPECT_GT(timestamps[i], timestamps[i - 1]);
+    }
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithSnapshotAt)
+{
+    // Verify that historyTimestamps("GPU0")[i] matches snapshotAt("GPU0", i).captureTimeSec.
+    // This is the alignment property that GpuSection relies on for tooltip timestamps.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 0.0);
+
+    Domain::GPUModel model(std::move(probe));
+    constexpr int kSamples = 5;
+    for (int i = 0; i < kSamples; ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    const auto timestamps = model.historyTimestamps("GPU0");
+    ASSERT_EQ(static_cast<int>(timestamps.size()), kSamples);
+    for (std::size_t i = 0; i < timestamps.size(); ++i)
+    {
+        const auto snap = model.snapshotAt("GPU0", i);
+        ASSERT_TRUE(snap.has_value());
+        EXPECT_DOUBLE_EQ(timestamps[i], snap->captureTimeSec);
+    }
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsCappedAtCapacity)
+{
+    // After pushing more samples than GPU_HISTORY_CAPACITY, historyTimestamps(gpuId)
+    // returns exactly GPU_HISTORY_CAPACITY entries (ring-buffer wraparound).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 5;
+    for (std::size_t i = 0; i < overCapacity; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i));
+        model.refresh();
+    }
+
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), Domain::GPU_HISTORY_CAPACITY);
+}
+
+TEST(GPUModelTest, PerGpuHistoryTimestampsIndependentPerGpu)
+{
+    // Two GPUs accumulate their own per-GPU timestamp vectors; they must have
+    // the same length as their own history even when one GPU has fewer samples.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "GPU Zero", "VendorA").withGPU("GPU1", "GPU One", "VendorB");
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 3; ++i)
+    {
+        rawProbe->withUtilization("GPU0", 10.0).withUtilization("GPU1", 20.0);
+        model.refresh();
+    }
+
+    const auto ts0 = model.historyTimestamps("GPU0");
+    const auto ts1 = model.historyTimestamps("GPU1");
+    EXPECT_EQ(ts0.size(), 3u);
+    EXPECT_EQ(ts1.size(), 3u);
+
+    // Each set of timestamps must match its own history length.
+    EXPECT_EQ(ts0.size(), model.utilizationHistory("GPU0").size());
+    EXPECT_EQ(ts1.size(), model.utilizationHistory("GPU1").size());
+}
+
+TEST(GPUModelTest, PerGpuTimestampsStayAlignedWhenGpuAbsent)
+{
+    // Regression test: when a GPU is intermittently absent (readGPUCounters does not
+    // return it for some refreshes), historyTimestamps(gpuId) must only contain
+    // timestamps from refreshes where the GPU was present, staying aligned with
+    // utilizationHistory(gpuId). Using the global historyTimestamps() instead would
+    // produce an off-by-sample hover mismatch in GpuSection charts.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+
+    // Refresh 1: GPU0 present
+    rawProbe->withUtilization("GPU0", 20.0);
+    model.refresh();
+
+    // Refresh 2: GPU0 present
+    rawProbe->withUtilization("GPU0", 30.0);
+    model.refresh();
+
+    // Refresh 3: GPU0 absent (simulate intermittent disappearance)
+    rawProbe->clearGPUs();
+    model.refresh();
+
+    // Refresh 4: GPU0 present again
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+    model.refresh();
+
+    // Global timestamps capture every refresh (4 entries)
+    const auto globalTs = model.historyTimestamps();
+    EXPECT_EQ(globalTs.size(), 4u);
+
+    // Per-GPU timestamps skip the refresh where GPU0 was absent (3 entries)
+    const auto perGpuTs = model.historyTimestamps("GPU0");
+    EXPECT_EQ(perGpuTs.size(), 3u);
+
+    // Per-GPU timestamps must stay aligned with the per-GPU history vectors
+    const auto utilHist = model.utilizationHistory("GPU0");
+    EXPECT_EQ(perGpuTs.size(), utilHist.size());
+
+    // The absent refresh's global timestamp (globalTs[2]) must not appear in per-GPU timestamps.
+    // perGpuTs should correspond to globalTs[0], globalTs[1], and globalTs[3].
+    ASSERT_GE(globalTs.size(), 4u);
+    ASSERT_EQ(perGpuTs.size(), 3u);
+    EXPECT_DOUBLE_EQ(perGpuTs[0], globalTs[0]);
+    EXPECT_DOUBLE_EQ(perGpuTs[1], globalTs[1]);
+    EXPECT_DOUBLE_EQ(perGpuTs[2], globalTs[3]);
+}
+
+// =============================================================================
 // Multi-GPU History Tests
 // =============================================================================
 
@@ -876,6 +1066,135 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
     auto counters2 = model.readProcessGPUCounters();
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 2);
     EXPECT_EQ(counters2.size(), 1);
+}
+
+// =============================================================================
+// snapshotAt Tests
+// =============================================================================
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptForUnknownGPU)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_FALSE(model.snapshotAt("GPU_UNKNOWN", 0).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptForOutOfRangeIndex)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 42.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh(); // 1 sample
+
+    EXPECT_FALSE(model.snapshotAt("GPU0", 1).has_value()); // index 1 is out of range
+    EXPECT_FALSE(model.snapshotAt("GPU0", 999).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsNulloptWhenNoRefresh)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    // No refresh called
+
+    EXPECT_FALSE(model.snapshotAt("GPU0", 0).has_value());
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsCorrectSampleByIndex)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 10.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh(); // index 0: util=10
+
+    rawProbe->withUtilization("GPU0", 20.0);
+    model.refresh(); // index 1: util=20
+
+    rawProbe->withUtilization("GPU0", 30.0);
+    model.refresh(); // index 2: util=30
+
+    auto s0 = model.snapshotAt("GPU0", 0);
+    auto s1 = model.snapshotAt("GPU0", 1);
+    auto s2 = model.snapshotAt("GPU0", 2);
+
+    ASSERT_TRUE(s0.has_value());
+    ASSERT_TRUE(s1.has_value());
+    ASSERT_TRUE(s2.has_value());
+
+    EXPECT_DOUBLE_EQ(s0->utilizationPercent, 10.0);
+    EXPECT_DOUBLE_EQ(s1->utilizationPercent, 20.0);
+    EXPECT_DOUBLE_EQ(s2->utilizationPercent, 30.0);
+}
+
+TEST(GPUModelTest, SnapshotAtReturnsValueMatchingHistoryByIndex)
+{
+    // Verify snapshotAt returns the same value as history() at the same logical index.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
+
+    Domain::GPUModel model(std::move(probe));
+    for (int i = 0; i < 5; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
+        model.refresh();
+    }
+
+    auto fullHistory = model.history("GPU0");
+    ASSERT_EQ(fullHistory.size(), 5);
+
+    for (std::size_t i = 0; i < 5; ++i)
+    {
+        auto snap = model.snapshotAt("GPU0", i);
+        ASSERT_TRUE(snap.has_value());
+        EXPECT_DOUBLE_EQ(snap->utilizationPercent, fullHistory[i].utilizationPercent);
+    }
+}
+
+TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
+{
+    // Push more samples than GPU_HISTORY_CAPACITY to verify the ring-buffer
+    // wraparound: index 0 should return the oldest *retained* sample, not the
+    // original first sample, and the last index should return the newest sample.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+
+    constexpr std::size_t overCapacity = Domain::GPU_HISTORY_CAPACITY + 10;
+    for (std::size_t i = 0; i < overCapacity; ++i)
+    {
+        rawProbe->withUtilization("GPU0", static_cast<double>(i));
+        model.refresh();
+    }
+
+    // History should be capped at GPU_HISTORY_CAPACITY, not overCapacity.
+    auto fullHistory = model.history("GPU0");
+    ASSERT_EQ(fullHistory.size(), Domain::GPU_HISTORY_CAPACITY);
+
+    // Index 0 is the oldest retained sample (value = overCapacity - GPU_HISTORY_CAPACITY).
+    const double expectedOldestUtil = static_cast<double>(overCapacity - Domain::GPU_HISTORY_CAPACITY);
+    auto s0 = model.snapshotAt("GPU0", 0);
+    ASSERT_TRUE(s0.has_value());
+    EXPECT_DOUBLE_EQ(s0->utilizationPercent, expectedOldestUtil);
+
+    // Last index is the newest sample (value = overCapacity - 1).
+    const double expectedNewestUtil = static_cast<double>(overCapacity - 1);
+    auto sLast = model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY - 1);
+    ASSERT_TRUE(sLast.has_value());
+    EXPECT_DOUBLE_EQ(sLast->utilizationPercent, expectedNewestUtil);
+
+    // One past the last index is out of range.
+    EXPECT_FALSE(model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY).has_value());
 }
 
 } // namespace
