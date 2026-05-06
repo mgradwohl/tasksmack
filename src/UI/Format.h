@@ -801,7 +801,9 @@ struct AlignedBytesParts
 /// per-process energy counters use 0.0 as the sentinel for "not yet measured"
 /// and per-process power is never negative. Do NOT use this formatter for
 /// system/battery power (Domain::PowerStatus::powerWatts), which is signed and
-/// where negative watts indicate battery charging — use formatPowerCompact there.
+/// may be negative while the battery is charging. formatPowerCompact() also
+/// does not preserve negative values (it returns "-" for watts <= 0.0), so a
+/// dedicated signed-power formatter is required if that use case is needed.
 [[nodiscard]] inline auto formatPowerOrZero(double watts) -> std::string
 {
     if (watts <= 0.0)
