@@ -34,7 +34,7 @@ class UserConfigSaveLoadFixture : public ::testing::Test
 
         // Create a unique temp directory exclusive to this test process.
         // Use a retry loop so we never share state with another parallel test process.
-        // ctest runs each test case in a separate process with -j$(nproc).
+        // ctest runs each test executable in a separate process with -j$(nproc).
         const auto base = std::filesystem::temp_directory_path() / "tasksmack_ucsl_";
         std::random_device rd;
         constexpr int kMaxRetries = 100;
@@ -53,13 +53,13 @@ class UserConfigSaveLoadFixture : public ::testing::Test
             }
         }
 
-        UserConfig::get().setConfigPath(m_TempDir / "config.toml");
+        UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
     }
 
     void TearDown() override
     {
         // Restore the real platform config path.
-        UserConfig::get().setConfigPath(m_OriginalPath);
+        UserConfig::get().resetConfigPathForTesting(m_OriginalPath);
 
         // Remove the temp directory.
         std::error_code ec;
@@ -80,7 +80,7 @@ class UserConfigPersistenceTest : public ::testing::Test
         // Create unique temp directory for this test.
         // Use std::random_device + a create_directory retry loop so we
         // provably start with a fresh, exclusive directory. ctest runs each
-        // TEST_F in a separate process with -j$(nproc); a retry loop is the
+        // test executable in a separate process with -j$(nproc); a retry loop is the
         // only reliable way to guarantee we never share state between tests.
         const auto base = std::filesystem::temp_directory_path() / "tasksmack_test_config_";
         std::random_device rd;

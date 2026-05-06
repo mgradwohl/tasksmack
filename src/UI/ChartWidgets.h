@@ -467,9 +467,12 @@ inline void renderHistoryWithNowBars(const char* tableId,
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
-                ImGui::BeginTooltip();
-                ImGui::TextUnformatted(tooltip.c_str());
-                ImGui::EndTooltip();
+                if (!tooltip.empty())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(tooltip.c_str());
+                    ImGui::EndTooltip();
+                }
             }
             ImGui::PopID();
         }
@@ -517,9 +520,12 @@ inline void renderHistoryWithNowBars(const char* tableId,
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
-                ImGui::BeginTooltip();
-                ImGui::TextUnformatted(tooltip.c_str());
-                ImGui::EndTooltip();
+                if (!tooltip.empty())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(tooltip.c_str());
+                    ImGui::EndTooltip();
+                }
             }
             ImGui::EndGroup();
             ImGui::PopID();

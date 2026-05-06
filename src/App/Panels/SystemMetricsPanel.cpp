@@ -812,7 +812,7 @@ void SystemMetricsPanel::renderOverview()
                             if (*idxVal < powerHist.size())
                             {
                                 const double powerVal = Domain::Numeric::toDouble(powerHist[*idxVal]);
-                                ImGui::TextColored(theme.scheme().chartCpu, "Power: %s", UI::Format::formatPowerCompact(powerVal).c_str());
+                                ImGui::TextColored(theme.scheme().chartCpu, "Power: %s", UI::Format::formatPowerOrZero(powerVal).c_str());
                             }
                             if (*idxVal < batteryHist.size() && snap.power.hasBattery)
                             {
