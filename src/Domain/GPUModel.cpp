@@ -14,8 +14,8 @@
 #include <exception>
 #include <memory>
 #include <mutex>
-// NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
 #include <optional>
+// NOLINTNEXTLINE(misc-include-cleaner) - std::ranges::find_if and std::ranges::find are in <ranges>
 #include <ranges>
 #include <shared_mutex>
 #include <string>
