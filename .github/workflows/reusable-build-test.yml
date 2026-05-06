@@ -37,13 +37,13 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup LLVM
-        if: inputs.os == 'ubuntu-24.04'
+        if: runner.os == 'Linux'
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ inputs.llvm-version }}
 
       - name: Setup Windows LLVM
-        if: inputs.os == 'windows-latest'
+        if: runner.os == 'Windows'
         uses: ./.github/actions/setup-windows-llvm
         with:
           llvm-version: ${{ inputs.llvm-semver-version }}

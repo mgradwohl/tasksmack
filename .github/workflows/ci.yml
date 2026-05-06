@@ -119,7 +119,6 @@ jobs:
       llvm-semver-version: '22.1.0'
 
   docs-hygiene:
-    needs: [detect-docs-only]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
