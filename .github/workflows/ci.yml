@@ -43,7 +43,7 @@ jobs:
       - name: Normalize docs-only output
         id: set_output
         run: |
-          if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
+          if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
             echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
