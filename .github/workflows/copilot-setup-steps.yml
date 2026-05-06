@@ -1,0 +1,44 @@
+name: "Copilot Setup Steps"
+
+# Run automatically when this file changes for easy validation,
+# and allow manual testing through the repository's "Actions" tab.
+on:
+    workflow_dispatch:
+    push:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+    pull_request:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+
+env:
+    LLVM_VERSION: '22'
+
+jobs:
+    # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+    copilot-setup-steps:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+
+        permissions:
+            contents: read
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v6
+
+            - name: Setup LLVM
+              uses: ./.github/actions/setup-llvm
+              with:
+                  llvm-version: ${{ env.LLVM_VERSION }}
+                  install-clang-format: 'true'
+                  install-clang-tidy: 'true'
+                  install-clangd: 'true'
+                  install-coverage-tools: 'true'
+
+            - name: Setup Python for GLAD
+              uses: ./.github/actions/setup-python-glad
+
+            - name: Validate prerequisites
+              shell: bash
+              run: ./tools/check-prereqs.sh
