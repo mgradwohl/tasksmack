@@ -128,6 +128,18 @@ class UserConfig
         return m_ConfigPath;
     }
 
+    /// Override the config file path and reset all in-memory settings to defaults.
+    /// This is a destructive operation intended only for test fixtures: it clears
+    /// m_Settings so that each test starts from a clean state without inheriting
+    /// values from a previous test or the real platform config.
+    /// Application code should never call this method.
+    void resetConfigPathForTesting(const std::filesystem::path& path)
+    {
+        m_ConfigPath = path;
+        m_Settings = UserSettings{};
+        m_IsLoaded = false;
+    }
+
   private:
     UserConfig();
     ~UserConfig() = default;

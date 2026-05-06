@@ -683,14 +683,17 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
         // Use smoothed values for NowBars for consistent animation
         const NowBar cpuTotalNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuPercent),
                                  .label = "CPU Total",
+                                 .tooltipText = {},
                                  .value01 = UI::Format::percent01(m_SmoothedUsage.cpuPercent),
                                  .color = theme.progressColor(m_SmoothedUsage.cpuPercent)};
         const NowBar cpuUserNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuUserPercent),
                                 .label = "User",
+                                .tooltipText = {},
                                 .value01 = UI::Format::percent01(m_SmoothedUsage.cpuUserPercent),
                                 .color = theme.scheme().cpuUser};
         const NowBar cpuSystemNow{.valueText = UI::Format::percentCompact(m_SmoothedUsage.cpuSystemPercent),
                                   .label = "System",
+                                  .tooltipText = {},
                                   .value01 = UI::Format::percent01(m_SmoothedUsage.cpuSystemPercent),
                                   .color = theme.scheme().cpuSystem};
 
@@ -814,16 +817,21 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
             const double virtNowVal = virtData.empty() ? 0.0 : virtData.back();
 
             std::vector<NowBar> memoryBars;
+            // Tooltip shows percent-only to stay consistent with the bar, which is driven by history samples.
+            // Using live smoothed bytes here would mix sources and can disagree with the displayed bar value.
             memoryBars.push_back({.valueText = UI::Format::percentCompact(usedNow),
                                   .label = "Memory Used",
+                                  .tooltipText = std::format("Memory Used: {}", UI::Format::percentCompact(usedNow)),
                                   .value01 = UI::Format::percent01(usedNow),
                                   .color = theme.scheme().chartMemory});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(sharedNow),
                                   .label = "Shared",
+                                  .tooltipText = std::format("Shared: {}", UI::Format::percentCompact(sharedNow)),
                                   .value01 = UI::Format::percent01(sharedNow),
                                   .color = theme.scheme().chartCpu});
             memoryBars.push_back({.valueText = UI::Format::percentCompact(virtNowVal),
                                   .label = "Virtual",
+                                  .tooltipText = std::format("Virtual: {}", UI::Format::percentCompact(virtNowVal)),
                                   .value01 = UI::Format::percent01(virtNowVal),
                                   .color = theme.scheme().chartIo});
 
@@ -890,6 +898,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                             ImGui::BeginTooltip();
                             const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                             ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::Separator();
                             if (*idxVal < usedData.size())
                             {
                                 ImGui::TextColored(
@@ -961,6 +970,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
 
     const NowBar threadsBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.threadCount), "threads"),
                             .label = "Threads",
+                            .tooltipText =
+                                std::format("Threads: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.threadCount))),
                             .value01 = (threadMax > 0.0) ? std::clamp(m_SmoothedUsage.threadCount / threadMax, 0.0, 1.0) : 0.0,
                             .color = theme.scheme().chartCpu};
 
@@ -970,13 +981,17 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     constexpr const char* handleLabel = "FDs";
 #endif
 
-    const NowBar handlesBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
-                            .label = handleLabel,
-                            .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedUsage.handleCount / handleMax, 0.0, 1.0) : 0.0,
-                            .color = theme.scheme().chartMemory};
+    const NowBar handlesBar{
+        .valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.handleCount), handleLabel),
+        .label = handleLabel,
+        .tooltipText = std::format("{}: {}", handleLabel, UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.handleCount))),
+        .value01 = (handleMax > 0.0) ? std::clamp(m_SmoothedUsage.handleCount / handleMax, 0.0, 1.0) : 0.0,
+        .color = theme.scheme().chartMemory};
 
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec),
                            .label = "Page Faults",
+                           .tooltipText =
+                               std::format("Page Faults: {}", UI::Format::formatCountPerSecond(m_SmoothedUsage.pageFaultsPerSec)),
                            .value01 = (faultMax > 0.0) ? std::clamp(m_SmoothedUsage.pageFaultsPerSec / faultMax, 0.0, 1.0) : 0.0,
                            .color = theme.scheme().chartIo};
 
@@ -987,6 +1002,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     const double gdiMax = seriesMax(gdiData, m_SmoothedUsage.gdiObjectCount);
     const NowBar gdiBar{.valueText = UI::Format::formatCountWithLabel(std::llround(m_SmoothedUsage.gdiObjectCount), "GDI"),
                         .label = "GDI Objects",
+                        .tooltipText =
+                            std::format("GDI Objects: {}", UI::Format::formatIntLocalized(std::llround(m_SmoothedUsage.gdiObjectCount))),
                         .value01 = (gdiMax > 0.0) ? std::clamp(m_SmoothedUsage.gdiObjectCount / gdiMax, 0.0, 1.0) : 0.0,
                         .color = theme.accentColor(4)};
 #endif
@@ -1102,15 +1119,19 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const auto readUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioReadBytesPerSec);
     const auto writeUnit = UI::Format::unitForBytesPerSecond(m_SmoothedUsage.ioWriteBytesPerSec);
 
-    const NowBar readBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
-                         .label = "Disk Read",
-                         .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
-                         .color = theme.scheme().chartIo};
+    const NowBar readBar{
+        .valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit),
+        .label = "Disk Read",
+        .tooltipText = std::format("Disk Read: {}", UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioReadBytesPerSec, readUnit)),
+        .value01 = (readMax > 0.0) ? std::clamp(m_SmoothedUsage.ioReadBytesPerSec / readMax, 0.0, 1.0) : 0.0,
+        .color = theme.scheme().chartIo};
 
-    const NowBar writeBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
-                          .label = "Disk Write",
-                          .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
-                          .color = theme.scheme().chartIoWrite};
+    const NowBar writeBar{
+        .valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit),
+        .label = "Disk Write",
+        .tooltipText = std::format("Disk Write: {}", UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.ioWriteBytesPerSec, writeUnit)),
+        .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
+        .color = theme.scheme().chartIoWrite};
 
     auto plot = [&]()
     {
@@ -1138,6 +1159,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                         ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
                         ImGui::TextColored(theme.scheme().chartIo, "Read: %s", UI::Format::formatBytesPerSec(readData[*idxVal]).c_str());
                         ImGui::TextColored(
                             theme.scheme().chartIoWrite, "Write: %s", UI::Format::formatBytesPerSec(writeData[*idxVal]).c_str());
@@ -1188,11 +1210,15 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit),
                          .label = "Network Sent",
+                         .tooltipText = std::format("Avg Sent Rate: {}",
+                                                    UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netSentBytesPerSec, sentUnit)),
                          .value01 = (sentMax > 0.0) ? std::clamp(m_SmoothedUsage.netSentBytesPerSec / sentMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartNetTx};
 
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit),
                          .label = "Network Received",
+                         .tooltipText = std::format("Avg Recv Rate: {}",
+                                                    UI::Format::formatBytesPerSecWithUnit(m_SmoothedUsage.netRecvBytesPerSec, recvUnit)),
                          .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartNetRx};
 
@@ -1222,10 +1248,11 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                         ImGui::TextUnformatted(ageText.c_str());
+                        ImGui::Separator();
                         ImGui::TextColored(
                             theme.scheme().chartNetTx, "Avg Sent: %s", UI::Format::formatBytesPerSec(sentData[*idxVal]).c_str());
                         ImGui::TextColored(
-                            theme.scheme().chartNetRx, "Avg Recv: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
+                            theme.scheme().chartNetRx, "Avg Received: %s", UI::Format::formatBytesPerSec(recvData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -1270,8 +1297,9 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
     // Use smoothed value for NowBar
     const double powerMax = seriesMax(powerData, m_SmoothedUsage.powerWatts);
 
-    const NowBar powerBar{.valueText = UI::Format::formatPowerCompact(m_SmoothedUsage.powerWatts),
+    const NowBar powerBar{.valueText = UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts),
                           .label = "Power Usage",
+                          .tooltipText = std::format("Power: {}", UI::Format::formatPowerOrZero(m_SmoothedUsage.powerWatts)),
                           .value01 = (powerMax > 0.0) ? std::clamp(m_SmoothedUsage.powerWatts / powerMax, 0.0, 1.0) : 0.0,
                           .color = theme.scheme().textInfo};
 
@@ -1300,8 +1328,9 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
                             ImGui::BeginTooltip();
                             const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                             ImGui::TextUnformatted(ageText.c_str());
+                            ImGui::Separator();
                             ImGui::TextColored(
-                                theme.scheme().textInfo, "Power: %s", UI::Format::formatPowerCompact(powerData[*idxVal]).c_str());
+                                theme.scheme().textInfo, "Power: %s", UI::Format::formatPowerOrZero(powerData[*idxVal]).c_str());
                             ImGui::EndTooltip();
                         }
                     }
@@ -1538,7 +1567,10 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                                 ImGui::BeginTooltip();
                                 const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                                 ImGui::TextUnformatted(ageText.c_str());
-                                ImGui::TextColored(theme.scheme().gpuUtilization, "GPU: %.1f%%", gpuUtilVec[*idxVal]);
+                                ImGui::Separator();
+                                ImGui::TextColored(theme.scheme().gpuUtilization,
+                                                   "GPU: %s",
+                                                   UI::Format::percentCompact(static_cast<double>(gpuUtilVec[*idxVal])).c_str());
                                 ImGui::EndTooltip();
                             }
                         }
@@ -1580,6 +1612,7 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                                 ImGui::BeginTooltip();
                                 const auto ageText = formatAgeSeconds(timeData[*idxVal]);
                                 ImGui::TextUnformatted(ageText.c_str());
+                                ImGui::Separator();
                                 const std::string memStr = UI::Format::formatBytes(gpuMemVec[*idxVal]);
                                 ImGui::TextColored(theme.scheme().gpuMemory, "GPU Memory: %s", memStr.c_str());
                                 ImGui::EndTooltip();
@@ -1598,16 +1631,19 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = std::format("{:.1f}%", m_SmoothedUsage.gpuUtilPercent),
+            .valueText = UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent),
             .label = "GPU Utilization",
+            .tooltipText = std::format("GPU Utilization: {}", UI::Format::percentCompact(m_SmoothedUsage.gpuUtilPercent)),
             .value01 = m_SmoothedUsage.gpuUtilPercent / 100.0,
             .color = theme.scheme().gpuUtilization,
         };
 
+        const double gpuMemMax = seriesMax(gpuMemVec, static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
-            .value01 = 0.0, // Auto-scale by setting to 0
+            .tooltipText = std::format("GPU Memory: {}", UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes)),
+            .value01 = (gpuMemMax > 0.0) ? std::clamp(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes) / gpuMemMax, 0.0, 1.0) : 0.0,
             .color = theme.scheme().gpuMemory,
         };
 

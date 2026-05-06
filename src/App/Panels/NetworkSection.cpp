@@ -279,14 +279,16 @@ void renderNetworkSection(RenderContext& ctx)
     // Determine labels based on selection
     const std::string ifaceDisplayName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "Network";
     const std::string sentBarLabel = showingInterface ? std::format("{} Sent", ifaceDisplayName) : "Network Sent";
-    const std::string recvBarLabel = showingInterface ? std::format("{} Recv", ifaceDisplayName) : "Network Received";
+    const std::string recvBarLabel = showingInterface ? std::format("{} Received", ifaceDisplayName) : "Network Received";
 
     const NowBar sentBar{.valueText = UI::Format::formatBytesPerSec(smoothedSent),
                          .label = sentBarLabel,
+                         .tooltipText = {},
                          .value01 = std::clamp(smoothedSent / netMax, 0.0, 1.0),
                          .color = theme.scheme().chartNetTx};
     const NowBar recvBar{.valueText = UI::Format::formatBytesPerSec(smoothedRecv),
                          .label = recvBarLabel,
+                         .tooltipText = {},
                          .value01 = std::clamp(smoothedRecv / netMax, 0.0, 1.0),
                          .color = theme.scheme().chartNetRx};
 
@@ -320,11 +322,11 @@ void renderNetworkSection(RenderContext& ctx)
                 const auto ifaceSentFill = UI::withAlpha(theme.scheme().chartNetTxFill, theme.scheme().chartNetTxFill.w * 0.7F);
                 const auto ifaceRecvFill = UI::withAlpha(theme.scheme().chartNetRxFill, theme.scheme().chartNetRxFill.w * 0.7F);
                 plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor, ifaceSentFill);
-                plotLineWithFill("Recv (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
+                plotLineWithFill("Received (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
-                const auto ifaceRecvLabel = std::format("{} Recv", ifaceDisplayName);
+                const auto ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
                 plotLineWithFill(ifaceSentLabel.c_str(),
                                  netTimes.data(),
                                  ifaceSentData.data(),
@@ -342,7 +344,8 @@ void renderNetworkSection(RenderContext& ctx)
             {
                 // Just total
                 plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
-                plotLineWithFill("Recv", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+                plotLineWithFill(
+                    "Received", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
             }
 
             if (ImPlot::IsPlotHovered())
@@ -364,7 +367,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "  Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
                             ImGui::TextColored(ifaceRecvColor,
-                                               "  Recv: %s",
+                                               "  Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                             ImGui::Spacing();
                             ImGui::TextColored(theme.scheme().textPrimary, "%s:", ifaceDisplayName.c_str());
@@ -372,7 +375,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "  Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceSentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.scheme().chartNetRx,
-                                               "  Recv: %s",
+                                               "  Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(ifaceRecvData[*idxVal])).c_str());
                         }
                         else
@@ -381,7 +384,7 @@ void renderNetworkSection(RenderContext& ctx)
                                                "Sent: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(sentData[*idxVal])).c_str());
                             ImGui::TextColored(theme.scheme().chartNetRx,
-                                               "Recv: %s",
+                                               "Received: %s",
                                                UI::Format::formatBytesPerSec(static_cast<double>(recvData[*idxVal])).c_str());
                         }
                         ImGui::EndTooltip();
