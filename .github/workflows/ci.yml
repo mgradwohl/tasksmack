@@ -19,6 +19,9 @@ jobs:
   detect-docs-only:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.set_output.outputs.docs_only }}
     steps:
