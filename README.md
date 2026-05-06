@@ -46,7 +46,7 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 
 ## Documentation
 
-This README serves as the primary landing page and is intentionally structured so it can be promoted to a GitHub Pages home page later without major rework.
+This README serves as the primary landing page for both users and contributors, intentionally includes a documentation map, and is structured so it can be promoted to a GitHub Pages home page later without major rework. Contributor/developer workflow guidance remains canonical in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - **Project overview and features:** [TaskSmack](#tasksmack)
 - **Contributor workflow (canonical):** [CONTRIBUTING.md](CONTRIBUTING.md)
