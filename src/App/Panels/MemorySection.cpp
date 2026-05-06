@@ -158,8 +158,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                         const double pct = static_cast<double>(memHist[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
-                            // Physical RAM total is constant (hardware), so back-calculating bytes from
-                            // the historical percent is exact
+                            // Physical RAM total is generally constant (hardware), so estimating bytes
+                            // from the historical percent is reasonable for display, but only approximate
+                            // because the history stores percentages rather than original byte values.
                             const auto usedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
                             ImGui::TextColored(theme.scheme().chartMemory,
                                                "Used: %s",
