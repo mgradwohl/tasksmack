@@ -80,7 +80,12 @@ jobs:
           if [ -f coverage-output.txt ]; then
             echo "### Coverage Summary" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
-            sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt >> $GITHUB_STEP_SUMMARY || echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
+            coverage_summary="$(sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt)"
+            if [ -n "$coverage_summary" ]; then
+              printf '%s\n' "$coverage_summary" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
+            fi
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
@@ -125,6 +130,7 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
+          if-no-files-found: warn
           retention-days: 30
 
   sanitizers:
