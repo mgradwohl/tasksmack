@@ -1,0 +1,15 @@
+# CODEOWNERS
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Each line is a pattern followed by one or more owners.
+# The last matching pattern takes precedence.
+# Owners are automatically requested for review on PRs that touch matching files.
+
+# Default: all files
+* @mgradwohl
+
+# CI / tooling
+.github/ @mgradwohl
+tools/ @mgradwohl
+CMakeLists.txt @mgradwohl
+CMakePresets.json @mgradwohl

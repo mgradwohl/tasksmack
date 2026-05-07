@@ -1,6 +1,20 @@
 # TaskSmack
 
+[![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?style=flat-square)](https://github.com/mgradwohl/tasksmack/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
+
+## Download
+
+**[→ Latest Release](https://github.com/mgradwohl/tasksmack/releases/latest)**
+
+| Platform | Package | Install |
+|----------|---------|---------|
+| Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
+| Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
+| Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
 ## System Requirements
 
