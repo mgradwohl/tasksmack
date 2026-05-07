@@ -26,7 +26,7 @@ TaskSmack ships several build flavours targeting different CPU generations. Pick
 |--------|--------------------------|-------------|
 | `release` / `win-release` | Default compiler optimizations | Any x86-64 |
 | `release-compatible` / `win-release-compatible` | x86-64-v2 | 2009+ (Core i3/i5/i7, Athlon II) |
-| `optimized` / `win-optimized` | x86-64-v3 (AVX2) | 2013+ (Haswell / Excavator) |
+| `optimized` / `win-optimized` | x86-64-v3 (AVX2) | Intel Haswell 2013+ / AMD Excavator 2015+ |
 
 > **Tip:** If you see an "Illegal instruction" crash immediately on launch, your CPU does not support AVX2. Download the `release-compatible` build instead.
 

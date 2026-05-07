@@ -4,7 +4,7 @@
 
 ## "Illegal instruction" error on launch
 
-**Cause:** The binary was built with the `optimized` or `win-optimized` preset, which targets the x86-64-v3 microarchitecture (AVX2). Processors made before 2013 (pre-Haswell / pre-Excavator) do not support these instructions.
+**Cause:** The binary was built with the `optimized` or `win-optimized` preset, which targets the x86-64-v3 microarchitecture (AVX2). Intel processors before Haswell (2013) and AMD processors before Excavator (2015) do not support these instructions.
 
 **Fix:** Download the `release-compatible` (`win-release-compatible` on Windows) build from the [releases page](https://github.com/mgradwohl/tasksmack/releases/latest). It targets x86-64-v2 (2009+ CPUs) and runs on any modern x86-64 machine.
 
