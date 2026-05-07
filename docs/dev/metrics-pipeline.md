@@ -77,12 +77,11 @@ uniqueKey = hash(pid, startTimeTicks)
 
 ---
 
-## History Buffers and Decimation
+## History Buffers and Retention
 
-Domain models maintain scrolling history for time-series charts using `History<T>` — a ring buffer with configurable length and decimation.
+Domain models maintain scrolling history for time-series charts using bounded history containers. `History<T>` is a fixed-capacity ring buffer, and some models also use `std::deque` histories trimmed to the configured time window.
 
-- **Bounded memory:** the ring buffer has a fixed capacity. When full, old samples are dropped.
-- **Decimation:** at longer time ranges, samples are downsampled to keep chart resolution reasonable without storing every raw sample.
+- **Bounded memory:** fixed-capacity ring buffers overwrite old samples when full, and deque-backed histories drop old samples once they fall outside the configured retention window.
 - **What is stored:** percentages only, not raw byte totals. For example, `SystemModel` stores memory%, cached%, and swap% series — historical byte totals are not retained.
 
 ---

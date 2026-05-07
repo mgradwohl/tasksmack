@@ -63,12 +63,12 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 The System Metrics panel displays real-time and historical charts for:
 
 - **CPU utilisation** — system-wide and per-core breakdowns
-- **Memory** — used, cached, and available RAM displayed as percentages over time
+- **Memory** — used and cached RAM displayed as percentage history, with current availability derived from the latest system snapshot
 - **Swap** — swap usage percentage history
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
 
-All charts retain a scrolling history window (configurable length) implemented as decimating ring buffers, so memory usage stays bounded regardless of how long the app runs.
+All charts retain a bounded scrolling history window. Depending on the metric, TaskSmack uses fixed-capacity ring buffers or time-trimmed history containers so memory usage stays bounded regardless of how long the app runs.
 
 ### Network Monitoring
 

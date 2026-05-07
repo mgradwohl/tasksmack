@@ -41,7 +41,7 @@ graph TD
 ### `src/Domain/`
 
 - Defines immutable snapshot types (`ProcessSnapshot`, `SystemSnapshot`, `GPUSnapshot`, …).
-- Implements `History<T>` ring buffers with decimation for bounded memory.
+- Implements `History<T>` ring buffers and other bounded history containers for chart data.
 - Owns `ProcessModel`, `SystemModel`, `GPUModel` — the delta/rate calculators.
 - **No SDL3, OpenGL, or direct OS calls.** Fully deterministic and unit-testable with mock probes.
 - Enforces cross-platform metrics semantics (CPU% calculation, PID-reuse handling via `hash(pid, startTime)`, I/O rates).
