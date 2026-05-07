@@ -11,7 +11,7 @@ if(POLICY CMP0069)
 endif()
 
 
-project(TaskSmack VERSION 0.6.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.6.1 LANGUAGES C CXX)
 
 # Windows: Configure MSVC runtime library linkage for Clang
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
