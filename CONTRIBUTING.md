@@ -343,7 +343,7 @@ pwsh tools/check-format.ps1    # Windows
 
 Coverage reports are written to `coverage/` (gitignored).
 
-CI also publishes a coverage summary and may emit a warning if coverage is below the configured threshold.
+CI heavy checks also publish a coverage summary and may emit a warning if coverage is below the configured threshold.
 
 ```bash
 # Linux
@@ -716,16 +716,23 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 
 ## CI/CD
 
-GitHub Actions builds on Linux (Ubuntu 24.04) and Windows and runs:
+GitHub Actions runs:
 
-- Build + tests (debug and release)
-- Sanitizers (Linux: ASan+UBSan, TSan)
-- clang-format (via the `pre-commit` workflow — runs all pre-commit hooks)
-- clang-tidy (`static-analysis` job)
-- Markdown link audit (`docs-hygiene` job)
-- Coverage (`coverage` job)
-- Include analysis (`include-analysis` job — manual-only via workflow_dispatch)
-- Dependency vulnerability scan (`osv-scanner` workflow — Syft SBOM + OSV database)
+- `ci.yml` (fast path for push/PR):
+  - Build + tests (debug and release) on Linux and Windows via reusable matrix workflow
+  - clang-tidy (`static-analysis` job)
+  - Markdown link audit (`docs-hygiene` job)
+  - Include analysis (`include-analysis` job — manual-only via workflow_dispatch)
+- `heavy-checks.yml` (heavy path):
+  - Weekly on `main` + manual dispatch
+  - Coverage (`coverage` job)
+  - Sanitizers (Linux: ASan+UBSan, TSan)
+- `pre-commit.yml`:
+  - pre-commit hooks (includes formatting and hygiene checks)
+- `osv-scanner.yml`:
+  - Dependency vulnerability scan (Syft SBOM + OSV database)
+
+PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
@@ -819,17 +826,18 @@ The git-cliff configuration lives in [`cliff.toml`](cliff.toml) at the repo root
 
 In Actions → workflow run → Artifacts, you may see:
 
-- `coverage-html-report`
+- `coverage-report`
 - `asan-ubsan-report`
 - `tsan-report`
-- `linux-test-results` / `windows-test-results`
+- `linux-debug-test-results`, `linux-release-test-results`
+- `windows-debug-test-results`, `windows-release-test-results`
 - `clang-tidy-results`
 - `iwyu-results`
 
 ### CI Artifacts (GitHub CLI)
 
 ```bash
-gh run download <run-id> -n coverage-html-report
+gh run download <run-id> -n coverage-report
 ```
 
 ## Branching Strategy

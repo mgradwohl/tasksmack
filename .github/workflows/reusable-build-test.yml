@@ -1,0 +1,109 @@
+name: Reusable Build and Test
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: GitHub-hosted runner label
+        required: true
+        type: string
+      llvm-version:
+        description: Linux LLVM major version
+        required: false
+        type: string
+        default: '22'
+      llvm-semver-version:
+        description: Windows LLVM semantic version
+        required: false
+        type: string
+        default: '22.1.0'
+
+jobs:
+  build-test:
+    name: Build & Test (${{ inputs.os }} ${{ matrix.build_type }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: true
+      matrix:
+        build_type: [debug, release]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup LLVM
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ inputs.llvm-version }}
+
+      - name: Setup Windows LLVM
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ inputs.llvm-semver-version }}
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: ${{ runner.os }}-${{ matrix.build_type }}
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --preset ${{ matrix.build_type }} -DPython3_EXECUTABLE="$(which python)"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --preset win-${{ matrix.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build --preset ${{ matrix.build_type }}
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-${{ matrix.build_type }}
+
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --preset ${{ matrix.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ctest --preset win-${{ matrix.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+
+      - name: Upload test results (Linux)
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.build_type }}-test-results
+          path: build/${{ matrix.build_type }}/test-results.xml
+          retention-days: 30
+
+      - name: Upload test results (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.build_type }}-test-results
+          path: build/win-${{ matrix.build_type }}/test-results.xml
+          retention-days: 30
