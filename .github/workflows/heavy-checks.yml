@@ -140,6 +140,7 @@ jobs:
             echo "llvm-cov not found on PATH"
             exit 1
           fi
+          mkdir -p coverage
           "$llvm_cov_bin" export \
             build/coverage/tests/TaskSmackTests \
             -instr-profile=build/coverage/default.profdata \
@@ -157,6 +158,7 @@ jobs:
           retention-days: 30
 
       - name: Upload coverage to Codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
