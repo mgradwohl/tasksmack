@@ -1,0 +1,65 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: static-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLVM_VERSION: '22'
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+          install-clang-tidy: 'true'
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: linux-tidy
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+
+      - name: Build GLAD
+        run: cmake --build --preset debug --target glad_gl_core_33
+
+      - name: Run clang-tidy
+        shell: bash
+        run: |
+          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Upload clang-tidy results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-results
+          path: clang-tidy-output.txt
+          retention-days: 14
