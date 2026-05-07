@@ -1,7 +1,7 @@
 # TaskSmack
 
 [![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?style=flat-square)](https://github.com/mgradwohl/tasksmack/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
+[![CI (PR)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
 [![Sanitizers](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/sanitizers.yml?branch=main&style=flat-square&label=Sanitizers)](https://github.com/mgradwohl/tasksmack/actions/workflows/sanitizers.yml)
 [![Static Analysis](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/static-analysis.yml?branch=main&style=flat-square&label=Static%20Analysis)](https://github.com/mgradwohl/tasksmack/actions/workflows/static-analysis.yml)
 [![CodeQL](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/codeql.yml?branch=main&style=flat-square&label=CodeQL)](https://github.com/mgradwohl/tasksmack/actions/workflows/codeql.yml)
@@ -14,6 +14,8 @@
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
 
 ## Build Matrix Status
+
+Main-branch build badges are shown below; the CI badge above tracks pull request validation.
 
 | Platform | Debug | Release |
 |----------|-------|---------|
