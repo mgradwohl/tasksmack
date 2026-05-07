@@ -167,6 +167,7 @@ jobs:
 
   sanitizers:
     needs: [validate-environment]
+    # Main-branch pushes use the standalone sanitizers workflow/badge; keep heavy checks non-push only.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
