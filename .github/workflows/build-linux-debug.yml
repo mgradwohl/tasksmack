@@ -13,6 +13,7 @@ jobs:
   build-linux-debug:
     permissions:
       contents: read
+      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
