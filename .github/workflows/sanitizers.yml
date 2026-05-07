@@ -25,6 +25,8 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          install-clang-tidy: 'true'
+          install-clangd: 'true'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
