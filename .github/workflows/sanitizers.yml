@@ -87,7 +87,7 @@ jobs:
       - name: Annotate sanitizer failures
         if: steps.sanitizer-test.outputs.test_result != '0'
         run: |
-          grep -nE "ERROR:|WARNING: ThreadSanitizer|SUMMARY" sanitizer-logs/${{ matrix.preset }}.log | while IFS=: read -r line content; do
+          grep -nE "ERROR:|WARNING: ThreadSanitizer|SUMMARY:" sanitizer-logs/${{ matrix.preset }}.log | while IFS=: read -r line content; do
             escaped_content="${content//%/%25}"
             escaped_content="${escaped_content//$'\r'/%0D}"
             escaped_content="${escaped_content//$'\n'/%0A}"
