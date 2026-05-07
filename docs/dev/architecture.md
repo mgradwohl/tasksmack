@@ -8,19 +8,22 @@ TaskSmack is organised as a strict five-layer stack. Each layer has clearly defi
 
 ```mermaid
 graph TD
-    OS["OS APIs<br/>(Linux: /proc/*, NtQuerySystemInformation)"]
+    OS["OS APIs<br/>(Linux: /proc/*, /sys/class/drm)<br/>(Windows: NtQuerySystemInformation)"]
     Platform["Platform Layer<br/>Stateless probes: IProcessProbe, ISystemProbe,<br/>INetworkProbe, IDiskProbe, IGpuProbe"]
     Domain["Domain Layer<br/>ProcessModel, SystemModel, GPUModel<br/>History buffers, delta/rate computation"]
     Core["Core Layer<br/>Application loop, SDL3 window,<br/>OpenGL context, PathService"]
     UI["UI Layer<br/>ImGui/ImPlot widgets, ChartWidgets,<br/>Format helpers"]
     App["App / Panels<br/>ProcessesPanel, SystemMetricsPanel,<br/>NetworkPanel, ProcessDetailsPanel"]
 
-    OS --> Platform
-    Platform --> Domain
-    Domain --> App
-    Core --> App
-    UI --> App
     App --> Core
+    App --> UI
+    App --> Domain
+    Core --> Domain
+    Core --> Platform
+    UI --> Core
+    UI --> Domain
+    Domain --> Platform
+    Platform --> OS
 ```
 
 ---
@@ -30,7 +33,7 @@ graph TD
 ### `src/Platform/`
 
 - Declares probe interfaces: `IProcessProbe`, `ISystemProbe`, `INetworkProbe`, `IDiskProbe`, `IGpuProbe`.
-- Provides OS-specific implementations under `linux/` and `windows/`.
+- Provides OS-specific implementations under `Linux/` and `Windows/`.
 - **Stateless**: each probe call reads current OS counters and returns them — no state is kept between calls.
 - Returns **raw counters** only (ticks, bytes). Rate computation belongs in Domain.
 - Factory functions (`Platform::make*Probe()`) select the correct implementation at link time.

@@ -26,9 +26,9 @@ For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Inst
 **GPU monitoring libraries (optional):**
 
 ```bash
-sudo apt install libdrm-dev          # Intel GPU basic enumeration
 # NVIDIA: install driver from nvidia.com (includes libnvidia-ml.so)
 # AMD: install ROCm SMI from amd.com/rocm (includes librocm_smi64.so)
+# Intel: no package needed — the probe reads /sys/class/drm via sysfs (kernel DRM must be available)
 ```
 
 **Full one-liner (Ubuntu/Debian):**

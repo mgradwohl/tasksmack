@@ -47,7 +47,7 @@ sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
 |--------|-----------------|
 | NVIDIA | `libnvidia-ml.so` (Linux) / `nvml.dll` (Windows) — installed with the NVIDIA driver |
 | AMD | `librocm_smi64.so` — installed as part of [ROCm](https://rocmdocs.amd.com/) |
-| Intel | `libdrm` (Linux, basic enumeration only) — `sudo apt install libdrm-dev` |
+| Intel | DRM/sysfs (Linux, `/sys/class/drm`) — no library installation needed; requires kernel DRM support (standard on all modern Linux kernels) |
 
 **Checklist:**
 

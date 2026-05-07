@@ -167,9 +167,7 @@ TaskSmack persists settings in several places:
 
 | Setting | Location |
 |---------|----------|
-| Window layout, panel positions, ImGui state | `imgui.ini` next to the executable (or in the user config directory) |
-| Active theme | Saved in application settings (TOML) |
-| Column visibility | Persisted in `imgui.ini` via ImGui's table storage |
+| Window layout, panel positions, column visibility, theme | `config.toml` in the user config directory (`%APPDATA%\TaskSmack\` on Windows, `~/.config/tasksmack/` on Linux) |
 | User themes | `%APPDATA%\TaskSmack\themes\` (Windows) or `~/.config/tasksmack/themes/` (Linux) |
 
-To reset all layout settings, delete `imgui.ini`. To reset theme settings, remove the theme entry from the application settings file.
+To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
