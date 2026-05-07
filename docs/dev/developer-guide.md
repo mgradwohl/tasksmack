@@ -1,6 +1,6 @@
 # Developer Guide
 
-This guide covers everything you need to start contributing to TaskSmack: prerequisites, quick-start workflow, VS Code setup, code quality tools, coding standards, testing, coverage, packaging, and the contributing process.
+This guide is a docs-site overview for contributors. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) is the canonical source of truth for contributor setup, build/test workflow, and tooling; keep this page aligned with it.
 
 For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Instructions](build-instructions.md).
 
@@ -16,7 +16,7 @@ For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Inst
 | libc++ / libc++abi | 22 | `sudo apt install libc++-22-dev libc++abi-22-dev` |
 | clang-tidy | 22 | `sudo apt install clang-tidy-22` |
 | clang-format | 22 | `sudo apt install clang-format-22` |
-| CMake | 3.28+ (4.x recommended) | `sudo apt install cmake` |
+| CMake | 3.29+ (latest stable 3.x recommended) | `sudo apt install cmake` |
 | Ninja | any | `sudo apt install ninja-build` |
 | ccache | 4.9.1+ | `sudo apt install ccache` |
 | Python 3 + jinja2 | 3.x | `sudo apt install python3 python3-jinja2` |
@@ -44,7 +44,7 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 \
 | Tool | Install |
 |------|---------|
 | LLVM/Clang 22 | [releases.llvm.org](https://releases.llvm.org/) — set `LLVM_ROOT` env var |
-| CMake 3.28+ | `winget install Kitware.CMake` |
+| CMake 3.29+ | `winget install Kitware.CMake` |
 | Ninja | `winget install Ninja-build.Ninja` |
 | Python 3 + jinja2 | `winget install Python.Python.3.12` then `pip install jinja2` |
 | ccache (optional) | `winget install ccache` |

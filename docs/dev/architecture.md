@@ -9,7 +9,7 @@ TaskSmack is organised as a strict five-layer stack. Each layer has clearly defi
 ```mermaid
 graph TD
     OS["OS APIs<br/>(Linux: /proc/*, /sys/class/drm)<br/>(Windows: NtQuerySystemInformation)"]
-    Platform["Platform Layer<br/>Stateless probes: IProcessProbe, ISystemProbe,<br/>INetworkProbe, IDiskProbe, IGpuProbe"]
+    Platform["Platform Layer<br/>Stateless probes: IProcessProbe, ISystemProbe,<br/>IDiskProbe, IPowerProbe, IGPUProbe"]
     Domain["Domain Layer<br/>ProcessModel, SystemModel, GPUModel<br/>History buffers, delta/rate computation"]
     Core["Core Layer<br/>Application loop, SDL3 window,<br/>OpenGL context, PathService"]
     UI["UI Layer<br/>ImGui/ImPlot widgets, ChartWidgets,<br/>Format helpers"]
@@ -32,7 +32,7 @@ graph TD
 
 ### `src/Platform/`
 
-- Declares probe interfaces: `IProcessProbe`, `ISystemProbe`, `INetworkProbe`, `IDiskProbe`, `IGpuProbe`.
+- Declares probe interfaces: `IProcessProbe`, `ISystemProbe`, `IDiskProbe`, `IPowerProbe`, `IGPUProbe`.
 - Provides OS-specific implementations under `Linux/` and `Windows/`.
 - **Stateless**: each probe call reads current OS counters and returns them — no state is kept between calls.
 - Returns **raw counters** only (ticks, bytes). Rate computation belongs in Domain.
@@ -55,7 +55,7 @@ graph TD
 
 ### `src/UI/`
 
-- Configures Dear ImGui and ImPlot (contexts, styling, `imgui.ini` persistence).
+- Configures Dear ImGui and ImPlot (contexts, styling, and TOML-backed app persistence for layout, theme, and columns).
 - Hooks the ImGui SDL3 and OpenGL3 backends.
 - Provides shared widgets, table helpers, `ChartWidgets`, and `Format` utilities.
 - Consumes **immutable domain snapshots**; never calls Platform APIs directly.
@@ -85,7 +85,7 @@ OS APIs
 
 **Hard rules:**
 
-- Domain depends on nothing else in the project.
+- Domain depends only on Platform probe interfaces (`IProcessProbe`, `ISystemProbe`, `IDiskProbe`, `IPowerProbe`, `IGPUProbe`), not on Platform implementations or any Core/UI/App code.
 - UI never calls Platform APIs directly.
 - Platform never depends on UI, Core, or any renderer.
 - All OpenGL calls are confined to `Core/` and `UI/` only.
