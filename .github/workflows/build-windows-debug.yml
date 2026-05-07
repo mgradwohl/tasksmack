@@ -13,7 +13,6 @@ jobs:
   build-windows-debug:
     permissions:
       contents: read
-      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest
