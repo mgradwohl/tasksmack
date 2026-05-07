@@ -56,7 +56,7 @@ Column visibility is toggled via the column header context menu and persisted ac
 
 **Tree view** shows the parent–child process hierarchy when enabled.
 
-Process rows are colour-coded by state (running, sleeping, stopped, zombie).
+Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
 ### System Metrics
 
