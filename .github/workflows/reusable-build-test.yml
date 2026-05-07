@@ -7,6 +7,10 @@ on:
         description: GitHub-hosted runner label
         required: true
         type: string
+      build_type:
+        description: Build preset type (`debug` or `release`, without platform prefix)
+        required: true
+        type: string
       llvm-version:
         description: Linux LLVM major version
         required: false
@@ -20,16 +24,12 @@ on:
 
 jobs:
   build-test:
-    name: Build & Test (${{ inputs.os }} ${{ matrix.build_type }})
+    name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
     runs-on: ${{ inputs.os }}
     timeout-minutes: 25
     permissions:
       contents: read
       actions: write
-    strategy:
-      fail-fast: true
-      matrix:
-        build_type: [debug, release]
     steps:
       - uses: actions/checkout@v6
 
@@ -51,7 +51,7 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
-          key: ${{ runner.os }}-${{ matrix.build_type }}
+          key: ${{ runner.os }}-${{ inputs.build_type }}
           max-size: 500M
 
       - name: Cache FetchContent dependencies
@@ -63,47 +63,47 @@ jobs:
 
       - name: Configure (Linux)
         if: runner.os == 'Linux'
-        run: cmake --preset ${{ matrix.build_type }} -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)"
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-${{ matrix.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
-        run: cmake --build --preset ${{ matrix.build_type }}
+        run: cmake --build --preset ${{ inputs.build_type }}
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --build --preset win-${{ matrix.build_type }}
+        run: cmake --build --preset win-${{ inputs.build_type }}
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: ctest --preset ${{ matrix.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ctest --preset win-${{ matrix.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
-          name: linux-${{ matrix.build_type }}-test-results
-          path: build/${{ matrix.build_type }}/test-results.xml
+          name: linux-${{ inputs.build_type }}-test-results
+          path: build/${{ inputs.build_type }}/test-results.xml
           retention-days: 30
 
       - name: Upload test results (Windows)
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
-          name: windows-${{ matrix.build_type }}-test-results
-          path: build/win-${{ matrix.build_type }}/test-results.xml
+          name: windows-${{ inputs.build_type }}-test-results
+          path: build/win-${{ inputs.build_type }}/test-results.xml
           retention-days: 30

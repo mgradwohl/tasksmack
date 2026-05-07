@@ -1,0 +1,21 @@
+name: Build Linux Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-linux-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux-release:
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-24.04
+      build_type: release
+      llvm-version: '22'

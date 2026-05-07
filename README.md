@@ -1,11 +1,27 @@
 # TaskSmack
 
 [![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?style=flat-square)](https://github.com/mgradwohl/tasksmack/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
+[![CI (PR)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
+[![Sanitizers](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/sanitizers.yml?branch=main&style=flat-square&label=Sanitizers)](https://github.com/mgradwohl/tasksmack/actions/workflows/sanitizers.yml)
+[![Static Analysis](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/static-analysis.yml?branch=main&style=flat-square&label=Static%20Analysis)](https://github.com/mgradwohl/tasksmack/actions/workflows/static-analysis.yml)
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/codeql.yml?branch=main&style=flat-square&label=CodeQL)](https://github.com/mgradwohl/tasksmack/actions/workflows/codeql.yml)
+[![OSV Scan](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/osv-scanner.yml?branch=main&style=flat-square&label=OSV%20Scan)](https://github.com/mgradwohl/tasksmack/actions/workflows/osv-scanner.yml)
+[![Pre-commit](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/pre-commit.yml?branch=main&style=flat-square&label=Pre-commit)](https://github.com/mgradwohl/tasksmack/actions/workflows/pre-commit.yml)
+[![Codecov](https://img.shields.io/codecov/c/github/mgradwohl/tasksmack?style=flat-square)](https://codecov.io/gh/mgradwohl/tasksmack)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mgradwohl/tasksmack/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mgradwohl/tasksmack)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue?style=flat-square)](https://mgradwohl.github.io/tasksmack/)
 
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
+
+## Build Matrix Status
+
+Main-branch build badges are shown below; the CI badge above reflects PR validation.
+
+| Platform | Debug | Release |
+|----------|-------|---------|
+| Linux | [![Linux Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-debug.yml?branch=main&style=flat-square&label=Linux%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-debug.yml) | [![Linux Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-release.yml?branch=main&style=flat-square&label=Linux%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-release.yml) |
+| Windows | [![Windows Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-debug.yml?branch=main&style=flat-square&label=Windows%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-debug.yml) | [![Windows Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-release.yml?branch=main&style=flat-square&label=Windows%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-release.yml) |
 
 ## Download
 
@@ -50,6 +66,8 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 - Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
 
 ## For Developers
+
+**[→ Documentation site](https://mgradwohl.github.io/tasksmack/)** — user guide, architecture, build instructions, and metrics pipeline.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 

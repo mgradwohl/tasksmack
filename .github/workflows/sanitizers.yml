@@ -1,15 +1,12 @@
-name: Heavy Checks
+name: Sanitizers
 
 on:
   push:
     branches: [main]
-  schedule:
-    # Weekly on Mondays at 04:00 UTC
-    - cron: '0 4 * * 1'
   workflow_dispatch:
 
 concurrency:
-  group: heavy-checks-${{ github.ref }}
+  group: sanitizers-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,7 +25,6 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
-          install-coverage-tools: 'true'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -36,141 +32,8 @@ jobs:
       - name: Validate prerequisites
         run: ./tools/check-prereqs.sh
 
-  coverage:
-    needs: [validate-environment]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-coverage-tools: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: linux-coverage
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
-        with:
-          path: .cache/fetchcontent
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
-
-      - name: Generate coverage report
-        run: |
-          set -o pipefail
-          ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
-
-      - name: Add coverage summary to workflow summary
-        if: always()
-        run: |
-          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ -f coverage-output.txt ]; then
-            echo "### Coverage Summary" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            if grep -q "^Filename" coverage-output.txt && grep -q "^TOTAL" coverage-output.txt; then
-              coverage_summary="$(sed -n '/^Filename/,/^TOTAL/p' coverage-output.txt)"
-              printf '%s\n' "$coverage_summary" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "Coverage summary not found in output" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Full HTML report available in artifacts." >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Check coverage threshold
-        if: always()
-        run: |
-          if [ -f coverage-output.txt ]; then
-            total_line="$(grep "^TOTAL" coverage-output.txt | tail -n 1 || true)"
-            THRESHOLD=80
-            if [ -n "$total_line" ]; then
-              COVERAGE="$(printf '%s\n' "$total_line" | awk '{print $NF}' | sed 's/%//')"
-              if [[ "$COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                echo "📊 Current coverage: ${COVERAGE}%"
-                echo "🎯 Minimum threshold: ${THRESHOLD}%"
-
-                if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
-                  echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-                  echo "This is a warning only - build will continue"
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-                else
-                  echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-                fi
-              else
-                echo "⚠️ TOTAL coverage value is present but unparsable - cannot check threshold"
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "⚠️ **Coverage Warning:** TOTAL coverage value from \`coverage-output.txt\` was not numeric; threshold check skipped." >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "⚠️ Coverage TOTAL line missing - cannot check threshold"
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "⚠️ **Coverage Warning:** No TOTAL line found in \`coverage-output.txt\`; threshold check skipped." >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "❌ Coverage output file not found - cannot check threshold"
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Coverage Check Failed:** Could not find coverage output file" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Generate LCOV file for Codecov
-        run: |
-          llvm_cov_bin="$(command -v llvm-cov || command -v llvm-cov-22 || true)"
-          if [ -z "$llvm_cov_bin" ]; then
-            echo "llvm-cov not found on PATH"
-            exit 1
-          fi
-          mkdir -p coverage
-          "$llvm_cov_bin" export \
-            build/coverage/tests/TaskSmackTests \
-            -instr-profile=build/coverage/default.profdata \
-            -format=lcov \
-            -ignore-filename-regex='.*/(build|_deps|tests)/.*' \
-            > coverage/coverage.lcov
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-report
-          path: coverage/
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Upload coverage to Codecov
-        if: ${{ secrets.CODECOV_TOKEN != '' }}
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage/coverage.lcov
-          flags: unittests
-          name: tasksmack-coverage
-          fail_ci_if_error: false
-
   sanitizers:
     needs: [validate-environment]
-    # Skip main-branch pushes (handled by standalone sanitizers.yml) to avoid duplicate sanitizer runs.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -217,12 +80,12 @@ jobs:
 
       - name: Test with sanitizers
         id: sanitizer-test
+        continue-on-error: true
         run: |
           set +e
           ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
-          ctest_exit=${PIPESTATUS[0]}
-          set -e
-          echo "test_result=${ctest_exit}" >> "$GITHUB_OUTPUT"
+          test_result=${PIPESTATUS[0]}
+          echo "test_result=${test_result}" >> "$GITHUB_OUTPUT"
 
       - name: Annotate sanitizer failures
         if: steps.sanitizer-test.outputs.test_result != '0'
@@ -240,7 +103,7 @@ jobs:
         if: always()
         run: |
           generated_at="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          cat > sanitizer-reports/${{ matrix.preset }}.html << EOF
+          cat > sanitizer-reports/${{ matrix.preset }}.html << EOF_HTML
           <!DOCTYPE html>
           <html>
           <head>
@@ -306,7 +169,7 @@ jobs:
               <div class="content">
                   <h2>Test Output</h2>
                   <pre>
-          EOF
+          EOF_HTML
 
           if [ -f sanitizer-logs/${{ matrix.preset }}.log ]; then
             sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' sanitizer-logs/${{ matrix.preset }}.log >> sanitizer-reports/${{ matrix.preset }}.html
@@ -314,12 +177,12 @@ jobs:
             echo "No log file found" >> sanitizer-reports/${{ matrix.preset }}.html
           fi
 
-          cat >> sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
+          cat >> sanitizer-reports/${{ matrix.preset }}.html << EOF_HTML
                   </pre>
               </div>
           </body>
           </html>
-          EOF
+          EOF_HTML
 
       - name: Add sanitizer summary to workflow summary
         if: always()
@@ -343,7 +206,7 @@ jobs:
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Full report available in artifacts: \`sanitizer-reports/${{ matrix.preset }}.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "Full report available in artifacts: `sanitizer-reports/${{ matrix.preset }}.html`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload sanitizer logs and reports
         if: always()

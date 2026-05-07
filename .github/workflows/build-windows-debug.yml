@@ -1,0 +1,21 @@
+name: Build Windows Debug
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-windows-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-debug:
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: windows-latest
+      build_type: debug
+      llvm-semver-version: '22.1.0'

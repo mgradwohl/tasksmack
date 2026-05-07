@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'dev/**']
+    branches: ['dev/**']
   pull_request:
     branches: [main, 'dev/**']
   workflow_dispatch:
@@ -99,23 +99,33 @@ jobs:
   build-linux:
     needs: [detect-docs-only, validate-environment]
     if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        build_type: [debug, release]
     permissions:
       contents: read
       actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
+      build_type: ${{ matrix.build_type }}
       llvm-version: '22'
 
   build-windows:
     needs: [detect-docs-only, validate-environment-windows]
     if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        build_type: [debug, release]
     permissions:
       contents: read
       actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest
+      build_type: ${{ matrix.build_type }}
       llvm-semver-version: '22.1.0'
 
   docs-hygiene:
