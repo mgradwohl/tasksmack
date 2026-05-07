@@ -105,7 +105,6 @@ jobs:
         build_type: [debug, release]
     permissions:
       contents: read
-      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -121,7 +120,6 @@ jobs:
         build_type: [debug, release]
     permissions:
       contents: read
-      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest

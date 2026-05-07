@@ -1,6 +1,8 @@
 name: Heavy Checks
 
 on:
+  push:
+    branches: [main]
   schedule:
     # Weekly on Mondays at 04:00 UTC
     - cron: '0 4 * * 1'
