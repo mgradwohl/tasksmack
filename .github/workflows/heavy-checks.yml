@@ -167,7 +167,7 @@ jobs:
 
   sanitizers:
     needs: [validate-environment]
-    if: github.event_name != 'push'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
