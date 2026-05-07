@@ -217,10 +217,12 @@ jobs:
 
       - name: Test with sanitizers
         id: sanitizer-test
-        continue-on-error: true
         run: |
+          set +e
           ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
-          echo "test_result=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          ctest_exit=${PIPESTATUS[0]}
+          set -e
+          echo "test_result=${ctest_exit}" >> "$GITHUB_OUTPUT"
 
       - name: Annotate sanitizer failures
         if: steps.sanitizer-test.outputs.test_result != '0'
