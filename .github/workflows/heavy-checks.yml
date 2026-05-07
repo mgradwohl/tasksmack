@@ -68,6 +68,7 @@ jobs:
 
       - name: Generate coverage report
         run: |
+          set -o pipefail
           ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
 
       - name: Add coverage summary to workflow summary
@@ -194,7 +195,8 @@ jobs:
       - name: Generate HTML report
         if: always()
         run: |
-          cat > sanitizer-reports/${{ matrix.preset }}.html << 'EOF'
+          generated_at="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          cat > sanitizer-reports/${{ matrix.preset }}.html << EOF
           <!DOCTYPE html>
           <html>
           <head>
@@ -255,7 +257,7 @@ jobs:
           <body>
               <div class="header">
                   <h1>${{ matrix.preset }} Sanitizer Report</h1>
-                  <div class="timestamp">Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')</div>
+                  <div class="timestamp">Generated: ${generated_at}</div>
               </div>
               <div class="content">
                   <h2>Test Output</h2>
