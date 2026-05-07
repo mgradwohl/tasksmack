@@ -51,7 +51,7 @@ ctest --preset win-debug
 - **Clang 22 + libc++/libc++abi 22 (matches CI)**
     - `sudo apt install clang-22 lld-22 libc++-22-dev libc++abi-22-dev`
     - `<print>` from C++23 requires a C++23-ready standard library (libc++ 22)
-- CMake 3.28+ (4.2.1+ recommended)
+- CMake 3.29+ (4.x recommended)
 - Ninja
 - lld (LLVM linker)
 - clang-tidy and clang-format
@@ -62,7 +62,7 @@ ctest --preset win-debug
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
   - ROCm SMI library (librocm_smi64.so) for AMD GPU support
-  - libdrm-dev for basic Intel GPU enumeration
+  - Intel: no package needed — reads `/sys/class/drm` via sysfs (kernel DRM support is standard on all modern Linux kernels)
 
 Example (Ubuntu/Debian):
 
@@ -70,16 +70,16 @@ Example (Ubuntu/Debian):
 sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake ninja-build ccache python3 python3-jinja2 libfreetype6-dev
 
 # Optional: For GPU monitoring
-sudo apt install libdrm-dev          # Intel GPU enumeration
 # NVIDIA drivers (download from nvidia.com)
 # ROCm SMI (download from amd.com/rocm)
+# Intel: no package needed (reads /sys/class/drm via sysfs)
 ```
 
 ### Windows Pre-Requisites
 
 - LLVM/Clang 22 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata)
 - `LLVM_ROOT` environment variable set
-- CMake 3.28+
+- CMake 3.29+
 - Ninja
 - ccache 4.9.1+ (optional but recommended)
 - Python 3 + jinja2 (required for GLAD OpenGL loader generation)

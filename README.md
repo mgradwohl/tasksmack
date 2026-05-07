@@ -3,6 +3,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?style=flat-square)](https://github.com/mgradwohl/tasksmack/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-blue?style=flat-square)](https://mgradwohl.github.io/tasksmack/)
 
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
 
