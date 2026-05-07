@@ -1,18 +1,34 @@
 # TaskSmack
 
-[![CI](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml/badge.svg)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/mgradwohl/tasksmack/actions/workflows/codeql.yml/badge.svg)](https://github.com/mgradwohl/tasksmack/actions/workflows/codeql.yml)
-[![OSV Dependency Scan](https://github.com/mgradwohl/tasksmack/actions/workflows/osv-scanner.yml/badge.svg)](https://github.com/mgradwohl/tasksmack/actions/workflows/osv-scanner.yml)
-[![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?sort=semver)](https://github.com/mgradwohl/tasksmack/releases/latest)
-[![License](https://img.shields.io/github/license/mgradwohl/tasksmack)](LICENSE)
-[![Pre-commit](https://github.com/mgradwohl/tasksmack/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/mgradwohl/tasksmack/actions/workflows/pre-commit.yml)
-[![Last Commit](https://img.shields.io/github/last-commit/mgradwohl/tasksmack)](https://github.com/mgradwohl/tasksmack/commits/main)
-[![Downloads](https://img.shields.io/github/downloads/mgradwohl/tasksmack/total)](https://github.com/mgradwohl/tasksmack/releases)
-![C++23](https://img.shields.io/badge/C%2B%2B-23-blue)
+[![Latest Release](https://img.shields.io/github/v/release/mgradwohl/tasksmack?style=flat-square)](https://github.com/mgradwohl/tasksmack/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/mgradwohl/tasksmack/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
 TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
 
-## Why TaskSmack
+## Download
+
+**[→ Latest Release](https://github.com/mgradwohl/tasksmack/releases/latest)**
+
+| Platform | Package | Install |
+|----------|---------|---------|
+| Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
+| Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
+| Windows | `.zip` | Extract and run `TaskSmack.exe` |
+
+## System Requirements
+
+### CPU Requirements
+
+TaskSmack provides multiple build configurations optimized for different CPU generations:
+
+- **Standard builds** (`release`, `win-release`): Use default compiler optimizations, compatible with most x86-64 CPUs
+- **Compatible builds** (`release-compatible`, `win-release-compatible`): Target x86-64-v2 microarchitecture (2009+, Core i3/i5/i7, Athlon II)
+- **Optimized builds** (`optimized`, `win-optimized`): Target x86-64-v3 microarchitecture (2013+, Haswell/Excavator), requires AVX2 support
+
+**Note:** If you encounter "Illegal instruction" errors when running binaries built with the `optimized` preset, your CPU may not support AVX2. Use the `release-compatible` preset instead for broader compatibility.
+
+## Features
 
 - Cross-platform (Windows + Linux)
 - ImGui-based UI with docking and multi-viewport support
@@ -29,39 +45,19 @@ TaskSmack is a cross-platform system monitor / task manager built with modern C+
   - Per-process network tracking (sent/received bytes per second)
   - Interface selector with status and link speed display
 - Battery/power monitoring (charge %, power consumption, time remaining, health)
-- Configurable themes (TOML-based) and user themes: drop `.toml` files in your user config themes folder (Windows: `%APPDATA%/TaskSmack/themes`, Linux: `~/.config/tasksmack/themes`)
+- Configurable themes (TOML-based) and user themes: drop .toml files in your user config themes folder (Windows: %APPDATA%/TaskSmack/themes, Linux: ~/.config/tasksmack/themes)
 - Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
-
-## System Requirements
-
-### CPU Requirements
-
-TaskSmack provides multiple build configurations optimized for different CPU generations:
-
-- **Standard builds** (`release`, `win-release`): Use default compiler optimizations, compatible with most x86-64 CPUs
-- **Compatible builds** (`release-compatible`, `win-release-compatible`): Target x86-64-v2 microarchitecture (2009+, Core i3/i5/i7, Athlon II)
-- **Optimized builds** (`optimized`, `win-optimized`): Target x86-64-v3 microarchitecture (2013+, Haswell/Excavator), requires AVX2 support
-
-**Note:** If you encounter "Illegal instruction" errors when running binaries built with the `optimized` preset, your CPU may not support AVX2. Use the `release-compatible` preset instead for broader compatibility.
-
-## Documentation
-
-This README serves as the primary landing page for both users and contributors, intentionally includes a documentation map, and is structured so it can be promoted to a GitHub Pages home page later without major rework. Contributor/developer workflow guidance remains canonical in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-- **Project overview and features:** [TaskSmack](#tasksmack)
-- **Contributor workflow (canonical):** [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Architecture and engineering notes (canonical):** [tasksmack.md](tasksmack.md)
-- **Completed features list (canonical):** [completed-features.md](completed-features.md)
-- **Security policy:** [SECURITY.md](SECURITY.md)
-- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 
 ## For Developers
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 - Use the **issue templates** for bug reports and feature requests
-- PRs are checked against the **PR template** checklist
+- PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
+- Architecture overview: [tasksmack.md](tasksmack.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 
