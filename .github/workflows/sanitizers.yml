@@ -175,7 +175,7 @@ jobs:
             echo "No log file found" >> sanitizer-reports/${{ matrix.preset }}.html
           fi
 
-          cat >> sanitizer-reports/${{ matrix.preset }}.html << 'EOF_HTML'
+          cat >> sanitizer-reports/${{ matrix.preset }}.html << EOF_HTML
                   </pre>
               </div>
           </body>
