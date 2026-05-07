@@ -1,6 +1,6 @@
 # Developer Guide
 
-This guide is a docs-site overview for contributors. [`CONTRIBUTING.md`](../../CONTRIBUTING.md) is the canonical source of truth for contributor setup, build/test workflow, and tooling; keep this page aligned with it.
+This guide is a docs-site overview for contributors. `CONTRIBUTING.md` is the canonical source of truth for contributor setup, build/test workflow, and tooling; keep this page aligned with it.
 
 For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Instructions](build-instructions.md).
 
