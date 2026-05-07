@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       build_type:
-        description: Build preset type (debug/release)
+        description: Build preset type (`debug` or `release`, without platform prefix)
         required: true
         type: string
       llvm-version:

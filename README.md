@@ -15,7 +15,7 @@ TaskSmack is a cross-platform system monitor / task manager built with modern C+
 
 ## Build Matrix Status
 
-Main-branch build badges are shown below; the CI badge above tracks pull request validation.
+Main-branch build badges are shown below; the CI badge above shows pull request validation status, while the workflow also runs on `dev/**` pushes.
 
 | Platform | Debug | Release |
 |----------|-------|---------|
