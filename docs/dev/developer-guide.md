@@ -318,6 +318,29 @@ Packages are written to `dist/`.
 
 ---
 
+## CI / Build Status
+
+The table below shows live build status for the `main` branch. The CI badge at the top of the [README](https://github.com/mgradwohl/tasksmack#readme) reflects PR validation; the per-platform badges here reflect ongoing main-branch health.
+
+| Platform | Debug | Release |
+|----------|-------|---------|
+| Linux | [![Linux Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-debug.yml?branch=main&style=flat-square&label=Linux%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-debug.yml) | [![Linux Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-release.yml?branch=main&style=flat-square&label=Linux%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-release.yml) |
+| Windows | [![Windows Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-debug.yml?branch=main&style=flat-square&label=Windows%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-debug.yml) | [![Windows Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-release.yml?branch=main&style=flat-square&label=Windows%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-release.yml) |
+
+Additional checks on `main`:
+
+| Check | Status |
+|-------|--------|
+| Sanitizers (ASan/TSan/UBSan) | [![Sanitizers](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/sanitizers.yml?branch=main&style=flat-square&label=Sanitizers)](https://github.com/mgradwohl/tasksmack/actions/workflows/sanitizers.yml) |
+| Static Analysis (clang-tidy) | [![Static Analysis](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/static-analysis.yml?branch=main&style=flat-square&label=Static%20Analysis)](https://github.com/mgradwohl/tasksmack/actions/workflows/static-analysis.yml) |
+| CodeQL | [![CodeQL](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/codeql.yml?branch=main&style=flat-square&label=CodeQL)](https://github.com/mgradwohl/tasksmack/actions/workflows/codeql.yml) |
+| OSV Dependency Scan | [![OSV Scan](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/osv-scanner.yml?branch=main&style=flat-square&label=OSV%20Scan)](https://github.com/mgradwohl/tasksmack/actions/workflows/osv-scanner.yml) |
+| Pre-commit hooks | [![Pre-commit](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/pre-commit.yml?branch=main&style=flat-square&label=Pre-commit)](https://github.com/mgradwohl/tasksmack/actions/workflows/pre-commit.yml) |
+| Coverage | [![Codecov](https://img.shields.io/codecov/c/github/mgradwohl/tasksmack?style=flat-square)](https://codecov.io/gh/mgradwohl/tasksmack) |
+| OpenSSF Scorecard | [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mgradwohl/tasksmack/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mgradwohl/tasksmack) |
+
+---
+
 ## Contributing Workflow
 
 1. **Check for existing issues** — search GitHub Issues before opening a new one.
