@@ -8,15 +8,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  security-events: write
-  id-token: write
-  contents: read
+permissions: read-all
 
 jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
