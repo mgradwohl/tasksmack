@@ -12,7 +12,6 @@ permissions:
   security-events: write
   id-token: write
   contents: read
-  actions: write
 
 jobs:
   analysis:
