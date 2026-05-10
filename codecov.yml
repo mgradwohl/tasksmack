@@ -1,0 +1,19 @@
+coverage:
+  status:
+    project:
+      default:
+        enabled: false
+      linux:
+        flags:
+          - linux
+        target: 80%
+      windows:
+        flags:
+          - windows
+        target: 60%
+
+flags:
+  linux:
+    carryforward: true
+  windows:
+    carryforward: true

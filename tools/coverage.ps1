@@ -97,7 +97,18 @@ try {
         "-ignore-filename-regex=.*(\\|/)(build|_deps|tests)(\\|/).*"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    # Step 5: Generate summary
+    # Step 5: Generate LCOV file for Codecov
+    Write-Host "==> Generating LCOV report..."
+    $lcovPath = Join-Path $CoverageDir "coverage.lcov"
+    & $LlvmCov export `
+        "$BuildDir\tests\TaskSmackTests.exe" `
+        "-instr-profile=$BuildDir\default.profdata" `
+        -format=lcov `
+        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests)(\\|/).*" `
+        | Set-Content -Path $lcovPath -Encoding utf8NoBOM
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    # Step 6: Generate summary
     Write-Host "==> Coverage Summary:"
     & $LlvmCov report `
         "$BuildDir\tests\TaskSmackTests.exe" `
@@ -106,6 +117,7 @@ try {
 
     Write-Host ""
     Write-Host "HTML report generated at: $CoverageDir\index.html" -ForegroundColor Green
+    Write-Host "LCOV report generated at: $lcovPath" -ForegroundColor Green
 
     # Open in browser if requested
     if ($OpenReport) {
