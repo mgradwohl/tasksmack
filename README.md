@@ -12,7 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue?style=flat-square)](https://mgradwohl.github.io/tasksmack/)
 
-TaskSmack is a cross-platform system monitor / task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
+TaskSmack is a cross-platform system monitor & task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
 
 ## Build Matrix Status
 
@@ -70,13 +70,8 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 **[→ Documentation site](https://mgradwohl.github.io/tasksmack/)** — user guide, architecture, build instructions, and metrics pipeline.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
-
-- Use the **issue templates** for bug reports and feature requests
-- PRs will be checked against the **PR template** checklist
-- Security issues should be reported per [SECURITY.md](SECURITY.md)
-- Architecture overview: [tasksmack.md](tasksmack.md)
-- Security policy: [SECURITY.md](SECURITY.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
+Changelog: [CHANGELOG.md](CHANGELOG.md)
+Security: [SECURITY.md](SECURITY.md)
 
 ## License
 
