@@ -1068,6 +1068,52 @@ TEST(FormatTest, FormatPowerCompactHandlesMilliwatts)
     EXPECT_TRUE(result.contains("mW"));
 }
 
+TEST(FormatTest, FormatPowerCompactHandlesMicrowatts)
+{
+    // < 0.001 W → µW path
+    const auto result = UI::Format::formatPowerCompact(0.0005);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains('W'));
+    // µW uses the Unicode micro sign so just verify it is not mW
+    EXPECT_FALSE(result.contains("mW"));
+}
+
+TEST(FormatTest, FormatPowerCompactBoundaryMilliWatt)
+{
+    // Exactly at the mW/W boundary (0.001 W)
+    const auto mw = UI::Format::formatPowerCompact(0.001);
+    EXPECT_TRUE(mw.contains("mW"));
+
+    // Just below the mW boundary (0.0009 W) → µW path
+    const auto uw = UI::Format::formatPowerCompact(0.0009);
+    EXPECT_FALSE(uw.contains("mW"));
+}
+
+// =============================================================================
+// splitPowerForAlignment additional branch tests
+// =============================================================================
+
+TEST(FormatTest, SplitPowerForAlignmentHandlesNegativeWatts)
+{
+    // Negative power should trigger the <= 0.0 guard and return the zero display
+    const auto parts = UI::Format::splitPowerForAlignment(-5.0);
+
+    EXPECT_EQ(parts.wholePart, "0.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " W");
+}
+
+TEST(FormatTest, SplitPowerForAlignmentRoundingOverflow)
+{
+    // A value whose fractional part rounds up to 10 should carry to the whole part
+    // e.g. 4.95 W → rounds to 5.0 W
+    const auto parts = UI::Format::splitPowerForAlignment(4.95);
+
+    EXPECT_EQ(parts.wholePart, "5.");
+    EXPECT_EQ(parts.decimalPart, "0");
+    EXPECT_EQ(parts.unitPart, " W");
+}
+
 // =============================================================================
 // formatPowerOrZero Tests
 // =============================================================================
@@ -1099,9 +1145,146 @@ TEST(FormatTest, FormatPowerOrZeroHandlesMilliwatts)
     EXPECT_TRUE(result.contains("mW"));
 }
 
+TEST(FormatTest, FormatPowerOrZeroHandlesMicrowatts)
+{
+    const auto result = UI::Format::formatPowerOrZero(0.0005);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains('W'));
+    EXPECT_NE(result, "0.00 W");
+}
+
 // =============================================================================
-// Count Per Second Formatting Tests
+// formatUptimeShort — hours-only path (hours > 0, days == 0)
 // =============================================================================
+
+TEST(FormatTest, FormatUptimeShortHandlesHoursOnly)
+{
+    // 2 hours, 30 minutes, no days
+    const std::uint64_t seconds = (2ULL * 60ULL * 60ULL) + (30ULL * 60ULL);
+    const auto result = UI::Format::formatUptimeShort(seconds);
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains("Up:"));
+    EXPECT_TRUE(result.contains("h"));
+    EXPECT_TRUE(result.contains("m"));
+}
+
+TEST(FormatTest, FormatUptimeShortHandlesMinutesOnly)
+{
+    // Less than one hour: just minutes path
+    const auto result = UI::Format::formatUptimeShort(45 * 60); // 45 minutes
+    EXPECT_FALSE(result.empty());
+    EXPECT_TRUE(result.contains("Up:"));
+    EXPECT_TRUE(result.contains("m"));
+    EXPECT_FALSE(result.contains("h"));
+    EXPECT_FALSE(result.contains("d"));
+}
+
+// =============================================================================
+// splitBytesPerSecForAlignmentFast — unit suffix correctness
+// =============================================================================
+
+TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastUnits)
+{
+    const std::vector<std::pair<UI::Format::ByteUnit, std::string>> unitExpected = {
+        {{.suffix = "B", .scale = 1.0, .decimals = 1}, " B/s"},
+        {{.suffix = "KB", .scale = 1024.0, .decimals = 1}, " KB/s"},
+        {{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1}, " MB/s"},
+        {{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1}, " GB/s"},
+    };
+
+    for (const auto& [unit, expectedSuffix] : unitExpected)
+    {
+        const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(512.0 * unit.scale, unit);
+        EXPECT_EQ(parts.unitPart, expectedSuffix) << "Failed for unit=" << unit.suffix;
+    }
+}
+
+TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastMatchesSlowPath)
+{
+    const std::vector<UI::Format::ByteUnit> units = {
+        {.suffix = "B", .scale = 1.0, .decimals = 1},
+        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+    };
+
+    for (const auto& unit : units)
+    {
+        const double bytes = 512.0 * unit.scale; // 512 in each unit
+        const auto slow = UI::Format::splitBytesPerSecForAlignment(bytes, unit);
+        const auto fast = UI::Format::splitBytesPerSecForAlignmentFast(bytes, unit);
+
+        EXPECT_EQ(slow.wholePart, fast.wholePart()) << "wholePart mismatch for " << unit.suffix;
+        EXPECT_EQ(std::string(1, fast.decimalDigit), slow.decimalPart) << "decimalPart mismatch for " << unit.suffix;
+        EXPECT_EQ(slow.unitPart, fast.unitPart) << "unitPart mismatch for " << unit.suffix;
+    }
+}
+
+// =============================================================================
+// splitPercentForAlignment — single-digit and rounding paths
+// =============================================================================
+
+TEST(FormatTest, SplitPercentForAlignmentSingleDigit)
+{
+    // Single-digit whole part (0-9)
+    const auto parts = UI::Format::splitPercentForAlignment(7.3);
+    EXPECT_EQ(parts.wholePart, "7.");
+    EXPECT_EQ(parts.decimalDigit, '3');
+}
+
+TEST(FormatTest, SplitPercentForAlignmentDoubleDigit)
+{
+    // Two-digit whole part (10-99)
+    const auto parts = UI::Format::splitPercentForAlignment(42.8);
+    EXPECT_EQ(parts.wholePart, "42.");
+    EXPECT_EQ(parts.decimalDigit, '8');
+}
+
+TEST(FormatTest, SplitPercentForAlignmentRoundingAt99_95)
+{
+    // 99.95 → fractional rounds to 10 → carry → 100.0
+    const auto parts = UI::Format::splitPercentForAlignment(99.95);
+    EXPECT_EQ(parts.wholePart, "100.");
+    EXPECT_EQ(parts.decimalDigit, '0');
+}
+
+// =============================================================================
+// chooseByteUnit — boundary and negative value coverage
+// =============================================================================
+
+TEST(FormatTest, ChooseByteUnitHandlesNegativeBytes)
+{
+    // Negative bytes (unusual but possible from deltas): chooseByteUnit uses abs()
+    const auto unit = UI::Format::chooseByteUnit(-2048.0);
+    EXPECT_EQ(std::string(unit.suffix), "KB");
+}
+
+TEST(FormatTest, ChooseByteUnitBoundaryExactlyGB)
+{
+    // Exactly 1 GiB → GB unit
+    const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0 * 1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "GB");
+}
+
+TEST(FormatTest, ChooseByteUnitBoundaryExactlyMB)
+{
+    // Exactly 1 MiB → MB unit
+    const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "MB");
+}
+
+TEST(FormatTest, ChooseByteUnitBoundaryExactlyKB)
+{
+    // Exactly 1 KiB → KB unit
+    const auto unit = UI::Format::chooseByteUnit(1024.0);
+    EXPECT_EQ(std::string(unit.suffix), "KB");
+}
+
+TEST(FormatTest, ChooseByteUnitZeroIsBytes)
+{
+    const auto unit = UI::Format::chooseByteUnit(0.0);
+    EXPECT_EQ(std::string(unit.suffix), "B");
+}
 
 TEST(FormatTest, FormatCountPerSecondSmallValue)
 {

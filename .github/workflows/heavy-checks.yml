@@ -71,10 +71,13 @@ jobs:
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
+      - name: Install xvfb for headless display
+        run: sudo apt-get install -y xvfb
+
       - name: Generate coverage report
         run: |
           set -o pipefail
-          ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
+          xvfb-run -s "-screen 0 1920x1080x24" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
 
       - name: Add coverage summary to workflow summary
         if: always()
