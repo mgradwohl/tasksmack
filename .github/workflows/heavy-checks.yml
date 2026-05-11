@@ -15,6 +15,8 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.0'
+  LINUX_COVERAGE_THRESHOLD: '80'
+  WINDOWS_COVERAGE_THRESHOLD: '60'
 
 jobs:
   validate-environment:
@@ -107,7 +109,7 @@ jobs:
         run: |
           if [ -f coverage-output.txt ]; then
             total_line="$(grep "^TOTAL" coverage-output.txt | tail -n 1 || true)"
-            THRESHOLD=80
+            THRESHOLD="${{ env.LINUX_COVERAGE_THRESHOLD }}"
             if [ -n "$total_line" ]; then
               COVERAGE="$(printf '%s\n' "$total_line" | awk '{print $NF}' | sed 's/%//')"
               if [[ "$COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -248,7 +250,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $threshold = 60.0
+          # Keep this aligned with codecov.yml windows target.
+          [double]$threshold = [double]$env:WINDOWS_COVERAGE_THRESHOLD
           if (Test-Path "coverage-output.txt") {
             $totalLine = Get-Content "coverage-output.txt" | Where-Object { $_ -match '^TOTAL' } | Select-Object -Last 1
             if ($null -ne $totalLine -and $totalLine.Trim().Length -gt 0) {
