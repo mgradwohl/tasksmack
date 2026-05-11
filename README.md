@@ -75,7 +75,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 - PRs will be checked against the **PR template** checklist
 - Security issues should be reported per [SECURITY.md](SECURITY.md)
 - Architecture overview: [tasksmack.md](tasksmack.md)
-- Security policy: [SECURITY.md](SECURITY.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## License
