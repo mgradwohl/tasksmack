@@ -1106,8 +1106,9 @@ TEST(FormatTest, SplitPowerForAlignmentHandlesNegativeWatts)
 TEST(FormatTest, SplitPowerForAlignmentRoundingOverflow)
 {
     // A value whose fractional part rounds up to 10 should carry to the whole part
-    // e.g. 4.99 W → rounds to 5.0 W
-    const auto parts = UI::Format::splitPowerForAlignment(4.99);
+    // Use an exactly representable binary fraction (4 + 31/32) to avoid FP ambiguity
+    // while still exercising the carry-to-whole rounding path to 5.0 W.
+    const auto parts = UI::Format::splitPowerForAlignment(4.96875);
 
     EXPECT_EQ(parts.wholePart, "5.");
     EXPECT_EQ(parts.decimalPart, "0");
@@ -1240,10 +1241,11 @@ TEST(FormatTest, SplitPercentForAlignmentDoubleDigit)
     EXPECT_EQ(parts.decimalDigit, '8');
 }
 
-TEST(FormatTest, SplitPercentForAlignmentRoundingAt99_99)
+TEST(FormatTest, SplitPercentForAlignmentRoundingAt99_96875)
 {
-    // 99.99 → fractional rounds to 10 → carry → 100.0
-    const auto parts = UI::Format::splitPercentForAlignment(99.99);
+    // Use an exactly representable binary fraction (99 + 31/32) to avoid FP ambiguity
+    // while still exercising the carry-to-whole rounding path to 100.0.
+    const auto parts = UI::Format::splitPercentForAlignment(99.96875);
     EXPECT_EQ(parts.wholePart, "100.");
     EXPECT_EQ(parts.decimalDigit, '0');
 }
