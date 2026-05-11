@@ -1286,6 +1286,10 @@ TEST(FormatTest, ChooseByteUnitZeroIsBytes)
     EXPECT_EQ(std::string(unit.suffix), "B");
 }
 
+// =============================================================================
+// FormatCountPerSecond — rate suffix coverage
+// =============================================================================
+
 TEST(FormatTest, FormatCountPerSecondSmallValue)
 {
     const auto result = UI::Format::formatCountPerSecond(500.0);
