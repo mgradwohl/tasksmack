@@ -497,6 +497,305 @@ TEST_F(DRMGPUProbeUnitTest, ProcessGPUCounters_AlwaysEmpty)
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
 }
 
+TEST_F(DRMGPUProbeUnitTest, Capabilities_MultipleIntelGPUs_SupportsMultiGPU)
+{
+    for (const auto* card : {"card0", "card1"})
+    {
+        const auto deviceDir = makeCard(card, "i915");
+        writeFile(deviceDir / "vendor", "0x8086");
+        writeFile(deviceDir / "class", "0x030000");
+    }
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    const auto caps = probe.capabilities();
+    EXPECT_TRUE(caps.supportsMultiGPU);
+}
+
+// =============================================================================
+// readGPUCounters — sysfs file reading paths
+// =============================================================================
+
+/// Helper that creates a hwmon directory tree: device/hwmon/hwmon0/
+static void makeHwmon(const std::filesystem::path& deviceDir, const std::string& hwmonName = "hwmon0")
+{
+    std::filesystem::create_directories(deviceDir / "hwmon" / hwmonName);
+}
+
+static void writeHwmonFile(const std::filesystem::path& deviceDir,
+                           const std::string& hwmonName,
+                           const std::string& filename,
+                           const std::string& content)
+{
+    std::ofstream f(deviceDir / "hwmon" / hwmonName / filename);
+    f << content << "\n";
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_NoSysfsFiles_ReturnsZeros)
+{
+    // Card with no optional sysfs files — counter fields should all be zero/default.
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].temperatureC, 0);
+    EXPECT_EQ(counters[0].gpuClockMHz, 0U);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 0ULL);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperature_IsRead)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    // Create hwmon directory with temp1_input in millidegrees Celsius
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_input", "65000"); // 65 °C
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].temperatureC, 65);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_input", "0");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    // A zero reading from the file should leave temperatureC at 0
+    EXPECT_EQ(counters[0].temperatureC, 0);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_GpuFrequency_IsRead)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    // gt_cur_freq_mhz lives under the card directory (not device/)
+    const auto cardDir = m_SysRoot / "card0";
+    writeFile(cardDir / "gt_cur_freq_mhz", "1200");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuClockMHz, 1200U);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroFrequency_IsIgnored)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+
+    const auto cardDir = m_SysRoot / "card0";
+    writeFile(cardDir / "gt_cur_freq_mhz", "0");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuClockMHz, 0U);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_VramUsedAndTotal_AreRead)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030200");                 // discrete (3D controller)
+    writeFile(deviceDir / "mem_info_vram_used", "2147483648");  // 2 GiB used
+    writeFile(deviceDir / "mem_info_vram_total", "4294967296"); // 4 GiB total
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 2147483648ULL);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 4294967296ULL);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_ZeroVram_IsIgnored)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    writeFile(deviceDir / "mem_info_vram_used", "0");
+    writeFile(deviceDir / "mem_info_vram_total", "0");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 0ULL);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0ULL);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_AllSysfsFiles_AllFieldsPopulated)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030200"); // discrete
+
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_input", "72000"); // 72 °C
+
+    const auto cardDir = m_SysRoot / "card0";
+    writeFile(cardDir / "gt_cur_freq_mhz", "950");
+
+    writeFile(deviceDir / "mem_info_vram_used", "1073741824");  // 1 GiB
+    writeFile(deviceDir / "mem_info_vram_total", "8589934592"); // 8 GiB
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].temperatureC, 72);
+    EXPECT_EQ(counters[0].gpuClockMHz, 950U);
+    EXPECT_EQ(counters[0].memoryUsedBytes, 1073741824ULL);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 8589934592ULL);
+}
+
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_MultipleGPUs_EachGetsOwnCounters)
+{
+    // card0: 65 °C, 1200 MHz, no VRAM
+    const auto dev0 = makeCard("card0", "i915");
+    writeFile(dev0 / "vendor", "0x8086");
+    writeFile(dev0 / "class", "0x030000");
+    makeHwmon(dev0);
+    writeHwmonFile(dev0, "hwmon0", "temp1_input", "65000");
+    writeFile(m_SysRoot / "card0" / "gt_cur_freq_mhz", "1200");
+
+    // card1: 72 °C, 950 MHz, 4 GiB VRAM
+    const auto dev1 = makeCard("card1", "xe");
+    writeFile(dev1 / "vendor", "0x8086");
+    writeFile(dev1 / "class", "0x030200");
+    makeHwmon(dev1);
+    writeHwmonFile(dev1, "hwmon0", "temp1_input", "72000");
+    writeFile(m_SysRoot / "card1" / "gt_cur_freq_mhz", "950");
+    writeFile(dev1 / "mem_info_vram_used", "1073741824");
+    writeFile(dev1 / "mem_info_vram_total", "4294967296");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+
+    // Find card0 counters (order may vary depending on directory iteration)
+    const auto* c0 = counters[0].gpuClockMHz == 1200U ? &counters[0] : &counters[1];
+    const auto* c1 = counters[0].gpuClockMHz == 1200U ? &counters[1] : &counters[0];
+
+    EXPECT_EQ(c0->temperatureC, 65);
+    EXPECT_EQ(c0->gpuClockMHz, 1200U);
+    EXPECT_EQ(c0->memoryTotalBytes, 0ULL); // integrated, no VRAM
+
+    EXPECT_EQ(c1->temperatureC, 72);
+    EXPECT_EQ(c1->gpuClockMHz, 950U);
+    EXPECT_EQ(c1->memoryTotalBytes, 4294967296ULL);
+}
+
+// =============================================================================
+// uevent device name parsing tests
+// =============================================================================
+
+TEST_F(DRMGPUProbeUnitTest, EnumerateGPUs_UeventWithPciId_ParsedCorrectly)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    // uevent with PCI_ID entry → probe should extract "8086:9A49" as the id
+    writeFile(deviceDir / "uevent", "PCI_ID=8086:9A49\nDRIVER=i915\n");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].name.contains("Intel"));
+    EXPECT_TRUE(gpus[0].name.contains("8086"));
+}
+
+TEST_F(DRMGPUProbeUnitTest, EnumerateGPUs_UeventWithoutPciId_FallbackToIds)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    writeFile(deviceDir / "device", "0x9A49"); // PCI device ID
+    // uevent without PCI_ID → probe falls back to vendor:device string
+    writeFile(deviceDir / "uevent", "DRIVER=i915\nPCI_SLOT_NAME=0000:00:02.0\n");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_FALSE(gpus[0].name.empty());
+}
+
+// =============================================================================
+// Malformed sysfs content tests
+// =============================================================================
+
+TEST_F(DRMGPUProbeUnitTest, MalformedHexClass_TreatedAsUnrecognised)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "not_a_hex_value"); // malformed
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    // Should not crash and should still enumerate the card
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    // Unrecognised class with no VRAM → conservative default: integrated
+    EXPECT_TRUE(gpus[0].isIntegrated);
+}
+
+TEST_F(DRMGPUProbeUnitTest, MalformedFrequencyFile_TreatedAsZero)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    writeFile(m_SysRoot / "card0" / "gt_cur_freq_mhz", "not_a_number");
+
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    // Malformed value → treated as zero → field left at 0
+    EXPECT_EQ(counters[0].gpuClockMHz, 0U);
+}
+
 } // namespace
 } // namespace Platform
 

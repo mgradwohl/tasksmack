@@ -14,6 +14,9 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
+  LLVM_SEMVER_VERSION: '22.1.0'
+  LINUX_COVERAGE_THRESHOLD: '80'
+  WINDOWS_COVERAGE_THRESHOLD: '60'
 
 jobs:
   validate-environment:
@@ -71,10 +74,13 @@ jobs:
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: ${{ runner.os }}-fetchcontent-
 
+      - name: Install xvfb for headless display
+        run: sudo apt-get install -y xvfb
+
       - name: Generate coverage report
         run: |
           set -o pipefail
-          ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
+          xvfb-run -s "-screen 0 1920x1080x24" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt
 
       - name: Add coverage summary to workflow summary
         if: always()
@@ -103,7 +109,7 @@ jobs:
         run: |
           if [ -f coverage-output.txt ]; then
             total_line="$(grep "^TOTAL" coverage-output.txt | tail -n 1 || true)"
-            THRESHOLD=80
+            THRESHOLD="${{ env.LINUX_COVERAGE_THRESHOLD }}"
             if [ -n "$total_line" ]; then
               COVERAGE="$(printf '%s\n' "$total_line" | awk '{print $NF}' | sed 's/%//')"
               if [[ "$COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -165,8 +171,136 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage.lcov
-          flags: unittests
-          name: tasksmack-coverage
+          flags: linux
+          name: tasksmack-coverage-linux
+          fail_ci_if_error: false
+
+  win-coverage:
+    needs: [validate-environment]
+    runs-on: windows-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: write
+    env:
+      LLVM_ROOT: C:\Program Files\LLVM
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: windows-coverage
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Generate coverage report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/coverage.ps1 -ShowDetails *>&1 | Tee-Object -FilePath coverage-output.txt
+
+      - name: Add coverage summary to workflow summary
+        if: always()
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Windows Coverage Report"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+
+          if (Test-Path "coverage-output.txt") {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Coverage Summary"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+
+            $content = Get-Content "coverage-output.txt"
+            $startIdx = -1
+            $endIdx = -1
+            for ($i = 0; $i -lt $content.Count; $i++) {
+              if ($startIdx -lt 0 -and $content[$i] -match '^Filename') { $startIdx = $i }
+              if ($content[$i] -match '^TOTAL') { $endIdx = $i }
+            }
+
+            if ($startIdx -ge 0 -and $endIdx -ge $startIdx) {
+              $content[$startIdx..$endIdx] | ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $_ }
+            } else {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Coverage summary not found in output"
+            }
+
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Full HTML report available in artifacts."
+          } else {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Coverage output file not found"
+          }
+
+      - name: Check coverage threshold
+        if: always()
+        shell: pwsh
+        run: |
+          # Keep this aligned with codecov.yml windows target.
+          [double]$threshold = [double]$env:WINDOWS_COVERAGE_THRESHOLD
+          if (Test-Path "coverage-output.txt") {
+            $totalLine = Get-Content "coverage-output.txt" | Where-Object { $_ -match '^TOTAL' } | Select-Object -Last 1
+            if ($null -ne $totalLine -and $totalLine.Trim().Length -gt 0) {
+              $coverageToken = ($totalLine -split '\s+')[-1].TrimEnd('%')
+              [double]$coverage = 0
+              if ([double]::TryParse($coverageToken, [ref]$coverage)) {
+                Write-Host "📊 Current Windows coverage: $coverage%"
+                Write-Host "🎯 Minimum threshold: $threshold%"
+                if ($coverage -lt $threshold) {
+                  Write-Host "⚠️ WARNING: Coverage $coverage% is below threshold $threshold%"
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** Current coverage (${coverage}%) is below the ${threshold}% threshold"
+                } else {
+                  Write-Host "✅ Coverage $coverage% meets threshold $threshold%"
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "✅ **Windows Coverage Status:** Current coverage (${coverage}%) meets the ${threshold}% threshold"
+                }
+              } else {
+                Write-Host "⚠️ TOTAL coverage value is present but unparsable - cannot check threshold"
+                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** TOTAL coverage value from \`coverage-output.txt\` was not numeric; threshold check skipped."
+              }
+            } else {
+              Write-Host "⚠️ Coverage TOTAL line missing - cannot check threshold"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** No TOTAL line found in \`coverage-output.txt\`; threshold check skipped."
+            }
+          } else {
+            Write-Host "❌ Coverage output file not found - cannot check threshold"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "❌ **Windows Coverage Check Failed:** Could not find coverage output file"
+          }
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-coverage-report
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/coverage.lcov
+          flags: windows
+          name: tasksmack-coverage-windows
           fail_ci_if_error: false
 
   sanitizers:

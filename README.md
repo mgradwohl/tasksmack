@@ -70,8 +70,9 @@ TaskSmack provides multiple build configurations optimized for different CPU gen
 **[→ Documentation site](https://mgradwohl.github.io/tasksmack/)** — user guide, architecture, build instructions, and metrics pipeline.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
-Changelog: [CHANGELOG.md](CHANGELOG.md)
-Security: [SECURITY.md](SECURITY.md)
+- Security issues should be reported per [SECURITY.md](SECURITY.md)
+- Architecture overview: [tasksmack.md](tasksmack.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 
