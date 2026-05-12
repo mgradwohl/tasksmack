@@ -6,8 +6,11 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -272,9 +275,149 @@ TEST(UserSettingsTest, ZeroWindowDimensionsAreStorable)
     EXPECT_EQ(settings.windowHeight, 0);
 }
 
-// Note: Additional integration tests for the helper functions would require
-// refactoring UserConfig to accept a configurable path for testing, as it
-// currently uses a singleton pattern with a fixed config location.
+// ========== UserConfig load() / save() integration (uses resetConfigPathForTesting) ==========
+
+class UserConfigLoadSaveTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_TempDir = std::filesystem::temp_directory_path() / "tasksmack_test_userconfig";
+        // Remove any leftovers from a prior run before recreating
+        std::error_code ec;
+        std::filesystem::remove_all(m_TempDir, ec);
+        std::filesystem::create_directories(m_TempDir);
+        m_ConfigPath = m_TempDir / "config.toml";
+        // Reset singleton to a clean state pointing at our temp file
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+    }
+
+    void TearDown() override
+    {
+        // Reset again so subsequent tests start clean
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        std::error_code ec;
+        std::filesystem::remove_all(m_TempDir, ec);
+    }
+
+    std::filesystem::path m_TempDir;
+    std::filesystem::path m_ConfigPath;
+};
+
+TEST_F(UserConfigLoadSaveTest, LoadDoesNothingWhenFileAbsent)
+{
+    UserConfig::get().load();
+    // Should keep defaults
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadIsIdempotent)
+{
+    // First load seeds defaults; second call must be a no-op (isLoaded guard)
+    UserConfig::get().load();
+    UserConfig::get().settings().refreshIntervalMs = 9999;
+    UserConfig::get().load(); // should not re-read or reset
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, 9999);
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
+{
+    // Unclosed string literal — causes toml::parse_error (EOF in string)
+    // without triggering parser debug assertions
+    {
+        std::ofstream f(m_ConfigPath);
+        f << "interval_ms = \"unclosed string\n";
+    }
+    UserConfig::get().load(); // should not throw
+    EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadSwapsProgressThresholdsWhenInverted)
+{
+    // Write a config where low > high — load() must swap them
+    {
+        std::ofstream f(m_ConfigPath);
+        f << "[ui]\n";
+        f << "progress_color_low_threshold = 80.0\n";
+        f << "progress_color_high_threshold = 20.0\n";
+    }
+    UserConfig::get().load();
+    const auto& s = UserConfig::get().settings();
+    EXPECT_LE(s.progressColorLowThreshold, s.progressColorHighThreshold);
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
+{
+    const std::vector<std::pair<std::string, UI::FontSize>> cases = {
+        {"small", UI::FontSize::Small},
+        {"medium", UI::FontSize::Medium},
+        {"large", UI::FontSize::Large},
+        {"extra-large", UI::FontSize::ExtraLarge},
+        {"huge", UI::FontSize::Huge},
+        {"even-huger", UI::FontSize::EvenHuger},
+    };
+
+    for (const auto& [str, expected] : cases)
+    {
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        {
+            std::ofstream f(m_ConfigPath);
+            f << "[font]\nsize = \"" << str << "\"\n";
+        }
+        UserConfig::get().load();
+        EXPECT_EQ(UserConfig::get().settings().fontSize, expected) << "Failed for font size: " << str;
+    }
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadClampsInsaneWindowPosition)
+{
+    // Values far outside ±100000 must be reset to nullopt
+    {
+        std::ofstream f(m_ConfigPath);
+        f << "[window]\n";
+        f << "x = 999999999\n";
+        f << "y = -999999999\n";
+    }
+    UserConfig::get().load();
+    EXPECT_FALSE(UserConfig::get().settings().windowPosX.has_value());
+    EXPECT_FALSE(UserConfig::get().settings().windowPosY.has_value());
+}
+
+TEST_F(UserConfigLoadSaveTest, SaveCreatesFileAndRoundTrips)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().refreshIntervalMs = 2000;
+    cfg.settings().themeId = "dracula";
+    cfg.settings().windowPosX = 150;
+    cfg.settings().windowPosY = 250;
+    cfg.save();
+
+    ASSERT_TRUE(std::filesystem::exists(m_ConfigPath));
+
+    cfg.resetConfigPathForTesting(m_ConfigPath);
+    cfg.load();
+    EXPECT_EQ(cfg.settings().refreshIntervalMs, 2000);
+    EXPECT_EQ(cfg.settings().themeId, "dracula");
+    EXPECT_TRUE(cfg.settings().windowPosX.has_value());
+    EXPECT_EQ(*cfg.settings().windowPosX, 150);
+    EXPECT_TRUE(cfg.settings().windowPosY.has_value());
+    EXPECT_EQ(*cfg.settings().windowPosY, 250);
+}
+
+TEST_F(UserConfigLoadSaveTest, SaveWithNoOptionalWindowPos)
+{
+    auto& cfg = UserConfig::get();
+    cfg.settings().windowPosX.reset();
+    cfg.settings().windowPosY.reset();
+    cfg.save();
+
+    ASSERT_TRUE(std::filesystem::exists(m_ConfigPath));
+
+    cfg.resetConfigPathForTesting(m_ConfigPath);
+    cfg.load();
+    EXPECT_FALSE(cfg.settings().windowPosX.has_value());
+    EXPECT_FALSE(cfg.settings().windowPosY.has_value());
+}
 
 } // namespace
 } // namespace App
