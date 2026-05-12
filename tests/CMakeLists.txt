@@ -132,7 +132,7 @@ add_executable(TaskSmackTests
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
-    UI/test_Widgets.cpp
+    UI/test_WidgetsHeader.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
