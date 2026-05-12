@@ -184,6 +184,41 @@ modal_window_dim_background = "#0000004D"
     return body;
 }
 
+// Build a full-valid theme body with the [charts].cpu value replaced by cpuValue.
+// Accepts any valid TOML value for cpu, e.g. a quoted hex string ("#FF0000")
+// or an array ([0.0, 0.47, 0.83]).
+// Used by tests that exercise the array-format color parsing path for chart colors.
+[[nodiscard]] auto buildFullThemeWithCpuColor(std::string_view cpuValue) -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    // Replace the cpu line — it appears exactly once in [charts].
+    const std::string oldLine = "cpu = \"#0078D4\"";
+    const std::size_t pos = body.find(oldLine);
+    if (pos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithCpuColor: cpu key not found in k_FullThemeTomlBody");
+    }
+    body.replace(pos, oldLine.size(), std::string("cpu = ") + std::string(cpuValue));
+    return body;
+}
+
+// Build a full-valid theme body with the [accents].colors value replaced by accentsValue.
+// Accepts any TOML array value, e.g. a mixed array of hex strings and inline [r,g,b] arrays.
+// Used by tests that exercise the array-element color parsing path for accents.
+[[nodiscard]] auto buildFullThemeWithAccents(std::string_view accentsValue) -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    // Replace the colors line — it appears exactly once in [accents].
+    const std::string oldLine = R"(colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"])";
+    const std::size_t pos = body.find(oldLine);
+    if (pos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithAccents: colors key not found in k_FullThemeTomlBody");
+    }
+    body.replace(pos, oldLine.size(), std::string("colors = ") + std::string(accentsValue));
+    return body;
+}
+
 // ========== hexToImVec4 Tests ==========
 
 TEST(ThemeLoaderTest, HexToImVec4_ValidSixDigit)
@@ -1408,6 +1443,69 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_DefaultsToWhit
 
     // Default badge text color must be fully opaque white
     expectColorNear(theme->priorityBadgeTextColor, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
+}
+
+// ========== Array-format color parsing ==========
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_ArrayColorRgbForChartCpu)
+{
+    // [r, g, b] array exercises parseColorView array path; alpha defaults to 1.0
+    const std::string toml = std::string("[meta]\nname = \"Array RGB Charts\"\n\n") + buildFullThemeWithCpuColor("[0.0, 0.47, 0.83]");
+    createThemeFile("array-rgb-charts.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "array-rgb-charts.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // cpu = [0.0, 0.47, 0.83] → approximately Windows Blue
+    EXPECT_NEAR(theme->chartCpu.x, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.y, 0.47F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.z, 0.83F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.w, 1.0F, 0.01F); // alpha defaults to 1.0
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_ArrayColorRgbaForChartCpu)
+{
+    // [r, g, b, a] array exercises parseColorView with explicit alpha
+    const std::string toml =
+        std::string("[meta]\nname = \"Array RGBA Charts\"\n\n") + buildFullThemeWithCpuColor("[0.0, 0.47, 0.83, 0.75]");
+    createThemeFile("array-rgba-charts.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "array-rgba-charts.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // cpu = [0.0, 0.47, 0.83, 0.75] — explicit alpha 0.75
+    EXPECT_NEAR(theme->chartCpu.x, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.y, 0.47F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.z, 0.83F, 0.02F);
+    EXPECT_NEAR(theme->chartCpu.w, 0.75F, 0.02F);
+}
+
+TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_AccentsInArrayColorFormat)
+{
+    // Mixed [[r,g,b], [r,g,b,a], "#hex", ...] accents exercises parseColorNode array path
+    // via loadColorArray<N>: each element dispatches through parseColorNode.
+    constexpr std::string_view accentsValue = R"([
+  [1.0, 0.0, 0.0],
+  [0.0, 1.0, 0.0, 0.8],
+  "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"
+])";
+    const std::string toml = std::string("[meta]\nname = \"Accents Array Format\"\n\n") + buildFullThemeWithAccents(accentsValue);
+    createThemeFile("accents-array-format.toml", toml);
+
+    auto theme = ThemeLoader::loadTheme(m_TempDir / "accents-array-format.toml");
+    ASSERT_TRUE(theme.has_value());
+
+    // accents[0] = [1.0, 0.0, 0.0] → red, alpha defaults to 1.0
+    EXPECT_NEAR(theme->accents[0].x, 1.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[0].y, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[0].z, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[0].w, 1.0F, 0.02F);
+
+    // accents[1] = [0.0, 1.0, 0.0, 0.8] → green with alpha 0.8
+    EXPECT_NEAR(theme->accents[1].x, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[1].y, 1.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[1].z, 0.0F, 0.02F);
+    EXPECT_NEAR(theme->accents[1].w, 0.8F, 0.02F);
 }
 
 } // namespace

@@ -12,6 +12,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
@@ -25,6 +26,7 @@ using TestMocks::makeCpuCounters;
 using TestMocks::makeInterfaceCounters;
 using TestMocks::makeMemoryCounters;
 using TestMocks::makeSystemCounters;
+using TestMocks::MockPowerProbe;
 using TestMocks::MockSystemProbe;
 
 // =============================================================================
@@ -1281,4 +1283,113 @@ TEST(SystemModelTest, BatteryChargeHistoryTracked)
     // Battery charge history should exist
     auto chargeHist = model.batteryChargeHistory();
     EXPECT_FALSE(chargeHist.empty());
+}
+
+// =============================================================================
+// Power Status (computePowerStatus via refresh)
+// =============================================================================
+
+TEST(SystemModelTest, PowerStatus_NoBattery_WhenNoPowerProbe)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe)); // no power probe
+    model.refresh();
+
+    EXPECT_FALSE(model.snapshot().power.hasBattery);
+}
+
+TEST(SystemModelTest, PowerStatus_HasBattery_WhenPowerProbeReportsIt)
+{
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    powerProbe->setCapabilities(caps);
+
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Discharging;
+    counters.isOnAc = false;
+    counters.chargePercent = 75;
+    counters.powerNowW = 12.5;
+    counters.healthPercent = 95;
+    counters.technology = "Li-ion";
+    counters.model = "TestBattery";
+    counters.timeToEmptySec = 7200;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+
+    const auto& power = model.snapshot().power;
+    EXPECT_TRUE(power.hasBattery);
+    EXPECT_FALSE(power.isOnAc);
+    EXPECT_FALSE(power.isCharging);
+    EXPECT_TRUE(power.isDischarging);
+    EXPECT_FALSE(power.isFull);
+    EXPECT_EQ(power.chargePercent, 75);
+    EXPECT_DOUBLE_EQ(power.powerWatts, 12.5);
+    EXPECT_EQ(power.healthPercent, 95);
+    EXPECT_EQ(power.technology, "Li-ion");
+    EXPECT_EQ(power.model, "TestBattery");
+    EXPECT_EQ(power.timeToEmptySec, 7200ULL);
+}
+
+TEST(SystemModelTest, PowerStatus_Charging)
+{
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    powerProbe->setCapabilities(caps);
+
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Charging;
+    counters.isOnAc = true;
+    counters.chargePercent = 50;
+    counters.timeToFullSec = 3600;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+
+    const auto& power = model.snapshot().power;
+    EXPECT_TRUE(power.hasBattery);
+    EXPECT_TRUE(power.isOnAc);
+    EXPECT_TRUE(power.isCharging);
+    EXPECT_FALSE(power.isDischarging);
+    EXPECT_FALSE(power.isFull);
+    EXPECT_EQ(power.timeToFullSec, 3600ULL);
+}
+
+TEST(SystemModelTest, PowerStatus_Full)
+{
+    auto sysProbe = std::make_unique<MockSystemProbe>();
+    sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+
+    auto powerProbe = std::make_unique<MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    powerProbe->setCapabilities(caps);
+
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Full;
+    counters.isOnAc = true;
+    counters.chargePercent = 100;
+    powerProbe->setCounters(counters);
+
+    Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+    model.refresh();
+
+    const auto& power = model.snapshot().power;
+    EXPECT_TRUE(power.hasBattery);
+    EXPECT_TRUE(power.isOnAc);
+    EXPECT_FALSE(power.isCharging);
+    EXPECT_FALSE(power.isDischarging);
+    EXPECT_TRUE(power.isFull);
 }

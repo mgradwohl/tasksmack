@@ -6,14 +6,17 @@
 
 #pragma once
 
+#include "Platform/IPowerProbe.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
 
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace TestMocks
@@ -364,6 +367,39 @@ class MockSystemProbe : public Platform::ISystemProbe
     Platform::SystemCapabilities m_Capabilities;
     long m_TicksPerSecond = 100;
     std::atomic<int> m_ReadCount{0};
+};
+
+// =============================================================================
+// Mock Power Probe
+// =============================================================================
+
+/// Mock implementation of IPowerProbe for testing.
+class MockPowerProbe : public Platform::IPowerProbe
+{
+  public:
+    void setCounters(Platform::PowerCounters counters)
+    {
+        m_Counters = std::move(counters);
+    }
+
+    void setCapabilities(Platform::PowerCapabilities caps)
+    {
+        m_Capabilities = caps;
+    }
+
+    [[nodiscard]] Platform::PowerCounters read() override
+    {
+        return m_Counters;
+    }
+
+    [[nodiscard]] Platform::PowerCapabilities capabilities() const override
+    {
+        return m_Capabilities;
+    }
+
+  private:
+    Platform::PowerCounters m_Counters;
+    Platform::PowerCapabilities m_Capabilities;
 };
 
 // =============================================================================
