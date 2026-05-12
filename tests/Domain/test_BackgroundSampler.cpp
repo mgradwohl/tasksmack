@@ -695,17 +695,19 @@ TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
 
     sampler.start();
 
-    // Wait until at least one enumerate() call has occurred, confirming the loop ran
+    // Wait until at least two enumerate() calls have occurred: the first confirms the
+    // loop ran, and the second confirms the sampler continued after catching the exception.
+    constexpr auto kMinCalls = 2;
     constexpr auto kMaxWait = 2000ms;
     constexpr auto kPollInterval = 5ms;
     auto waited = 0ms;
-    while (callCount->load() == 0 && waited < kMaxWait)
+    while (callCount->load() < kMinCalls && waited < kMaxWait)
     {
         std::this_thread::sleep_for(kPollInterval);
         waited += kPollInterval;
     }
 
-    EXPECT_GT(callCount->load(), 0);
+    EXPECT_GE(callCount->load(), kMinCalls);
     EXPECT_TRUE(sampler.isRunning());
 
     sampler.stop();
