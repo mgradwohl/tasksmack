@@ -975,6 +975,18 @@ TEST_F(UserConfigSaveLoadFixture, MetricsMinTimeForRateRoundTrip)
     EXPECT_DOUBLE_EQ(config.settings().minTimeForRateSeconds, 1.5);
 }
 
+TEST_F(UserConfigSaveLoadFixture, MetricsMaxSaneRateRoundTrip)
+{
+    auto& config = UserConfig::get();
+    // 5 GB/s — within the valid clamp range [1 GB/s, 100 GB/s].
+    constexpr double testRate = 5'000'000'000.0;
+    config.settings().maxSaneRateBps = testRate;
+    config.save();
+    config.settings().maxSaneRateBps = Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().maxSaneRateBps, testRate);
+}
+
 } // namespace
 } // namespace App
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
