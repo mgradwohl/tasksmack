@@ -184,6 +184,40 @@ modal_window_dim_background = "#0000004D"
     return body;
 }
 
+// Build a full-valid theme body with the [charts].cpu value replaced by cpuValue.
+// Accepts any TOML value: a hex string (e.g. "#FF0000") or an array (e.g. "[0.0, 0.47, 0.83]").
+// Used by tests that exercise the array-format color parsing path for chart colors.
+[[nodiscard]] auto buildFullThemeWithCpuColor(std::string_view cpuValue) -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    // Replace the cpu line — it appears exactly once in [charts].
+    const std::string oldLine = "cpu = \"#0078D4\"";
+    const std::size_t pos = body.find(oldLine);
+    if (pos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithCpuColor: cpu key not found in k_FullThemeTomlBody");
+    }
+    body.replace(pos, oldLine.size(), std::string("cpu = ") + std::string(cpuValue));
+    return body;
+}
+
+// Build a full-valid theme body with the [accents].colors value replaced by accentsValue.
+// Accepts any TOML array value, e.g. a mixed array of hex strings and inline [r,g,b] arrays.
+// Used by tests that exercise the array-element color parsing path for accents.
+[[nodiscard]] auto buildFullThemeWithAccents(std::string_view accentsValue) -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    // Replace the colors line — it appears exactly once in [accents].
+    const std::string oldLine = R"(colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"])";
+    const std::size_t pos = body.find(oldLine);
+    if (pos == std::string::npos)
+    {
+        throw std::runtime_error("buildFullThemeWithAccents: colors key not found in k_FullThemeTomlBody");
+    }
+    body.replace(pos, oldLine.size(), std::string("colors = ") + std::string(accentsValue));
+    return body;
+}
+
 // ========== hexToImVec4 Tests ==========
 
 TEST(ThemeLoaderTest, HexToImVec4_ValidSixDigit)
@@ -1414,149 +1448,9 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_PriorityBadgeTextColor_DefaultsToWhit
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_ArrayColorRgbForChartCpu)
 {
-    // Use inline [r, g, b] array format for charts.cpu (exercises parseColorView array path)
-    const std::string body = R"(
-[meta]
-name = "Array RGB Charts"
-
-[accents]
-colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
-[semantic]
-text_primary = "#FFFFFF"
-text_disabled = "#808080"
-text_muted = "#CCCCCC"
-text_error = "#FF0000"
-text_warning = "#FFA500"
-text_success = "#00FF00"
-text_info = "#00FFFF"
-
-[status]
-running = "#00FF00"
-sleeping = "#0000FF"
-disk_sleep = "#FFA500"
-zombie = "#FF0000"
-stopped = "#FF00FF"
-idle = "#808080"
-
-[charts]
-cpu = [0.0, 0.47, 0.83]
-memory = "#10893E"
-io = "#E74856"
-io_write = "#F7630C"
-
-[cpu_breakdown]
-user = "#0078D4"
-system = "#E74856"
-iowait = "#FFB900"
-idle = "#808080"
-
-[charts.gpu]
-utilization = "#0078D4"
-memory = "#10893E"
-temperature = "#E74856"
-power = "#FFB900"
-encoder = "#00B7C3"
-decoder = "#8E8CD8"
-clock = "#E3008C"
-fan = "#808080"
-
-[buttons.success]
-normal = "#10893E"
-hovered = "#2AA84E"
-active = "#0A6B2E"
-
-[ui.window]
-background = "#1E1E1E"
-child_background = "#252526"
-popup_background = "#2D2D30"
-border = "#3F3F46"
-
-[ui.frame]
-background = "#333337"
-background_hovered = "#3E3E42"
-background_active = "#0078D4"
-
-[ui.title]
-background = "#2D2D30"
-background_active = "#0078D4"
-background_collapsed = "#3F3F46"
-
-[ui.bars]
-menu = "#2D2D30"
-status = "#2D2D30"
-
-[ui.scrollbar]
-background = "#1E1E1E"
-grab = "#5A5A5A"
-grab_hovered = "#808080"
-grab_active = "#0078D4"
-
-[ui.controls]
-check_mark = "#FFFFFF"
-slider_grab = "#5A5A5A"
-slider_grab_active = "#0078D4"
-
-[ui.button]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.header]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.separator]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.resize_grip]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.tab]
-normal = "#2D2D30"
-hovered = "#3E3E42"
-active = "#0078D4"
-active_overline = "#FFFFFF"
-unfocused = "#252526"
-unfocused_active = "#3F3F46"
-unfocused_active_overline = "#808080"
-
-[ui.docking]
-preview = "#0078D480"
-empty_background = "#1E1E1E"
-
-[ui.plot]
-lines = "#0078D4"
-lines_hovered = "#60CDFF"
-histogram = "#10893E"
-histogram_hovered = "#6CCB5F"
-
-[ui.table]
-header_background = "#333337"
-border_strong = "#3F3F46"
-border_light = "#2D2D30"
-row_background = "#00000000"
-row_background_alt = "#FFFFFF0D"
-
-[ui.misc]
-text_selected_background = "#0078D480"
-drag_drop_target = "#FFB900"
-nav_highlight = "#0078D4"
-nav_windowing_highlight = "#FFFFFFB3"
-nav_windowing_dim_background = "#0000004D"
-modal_window_dim_background = "#0000004D"
-)";
-    createThemeFile("array-rgb-charts.toml", body);
+    // [r, g, b] array exercises parseColorView array path; alpha defaults to 1.0
+    const std::string toml = std::string("[meta]\nname = \"Array RGB Charts\"\n\n") + buildFullThemeWithCpuColor("[0.0, 0.47, 0.83]");
+    createThemeFile("array-rgb-charts.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "array-rgb-charts.toml");
     ASSERT_TRUE(theme.has_value());
@@ -1570,149 +1464,10 @@ modal_window_dim_background = "#0000004D"
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_ArrayColorRgbaForChartCpu)
 {
-    // Use inline [r, g, b, a] array format (exercises parseColorView with explicit alpha)
-    const std::string body = R"(
-[meta]
-name = "Array RGBA Charts"
-
-[accents]
-colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
-[semantic]
-text_primary = "#FFFFFF"
-text_disabled = "#808080"
-text_muted = "#CCCCCC"
-text_error = "#FF0000"
-text_warning = "#FFA500"
-text_success = "#00FF00"
-text_info = "#00FFFF"
-
-[status]
-running = "#00FF00"
-sleeping = "#0000FF"
-disk_sleep = "#FFA500"
-zombie = "#FF0000"
-stopped = "#FF00FF"
-idle = "#808080"
-
-[charts]
-cpu = [0.0, 0.47, 0.83, 0.75]
-memory = "#10893E"
-io = "#E74856"
-io_write = "#F7630C"
-
-[cpu_breakdown]
-user = "#0078D4"
-system = "#E74856"
-iowait = "#FFB900"
-idle = "#808080"
-
-[charts.gpu]
-utilization = "#0078D4"
-memory = "#10893E"
-temperature = "#E74856"
-power = "#FFB900"
-encoder = "#00B7C3"
-decoder = "#8E8CD8"
-clock = "#E3008C"
-fan = "#808080"
-
-[buttons.success]
-normal = "#10893E"
-hovered = "#2AA84E"
-active = "#0A6B2E"
-
-[ui.window]
-background = "#1E1E1E"
-child_background = "#252526"
-popup_background = "#2D2D30"
-border = "#3F3F46"
-
-[ui.frame]
-background = "#333337"
-background_hovered = "#3E3E42"
-background_active = "#0078D4"
-
-[ui.title]
-background = "#2D2D30"
-background_active = "#0078D4"
-background_collapsed = "#3F3F46"
-
-[ui.bars]
-menu = "#2D2D30"
-status = "#2D2D30"
-
-[ui.scrollbar]
-background = "#1E1E1E"
-grab = "#5A5A5A"
-grab_hovered = "#808080"
-grab_active = "#0078D4"
-
-[ui.controls]
-check_mark = "#FFFFFF"
-slider_grab = "#5A5A5A"
-slider_grab_active = "#0078D4"
-
-[ui.button]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.header]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.separator]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.resize_grip]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.tab]
-normal = "#2D2D30"
-hovered = "#3E3E42"
-active = "#0078D4"
-active_overline = "#FFFFFF"
-unfocused = "#252526"
-unfocused_active = "#3F3F46"
-unfocused_active_overline = "#808080"
-
-[ui.docking]
-preview = "#0078D480"
-empty_background = "#1E1E1E"
-
-[ui.plot]
-lines = "#0078D4"
-lines_hovered = "#60CDFF"
-histogram = "#10893E"
-histogram_hovered = "#6CCB5F"
-
-[ui.table]
-header_background = "#333337"
-border_strong = "#3F3F46"
-border_light = "#2D2D30"
-row_background = "#00000000"
-row_background_alt = "#FFFFFF0D"
-
-[ui.misc]
-text_selected_background = "#0078D480"
-drag_drop_target = "#FFB900"
-nav_highlight = "#0078D4"
-nav_windowing_highlight = "#FFFFFFB3"
-nav_windowing_dim_background = "#0000004D"
-modal_window_dim_background = "#0000004D"
-)";
-    createThemeFile("array-rgba-charts.toml", body);
+    // [r, g, b, a] array exercises parseColorView with explicit alpha
+    const std::string toml =
+        std::string("[meta]\nname = \"Array RGBA Charts\"\n\n") + buildFullThemeWithCpuColor("[0.0, 0.47, 0.83, 0.75]");
+    createThemeFile("array-rgba-charts.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "array-rgba-charts.toml");
     ASSERT_TRUE(theme.has_value());
@@ -1726,154 +1481,15 @@ modal_window_dim_background = "#0000004D"
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_AccentsInArrayColorFormat)
 {
-    // Use [[r,g,b], [r,g,b,a], ...] format for accents.colors
-    // (exercises parseColorNode array path via loadColorArray)
-    const std::string body = R"(
-[meta]
-name = "Accents Array Format"
-
-[accents]
-colors = [
+    // Mixed [[r,g,b], [r,g,b,a], "#hex", ...] accents exercises parseColorNode array path
+    // via loadColorArray<N>: each element dispatches through parseColorNode.
+    constexpr std::string_view accentsValue = R"([
   [1.0, 0.0, 0.0],
   [0.0, 1.0, 0.0, 0.8],
   "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"
-]
-
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
-[semantic]
-text_primary = "#FFFFFF"
-text_disabled = "#808080"
-text_muted = "#CCCCCC"
-text_error = "#FF0000"
-text_warning = "#FFA500"
-text_success = "#00FF00"
-text_info = "#00FFFF"
-
-[status]
-running = "#00FF00"
-sleeping = "#0000FF"
-disk_sleep = "#FFA500"
-zombie = "#FF0000"
-stopped = "#FF00FF"
-idle = "#808080"
-
-[charts]
-cpu = "#0078D4"
-memory = "#10893E"
-io = "#E74856"
-io_write = "#F7630C"
-
-[cpu_breakdown]
-user = "#0078D4"
-system = "#E74856"
-iowait = "#FFB900"
-idle = "#808080"
-
-[charts.gpu]
-utilization = "#0078D4"
-memory = "#10893E"
-temperature = "#E74856"
-power = "#FFB900"
-encoder = "#00B7C3"
-decoder = "#8E8CD8"
-clock = "#E3008C"
-fan = "#808080"
-
-[buttons.success]
-normal = "#10893E"
-hovered = "#2AA84E"
-active = "#0A6B2E"
-
-[ui.window]
-background = "#1E1E1E"
-child_background = "#252526"
-popup_background = "#2D2D30"
-border = "#3F3F46"
-
-[ui.frame]
-background = "#333337"
-background_hovered = "#3E3E42"
-background_active = "#0078D4"
-
-[ui.title]
-background = "#2D2D30"
-background_active = "#0078D4"
-background_collapsed = "#3F3F46"
-
-[ui.bars]
-menu = "#2D2D30"
-status = "#2D2D30"
-
-[ui.scrollbar]
-background = "#1E1E1E"
-grab = "#5A5A5A"
-grab_hovered = "#808080"
-grab_active = "#0078D4"
-
-[ui.controls]
-check_mark = "#FFFFFF"
-slider_grab = "#5A5A5A"
-slider_grab_active = "#0078D4"
-
-[ui.button]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.header]
-normal = "#333337"
-hovered = "#3E3E42"
-active = "#0078D4"
-
-[ui.separator]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.resize_grip]
-normal = "#3F3F46"
-hovered = "#5A5A5A"
-active = "#0078D4"
-
-[ui.tab]
-normal = "#2D2D30"
-hovered = "#3E3E42"
-active = "#0078D4"
-active_overline = "#FFFFFF"
-unfocused = "#252526"
-unfocused_active = "#3F3F46"
-unfocused_active_overline = "#808080"
-
-[ui.docking]
-preview = "#0078D480"
-empty_background = "#1E1E1E"
-
-[ui.plot]
-lines = "#0078D4"
-lines_hovered = "#60CDFF"
-histogram = "#10893E"
-histogram_hovered = "#6CCB5F"
-
-[ui.table]
-header_background = "#333337"
-border_strong = "#3F3F46"
-border_light = "#2D2D30"
-row_background = "#00000000"
-row_background_alt = "#FFFFFF0D"
-
-[ui.misc]
-text_selected_background = "#0078D480"
-drag_drop_target = "#FFB900"
-nav_highlight = "#0078D4"
-nav_windowing_highlight = "#FFFFFFB3"
-nav_windowing_dim_background = "#0000004D"
-modal_window_dim_background = "#0000004D"
-)";
-    createThemeFile("accents-array-format.toml", body);
+])";
+    const std::string toml = std::string("[meta]\nname = \"Accents Array Format\"\n\n") + buildFullThemeWithAccents(accentsValue);
+    createThemeFile("accents-array-format.toml", toml);
 
     auto theme = ThemeLoader::loadTheme(m_TempDir / "accents-array-format.toml");
     ASSERT_TRUE(theme.has_value());

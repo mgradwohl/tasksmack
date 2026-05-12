@@ -282,6 +282,9 @@ class UserConfigLoadSaveTest : public ::testing::Test
   protected:
     void SetUp() override
     {
+        // Save the original path so TearDown can restore it.
+        m_OriginalPath = UserConfig::get().configPath();
+
         m_TempDir = std::filesystem::temp_directory_path() / "tasksmack_test_userconfig";
         // Remove any leftovers from a prior run before recreating
         std::error_code ec;
@@ -294,14 +297,16 @@ class UserConfigLoadSaveTest : public ::testing::Test
 
     void TearDown() override
     {
-        // Reset again so subsequent tests start clean
-        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        // Restore the real platform config path before removing the temp directory,
+        // so the singleton is never left pointing at a non-existent file.
+        UserConfig::get().resetConfigPathForTesting(m_OriginalPath);
         std::error_code ec;
         std::filesystem::remove_all(m_TempDir, ec);
     }
 
     std::filesystem::path m_TempDir;
     std::filesystem::path m_ConfigPath;
+    std::filesystem::path m_OriginalPath;
 };
 
 TEST_F(UserConfigLoadSaveTest, LoadDoesNothingWhenFileAbsent)
