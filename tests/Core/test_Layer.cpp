@@ -328,14 +328,11 @@ TEST(LayerTest, PolymorphicBehavior)
 
 namespace Core
 {
-namespace
-{
 class TestWindowCloseEvent : public Event
 {
   public:
     EVENT_CLASS_TYPE(WindowClose) // NOLINT(cppcoreguidelines-macro-usage)
 };
-} // namespace
 } // namespace Core
 
 TEST(LayerTest, DefaultOnEventDoesNotCrash)

@@ -684,7 +684,8 @@ class ThrowingNonStdProbe : public Platform::IProcessProbe
 TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
 {
     // Verify the catch(...) branch in the sampler loop keeps the thread alive.
-    // Use a shared atomic counter instead of sleep_for to avoid timing-dependent pass/fail.
+    // A shared atomic counter lets us confirm at least one enumerate() call happened
+    // before asserting, avoiding the flakiness of a single fixed-duration sleep.
     auto callCount = std::make_shared<std::atomic<int>>(0);
 
     Domain::SamplerConfig config;
