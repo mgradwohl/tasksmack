@@ -15,13 +15,13 @@ namespace
 class WindowCloseEvent : public Event
 {
   public:
-    EVENT_CLASS_TYPE(WindowClose)
+    EVENT_CLASS_TYPE(WindowClose) // NOLINT(cppcoreguidelines-macro-usage)
 };
 
 class ThemeChangedEvent : public Event
 {
   public:
-    EVENT_CLASS_TYPE(ThemeChanged)
+    EVENT_CLASS_TYPE(ThemeChanged) // NOLINT(cppcoreguidelines-macro-usage)
 };
 
 // ========== Event base class ==========

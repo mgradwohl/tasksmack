@@ -647,8 +647,12 @@ TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
 class ThrowingNonStdProbe : public Platform::IProcessProbe
 {
   public:
+    explicit ThrowingNonStdProbe(std::shared_ptr<std::atomic<int>> counter) : m_CallCount(std::move(counter))
+    {}
+
     [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
     {
+        ++(*m_CallCount);
         // NOLINTNEXTLINE(hicpp-exception-baseclass) — intentionally non-std for coverage
         throw 42; // non-std::exception to hit catch(...) branch
     }
@@ -672,19 +676,35 @@ class ThrowingNonStdProbe : public Platform::IProcessProbe
     {
         return 0;
     }
+
+  private:
+    std::shared_ptr<std::atomic<int>> m_CallCount;
 };
 
 TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
 {
-    // Verify the catch(...) branch in the sampler loop keeps the thread alive
+    // Verify the catch(...) branch in the sampler loop keeps the thread alive.
+    // Use a shared atomic counter instead of sleep_for to avoid timing-dependent pass/fail.
+    auto callCount = std::make_shared<std::atomic<int>>(0);
+
     Domain::SamplerConfig config;
     config.interval = 10ms;
 
-    Domain::BackgroundSampler sampler(std::make_unique<ThrowingNonStdProbe>(), config);
+    Domain::BackgroundSampler sampler(std::make_unique<ThrowingNonStdProbe>(callCount), config);
 
     sampler.start();
-    std::this_thread::sleep_for(60ms);
 
+    // Wait until at least one enumerate() call has occurred, confirming the loop ran
+    constexpr auto kMaxWait = 2000ms;
+    constexpr auto kPollInterval = 5ms;
+    auto waited = 0ms;
+    while (callCount->load() == 0 && waited < kMaxWait)
+    {
+        std::this_thread::sleep_for(kPollInterval);
+        waited += kPollInterval;
+    }
+
+    EXPECT_GT(callCount->load(), 0);
     EXPECT_TRUE(sampler.isRunning());
 
     sampler.stop();
