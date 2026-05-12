@@ -244,5 +244,22 @@ TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
     }
 }
 
+// =============================================================================
+// Success Path Tests
+// =============================================================================
+
+TEST(LinuxProcessActionsTest, ResumeOwnProcess_Succeeds)
+{
+    // Send SIGCONT to our own process - safe because it's a no-op on a running process
+    // but exercises the sendSignal() success path (lines ~114-116 in LinuxProcessActions.cpp).
+    LinuxProcessActions actions;
+    int32_t ownPid = static_cast<int32_t>(getpid());
+
+    auto result = actions.resume(ownPid);
+
+    EXPECT_TRUE(result.success);
+    EXPECT_TRUE(result.errorMessage.empty());
+}
+
 } // namespace
 } // namespace Platform
