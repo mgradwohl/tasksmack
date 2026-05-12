@@ -211,6 +211,45 @@ TEST(LinuxPathProviderTest, MultipleCallsReturnSamePaths)
     EXPECT_EQ(config1, config2);
 }
 
+TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVarsEmpty)
+{
+    // When XDG_CONFIG_HOME and HOME are both unset/empty, getUserConfigDir()
+    // falls back to std::filesystem::current_path() as a last resort.
+    // This test covers the fallback branch (lines ~75-85 in LinuxPathProvider.cpp).
+
+    const char* savedXdg = std::getenv("XDG_CONFIG_HOME");
+    const char* savedHome = std::getenv("HOME");
+    const std::string origXdg = savedXdg ? savedXdg : "";
+    const std::string origHome = savedHome ? savedHome : "";
+
+    setenv("XDG_CONFIG_HOME", "", 1);
+    setenv("HOME", "", 1);
+
+    LinuxPathProvider provider;
+    const auto dir = provider.getUserConfigDir();
+
+    // Restore environment
+    if (!origXdg.empty())
+    {
+        setenv("XDG_CONFIG_HOME", origXdg.c_str(), 1);
+    }
+    else
+    {
+        unsetenv("XDG_CONFIG_HOME");
+    }
+    if (!origHome.empty())
+    {
+        setenv("HOME", origHome.c_str(), 1);
+    }
+    else
+    {
+        unsetenv("HOME");
+    }
+
+    // The fallback must return a non-empty path (current_path() succeeds in test env)
+    EXPECT_FALSE(dir.empty());
+}
+
 } // namespace
 } // namespace Platform
 
