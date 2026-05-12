@@ -4,6 +4,7 @@
 #include "Core/Event.h"
 
 #include <gtest/gtest.h>
+#include <string>
 
 namespace Core
 {
