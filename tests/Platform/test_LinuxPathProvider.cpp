@@ -227,8 +227,8 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
     const std::string origXdg = xdgWasSet ? rawXdg : "";
     const std::string origHome = homeWasSet ? rawHome : "";
 
-    setenv("XDG_CONFIG_HOME", "", 1);
-    setenv("HOME", "", 1);
+    ASSERT_EQ(0, setenv("XDG_CONFIG_HOME", "", 1));
+    ASSERT_EQ(0, setenv("HOME", "", 1));
 
     LinuxPathProvider provider;
     const auto dir = provider.getUserConfigDir();
@@ -236,19 +236,19 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
     // Restore environment exactly as found
     if (xdgWasSet)
     {
-        setenv("XDG_CONFIG_HOME", origXdg.c_str(), 1);
+        ASSERT_EQ(0, setenv("XDG_CONFIG_HOME", origXdg.c_str(), 1));
     }
     else
     {
-        unsetenv("XDG_CONFIG_HOME");
+        ASSERT_EQ(0, unsetenv("XDG_CONFIG_HOME"));
     }
     if (homeWasSet)
     {
-        setenv("HOME", origHome.c_str(), 1);
+        ASSERT_EQ(0, setenv("HOME", origHome.c_str(), 1));
     }
     else
     {
-        unsetenv("HOME");
+        ASSERT_EQ(0, unsetenv("HOME"));
     }
 
     // The fallback returns current_path() which is non-empty in normal test environments.
