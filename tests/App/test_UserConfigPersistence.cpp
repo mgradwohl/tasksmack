@@ -638,6 +638,343 @@ TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
 }
 
+// ========== Load: Missing File Uses Defaults ==========
+
+TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
+{
+    // Config file does not exist — load() should silently use defaults.
+    auto& config = UserConfig::get();
+
+    // File was not created in this fixture — path is in temp dir but file is absent.
+    ASSERT_FALSE(std::filesystem::exists(config.configPath()));
+
+    config.load();
+
+    // Defaults from UserSettings
+    EXPECT_EQ(config.settings().themeId, "arctic-fire");
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+    EXPECT_TRUE(config.settings().showPrivilegeNotice);
+}
+
+// ========== Load: is-loaded guard ==========
+
+TEST_F(UserConfigSaveLoadFixture, LoadIsIdempotentAfterFirstCall)
+{
+    // Calling load() twice must not overwrite settings modified between calls.
+    auto& config = UserConfig::get();
+
+    config.load(); // first load — file absent, uses defaults
+    config.settings().themeId = "cyberpunk";
+
+    config.load(); // second call — should be a no-op due to m_IsLoaded guard
+    EXPECT_EQ(config.settings().themeId, "cyberpunk");
+}
+
+// ========== Load: Malformed TOML Uses Defaults ==========
+
+TEST_F(UserConfigSaveLoadFixture, LoadMalformedTomlUsesDefaults)
+{
+    // Write a TOML file that will fail to parse.
+    std::ofstream file(m_TempDir / "config.toml");
+    ASSERT_TRUE(file.is_open());
+    file << "[theme\nid = \"missing-bracket\"\nthis is not valid toml\n";
+    file.close();
+
+    auto& config = UserConfig::get();
+    config.load();
+
+    // Parse failure -> falls back to defaults.
+    EXPECT_EQ(config.settings().themeId, "arctic-fire");
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+}
+
+// ========== Load/Save: Theme Round-Trip ==========
+
+TEST_F(UserConfigSaveLoadFixture, ThemeIdRoundTrip)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().themeId = "dracula";
+    config.save();
+    config.settings().themeId = "arctic-fire"; // reset in-memory
+    config.load();
+
+    EXPECT_EQ(config.settings().themeId, "dracula");
+}
+
+// ========== Load/Save: Font Size Round-Trips ==========
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeSmallRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::Small;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Small);
+}
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeLargeRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::Large;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Large);
+}
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeExtraLargeRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::ExtraLarge;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
+}
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeHugeRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::Huge;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Huge);
+}
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeEvenHugerRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::EvenHuger;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::EvenHuger);
+}
+
+TEST_F(UserConfigSaveLoadFixture, FontSizeMediumRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = UI::FontSize::Medium;
+    config.save();
+    config.settings().fontSize = UI::FontSize::Small;
+    config.load();
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+}
+
+// ========== Load: Invalid Font Size Keeps Default ==========
+
+TEST_F(UserConfigSaveLoadFixture, UnknownFontSizeKeepsDefault)
+{
+    // Write a TOML file with an unrecognised font size string.
+    std::ofstream file(m_TempDir / "config.toml");
+    ASSERT_TRUE(file.is_open());
+    file << "[font]\nsize = \"super-mega-large\"\n";
+    file.close();
+
+    auto& config = UserConfig::get();
+    config.load();
+
+    // Unrecognised value — font size remains at default (Medium).
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
+}
+
+// ========== Load/Save: Sampling Parameters Round-Trip ==========
+
+TEST_F(UserConfigSaveLoadFixture, SamplingIntervalRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().refreshIntervalMs = 2000;
+    config.save();
+    config.settings().refreshIntervalMs = Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS;
+    config.load();
+    EXPECT_EQ(config.settings().refreshIntervalMs, 2000);
+}
+
+TEST_F(UserConfigSaveLoadFixture, HistorySecondsRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().maxHistorySeconds = 600;
+    config.save();
+    config.settings().maxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
+    config.load();
+    EXPECT_EQ(config.settings().maxHistorySeconds, 600);
+}
+
+// ========== Load/Save: Window State Round-Trip ==========
+
+TEST_F(UserConfigSaveLoadFixture, WindowDimensionsRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().windowWidth = 1920;
+    config.settings().windowHeight = 1080;
+    config.settings().windowMaximized = true;
+    config.save();
+    config.settings().windowWidth = 1280;
+    config.settings().windowHeight = 720;
+    config.settings().windowMaximized = false;
+    config.load();
+    EXPECT_EQ(config.settings().windowWidth, 1920);
+    EXPECT_EQ(config.settings().windowHeight, 1080);
+    EXPECT_TRUE(config.settings().windowMaximized);
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowPositionSaneValuesRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().windowPosX = 200;
+    config.settings().windowPosY = 150;
+    config.save();
+    config.settings().windowPosX = std::nullopt;
+    config.settings().windowPosY = std::nullopt;
+    config.load();
+    ASSERT_TRUE(config.settings().windowPosX.has_value());
+    ASSERT_TRUE(config.settings().windowPosY.has_value());
+    EXPECT_EQ(*config.settings().windowPosX, 200);
+    EXPECT_EQ(*config.settings().windowPosY, 150);
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowPositionNegativeValidRoundTrip)
+{
+    // Negative window positions are valid for multi-monitor setups.
+    auto& config = UserConfig::get();
+    config.settings().windowPosX = -1920;
+    config.settings().windowPosY = -100;
+    config.save();
+    config.settings().windowPosX = std::nullopt;
+    config.settings().windowPosY = std::nullopt;
+    config.load();
+    ASSERT_TRUE(config.settings().windowPosX.has_value());
+    ASSERT_TRUE(config.settings().windowPosY.has_value());
+    EXPECT_EQ(*config.settings().windowPosX, -1920);
+    EXPECT_EQ(*config.settings().windowPosY, -100);
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowPositionInsaneValueIsRejected)
+{
+    // Write a TOML with a position far outside sane bounds (abs > 100,000).
+    std::ofstream file(m_TempDir / "config.toml");
+    ASSERT_TRUE(file.is_open());
+    file << "[window]\nx = 999999\ny = -999999\n";
+    file.close();
+
+    auto& config = UserConfig::get();
+    config.load();
+
+    // isSaneWindowPositionComponent rejects abs > 100,000 — positions stay unset.
+    EXPECT_FALSE(config.settings().windowPosX.has_value());
+    EXPECT_FALSE(config.settings().windowPosY.has_value());
+}
+
+TEST_F(UserConfigSaveLoadFixture, WindowPositionAbsentStaysUnset)
+{
+    // Write a TOML without window x/y keys.
+    std::ofstream file(m_TempDir / "config.toml");
+    ASSERT_TRUE(file.is_open());
+    file << "[window]\nwidth = 1280\nheight = 720\n";
+    file.close();
+
+    auto& config = UserConfig::get();
+    config.load();
+
+    EXPECT_FALSE(config.settings().windowPosX.has_value());
+    EXPECT_FALSE(config.settings().windowPosY.has_value());
+}
+
+// ========== Load/Save: UI Parameters Round-Trip ==========
+
+TEST_F(UserConfigSaveLoadFixture, ChartSmoothFactorRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().chartSmoothFactor = 0.5;
+    config.save();
+    config.settings().chartSmoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().chartSmoothFactor, 0.5);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().progressColorLowThreshold = 30.0;
+    config.settings().progressColorHighThreshold = 80.0;
+    config.save();
+    config.settings().progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
+    config.settings().progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 30.0);
+    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProgressColorThresholdsSwappedWhenInverted)
+{
+    // Write a TOML where low > high — load() should swap them.
+    std::ofstream file(m_TempDir / "config.toml");
+    ASSERT_TRUE(file.is_open());
+    file << "[ui]\nprogress_color_low_threshold = 80.0\nprogress_color_high_threshold = 20.0\n";
+    file.close();
+
+    auto& config = UserConfig::get();
+    config.load();
+
+    // After the swap: low should be 20.0 and high should be 80.0.
+    EXPECT_LE(config.settings().progressColorLowThreshold, config.settings().progressColorHighThreshold);
+    EXPECT_DOUBLE_EQ(config.settings().progressColorLowThreshold, 20.0);
+    EXPECT_DOUBLE_EQ(config.settings().progressColorHighThreshold, 80.0);
+}
+
+// ========== Load/Save: Process Columns Round-Trip ==========
+
+TEST_F(UserConfigSaveLoadFixture, ProcessColumnsRoundTrip)
+{
+    auto& config = UserConfig::get();
+
+    // Toggle the first two columns to known values.
+    const auto col0 = static_cast<ProcessColumn>(0);
+    const auto col1 = static_cast<ProcessColumn>(1);
+    const bool original0 = config.settings().processColumns.isVisible(col0);
+    const bool original1 = config.settings().processColumns.isVisible(col1);
+
+    config.settings().processColumns.setVisible(col0, !original0);
+    config.settings().processColumns.setVisible(col1, !original1);
+    config.save();
+
+    // Reset to original
+    config.settings().processColumns.setVisible(col0, original0);
+    config.settings().processColumns.setVisible(col1, original1);
+    config.load();
+
+    EXPECT_EQ(config.settings().processColumns.isVisible(col0), !original0);
+    EXPECT_EQ(config.settings().processColumns.isVisible(col1), !original1);
+}
+
+// ========== Save: Creates Parent Directories ==========
+
+TEST_F(UserConfigSaveLoadFixture, SaveCreatesParentDirectoriesIfAbsent)
+{
+    // Redirect config to a nested path whose parent dirs don't yet exist.
+    const auto nestedConfig = m_TempDir / "a" / "b" / "config.toml";
+    UserConfig::get().resetConfigPathForTesting(nestedConfig);
+
+    UserConfig::get().save();
+
+    EXPECT_TRUE(std::filesystem::exists(nestedConfig));
+}
+
+// ========== Metrics: minTimeForRate and maxSaneRate Round-Trips ==========
+
+TEST_F(UserConfigSaveLoadFixture, MetricsMinTimeForRateRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().minTimeForRateSeconds = 1.5;
+    config.save();
+    config.settings().minTimeForRateSeconds = Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_DEFAULT;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().minTimeForRateSeconds, 1.5);
+}
+
 } // namespace
 } // namespace App
 // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)

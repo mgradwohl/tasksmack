@@ -99,14 +99,14 @@ $LLVM_COV show \
     -output-dir="$COVERAGE_DIR" \
     -show-line-counts-or-regions \
     -show-instantiations=false \
-    -ignore-filename-regex='.*/(build|_deps|tests)/.*'
+    -ignore-filename-regex='.*/(build|_deps|tests|\.cache)/.*'
 
 # Step 5: Generate summary
 echo "==> Coverage Summary:"
 $LLVM_COV report \
     "${BUILD_DIR}/tests/TaskSmackTests" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
-    -ignore-filename-regex='.*/(build|_deps|tests)/.*'
+    -ignore-filename-regex='.*/(build|_deps|tests|\.cache)/.*'
 
 echo ""
 echo "HTML report generated at: ${COVERAGE_DIR}/index.html"
