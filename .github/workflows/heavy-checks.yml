@@ -154,7 +154,7 @@ jobs:
             build/coverage/tests/TaskSmackTests \
             -instr-profile=build/coverage/default.profdata \
             -format=lcov \
-            -ignore-filename-regex='.*/(build|_deps|tests)/.*' \
+            -ignore-filename-regex='.*/(build|_deps|tests|\.cache)/.*' \
             > coverage/coverage.lcov
 
       - name: Upload coverage report
