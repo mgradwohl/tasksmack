@@ -639,3 +639,53 @@ TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
     // Callback should have been called multiple times (sampler kept looping after each throw)
     EXPECT_GT(callCount.load(), 1);
 }
+
+// ========== Unknown exception handling (catch(...) branch L172) ==========
+
+/// A probe that throws a non-std::exception (integer literal) to exercise the
+/// catch(...) branch in the sampler loop.
+class ThrowingNonStdProbe : public Platform::IProcessProbe
+{
+  public:
+    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    {
+        // NOLINTNEXTLINE(hicpp-exception-baseclass) — intentionally non-std for coverage
+        throw 42; // non-std::exception to hit catch(...) branch
+    }
+
+    [[nodiscard]] uint64_t totalCpuTime() const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+    [[nodiscard]] long ticksPerSecond() const override
+    {
+        return 100;
+    }
+
+    [[nodiscard]] uint64_t systemTotalMemory() const override
+    {
+        return 0;
+    }
+};
+
+TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
+{
+    // Verify the catch(...) branch in the sampler loop keeps the thread alive
+    Domain::SamplerConfig config;
+    config.interval = 10ms;
+
+    Domain::BackgroundSampler sampler(std::make_unique<ThrowingNonStdProbe>(), config);
+
+    sampler.start();
+    std::this_thread::sleep_for(60ms);
+
+    EXPECT_TRUE(sampler.isRunning());
+
+    sampler.stop();
+}

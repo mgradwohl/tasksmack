@@ -1354,3 +1354,48 @@ TEST(FormatTest, FormatCpuTimeCompactHandlesZero)
     const auto result = UI::Format::formatCpuTimeCompact(0.0);
     EXPECT_EQ(result, "0:00");
 }
+
+// =============================================================================
+// splitBytesForAlignment — no-decimal (decimals=0) path
+// =============================================================================
+
+TEST(FormatTest, SplitBytesForAlignmentNoDecimalUnit)
+{
+    // ByteUnit with decimals=0 exercises the else branch (no fractional part)
+    const UI::Format::ByteUnit unit{.suffix = "KB", .scale = 1024.0, .decimals = 0};
+    const auto parts = UI::Format::splitBytesForAlignment(2048.0, unit);
+    EXPECT_EQ(parts.wholePart, "2");
+    EXPECT_TRUE(parts.decimalPart.empty());
+    EXPECT_EQ(parts.unitPart, " KB");
+}
+
+TEST(FormatTest, SplitBytesForAlignmentNoDecimalZero)
+{
+    const UI::Format::ByteUnit unit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 0};
+    const auto parts = UI::Format::splitBytesForAlignment(0.0, unit);
+    EXPECT_EQ(parts.wholePart, "0");
+    EXPECT_TRUE(parts.decimalPart.empty());
+    EXPECT_EQ(parts.unitPart, " MB");
+}
+
+// =============================================================================
+// formatCpuAffinityMask — trailing range with prior bits (hasAny=true)
+// =============================================================================
+
+TEST(FormatTest, FormatCpuAffinityMaskTrailingAdjacentPairWithPrefix)
+{
+    // Bits {0,1} emit in-loop ("0,1"), then bits {62,63} are post-loop trailing
+    // adjacent pair (rangeStart+1 == rangeEnd) with hasAny=true → comma prefix
+    // 0x3 = bits 0,1 | 0xC000000000000000 = bits 62,63
+    const uint64_t mask = 0x3ULL | 0xC000000000000000ULL;
+    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,62,63");
+}
+
+TEST(FormatTest, FormatCpuAffinityMaskTrailingLongRangeWithPrefix)
+{
+    // Bits {0,1} emit in-loop ("0,1"), then bits {61,62,63} are post-loop trailing
+    // range (rangeEnd - rangeStart > 1) with hasAny=true → comma + "61-63"
+    // 0x3 = bits 0,1 | 0xE000000000000000 = bits 61,62,63
+    const uint64_t mask = 0x3ULL | 0xE000000000000000ULL;
+    EXPECT_EQ(UI::Format::formatCpuAffinityMask(mask), "0,1,61-63");
+}

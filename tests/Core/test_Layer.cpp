@@ -323,3 +323,26 @@ TEST(LayerTest, PolymorphicBehavior)
     EXPECT_EQ(concrete->postRenderCount, 1);
     EXPECT_EQ(concrete->detachCount, 1);
 }
+
+// ========== onEvent default implementation ==========
+
+namespace Core
+{
+namespace
+{
+class TestWindowCloseEvent : public Event
+{
+  public:
+    EVENT_CLASS_TYPE(WindowClose) // NOLINT(cppcoreguidelines-macro-usage)
+};
+} // namespace
+} // namespace Core
+
+TEST(LayerTest, DefaultOnEventDoesNotCrash)
+{
+    // Layer::onEvent() has a no-op default implementation; calling it should be safe
+    Core::Layer layer("TestLayer");
+    Core::TestWindowCloseEvent ev;
+    layer.onEvent(ev); // Should not crash or modify the event
+    EXPECT_FALSE(ev.isHandled());
+}
