@@ -86,6 +86,9 @@ else()
         Platform/test_LinuxDiskProbe.cpp
         Platform/test_LinuxPathProvider.cpp
         Platform/test_LinuxPowerProbe.cpp
+        Platform/test_LinuxGPUProbe.cpp
+        Platform/test_LinuxNVMLGPUProbe.cpp
+        Platform/test_LinuxROCmGPUProbe.cpp
         Platform/test_NetlinkSocketStats.cpp
         Platform/test_DRMGPUProbe.cpp
     )
