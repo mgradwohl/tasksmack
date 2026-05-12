@@ -185,7 +185,8 @@ modal_window_dim_background = "#0000004D"
 }
 
 // Build a full-valid theme body with the [charts].cpu value replaced by cpuValue.
-// Accepts any TOML value: a hex string (e.g. "#FF0000") or an array (e.g. "[0.0, 0.47, 0.83]").
+// Accepts any valid TOML value for cpu, e.g. a quoted hex string ("#FF0000")
+// or an array ([0.0, 0.47, 0.83]).
 // Used by tests that exercise the array-format color parsing path for chart colors.
 [[nodiscard]] auto buildFullThemeWithCpuColor(std::string_view cpuValue) -> std::string
 {
