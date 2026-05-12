@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace UI::Widgets
 {
@@ -100,6 +102,141 @@ TEST(NowBarTest, SelectTooltipFallsBackToLabelWhenValueTextEmpty)
 {
     const NowBar bar{.valueText = {}, .label = "CPU", .tooltipText = {}, .value01 = 0.5, .color = {}};
     EXPECT_EQ(selectNowBarTooltip(bar), "CPU");
+}
+
+// ========== Axis formatters ==========
+
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesSuffixes)
+{
+    char buf[32]{};
+    int len = formatAxisLocalized(1500.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "1.5K");
+
+    len = formatAxisLocalized(2'000'000.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "2.0M");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedReturnsZeroWhenBufferTooSmall)
+{
+    char buf[2]{};
+    const int len = formatAxisLocalized(999.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_EQ(len, 0);
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
+{
+    char buf[32]{};
+    int len = formatAxisBytesPerSec(100.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "100.0B/s");
+
+    len = formatAxisBytesPerSec(2048.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "2.0KB/s");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
+{
+    char buf[32]{};
+    int len = formatAxisWatts(10.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "10.0W");
+
+    len = formatAxisWatts(0.5, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "500.0mW");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
+{
+    char buf[32]{};
+    const int len = formatAxisPercent(12.34, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "12.3%");
+}
+
+// ========== Time-axis helpers ==========
+
+TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsOffset)
+{
+    const std::vector<double> timestamps{10.0, 20.0, 30.0, 40.0};
+    const auto cfg = makeTimeAxisConfig(timestamps, 5.0, 100.0);
+
+    EXPECT_DOUBLE_EQ(cfg.span, 30.0);
+    EXPECT_DOUBLE_EQ(cfg.maxOffset, 25.0);
+    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 25.0);
+    EXPECT_DOUBLE_EQ(cfg.xMin, -30.0);
+    EXPECT_DOUBLE_EQ(cfg.xMax, -25.0);
+}
+
+TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsRelativeTimes)
+{
+    const std::vector<double> timestamps{10.0, 20.0, 30.0};
+    const auto axis = buildTimeAxis(timestamps, 2, 30.0);
+
+    ASSERT_EQ(axis.size(), 2U);
+    EXPECT_FLOAT_EQ(axis[0], -10.0F);
+    EXPECT_FLOAT_EQ(axis[1], 0.0F);
+}
+
+TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
+{
+    const std::vector<double> timestamps{10.0, 20.0, 30.0};
+    const auto axis = buildTimeAxisDoubles(timestamps, 3, 25.0);
+
+    ASSERT_EQ(axis.size(), 3U);
+    EXPECT_DOUBLE_EQ(axis[0], -15.0);
+    EXPECT_DOUBLE_EQ(axis[1], -5.0);
+    EXPECT_DOUBLE_EQ(axis[2], 5.0);
+}
+
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
+{
+    const std::vector<float> axisF{-10.0F, -5.0F, 0.0F};
+    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -99.0).value(), 0U);
+    EXPECT_EQ(hoveredIndexFromPlotX(axisF, 99.0).value(), 2U);
+    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -4.2).value(), 1U);
+
+    const std::vector<double> axisD{-10.0, -5.0, 0.0};
+    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -9.9).value(), 0U);
+    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -2.5).value(), 1U);
+}
+
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
+{
+    const std::vector<float> axisF{};
+    const std::vector<double> axisD{};
+    EXPECT_FALSE(hoveredIndexFromPlotX(axisF, 0.0).has_value());
+    EXPECT_FALSE(hoveredIndexFromPlotX(axisD, 0.0).has_value());
+}
+
+// ========== Generic helpers ==========
+
+TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
+{
+    EXPECT_EQ(formatAgeSeconds(2.5), "Age: 2.5s");
+    EXPECT_EQ(formatAgeSeconds(-2.5), "Age: 2.5s");
+}
+
+TEST(ChartWidgetsHelpersTest, CropFrontToSizeRemovesOldestElements)
+{
+    std::vector<int> data{1, 2, 3, 4, 5};
+    cropFrontToSize(data, 3);
+    ASSERT_EQ(data.size(), 3U);
+    EXPECT_EQ(data[0], 3);
+    EXPECT_EQ(data[1], 4);
+    EXPECT_EQ(data[2], 5);
+}
+
+TEST(ChartWidgetsHelpersTest, CropFrontToSizeNoOpWhenAlreadySmall)
+{
+    std::vector<int> data{1, 2};
+    cropFrontToSize(data, 4);
+    ASSERT_EQ(data.size(), 2U);
+    EXPECT_EQ(data[0], 1);
+    EXPECT_EQ(data[1], 2);
 }
 
 } // namespace

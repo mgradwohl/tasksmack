@@ -116,6 +116,8 @@ add_executable(TaskSmackTests
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
+    Core/test_Window.cpp
+    Core/test_WindowEvents.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -129,7 +131,10 @@ add_executable(TaskSmackTests
     UI/test_Format.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
+    UI/test_ThemeHeader.cpp
+    UI/test_Widgets.cpp
     App/test_ProcessColumnConfig.cpp
+    App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
     App/test_UserConfig.cpp

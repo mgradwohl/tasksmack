@@ -2,6 +2,7 @@
 /// @brief Tests for Core::Event, EventDispatcher
 
 #include "Core/Event.h"
+#include "Core/WindowEvents.h"
 
 #include <gtest/gtest.h>
 
@@ -13,12 +14,6 @@ namespace
 {
 
 // ========== Concrete event types for testing ==========
-
-class WindowCloseEvent : public Event
-{
-  public:
-    EVENT_CLASS_TYPE(WindowClose) // NOLINT(cppcoreguidelines-macro-usage)
-};
 
 class ThemeChangedEvent : public Event
 {
