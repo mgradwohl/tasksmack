@@ -213,14 +213,19 @@ TEST(LinuxPathProviderTest, MultipleCallsReturnSamePaths)
 
 TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVarsEmpty)
 {
-    // When XDG_CONFIG_HOME and HOME are both unset/empty, getUserConfigDir()
+    // When XDG_CONFIG_HOME and HOME are both set to empty strings, getUserConfigDir()
     // falls back to std::filesystem::current_path() as a last resort.
     // This test covers the fallback branch (lines ~75-85 in LinuxPathProvider.cpp).
 
-    const char* savedXdg = std::getenv("XDG_CONFIG_HOME");
-    const char* savedHome = std::getenv("HOME");
-    const std::string origXdg = savedXdg ? savedXdg : "";
-    const std::string origHome = savedHome ? savedHome : "";
+    // Track both the original value AND whether the var was set at all.
+    // getenv() returns non-null for an empty value, so a bool is needed to
+    // distinguish "was set to empty string" from "was not set".
+    const char* rawXdg = std::getenv("XDG_CONFIG_HOME");
+    const char* rawHome = std::getenv("HOME");
+    const bool xdgWasSet = (rawXdg != nullptr);
+    const bool homeWasSet = (rawHome != nullptr);
+    const std::string origXdg = xdgWasSet ? rawXdg : "";
+    const std::string origHome = homeWasSet ? rawHome : "";
 
     setenv("XDG_CONFIG_HOME", "", 1);
     setenv("HOME", "", 1);
@@ -228,8 +233,8 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
     LinuxPathProvider provider;
     const auto dir = provider.getUserConfigDir();
 
-    // Restore environment
-    if (!origXdg.empty())
+    // Restore environment exactly as found
+    if (xdgWasSet)
     {
         setenv("XDG_CONFIG_HOME", origXdg.c_str(), 1);
     }
@@ -237,7 +242,7 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
     {
         unsetenv("XDG_CONFIG_HOME");
     }
-    if (!origHome.empty())
+    if (homeWasSet)
     {
         setenv("HOME", origHome.c_str(), 1);
     }
@@ -246,8 +251,12 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToCurrentDir_WhenBothEnvVar
         unsetenv("HOME");
     }
 
-    // The fallback must return a non-empty path (current_path() succeeds in test env)
-    EXPECT_FALSE(dir.empty());
+    // The fallback returns current_path() which is non-empty in normal test environments.
+    // Compare against the expected current_path() to confirm the right branch was taken.
+    std::error_code ec;
+    const auto expectedDir = std::filesystem::current_path(ec);
+    ASSERT_FALSE(ec) << "std::filesystem::current_path() failed: " << ec.message();
+    EXPECT_EQ(dir, expectedDir);
 }
 
 } // namespace
