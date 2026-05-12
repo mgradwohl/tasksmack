@@ -24,6 +24,29 @@
 namespace
 {
 
+bool tryEnableOffscreenVideoDriver()
+{
+#ifdef _WIN32
+    return false;
+#else
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - process env setup during single-threaded test startup
+    const char* videoDriver = std::getenv("SDL_VIDEODRIVER");
+    if (videoDriver != nullptr && videoDriver[0] != '\0')
+    {
+        return true;
+    }
+
+    const bool videoSet = (setenv("SDL_VIDEODRIVER", "offscreen", 0) == 0);
+    if (videoSet)
+    {
+        [[maybe_unused]] const int audioSetResult = setenv("SDL_AUDIODRIVER", "dummy", 0);
+    }
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+
+    return videoSet;
+#endif
+}
+
 // Check if we have a display available
 bool hasDisplay()
 {
@@ -48,7 +71,12 @@ bool hasDisplay()
     const char* display = std::getenv("DISPLAY");
     const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
     // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
+    if ((display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0'))
+    {
+        return true;
+    }
+
+    return tryEnableOffscreenVideoDriver();
 #endif
 }
 
