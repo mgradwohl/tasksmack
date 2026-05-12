@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -285,11 +286,29 @@ class UserConfigLoadSaveTest : public ::testing::Test
         // Save the original path so TearDown can restore it.
         m_OriginalPath = UserConfig::get().configPath();
 
-        m_TempDir = std::filesystem::temp_directory_path() / "tasksmack_test_userconfig";
-        // Remove any leftovers from a prior run before recreating
-        std::error_code ec;
-        std::filesystem::remove_all(m_TempDir, ec);
-        std::filesystem::create_directories(m_TempDir);
+        // Create a unique temp directory exclusive to this test process.
+        // Use std::random_device + a create_directory retry loop so we
+        // provably start with a fresh, exclusive directory. ctest runs each
+        // test executable in a separate process with -j$(nproc); a retry loop is the
+        // only reliable way to guarantee we never share state between tests.
+        const auto base = std::filesystem::temp_directory_path() / "tasksmack_ucls_";
+        std::random_device rd;
+        constexpr int kMaxRetries = 100;
+        for (int attempt = 0; attempt < kMaxRetries; ++attempt)
+        {
+            m_TempDir = base;
+            m_TempDir += std::to_string(rd());
+            std::error_code ec;
+            if (std::filesystem::create_directory(m_TempDir, ec) && !ec)
+            {
+                break;
+            }
+            if (attempt == kMaxRetries - 1)
+            {
+                FAIL() << "Failed to create unique temp directory after " << kMaxRetries << " attempts";
+            }
+        }
+
         m_ConfigPath = m_TempDir / "config.toml";
         // Reset singleton to a clean state pointing at our temp file
         UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
