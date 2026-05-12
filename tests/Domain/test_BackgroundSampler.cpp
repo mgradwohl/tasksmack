@@ -639,3 +639,76 @@ TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
     // Callback should have been called multiple times (sampler kept looping after each throw)
     EXPECT_GT(callCount.load(), 1);
 }
+
+// ========== Unknown exception handling (catch(...) branch L172) ==========
+
+/// A probe that throws a non-std::exception (integer literal) to exercise the
+/// catch(...) branch in the sampler loop.
+class ThrowingNonStdProbe : public Platform::IProcessProbe
+{
+  public:
+    explicit ThrowingNonStdProbe(std::shared_ptr<std::atomic<int>> counter) : m_CallCount(std::move(counter))
+    {}
+
+    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    {
+        ++(*m_CallCount);
+        // NOLINTNEXTLINE(hicpp-exception-baseclass) — intentionally non-std for coverage
+        throw 42; // non-std::exception to hit catch(...) branch
+    }
+
+    [[nodiscard]] uint64_t totalCpuTime() const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
+    {
+        return {};
+    }
+
+    [[nodiscard]] long ticksPerSecond() const override
+    {
+        return 100;
+    }
+
+    [[nodiscard]] uint64_t systemTotalMemory() const override
+    {
+        return 0;
+    }
+
+  private:
+    std::shared_ptr<std::atomic<int>> m_CallCount;
+};
+
+TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
+{
+    // Verify the catch(...) branch in the sampler loop keeps the thread alive.
+    // A shared atomic counter lets us confirm at least one enumerate() call happened
+    // before asserting, avoiding the flakiness of a single fixed-duration sleep.
+    auto callCount = std::make_shared<std::atomic<int>>(0);
+
+    Domain::SamplerConfig config;
+    config.interval = 10ms;
+
+    Domain::BackgroundSampler sampler(std::make_unique<ThrowingNonStdProbe>(callCount), config);
+
+    sampler.start();
+
+    // Wait until at least two enumerate() calls have occurred: the first confirms the
+    // loop ran, and the second confirms the sampler continued after catching the exception.
+    constexpr auto kMinCalls = 2;
+    constexpr auto kMaxWait = 2000ms;
+    constexpr auto kPollInterval = 5ms;
+    auto waited = 0ms;
+    while (callCount->load() < kMinCalls && waited < kMaxWait)
+    {
+        std::this_thread::sleep_for(kPollInterval);
+        waited += kPollInterval;
+    }
+
+    EXPECT_GE(callCount->load(), kMinCalls);
+    EXPECT_TRUE(sampler.isRunning());
+
+    sampler.stop();
+}

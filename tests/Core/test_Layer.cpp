@@ -58,6 +58,25 @@ class ConcreteLayer : public Core::Layer
     float lastDelta = 0.0F;
 };
 
+/// Test-only event type for Layer::onEvent tests.
+/// Kept in the anonymous namespace to avoid external-linkage pollution of Core.
+class TestWindowCloseEvent : public Core::Event
+{
+  public:
+    static auto getStaticType() -> Core::EventType
+    {
+        return Core::EventType::WindowClose;
+    }
+    [[nodiscard]] auto getEventType() const -> Core::EventType override
+    {
+        return getStaticType();
+    }
+    [[nodiscard]] auto getName() const -> const char* override
+    {
+        return "WindowClose";
+    }
+};
+
 } // namespace
 
 // =============================================================================
@@ -322,4 +341,15 @@ TEST(LayerTest, PolymorphicBehavior)
     EXPECT_EQ(concrete->renderCount, 1);
     EXPECT_EQ(concrete->postRenderCount, 1);
     EXPECT_EQ(concrete->detachCount, 1);
+}
+
+// ========== onEvent default implementation ==========
+
+TEST(LayerTest, DefaultOnEventDoesNotCrash)
+{
+    // Layer::onEvent() has a no-op default implementation; calling it should be safe
+    Core::Layer layer("TestLayer");
+    TestWindowCloseEvent ev;
+    layer.onEvent(ev); // Should not crash or modify the event
+    EXPECT_FALSE(ev.isHandled());
 }

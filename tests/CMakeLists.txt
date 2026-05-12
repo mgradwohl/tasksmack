@@ -113,6 +113,7 @@ endif()
 add_executable(TaskSmackTests
     test_main.cpp
     Core/test_Application.cpp
+    Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
     Domain/test_History.cpp
