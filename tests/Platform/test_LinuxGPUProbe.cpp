@@ -48,7 +48,7 @@ TEST(LinuxGPUProbeTest, ProcessGpuCountersAreStructurallyValid)
 
 TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto caps = probe.capabilities();
@@ -66,7 +66,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 
 TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto gpus = probe.enumerateGPUs();
@@ -84,7 +84,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 
 TEST(LinuxGPUProbeTest, MockLibrariesProvidePerProcessCountersFromNvmlProbe)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto processCounters = probe.readProcessGPUCounters();
