@@ -44,7 +44,7 @@ TEST(LinuxROCmGPUProbeTest, ProcessCountersAreEmptyWhenAvailableOrUnavailable)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -64,7 +64,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -86,7 +86,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());

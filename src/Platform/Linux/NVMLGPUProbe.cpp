@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -58,8 +59,19 @@ bool NVMLGPUProbe::Impl::loadNVML()
         return true;
     }
 
+    // Try optional explicit override first (useful for tests)
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - getenv() called during single-threaded probe initialization
+    const char* overridePath = std::getenv("TASKSMACK_NVML_LIB_PATH");
+    if (overridePath != nullptr && overridePath[0] != '\0')
+    {
+        nvmlHandle = dlopen(overridePath, RTLD_NOW);
+    }
+
     // Try to load libnvidia-ml.so (dynamic loading for graceful fallback)
-    nvmlHandle = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+    if (nvmlHandle == nullptr)
+    {
+        nvmlHandle = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+    }
     if (nvmlHandle == nullptr)
     {
         nvmlHandle = dlopen("libnvidia-ml.so", RTLD_NOW);

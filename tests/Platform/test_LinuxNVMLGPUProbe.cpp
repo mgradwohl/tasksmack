@@ -59,7 +59,7 @@ TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -79,7 +79,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -102,7 +102,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEngines)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -129,9 +129,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     const auto processCounters = probe.readProcessGPUCounters();
     ASSERT_EQ(processCounters.size(), 2U);
 
-    const auto merged = std::ranges::find_if(processCounters,
-                                             [](const ProcessGPUCounters& counter)
-                                             { return counter.pid == 123; });
+    const auto merged = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 123; });
     ASSERT_NE(merged, processCounters.end());
     EXPECT_EQ(merged->gpuId, "mock-nvml-uuid-0");
     EXPECT_EQ(merged->gpuMemoryBytes, 222U);
@@ -139,9 +137,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_EQ(merged->activeEngines[0], "Compute");
     EXPECT_EQ(merged->activeEngines[1], "3D");
 
-    const auto graphicsOnly = std::ranges::find_if(processCounters,
-                                                   [](const ProcessGPUCounters& counter)
-                                                   { return counter.pid == 456; });
+    const auto graphicsOnly = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 456; });
     ASSERT_NE(graphicsOnly, processCounters.end());
     EXPECT_EQ(graphicsOnly->gpuId, "mock-nvml-uuid-0");
     EXPECT_EQ(graphicsOnly->gpuMemoryBytes, 333U);

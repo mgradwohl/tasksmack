@@ -48,7 +48,7 @@ TEST(LinuxGPUProbeTest, ProcessGpuCountersAreStructurallyValid)
 
 TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto caps = probe.capabilities();
@@ -66,39 +66,29 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 
 TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto gpus = probe.enumerateGPUs();
-    EXPECT_NE(std::ranges::find_if(gpus,
-                                   [](const GPUInfo& gpu)
-                                   { return gpu.vendor == "NVIDIA" && gpu.id == "mock-nvml-uuid-0"; }),
+    EXPECT_NE(std::ranges::find_if(gpus, [](const GPUInfo& gpu) { return gpu.vendor == "NVIDIA" && gpu.id == "mock-nvml-uuid-0"; }),
               gpus.end());
-    EXPECT_NE(std::ranges::find_if(gpus,
-                                   [](const GPUInfo& gpu)
-                                   { return gpu.vendor == "AMD" && gpu.id == "4001"; }),
-              gpus.end());
+    EXPECT_NE(std::ranges::find_if(gpus, [](const GPUInfo& gpu) { return gpu.vendor == "AMD" && gpu.id == "4001"; }), gpus.end());
 
     const auto counters = probe.readGPUCounters();
-    EXPECT_NE(std::ranges::find_if(counters,
-                                   [](const GPUCounters& counter)
-                                   { return counter.gpuId == "mock-nvml-uuid-0" && counter.temperatureC == 65; }),
+    EXPECT_NE(std::ranges::find_if(
+                  counters, [](const GPUCounters& counter) { return counter.gpuId == "mock-nvml-uuid-0" && counter.temperatureC == 65; }),
               counters.end());
-    EXPECT_NE(std::ranges::find_if(counters,
-                                   [](const GPUCounters& counter)
-                                   { return counter.gpuId == "0" && counter.hotspotTempC == 72; }),
+    EXPECT_NE(std::ranges::find_if(counters, [](const GPUCounters& counter) { return counter.gpuId == "0" && counter.hotspotTempC == 72; }),
               counters.end());
 }
 
 TEST(LinuxGPUProbeTest, MockLibrariesProvidePerProcessCountersFromNvmlProbe)
 {
-    const auto envGuard = TestSupport::useMockGpuLibraries();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
     LinuxGPUProbe probe;
 
     const auto processCounters = probe.readProcessGPUCounters();
-    const auto merged = std::ranges::find_if(processCounters,
-                                             [](const ProcessGPUCounters& counter)
-                                             { return counter.pid == 123; });
+    const auto merged = std::ranges::find_if(processCounters, [](const ProcessGPUCounters& counter) { return counter.pid == 123; });
     ASSERT_NE(merged, processCounters.end());
     EXPECT_EQ(merged->gpuId, "mock-nvml-uuid-0");
     EXPECT_EQ(merged->gpuMemoryBytes, 222U);

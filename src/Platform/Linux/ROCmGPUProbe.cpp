@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -157,8 +158,19 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         return true;
     }
 
+    // Try optional explicit override first (useful for tests)
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - getenv() called during single-threaded probe initialization
+    const char* overridePath = std::getenv("TASKSMACK_ROCM_LIB_PATH");
+    if (overridePath != nullptr && overridePath[0] != '\0')
+    {
+        rocmHandle = dlopen(overridePath, RTLD_NOW);
+    }
+
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
-    rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    if (rocmHandle == nullptr)
+    {
+        rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    }
     if (rocmHandle == nullptr)
     {
         rocmHandle = dlopen("librocm_smi64.so", RTLD_NOW);
