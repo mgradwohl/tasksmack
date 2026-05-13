@@ -73,7 +73,7 @@ constexpr rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::ui
     return result;
 }
 
-constexpr std::array<MockRocmDevice, 3> MOCK_DEVICES{{
+const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
     {.name = "Mock AMD GPU 0",
      .hasName = true,
      .uniqueId = 4001ULL,

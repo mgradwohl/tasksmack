@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -64,7 +65,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
     const char* overridePath = std::getenv("TASKSMACK_NVML_LIB_PATH");
     if (overridePath != nullptr && overridePath[0] != '\0')
     {
-        nvmlHandle = dlopen(overridePath, RTLD_NOW);
+        // Validate the path points to a regular file before passing it to dlopen
+        if (std::filesystem::is_regular_file(overridePath))
+        {
+            nvmlHandle = dlopen(overridePath, RTLD_NOW);
+        }
+        else
+        {
+            spdlog::warn("NVMLGPUProbe: TASKSMACK_NVML_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
+        }
     }
 
     // Try to load libnvidia-ml.so (dynamic loading for graceful fallback)

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -163,7 +164,15 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     const char* overridePath = std::getenv("TASKSMACK_ROCM_LIB_PATH");
     if (overridePath != nullptr && overridePath[0] != '\0')
     {
-        rocmHandle = dlopen(overridePath, RTLD_NOW);
+        // Validate the path points to a regular file before passing it to dlopen
+        if (std::filesystem::is_regular_file(overridePath))
+        {
+            rocmHandle = dlopen(overridePath, RTLD_NOW);
+        }
+        else
+        {
+            spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
+        }
     }
 
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
