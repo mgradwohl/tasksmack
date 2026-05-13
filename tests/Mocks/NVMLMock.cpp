@@ -75,6 +75,11 @@ std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
 
 void writeString(const char* source, char* destination, unsigned int length)
 {
+    if (length == 0)
+    {
+        return;
+    }
+
     std::strncpy(destination, source, length);
     destination[length - 1] = '\0';
 }

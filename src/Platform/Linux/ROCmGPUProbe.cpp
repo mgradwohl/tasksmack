@@ -158,7 +158,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         return true;
     }
 
-    // Try optional explicit override first (useful for tests)
+    // Try optional explicit override first (useful for tests via TASKSMACK_ROCM_LIB_PATH)
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - getenv() called during single-threaded probe initialization
     const char* overridePath = std::getenv("TASKSMACK_ROCM_LIB_PATH");
     if (overridePath != nullptr && overridePath[0] != '\0')

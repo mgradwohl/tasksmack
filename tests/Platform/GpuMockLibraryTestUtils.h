@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -18,18 +19,27 @@ class ScopedEnvironmentVariable
             m_PreviousValue = previous;
         }
 
-        [[maybe_unused]] const int setResult = setenv(m_Name.c_str(), value.c_str(), 1);
+        if (setenv(m_Name.c_str(), value.c_str(), 1) != 0)
+        {
+            throw std::runtime_error("Failed to set environment variable: " + m_Name);
+        }
     }
 
     ~ScopedEnvironmentVariable()
     {
         if (m_PreviousValue.has_value())
         {
-            [[maybe_unused]] const int setResult = setenv(m_Name.c_str(), m_PreviousValue->c_str(), 1);
+            if (setenv(m_Name.c_str(), m_PreviousValue->c_str(), 1) != 0)
+            {
+                std::abort();
+            }
             return;
         }
 
-        [[maybe_unused]] const int unsetResult = unsetenv(m_Name.c_str());
+        if (unsetenv(m_Name.c_str()) != 0)
+        {
+            std::abort();
+        }
     }
 
     ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
