@@ -1,5 +1,5 @@
-#include "Core/Window.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
+#include "Core/Window.h"
 
 #include <gtest/gtest.h>
 

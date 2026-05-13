@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -165,13 +166,23 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     if (overridePath != nullptr && overridePath[0] != '\0')
     {
         // Validate the path points to a regular file before passing it to dlopen
-        if (std::filesystem::is_regular_file(overridePath))
+        std::error_code fileError;
+        if (std::filesystem::is_regular_file(overridePath, fileError))
         {
             rocmHandle = dlopen(overridePath, RTLD_NOW);
         }
         else
         {
-            spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
+            if (fileError)
+            {
+                spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' could not be validated ({}), ignoring",
+                             overridePath,
+                             fileError.message());
+            }
+            else
+            {
+                spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
+            }
         }
     }
 

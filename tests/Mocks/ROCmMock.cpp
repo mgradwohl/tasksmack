@@ -64,7 +64,8 @@ struct MockRocmDevice
     bool hasFanSpeed;
 };
 
-[[maybe_unused]] constexpr rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
+[[maybe_unused]] constexpr rsmi_frequencies_t
+makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
 {
     rsmi_frequencies_t result{};
     result.num_supported = numSupported;
