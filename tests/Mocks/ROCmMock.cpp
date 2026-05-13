@@ -64,7 +64,7 @@ struct MockRocmDevice
     bool hasFanSpeed;
 };
 
-constexpr rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
+[[maybe_unused]] constexpr rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
 {
     rsmi_frequencies_t result{};
     result.num_supported = numSupported;
@@ -73,7 +73,7 @@ constexpr rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::ui
     return result;
 }
 
-const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
+constexpr std::array<MockRocmDevice, 3> MOCK_DEVICES{{
     {.name = "Mock AMD GPU 0",
      .hasName = true,
      .uniqueId = 4001ULL,
