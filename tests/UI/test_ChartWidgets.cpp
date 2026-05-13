@@ -48,6 +48,17 @@ TEST(ChartWidgetsTest, ComputeAlphaFallsBackForNonPositiveDelta)
     EXPECT_NEAR(alphaZero, alphaNegative, 1e-6);
 }
 
+TEST(ChartWidgetsTest, ComputeAlphaFloatOverloadMatchesDoubleOverload)
+{
+    const auto interval = std::chrono::milliseconds(750);
+    const float deltaTime = 0.123F;
+
+    const double fromFloat = computeAlpha(deltaTime, interval);
+    const double fromDouble = computeAlpha(static_cast<double>(deltaTime), interval);
+
+    EXPECT_NEAR(fromFloat, fromDouble, 1e-9);
+}
+
 TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
 {
     constexpr double current = 10.0;
@@ -56,6 +67,16 @@ TEST(ChartWidgetsTest, SmoothTowardsInterpolates)
     EXPECT_DOUBLE_EQ(smoothTowards(current, target, 0.0), current);
     EXPECT_DOUBLE_EQ(smoothTowards(current, target, 1.0), target);
     EXPECT_DOUBLE_EQ(smoothTowards(current, target, 0.25), 12.5);
+}
+
+TEST(ChartWidgetsTest, InitializeOrSmoothReturnsTargetWhenUninitialized)
+{
+    EXPECT_DOUBLE_EQ(initializeOrSmooth(10.0, 25.0, 0.5, false), 25.0);
+}
+
+TEST(ChartWidgetsTest, InitializeOrSmoothAppliesSmoothingWhenInitialized)
+{
+    EXPECT_DOUBLE_EQ(initializeOrSmooth(10.0, 30.0, 0.25, true), 15.0);
 }
 
 // ========== NowBar ==========
@@ -125,6 +146,14 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedReturnsZeroWhenBufferTooSmal
     EXPECT_EQ(len, 0);
 }
 
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedClampsTinyValueToZero)
+{
+    char buf[32]{};
+    const int len = formatAxisLocalized(0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.0");
+}
+
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
 {
     char buf[32]{};
@@ -137,6 +166,14 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
     EXPECT_EQ(std::string(buf), "2.0KB/s");
 }
 
+TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
+{
+    char buf[32]{};
+    const int len = formatAxisBytesPerSec(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.0B/s");
+}
+
 TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
 {
     char buf[32]{};
@@ -147,6 +184,14 @@ TEST(ChartWidgetsFormattersTest, FormatAxisWattsUsesWAndMilliwatts)
     len = formatAxisWatts(0.5, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
     EXPECT_EQ(std::string(buf), "500.0mW");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisWattsClampsTinyNegativeToZeroMilliwatts)
+{
+    char buf[32]{};
+    const int len = formatAxisWatts(-0.00001, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.0mW");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
@@ -171,6 +216,28 @@ TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsOffset)
     EXPECT_DOUBLE_EQ(cfg.xMax, -25.0);
 }
 
+TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigWithEmptyTimestampsUsesDefaultWindow)
+{
+    const std::vector<double> timestamps{};
+    const auto cfg = makeTimeAxisConfig(timestamps, 12.0, 4.0);
+
+    EXPECT_DOUBLE_EQ(cfg.span, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.maxOffset, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.xMin, -12.0);
+    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
+}
+
+TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsNegativeOffsetToZero)
+{
+    const std::vector<double> timestamps{5.0, 15.0};
+    const auto cfg = makeTimeAxisConfig(timestamps, 6.0, -3.0);
+
+    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.xMin, -6.0);
+    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
+}
+
 TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsRelativeTimes)
 {
     const std::vector<double> timestamps{10.0, 20.0, 30.0};
@@ -179,6 +246,13 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsRelativeTimes)
     ASSERT_EQ(axis.size(), 2U);
     EXPECT_FLOAT_EQ(axis[0], -10.0F);
     EXPECT_FLOAT_EQ(axis[1], 0.0F);
+}
+
+TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisReturnsEmptyWhenInputEmpty)
+{
+    const std::vector<double> timestamps{};
+    const auto axis = buildTimeAxis(timestamps, 5, 30.0);
+    EXPECT_TRUE(axis.empty());
 }
 
 TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
@@ -192,6 +266,16 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesReturnsRelativeTimes)
     EXPECT_DOUBLE_EQ(axis[2], 5.0);
 }
 
+TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
+{
+    const std::vector<double> timestamps{1.0, 3.0, 7.0, 9.0};
+    const auto axis = buildTimeAxisDoubles(timestamps, 2, 10.0);
+
+    ASSERT_EQ(axis.size(), 2U);
+    EXPECT_DOUBLE_EQ(axis[0], -3.0);
+    EXPECT_DOUBLE_EQ(axis[1], -1.0);
+}
+
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
     const std::vector<float> axisF{-10.0F, -5.0F, 0.0F};
@@ -202,6 +286,15 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
     EXPECT_EQ(hoveredIndexFromPlotX(axisD, -9.9).value(), 0U);
     EXPECT_EQ(hoveredIndexFromPlotX(axisD, -2.5).value(), 1U);
+}
+
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
+{
+    const std::vector<float> axisF{-10.0F, -5.0F};
+    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -7.5).value(), 0U);
+
+    const std::vector<double> axisD{-10.0, -5.0};
+    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -7.5).value(), 0U);
 }
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
