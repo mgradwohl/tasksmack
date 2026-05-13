@@ -194,6 +194,37 @@ if(UNIX AND NOT APPLE)
     # Linux needs X11 for platform tests
     find_package(X11 REQUIRED)
     target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS})
+
+    add_library(TaskSmackNVMLMock SHARED
+        Mocks/NVMLMock.cpp
+    )
+    target_include_directories(TaskSmackNVMLMock PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    set_target_properties(TaskSmackNVMLMock PROPERTIES
+        PREFIX ""
+        SUFFIX ""
+        OUTPUT_NAME "libnvidia-ml.so.1"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
+
+    add_library(TaskSmackROCmMock SHARED
+        Mocks/ROCmMock.cpp
+    )
+    target_include_directories(TaskSmackROCmMock PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    set_target_properties(TaskSmackROCmMock PROPERTIES
+        PREFIX ""
+        SUFFIX ""
+        OUTPUT_NAME "librocm_smi64.so.6"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
+
+    add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
+    target_compile_definitions(TaskSmackTests PRIVATE
+        TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
 endif()
 
 if(WIN32)
