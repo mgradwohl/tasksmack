@@ -291,6 +291,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
 - When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
 - **GLAD dependency:** Requires Python 3 + jinja2 at build time for OpenGL loader generation
+- **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.
 
 ---
 *For comprehensive build instructions, prerequisites, tools, and project structure, see [CONTRIBUTING.md](../CONTRIBUTING.md).*

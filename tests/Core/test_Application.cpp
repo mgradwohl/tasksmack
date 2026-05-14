@@ -52,7 +52,14 @@ bool hasDisplay()
     // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     if ((display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0'))
     {
-        return true;
+        // Xvfb and other virtual displays expose DISPLAY but may lack a usable
+        // GL 3.3 core stack. Probe capability before committing to the real-display
+        // path; if the probe fails, fall through to the offscreen fallback so both
+        // Application and Window test suites behave consistently.
+        if (TestSupport::probeGLCapability())
+        {
+            return true;
+        }
     }
 
     return TestSupport::tryEnableOffscreenVideoDriver();

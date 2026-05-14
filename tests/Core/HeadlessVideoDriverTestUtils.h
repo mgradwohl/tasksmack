@@ -89,8 +89,11 @@ namespace TestSupport
     // so an SDL initialization failure here is safe to detect and recover from.
     if (!SDL_Init(SDL_INIT_VIDEO))
     {
-        // The offscreen driver is not functional; clear the env var so tests skip cleanly.
+        // The offscreen driver is not functional; clear both the env var and the
+        // SDL hint override so later SDL initializations are not forced to the
+        // non-functional offscreen driver.
         unsetenv("SDL_VIDEODRIVER");
+        SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
         return false;
     }
     SDL_Quit();
