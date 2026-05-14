@@ -15,6 +15,8 @@ env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.0'
 
+permissions: read-all
+
 jobs:
   detect-docs-only:
     runs-on: ubuntu-24.04
@@ -28,7 +30,7 @@ jobs:
       - name: Detect docs-only pull request changes
         id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         with:
           predicate-quantifier: every
           filters: |
@@ -57,7 +59,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -82,7 +84,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Windows LLVM
         uses: ./.github/actions/setup-windows-llvm
@@ -134,7 +136,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Audit markdown links
         run: ./tools/md-link-audit.sh
@@ -148,7 +150,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -160,13 +162,13 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
           key: linux-tidy
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -186,7 +188,7 @@ jobs:
 
       - name: Upload clang-tidy results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
@@ -201,7 +203,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -213,7 +215,7 @@ jobs:
 
       - name: Cache IWYU build
         id: cache-iwyu
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: /tmp/iwyu-install
           key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ runner.os }}-v1
@@ -241,13 +243,13 @@ jobs:
           include-what-you-use --version
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
           key: linux-iwyu
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -321,7 +323,7 @@ jobs:
 
       - name: Upload IWYU results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: iwyu-results
           path: iwyu-output.txt

@@ -9,6 +9,8 @@ concurrency:
   group: build-windows-release-${{ github.ref }}
   cancel-in-progress: true
 
+permissions: read-all
+
 jobs:
   build-windows-release:
     permissions:

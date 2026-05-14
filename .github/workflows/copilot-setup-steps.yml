@@ -14,6 +14,8 @@ on:
 env:
     LLVM_VERSION: '22'
 
+permissions: read-all
+
 jobs:
     # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
     copilot-setup-steps:
@@ -25,7 +27,7 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v6
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
             - name: Setup LLVM
               uses: ./.github/actions/setup-llvm
