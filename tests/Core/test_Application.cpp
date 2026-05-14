@@ -14,6 +14,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 
+#include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -658,24 +659,26 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     // when construction fails. Without that cleanup, a dangling Application::get() reference
     // would corrupt the singleton state for all subsequent tests.
     //
-    // Forcing failure: setting SDL_VIDEODRIVER to a non-existent driver makes SDL_Init
-    // reject it immediately, so the constructor throws before Window is created.
+    // Forcing failure: overriding the SDL_HINT_VIDEO_DRIVER hint to a non-existent driver
+    // makes SDL_Init reject it immediately, so the constructor throws before Window is
+    // created. Using SDL_SetHintWithPriority with SDL_HINT_OVERRIDE avoids any POSIX
+    // setenv()/getenv() calls (which are unavailable or deprecated on Windows) and also
+    // bypasses SDL3's internal environment snapshot, which is populated once at first use
+    // and is not updated by subsequent setenv() calls.
 
     if (!hasDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
 
-    // Save the current SDL_VIDEODRIVER so we can restore it after the failure probe.
-    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    // Single-threaded test body; env-var access is safe.
-    const char* savedRaw = std::getenv("SDL_VIDEODRIVER");
-    const std::string savedDriver = (savedRaw != nullptr) ? savedRaw : "";
+    // Save the current SDL video driver hint before we clobber it.
+    // SDL_GetHint returns a pointer into SDL's internal store; copy it immediately.
+    const char* currentHintRaw = SDL_GetHint(SDL_HINT_VIDEO_DRIVER);
+    const std::string savedHint = (currentHintRaw != nullptr) ? currentHintRaw : "";
 
     // Point SDL at a non-existent driver so SDL_Init(SDL_INIT_VIDEO) fails inside
     // the Application constructor, exercising the singleton-cleanup catch block.
-    [[maybe_unused]] const int setResult1 = setenv("SDL_VIDEODRIVER", "nosuchdriver", 1);
-    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE);
 
     Core::ApplicationSpecification spec;
     spec.Name = "FailureTest";
@@ -688,27 +691,20 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     // static_cast<void> discards the [[nodiscard]] return inside EXPECT_THROW.
     EXPECT_THROW(static_cast<void>(Core::Application::get()), std::runtime_error);
 
-    // Restore the driver so the second construction below (and all subsequent tests) works.
-    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    if (savedDriver.empty())
+    // Restore the driver hint so the second construction (and all subsequent tests) works.
+    // When no driver was previously configured we must NOT force "offscreen" — that would
+    // permanently override the hint for all later tests on a real display (X11/Wayland).
+    // Instead, reset the hint entirely so SDL reverts to its own driver-selection logic.
+    // When a driver was saved, restore it at OVERRIDE priority so it takes effect even
+    // though SDL3's internal env snapshot may already be populated.
+    if (savedHint.empty())
     {
-        [[maybe_unused]] const int unsetResult = unsetenv("SDL_VIDEODRIVER");
+        SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
     }
     else
     {
-        [[maybe_unused]] const int setResult2 = setenv("SDL_VIDEODRIVER", savedDriver.c_str(), 1);
+        SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, savedHint.c_str(), SDL_HINT_OVERRIDE);
     }
-    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-
-    // SDL3 snapshots the process environment into its own internal hash table at
-    // first use. Calling setenv() afterwards does not update SDL's copy, so
-    // SDL_GetHint(SDL_HINT_VIDEO_DRIVER) would still return "nosuchdriver".
-    // SDL_SetHintWithPriority(..., SDL_HINT_OVERRIDE) bypasses the stale
-    // internal env snapshot and forces SDL to use the restored driver name for
-    // the next SDL_Init call.
-#ifndef _WIN32
-    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, savedDriver.empty() ? "offscreen" : savedDriver.c_str(), SDL_HINT_OVERRIDE);
-#endif
 
     // With the valid driver restored, a second Application construction must succeed
     // and the singleton must point at the new instance — no dangling state from above.
