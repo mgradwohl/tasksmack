@@ -8,19 +8,27 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace Platform
 {
 
-LinuxDiskProbe::LinuxDiskProbe()
+LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath) : m_DiskstatsPath(std::move(diskstatsPath))
 {
     spdlog::debug("LinuxDiskProbe: initialized");
 }
+
+LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats")
+{}
 
 bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
 {
@@ -50,9 +58,24 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
     // Check if it ends with a digit (likely a partition)
     if (!deviceName.empty() && (std::isdigit(static_cast<unsigned char>(deviceName.back())) != 0))
     {
-        // Exception: NVMe devices like "nvme0n1" end with a digit but are whole devices
-        // Include nvme0n1, nvme1n1, etc. but skip partitions like sda1, sda2, nvme0n1p1
-        return deviceName.contains("nvme") && !deviceName.contains('p');
+        // Exception: NVMe whole namespaces (nvme0n1, nvme1n2) — contain "nvme", no 'p'.
+        if (deviceName.contains("nvme") && !deviceName.contains('p'))
+        {
+            return true;
+        }
+
+        // Exception: eMMC whole-disk devices (mmcblk0, mmcblk1).
+        // Match only "mmcblk" + all-digit suffix to exclude boot partitions
+        // (mmcblk0boot0, mmcblk0boot1) and RPMB devices that also end in a digit.
+        if (deviceName.starts_with("mmcblk"))
+        {
+            constexpr std::string_view k_MmcblkPrefix{"mmcblk"};
+            const std::string_view suffix = std::string_view{deviceName}.substr(k_MmcblkPrefix.size());
+            const bool allDigits = !suffix.empty() && std::ranges::all_of(suffix, [](unsigned char c) { return std::isdigit(c) != 0; });
+            return allDigits;
+        }
+
+        return false;
     }
 
     return true;
@@ -62,10 +85,10 @@ SystemDiskCounters LinuxDiskProbe::read()
 {
     SystemDiskCounters result;
 
-    std::ifstream diskstats("/proc/diskstats");
+    std::ifstream diskstats(m_DiskstatsPath);
     if (!diskstats.is_open())
     {
-        spdlog::warn("LinuxDiskProbe: Failed to open /proc/diskstats");
+        spdlog::warn("LinuxDiskProbe: Failed to open {}", m_DiskstatsPath.string());
         return result;
     }
 

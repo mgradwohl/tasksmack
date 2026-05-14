@@ -2,6 +2,9 @@
 
 #include "Platform/IDiskProbe.h"
 
+#include <filesystem>
+#include <string>
+
 namespace Platform
 {
 
@@ -11,6 +14,11 @@ class LinuxDiskProbe : public IDiskProbe
 {
   public:
     LinuxDiskProbe();
+
+    /// Testability constructor: reads from a custom diskstats path instead of
+    /// /proc/diskstats. Useful for unit tests that supply synthetic content.
+    explicit LinuxDiskProbe(std::filesystem::path diskstatsPath);
+
     ~LinuxDiskProbe() override = default;
 
     LinuxDiskProbe(const LinuxDiskProbe&) = delete;
@@ -23,6 +31,8 @@ class LinuxDiskProbe : public IDiskProbe
 
   private:
     [[nodiscard]] static bool shouldIncludeDevice(const std::string& deviceName);
+
+    std::filesystem::path m_DiskstatsPath;
 };
 
 } // namespace Platform
