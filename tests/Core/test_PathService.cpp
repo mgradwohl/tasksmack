@@ -141,24 +141,39 @@ namespace
 
 TEST(PathServiceTest, InjectionConstructorReturnsProvidedPaths)
 {
-    // Both inputs are already absolute — toAbsolute() returns them as-is (normalized).
-    auto provider = std::make_unique<FakePathProvider>("/usr/local/bin", "/home/user/.config/app");
+    // Use temp_directory_path() as the absolute base so the test is
+    // platform-neutral (avoids POSIX-only roots like /usr that are invalid on
+    // Windows).
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path execDir = base / "tasksmack_test_exec";
+    const std::filesystem::path configDir = base / "tasksmack_test_config";
+
+    auto provider = std::make_unique<FakePathProvider>(execDir, configDir);
     Core::PathService svc(std::move(provider));
 
-    EXPECT_EQ(svc.executableDir(), std::filesystem::path("/usr/local/bin"));
-    EXPECT_EQ(svc.userConfigDir(), std::filesystem::path("/home/user/.config/app"));
+    // toAbsolute() calls lexically_normal() on already-absolute paths, which
+    // leaves them unchanged when there are no redundant components.
+    EXPECT_EQ(svc.executableDir(), execDir.lexically_normal());
+    EXPECT_EQ(svc.userConfigDir(), configDir.lexically_normal());
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+    EXPECT_TRUE(svc.userConfigDir().is_absolute());
 }
 
 TEST(PathServiceTest, InjectionConstructorNormalizesRedundantComponents)
 {
-    // Paths with '.' and '..' components should be normalized by lexically_normal().
-    const std::filesystem::path rawExec = std::filesystem::path("/usr") / "local" / "." / "extra" / ".." / "bin";
-    const std::filesystem::path rawConfig = std::filesystem::path("/home") / "user" / ".config" / "." / "app";
+    // Build an absolute base from temp_directory_path() and insert redundant
+    // '.' and '..' components to verify lexically_normal() is applied.
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path rawExec = base / "a" / "." / "extra" / ".." / "bin";
+    const std::filesystem::path rawConfig = base / "cfg" / "." / "app";
+    const std::filesystem::path expectedExec = (base / "a" / "bin").lexically_normal();
+    const std::filesystem::path expectedConfig = (base / "cfg" / "app").lexically_normal();
+
     auto provider = std::make_unique<FakePathProvider>(rawExec, rawConfig);
     Core::PathService svc(std::move(provider));
 
-    EXPECT_EQ(svc.executableDir(), std::filesystem::path("/usr/local/bin"));
-    EXPECT_EQ(svc.userConfigDir(), std::filesystem::path("/home/user/.config/app"));
+    EXPECT_EQ(svc.executableDir(), expectedExec);
+    EXPECT_EQ(svc.userConfigDir(), expectedConfig);
     EXPECT_TRUE(svc.executableDir().is_absolute());
 }
 
