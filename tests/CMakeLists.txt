@@ -86,6 +86,9 @@ else()
         Platform/test_LinuxDiskProbe.cpp
         Platform/test_LinuxPathProvider.cpp
         Platform/test_LinuxPowerProbe.cpp
+        Platform/test_LinuxGPUProbe.cpp
+        Platform/test_LinuxNVMLGPUProbe.cpp
+        Platform/test_LinuxROCmGPUProbe.cpp
         Platform/test_NetlinkSocketStats.cpp
         Platform/test_DRMGPUProbe.cpp
     )
@@ -116,6 +119,8 @@ add_executable(TaskSmackTests
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
+    Core/test_Window.cpp
+    Core/test_WindowEvents.cpp
     Domain/test_History.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
@@ -129,7 +134,10 @@ add_executable(TaskSmackTests
     UI/test_Format.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
+    UI/test_ThemeHeader.cpp
+    UI/test_WidgetsHeader.cpp
     App/test_ProcessColumnConfig.cpp
+    App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
     App/test_UserConfig.cpp
@@ -186,6 +194,39 @@ if(UNIX AND NOT APPLE)
     # Linux needs X11 for platform tests
     find_package(X11 REQUIRED)
     target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS})
+
+    add_library(TaskSmackNVMLMock SHARED
+        Mocks/NVMLMock.cpp
+    )
+    target_include_directories(TaskSmackNVMLMock PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    set_target_properties(TaskSmackNVMLMock PROPERTIES
+        PREFIX ""
+        SUFFIX ""
+        OUTPUT_NAME "libnvidia-ml.so.1"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
+    tasksmack_apply_default_warnings(TaskSmackNVMLMock)
+
+    add_library(TaskSmackROCmMock SHARED
+        Mocks/ROCmMock.cpp
+    )
+    target_include_directories(TaskSmackROCmMock PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    set_target_properties(TaskSmackROCmMock PROPERTIES
+        PREFIX ""
+        SUFFIX ""
+        OUTPUT_NAME "librocm_smi64.so.6"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
+    tasksmack_apply_default_warnings(TaskSmackROCmMock)
+
+    add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
+    target_compile_definitions(TaskSmackTests PRIVATE
+        TASKSMACK_TEST_GPU_MOCK_DIR="${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
 endif()
 
 if(WIN32)
@@ -227,5 +268,15 @@ if(WIN32)
         DISCOVERY_TIMEOUT 30
     )
 else()
-    gtest_discover_tests(TaskSmackTests)
+    # Prepend the mocks directory to LD_LIBRARY_PATH before the test process starts so
+    # dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6") find the mock shared
+    # libraries built in the mocks/ directory. The dynamic linker caches LD_LIBRARY_PATH at
+    # process startup; runtime setenv() does not affect subsequent dlopen() calls, so the
+    # path must be injected via CTest's ENVIRONMENT_MODIFICATION test property.
+    # ENVIRONMENT_MODIFICATION prepends rather than replacing, preserving any SDL/driver/system
+    # library paths already set by the developer or CI runner.
+    gtest_discover_tests(TaskSmackTests
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
 endif()

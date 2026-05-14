@@ -148,6 +148,10 @@ struct ROCmGPUProbe::Impl
     bool loadROCmSMI();
     void unloadROCmSMI();
     [[nodiscard]] std::string getROCmError(rsmi_status_t result) const;
+
+    // Derive a stable device ID using the same chain as enumerateGPUs() so
+    // that GPUCounters::gpuId always matches GPUInfo::id for domain correlation.
+    [[nodiscard]] std::string deriveDeviceId(std::uint32_t deviceIdx) const;
 };
 
 bool ROCmGPUProbe::Impl::loadROCmSMI()
@@ -158,7 +162,11 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     }
 
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
-    rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
+    if (rocmHandle == nullptr)
+    {
+        rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
+    }
     if (rocmHandle == nullptr)
     {
         rocmHandle = dlopen("librocm_smi64.so", RTLD_NOW);
@@ -260,6 +268,26 @@ std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
     return "Unknown ROCm error " + std::to_string(result);
 }
 
+std::string ROCmGPUProbe::Impl::deriveDeviceId(std::uint32_t deviceIdx) const
+{
+    // Chain: uniqueId → pciId → "amd_N" fallback.
+    // Must match the enumerateGPUs() chain exactly so GPUCounters::gpuId
+    // correlates to GPUInfo::id in the domain layer.
+    std::uint64_t uniqueId = 0;
+    if (rsmi_dev_unique_id_get != nullptr && rsmi_dev_unique_id_get(deviceIdx, &uniqueId) == RSMI_STATUS_SUCCESS)
+    {
+        return std::to_string(uniqueId);
+    }
+
+    std::uint64_t pciId = 0;
+    if (rsmi_dev_pci_id_get != nullptr && rsmi_dev_pci_id_get(deviceIdx, &pciId) == RSMI_STATUS_SUCCESS)
+    {
+        return std::to_string(pciId);
+    }
+
+    return "amd_" + std::to_string(deviceIdx);
+}
+
 ROCmGPUProbe::ROCmGPUProbe() : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->loadROCmSMI();
@@ -310,27 +338,9 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
             info.name = "AMD GPU " + std::to_string(deviceIdx);
         }
 
-        // Get unique ID (use PCI ID as fallback if unique ID unavailable)
-        std::uint64_t uniqueId = 0;
-        result = m_Impl->rsmi_dev_unique_id_get(deviceIdx, &uniqueId);
-        if (result == RSMI_STATUS_SUCCESS)
-        {
-            info.id = std::to_string(uniqueId);
-        }
-        else
-        {
-            // Fallback: use PCI ID
-            std::uint64_t pciId = 0;
-            result = m_Impl->rsmi_dev_pci_id_get(deviceIdx, &pciId);
-            if (result == RSMI_STATUS_SUCCESS)
-            {
-                info.id = std::to_string(pciId);
-            }
-            else
-            {
-                info.id = "amd_" + std::to_string(deviceIdx);
-            }
-        }
+        // Derive a stable device ID via the shared chain (uniqueId → pciId → "amd_N").
+        // readGPUCounters() uses the same helper so GPUInfo::id and GPUCounters::gpuId match.
+        info.id = m_Impl->deriveDeviceId(deviceIdx);
 
         // Driver version: ROCm SMI doesn't directly expose driver version
         // We could read from /sys/module/amdgpu/version, but keeping it simple for now
@@ -356,7 +366,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
     for (std::uint32_t deviceIdx = 0; deviceIdx < m_Impl->deviceCount; ++deviceIdx)
     {
         GPUCounters counter{};
-        counter.gpuId = std::to_string(deviceIdx);
+
+        // Derive gpuId via the shared helper (uniqueId → pciId → "amd_N") so it
+        // always matches GPUInfo::id produced by enumerateGPUs() for domain correlation.
+        counter.gpuId = m_Impl->deriveDeviceId(deviceIdx);
 
         // GPU utilization (0-100%)
         std::uint32_t busyPercent = 0;

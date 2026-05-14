@@ -11,8 +11,10 @@
 /// Note: These tests require a display/windowing system. They are skipped in headless environments.
 
 #include "Core/Application.h"
+#include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 
+#include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -48,7 +50,19 @@ bool hasDisplay()
     const char* display = std::getenv("DISPLAY");
     const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
     // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    return (display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0');
+    if ((display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0'))
+    {
+        // Xvfb and other virtual displays expose DISPLAY but may lack a usable
+        // GL 3.3 core stack. Probe capability before committing to the real-display
+        // path; if the probe fails, fall through to the offscreen fallback so both
+        // Application and Window test suites behave consistently.
+        if (TestSupport::probeGLCapability())
+        {
+            return true;
+        }
+    }
+
+    return TestSupport::tryEnableOffscreenVideoDriver();
 #endif
 }
 
@@ -639,6 +653,76 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
     catch (const std::exception& e)
     {
         GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// =============================================================================
+// Constructor Failure / Singleton Cleanup Tests
+// =============================================================================
+
+TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
+{
+    // This test verifies the constructor catch-block that clears g_StackApplicationInstance
+    // when construction fails. Without that cleanup, a dangling Application::get() reference
+    // would corrupt the singleton state for all subsequent tests.
+    //
+    // Forcing failure: overriding the SDL_HINT_VIDEO_DRIVER hint to a non-existent driver
+    // makes SDL_Init reject it immediately, so the constructor throws before Window is
+    // created. Using SDL_SetHintWithPriority with SDL_HINT_OVERRIDE avoids any POSIX
+    // setenv()/getenv() calls (which are unavailable or deprecated on Windows) and also
+    // bypasses SDL3's internal environment snapshot, which is populated once at first use
+    // and is not updated by subsequent setenv() calls.
+
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    // Save the current SDL video driver hint before we clobber it.
+    // SDL_GetHint returns a pointer into SDL's internal store; copy it immediately.
+    const char* currentHintRaw = SDL_GetHint(SDL_HINT_VIDEO_DRIVER);
+    const std::string savedHint = (currentHintRaw != nullptr) ? currentHintRaw : "";
+
+    // Point SDL at a non-existent driver so SDL_Init(SDL_INIT_VIDEO) fails inside
+    // the Application constructor, exercising the singleton-cleanup catch block.
+    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE);
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "FailureTest";
+
+    // Construction must throw because SDL_Init will reject the invalid driver.
+    EXPECT_THROW({ Core::Application failedApp(spec); }, std::exception);
+
+    // After the failed construction the singleton must be cleared;
+    // Application::get() must throw rather than returning a dangling reference.
+    // static_cast<void> discards the [[nodiscard]] return inside EXPECT_THROW.
+    EXPECT_THROW(static_cast<void>(Core::Application::get()), std::runtime_error);
+
+    // Restore the driver hint so the second construction (and all subsequent tests) works.
+    // When no driver was previously configured we must NOT force "offscreen" — that would
+    // permanently override the hint for all later tests on a real display (X11/Wayland).
+    // Instead, reset the hint entirely so SDL reverts to its own driver-selection logic.
+    // When a driver was saved, restore it at OVERRIDE priority so it takes effect even
+    // though SDL3's internal env snapshot may already be populated.
+    if (savedHint.empty())
+    {
+        SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
+    }
+    else
+    {
+        SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, savedHint.c_str(), SDL_HINT_OVERRIDE);
+    }
+
+    // With the valid driver restored, a second Application construction must succeed
+    // and the singleton must point at the new instance — no dangling state from above.
+    try
+    {
+        Core::Application app(spec);
+        EXPECT_EQ(&Core::Application::get(), &app);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application re-construction after failure probe failed: " << e.what();
     }
 }
 
