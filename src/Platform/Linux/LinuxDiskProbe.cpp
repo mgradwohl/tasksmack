@@ -14,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace Platform
 {
@@ -54,9 +55,11 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
     // Check if it ends with a digit (likely a partition)
     if (!deviceName.empty() && (std::isdigit(static_cast<unsigned char>(deviceName.back())) != 0))
     {
-        // Exception: NVMe devices like "nvme0n1" end with a digit but are whole devices
-        // Include nvme0n1, nvme1n1, etc. but skip partitions like sda1, sda2, nvme0n1p1
-        return deviceName.contains("nvme") && !deviceName.contains('p');
+        // Exceptions: some whole-disk names end with a digit.
+        //   NVMe:  nvme0n1, nvme1n1  — contain "nvme", no 'p'
+        //   eMMC:  mmcblk0, mmcblk1  — contain "mmcblk", no 'p'
+        // Partitions (e.g. nvme0n1p1, mmcblk0p1) contain 'p' and are excluded.
+        return (deviceName.contains("nvme") || deviceName.contains("mmcblk")) && !deviceName.contains('p');
     }
 
     return true;

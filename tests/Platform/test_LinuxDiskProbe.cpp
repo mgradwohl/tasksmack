@@ -360,12 +360,16 @@ TEST_F(LinuxDiskProbeReadTest, DeviceMapperLineIsFiltered)
     EXPECT_EQ(counters.disks[0].deviceName, "sda");
 }
 
-TEST_F(LinuxDiskProbeReadTest, MmcWholeDiskLineIsFiltered)
+TEST_F(LinuxDiskProbeReadTest, MmcWholeDiskLineIsIncluded)
 {
-    // mmcblk0 ends with a digit but has no "nvme" → treated as partition, excluded.
-    writeDiskstats(makeLine("mmcblk0"));
+    // mmcblk0 is a whole eMMC disk — it should be included now that the
+    // filter has an explicit exception for mmcblk<N> (no 'p' suffix).
+    writeDiskstats(makeLine("mmcblk0", 80, 160, 30, 60));
     LinuxDiskProbe probe(m_DiskstatsPath);
-    EXPECT_TRUE(probe.read().disks.empty());
+    auto counters = probe.read();
+
+    ASSERT_EQ(counters.disks.size(), 1U);
+    EXPECT_EQ(counters.disks[0].deviceName, "mmcblk0");
 }
 
 TEST_F(LinuxDiskProbeReadTest, MmcPartitionLineIsFiltered)
