@@ -10,6 +10,33 @@
 namespace TestSupport
 {
 
+#ifndef _WIN32
+// Returns true if SDL can initialize video AND create an OpenGL context.
+// Used to determine whether the current display has a usable OpenGL stack.
+// Calls SDL_Init / SDL_Quit internally; do not call while SDL is already initialized.
+[[maybe_unused]] inline bool probeGLCapability()
+{
+    if (!SDL_Init(SDL_INIT_VIDEO))
+    {
+        return false;
+    }
+    bool glCapable = false;
+    SDL_Window* testWin = SDL_CreateWindow("gl_probe", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+    if (testWin != nullptr)
+    {
+        SDL_GLContext ctx = SDL_GL_CreateContext(testWin);
+        if (ctx != nullptr)
+        {
+            SDL_GL_DestroyContext(ctx);
+            glCapable = true;
+        }
+        SDL_DestroyWindow(testWin);
+    }
+    SDL_Quit();
+    return glCapable;
+}
+#endif
+
 [[maybe_unused]] inline bool tryEnableOffscreenVideoDriver()
 {
 #ifdef _WIN32
@@ -30,28 +57,11 @@ namespace TestSupport
         }
 
         // For any other pre-configured driver (e.g. x11, wayland, dummy), verify GL
-        // capability by actually creating a minimal GL window and context.
-        // Drivers such as 'dummy' pass SDL_Init(SDL_INIT_VIDEO) and can load libGL,
-        // but cannot create GL contexts; returning true for such a driver would cause
-        // Window construction to hit FAIL() instead of GTEST_SKIP().
+        // capability. Drivers such as 'dummy' pass SDL_Init(SDL_INIT_VIDEO) and can
+        // load libGL, but cannot create GL contexts; returning true for such a driver
+        // would cause Window construction to hit FAIL() instead of GTEST_SKIP().
         // Clear the variable and fall through to offscreen if the probe fails.
-        bool glCapable = false;
-        if (SDL_Init(SDL_INIT_VIDEO))
-        {
-            SDL_Window* testWin = SDL_CreateWindow("gl_probe", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
-            if (testWin != nullptr)
-            {
-                SDL_GLContext ctx = SDL_GL_CreateContext(testWin);
-                if (ctx != nullptr)
-                {
-                    SDL_GL_DestroyContext(ctx);
-                    glCapable = true;
-                }
-                SDL_DestroyWindow(testWin);
-            }
-            SDL_Quit();
-        }
-        if (glCapable)
+        if (probeGLCapability())
         {
             return true;
         }
@@ -64,10 +74,14 @@ namespace TestSupport
     }
     [[maybe_unused]] const int audioSetResult = setenv("SDL_AUDIODRIVER", "dummy", 1);
 
-    // Verify the offscreen driver can actually initialize the SDL video subsystem
-    // before returning true. Application construction registers a thread-local
-    // singleton before creating the window; if SDL initialization subsequently
-    // fails, the singleton is left dangling and later tests may misfire.
+    // SDL3 snapshots the process environment on first use; subsequent setenv() calls
+    // may not be visible to SDL if it already cached an earlier snapshot. Set the
+    // hint at OVERRIDE priority to guarantee SDL uses the offscreen driver regardless.
+    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "offscreen", SDL_HINT_OVERRIDE);
+
+    // Verify the offscreen driver can actually initialize the SDL video subsystem.
+    // The Application constructor's catch block cleans up the singleton on failure,
+    // so an SDL initialization failure here is safe to detect and recover from.
     if (!SDL_Init(SDL_INIT_VIDEO))
     {
         // The offscreen driver is not functional; clear the env var so tests skip cleanly.
