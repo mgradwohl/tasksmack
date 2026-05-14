@@ -48,7 +48,11 @@ TEST(LinuxROCmGPUProbeTest, ProcessCountersAreEmptyWhenAvailableOrUnavailable)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -68,7 +72,11 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -90,7 +98,11 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     ROCmGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -98,7 +110,10 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 3U);
 
-    EXPECT_EQ(counters[0].gpuId, "0");
+    // gpuId must match the ID returned by enumerateGPUs() so the domain layer can correlate
+    // counters to their GPUInfo entry. Device 0: uniqueId=4001; device 1: pciId=9001;
+    // device 2: no unique/PCI id, falls back to "amd_<index>".
+    EXPECT_EQ(counters[0].gpuId, "4001");
     EXPECT_DOUBLE_EQ(counters[0].utilizationPercent, 80.0);
     EXPECT_EQ(counters[0].memoryUsedBytes, 3ULL * 1024ULL * 1024ULL * 1024ULL);
     EXPECT_EQ(counters[0].memoryTotalBytes, 12ULL * 1024ULL * 1024ULL * 1024ULL);
@@ -110,13 +125,13 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_EQ(counters[0].memoryClockMHz, 2000U);
     EXPECT_EQ(counters[0].fanSpeedRPMPercent, 1700U);
 
-    EXPECT_EQ(counters[1].gpuId, "1");
+    EXPECT_EQ(counters[1].gpuId, "9001");
     EXPECT_EQ(counters[1].hotspotTempC, -1);
     EXPECT_EQ(counters[1].gpuClockMHz, 0U);
     EXPECT_EQ(counters[1].memoryClockMHz, 0U);
     EXPECT_EQ(counters[1].fanSpeedRPMPercent, 0U);
 
-    EXPECT_EQ(counters[2].gpuId, "2");
+    EXPECT_EQ(counters[2].gpuId, "amd_2");
     EXPECT_EQ(counters[2].pcieTxBytes, 0U);
     EXPECT_EQ(counters[2].pcieRxBytes, 0U);
     EXPECT_DOUBLE_EQ(counters[2].computeUtilPercent, 0.0);

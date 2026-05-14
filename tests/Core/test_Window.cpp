@@ -26,6 +26,15 @@ bool isOffscreenVideoDriver()
 bool hasDisplay()
 {
 #ifdef _WIN32
+    // Check for CI environment - headless Windows CI runners cannot create windows.
+    // Mirror the guard used in test_Application.cpp.
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    const char* ciEnv = std::getenv("CI");
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    if (ciEnv != nullptr && std::string_view(ciEnv) == "true")
+    {
+        return false;
+    }
     return true;
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)

@@ -360,7 +360,29 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
     for (std::uint32_t deviceIdx = 0; deviceIdx < m_Impl->deviceCount; ++deviceIdx)
     {
         GPUCounters counter{};
-        counter.gpuId = std::to_string(deviceIdx);
+
+        // Derive gpuId using the same logic as enumerateGPUs() so the domain layer can
+        // correlate counters back to their GPUInfo entry by matching GPUCounters::gpuId
+        // against GPUInfo::id.
+        std::uint64_t uniqueId = 0;
+        rsmi_status_t idResult = m_Impl->rsmi_dev_unique_id_get(deviceIdx, &uniqueId);
+        if (idResult == RSMI_STATUS_SUCCESS)
+        {
+            counter.gpuId = std::to_string(uniqueId);
+        }
+        else
+        {
+            std::uint64_t pciId = 0;
+            idResult = m_Impl->rsmi_dev_pci_id_get(deviceIdx, &pciId);
+            if (idResult == RSMI_STATUS_SUCCESS)
+            {
+                counter.gpuId = std::to_string(pciId);
+            }
+            else
+            {
+                counter.gpuId = "amd_" + std::to_string(deviceIdx);
+            }
+        }
 
         // GPU utilization (0-100%)
         std::uint32_t busyPercent = 0;

@@ -73,12 +73,32 @@ class ScopedEnvironmentVariable
     return ScopedEnvironmentVariable("LD_LIBRARY_PATH", prependToLibrarySearchPath(TASKSMACK_TEST_GPU_MOCK_DIR));
 }
 
-// ScopedGpuMockLibraries is a no-op: the mock libraries are made available by CTest setting
-// LD_LIBRARY_PATH=${TASKSMACK_TEST_GPU_MOCK_DIR} before the test process starts, so dlopen()
-// finds them without any runtime env-var manipulation. The guard is kept for API compatibility
-// with existing tests that hold an envGuard to document their dependency on the mock.
+// ScopedGpuMockLibraries detects at construction whether the mock library directory was
+// already added to LD_LIBRARY_PATH by CTest (ENVIRONMENT_MODIFICATION) or coverage.sh
+// before process start. Call mocksPreloaded() and GTEST_SKIP() when false: the mocks
+// directory is not on the dynamic linker's search path, so dlopen() will not find the mock
+// GPU libraries regardless of any runtime env-var manipulation.
 struct ScopedGpuMockLibraries
-{};
+{
+    ScopedGpuMockLibraries()
+    {
+        // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+        if (const char* ldPath = std::getenv("LD_LIBRARY_PATH"))
+        {
+            const std::string_view searchPath(ldPath);
+            m_MocksPreloaded = searchPath.contains(TASKSMACK_TEST_GPU_MOCK_DIR);
+        }
+        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    }
+
+    [[nodiscard]] bool mocksPreloaded() const noexcept
+    {
+        return m_MocksPreloaded;
+    }
+
+  private:
+    bool m_MocksPreloaded = false;
+};
 
 [[nodiscard]] inline ScopedGpuMockLibraries useMockGpuLibrariesWithOverrides()
 {

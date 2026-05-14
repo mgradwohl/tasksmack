@@ -48,7 +48,11 @@ TEST(LinuxGPUProbeTest, ProcessGpuCountersAreStructurallyValid)
 
 TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     LinuxGPUProbe probe;
 
     const auto caps = probe.capabilities();
@@ -66,7 +70,11 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 
 TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     LinuxGPUProbe probe;
 
     const auto gpus = probe.enumerateGPUs();
@@ -78,13 +86,18 @@ TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
     EXPECT_NE(std::ranges::find_if(
                   counters, [](const GPUCounters& counter) { return counter.gpuId == "mock-nvml-uuid-0" && counter.temperatureC == 65; }),
               counters.end());
-    EXPECT_NE(std::ranges::find_if(counters, [](const GPUCounters& counter) { return counter.gpuId == "0" && counter.hotspotTempC == 72; }),
-              counters.end());
+    EXPECT_NE(
+        std::ranges::find_if(counters, [](const GPUCounters& counter) { return counter.gpuId == "4001" && counter.hotspotTempC == 72; }),
+        counters.end());
 }
 
 TEST(LinuxGPUProbeTest, MockLibrariesProvidePerProcessCountersFromNvmlProbe)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     LinuxGPUProbe probe;
 
     const auto processCounters = probe.readProcessGPUCounters();

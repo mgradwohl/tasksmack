@@ -63,7 +63,11 @@ TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -83,7 +87,11 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());
@@ -106,7 +114,11 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEngines)
 {
-    [[maybe_unused]] const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
     NVMLGPUProbe probe;
 
     ASSERT_TRUE(probe.isAvailable());

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <SDL3/SDL.h>
+
 #include <cstdlib>
 
 namespace TestSupport
@@ -17,14 +19,27 @@ namespace TestSupport
         return true;
     }
 
-    const bool videoSet = (setenv("SDL_VIDEODRIVER", "offscreen", 1) == 0);
-    if (videoSet)
+    if (setenv("SDL_VIDEODRIVER", "offscreen", 1) != 0)
     {
-        [[maybe_unused]] const int audioSetResult = setenv("SDL_AUDIODRIVER", "dummy", 1);
+        return false;
     }
+    [[maybe_unused]] const int audioSetResult = setenv("SDL_AUDIODRIVER", "dummy", 1);
     // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
 
-    return videoSet;
+    // Verify the offscreen driver can actually initialize the SDL video subsystem before
+    // returning true. Application construction registers a thread-local singleton before
+    // creating the window; if SDL initialization subsequently fails, the singleton is left
+    // dangling and later tests may misfire.
+    if (!SDL_Init(SDL_INIT_VIDEO))
+    {
+        // The offscreen driver is not functional; clear the env var so tests skip cleanly.
+        // NOLINTBEGIN(concurrency-mt-unsafe)
+        unsetenv("SDL_VIDEODRIVER");
+        // NOLINTEND(concurrency-mt-unsafe)
+        return false;
+    }
+    SDL_Quit();
+    return true;
 #endif
 }
 
