@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <thread>
 
 #include <unistd.h>
@@ -253,6 +254,42 @@ TEST(AggregateByPidTest, LargeByteCountersAreHandled)
     ASSERT_EQ(result.size(), 1UL);
     EXPECT_EQ(result[100].first, 0xFFFFFFFFFFFFFF00ULL);
     EXPECT_EQ(result[100].second, 0x7FFFFFFFFFFFFFFFULL);
+}
+
+TEST(AggregateByPidTest, SaturatesReceivedOnOverflow)
+{
+    // Two sockets for the same PID whose bytesReceived sum would overflow uint64_t.
+    // First socket fills received to UINT64_MAX - 10, second tries to add 20 — overflow.
+    constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+    std::vector<SocketStats> sockets;
+    sockets.push_back({.inode = 1, .bytesReceived = kMax - 10ULL, .bytesSent = 0ULL});
+    sockets.push_back({.inode = 2, .bytesReceived = 20ULL, .bytesSent = 0ULL});
+
+    std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
+    inodeToPid[1] = 42;
+    inodeToPid[2] = 42; // Same PID — accumulation will overflow
+
+    auto result = aggregateByPid(sockets, inodeToPid);
+    ASSERT_EQ(result.size(), 1UL);
+    // Should saturate to UINT64_MAX rather than wrapping around
+    EXPECT_EQ(result[42].first, kMax);
+}
+
+TEST(AggregateByPidTest, SaturatesSentOnOverflow)
+{
+    // Two sockets for the same PID whose bytesSent sum would overflow uint64_t.
+    constexpr auto kMax = std::numeric_limits<std::uint64_t>::max();
+    std::vector<SocketStats> sockets;
+    sockets.push_back({.inode = 3, .bytesReceived = 0ULL, .bytesSent = kMax - 5ULL});
+    sockets.push_back({.inode = 4, .bytesReceived = 0ULL, .bytesSent = 10ULL});
+
+    std::unordered_map<std::uint64_t, std::int32_t> inodeToPid;
+    inodeToPid[3] = 99;
+    inodeToPid[4] = 99; // Same PID
+
+    auto result = aggregateByPid(sockets, inodeToPid);
+    ASSERT_EQ(result.size(), 1UL);
+    EXPECT_EQ(result[99].second, kMax);
 }
 
 // ----- Cache Tests -----
