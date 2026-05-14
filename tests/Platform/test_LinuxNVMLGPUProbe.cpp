@@ -25,18 +25,22 @@ TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
 {
     NVMLGPUProbe probe;
-    if (!probe.isAvailable())
+    if (probe.isAvailable())
     {
-        const auto caps = probe.capabilities();
-        EXPECT_FALSE(caps.hasTemperature);
-        EXPECT_FALSE(caps.hasPowerMetrics);
-        EXPECT_FALSE(caps.hasClockSpeeds);
-        EXPECT_FALSE(caps.hasFanSpeed);
-        EXPECT_FALSE(caps.hasPCIeMetrics);
-        EXPECT_FALSE(caps.hasPerProcessMetrics);
-        EXPECT_FALSE(caps.supportsMultiGPU);
-        EXPECT_FALSE(caps.hasEngineUtilization);
+        // Under CTest, LD_LIBRARY_PATH points at the mock library so the probe is
+        // always available. The unavailable path cannot be exercised in this process.
+        GTEST_SKIP() << "NVML probe is available (mock library loaded); unavailable path not testable in this environment";
     }
+
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasTemperature);
+    EXPECT_FALSE(caps.hasPowerMetrics);
+    EXPECT_FALSE(caps.hasClockSpeeds);
+    EXPECT_FALSE(caps.hasFanSpeed);
+    EXPECT_FALSE(caps.hasPCIeMetrics);
+    EXPECT_FALSE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.supportsMultiGPU);
+    EXPECT_FALSE(caps.hasEngineUtilization);
 }
 
 TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)

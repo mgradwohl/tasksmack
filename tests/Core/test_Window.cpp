@@ -1,6 +1,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Window.h"
 
+#include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -47,13 +48,40 @@ namespace Core
 namespace
 {
 
-TEST(WindowTest, CloseRequestLifecycle)
+// Fixture that mirrors the Application constructor/destructor SDL lifecycle.
+// SDL_Init(SDL_INIT_VIDEO) must be called before SDL_CreateWindow; without it
+// Window construction fails and tests are silently skipped rather than exercising
+// the Window methods they intend to cover.
+class WindowTest : public ::testing::Test
 {
-    if (!hasDisplay())
+  protected:
+    void SetUp() override
     {
-        GTEST_SKIP() << "No display available (headless environment)";
+        if (!hasDisplay())
+        {
+            GTEST_SKIP() << "No display available (headless environment)";
+        }
+        if (!SDL_Init(SDL_INIT_VIDEO))
+        {
+            GTEST_SKIP() << "SDL_Init(SDL_INIT_VIDEO) failed: " << SDL_GetError();
+        }
+        m_SdlInitialized = true;
     }
 
+    void TearDown() override
+    {
+        if (m_SdlInitialized)
+        {
+            SDL_Quit();
+            m_SdlInitialized = false;
+        }
+    }
+
+    bool m_SdlInitialized = false;
+};
+
+TEST_F(WindowTest, CloseRequestLifecycle)
+{
     try
     {
         Window window(WindowSpecification{.Title = "WindowCloseTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
@@ -69,13 +97,8 @@ TEST(WindowTest, CloseRequestLifecycle)
     }
 }
 
-TEST(WindowTest, SetSizeClampsToExpectedBounds)
+TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
 {
-    if (!hasDisplay())
-    {
-        GTEST_SKIP() << "No display available (headless environment)";
-    }
-
     try
     {
         Window window(WindowSpecification{.Title = "WindowClampTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
@@ -94,12 +117,8 @@ TEST(WindowTest, SetSizeClampsToExpectedBounds)
     }
 }
 
-TEST(WindowTest, SetAndGetPositionRoundTrip)
+TEST_F(WindowTest, SetAndGetPositionRoundTrip)
 {
-    if (!hasDisplay())
-    {
-        GTEST_SKIP() << "No display available (headless environment)";
-    }
     if (isOffscreenVideoDriver())
     {
         GTEST_SKIP() << "Offscreen SDL driver does not guarantee window position semantics";
@@ -124,13 +143,8 @@ TEST(WindowTest, SetAndGetPositionRoundTrip)
     }
 }
 
-TEST(WindowTest, WindowStateControlMethodsDoNotThrow)
+TEST_F(WindowTest, WindowStateControlMethodsDoNotThrow)
 {
-    if (!hasDisplay())
-    {
-        GTEST_SKIP() << "No display available (headless environment)";
-    }
-
     try
     {
         Window window(WindowSpecification{.Title = "WindowStateTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});

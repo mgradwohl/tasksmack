@@ -81,6 +81,11 @@ rm -f -- *.profraw default.profdata
 # Set profraw output location
 export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
 
+# Set LD_LIBRARY_PATH so dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6")
+# resolve to the mock shared libraries. CTest sets this automatically via the
+# gtest_discover_tests ENVIRONMENT property, but this script runs the binary directly.
+export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # Run the test executable directly to capture coverage
 ./tests/TaskSmackTests
 
