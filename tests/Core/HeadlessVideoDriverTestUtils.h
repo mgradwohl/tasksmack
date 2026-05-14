@@ -11,8 +11,9 @@ namespace TestSupport
 {
 
 #ifndef _WIN32
-// Returns true if SDL can initialize video AND create an OpenGL context.
-// Used to determine whether the current display has a usable OpenGL stack.
+// Returns true if SDL can initialize video AND create an OpenGL 3.3 core context.
+// Uses the same SDL_GL attributes as Core::Window so a display that only supports
+// a default/legacy context is correctly rejected.
 // Calls SDL_Init / SDL_Quit internally; do not call while SDL is already initialized.
 [[maybe_unused]] inline bool probeGLCapability()
 {
@@ -20,6 +21,10 @@ namespace TestSupport
     {
         return false;
     }
+    // Match the GL attributes set by Core::Window before creating its context.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     bool glCapable = false;
     SDL_Window* testWin = SDL_CreateWindow("gl_probe", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
     if (testWin != nullptr)

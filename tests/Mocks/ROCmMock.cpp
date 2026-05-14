@@ -5,7 +5,6 @@
 namespace
 {
 
-using rsmi_device_t = std::uint32_t;
 using rsmi_status_t = std::uint32_t;
 
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;

@@ -60,6 +60,7 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .pcieRxKilobytes = 16},
 }};
 
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - mutable handles needed so functions can return stable pointers-to-element as nvmlDevice_t
 std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
 
 // Sentinel returned by deviceIndex() when the handle is not found
