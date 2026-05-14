@@ -28,9 +28,9 @@ class LinuxDiskProbe : public IDiskProbe
     [[nodiscard]] SystemDiskCounters read() override;
     [[nodiscard]] DiskCapabilities capabilities() const override;
 
+  private:
     [[nodiscard]] static bool shouldIncludeDevice(const std::string& deviceName);
 
-  private:
     std::filesystem::path m_DiskstatsPath;
 };
 

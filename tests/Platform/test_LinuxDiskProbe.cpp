@@ -3,9 +3,9 @@
 ///
 /// Contains two test suites:
 ///   1. Integration tests that interact with the real /proc/diskstats filesystem.
-///   2. Unit tests using shouldIncludeDevice() directly and a synthetic diskstats
-///      file written to a temp path, covering all filter branches and read() paths
-///      that cannot be reliably triggered on real hardware.
+///   2. Unit tests using a synthetic diskstats file written to a temp path,
+///      covering all filter branches and read() paths that cannot be reliably
+///      triggered on real hardware.
 
 #include <gtest/gtest.h>
 
@@ -14,11 +14,14 @@
 #include "Platform/Linux/LinuxDiskProbe.h"
 #include "Platform/StorageTypes.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
+
+#include <unistd.h>
 
 namespace Platform
 {
@@ -169,98 +172,13 @@ TEST(LinuxDiskProbeTest, ConsecutiveReadsAreConsistent)
 } // namespace Platform
 
 // =============================================================================
-// shouldIncludeDevice — unit tests (all filter branches)
+// Synthetic diskstats read() — unit tests via temp file
 // =============================================================================
 
 namespace Platform
 {
 namespace
 {
-
-// ---- Loop devices -----------------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, LoopDeviceIsExcluded)
-{
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("loop0"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("loop1"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("loop100"));
-}
-
-// ---- RAM devices ------------------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, RamDeviceIsExcluded)
-{
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("ram0"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("ram1"));
-}
-
-// ---- SCSI / SATA whole disks ------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, ScsiWholeDiskIsIncluded)
-{
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("sda"));
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("sdb"));
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("sdc"));
-}
-
-TEST(LinuxDiskProbeShouldIncludeTest, ScsiPartitionIsExcluded)
-{
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("sda1"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("sda2"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("sdb3"));
-}
-
-// ---- Virtual / cloud disks --------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, VirtualDiskIsIncluded)
-{
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("vda"));
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("vdb"));
-}
-
-// ---- Device mapper (LVM) ----------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, DeviceMapperIsExcluded)
-{
-    // dm-0 ends with a digit and does not contain "nvme" → excluded
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("dm-0"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("dm-1"));
-}
-
-// ---- NVMe whole namespaces --------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, NvmeWholeNamespaceIsIncluded)
-{
-    // nvme0n1 ends with '1' (digit), contains "nvme", no 'p' → included
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("nvme0n1"));
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("nvme1n1"));
-    EXPECT_TRUE(LinuxDiskProbe::shouldIncludeDevice("nvme0n2"));
-}
-
-TEST(LinuxDiskProbeShouldIncludeTest, NvmePartitionIsExcluded)
-{
-    // nvme0n1p1 ends with '1', contains "nvme", but also contains 'p' → excluded
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("nvme0n1p1"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("nvme0n1p2"));
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("nvme1n1p3"));
-}
-
-// ---- eMMC (mmcblk) ----------------------------------------------------------
-
-TEST(LinuxDiskProbeShouldIncludeTest, MmcWholeDiskIsExcluded)
-{
-    // mmcblk0 ends with '0' (digit), no "nvme" → excluded by partition heuristic
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("mmcblk0"));
-}
-
-TEST(LinuxDiskProbeShouldIncludeTest, MmcPartitionIsExcluded)
-{
-    EXPECT_FALSE(LinuxDiskProbe::shouldIncludeDevice("mmcblk0p1"));
-}
-
-// =============================================================================
-// Synthetic diskstats read() — unit tests via temp file
-// =============================================================================
 
 class LinuxDiskProbeReadTest : public ::testing::Test
 {
@@ -284,7 +202,10 @@ class LinuxDiskProbeReadTest : public ::testing::Test
     void writeDiskstats(const std::string& content) const
     {
         std::ofstream f(m_DiskstatsPath);
+        ASSERT_TRUE(f.is_open()) << "Failed to open temp diskstats file: " << m_DiskstatsPath;
         f << content;
+        f.flush();
+        ASSERT_TRUE(f.good()) << "Failed to write temp diskstats file: " << m_DiskstatsPath;
     }
 
     // Build one valid /proc/diskstats line with all required fields.
@@ -416,6 +337,42 @@ TEST_F(LinuxDiskProbeReadTest, TotalCountersMatchSumOfParsedDisks)
     // readBytes = sectors * 512
     EXPECT_EQ(counters.totalReadBytes(), (200U + 400U) * 512U);
     EXPECT_EQ(counters.totalWriteBytes(), (100U + 160U) * 512U);
+}
+
+TEST_F(LinuxDiskProbeReadTest, VirtualDiskLineIsIncluded)
+{
+    writeDiskstats(makeLine("vda", 50, 100, 20, 40));
+    LinuxDiskProbe probe(m_DiskstatsPath);
+    auto counters = probe.read();
+
+    ASSERT_EQ(counters.disks.size(), 1U);
+    EXPECT_EQ(counters.disks[0].deviceName, "vda");
+}
+
+TEST_F(LinuxDiskProbeReadTest, DeviceMapperLineIsFiltered)
+{
+    // dm-0 (LVM) must be excluded; sda alongside it must pass through.
+    writeDiskstats(makeLine("dm-0") + makeLine("sda"));
+    LinuxDiskProbe probe(m_DiskstatsPath);
+    auto counters = probe.read();
+
+    ASSERT_EQ(counters.disks.size(), 1U);
+    EXPECT_EQ(counters.disks[0].deviceName, "sda");
+}
+
+TEST_F(LinuxDiskProbeReadTest, MmcWholeDiskLineIsFiltered)
+{
+    // mmcblk0 ends with a digit but has no "nvme" → treated as partition, excluded.
+    writeDiskstats(makeLine("mmcblk0"));
+    LinuxDiskProbe probe(m_DiskstatsPath);
+    EXPECT_TRUE(probe.read().disks.empty());
+}
+
+TEST_F(LinuxDiskProbeReadTest, MmcPartitionLineIsFiltered)
+{
+    writeDiskstats(makeLine("mmcblk0p1"));
+    LinuxDiskProbe probe(m_DiskstatsPath);
+    EXPECT_TRUE(probe.read().disks.empty());
 }
 
 } // namespace
