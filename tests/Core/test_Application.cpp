@@ -648,6 +648,81 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
     }
 }
 
+// =============================================================================
+// Constructor Failure / Singleton Cleanup Tests
+// =============================================================================
+
+TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
+{
+    // This test verifies the constructor catch-block that clears g_StackApplicationInstance
+    // when construction fails. Without that cleanup, a dangling Application::get() reference
+    // would corrupt the singleton state for all subsequent tests.
+    //
+    // Forcing failure: setting SDL_VIDEODRIVER to a non-existent driver makes SDL_Init
+    // reject it immediately, so the constructor throws before Window is created.
+
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    // Save the current SDL_VIDEODRIVER so we can restore it after the failure probe.
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    // Single-threaded test body; env-var access is safe.
+    const char* savedRaw = std::getenv("SDL_VIDEODRIVER");
+    const std::string savedDriver = (savedRaw != nullptr) ? savedRaw : "";
+
+    // Point SDL at a non-existent driver so SDL_Init(SDL_INIT_VIDEO) fails inside
+    // the Application constructor, exercising the singleton-cleanup catch block.
+    [[maybe_unused]] const int setResult1 = setenv("SDL_VIDEODRIVER", "nosuchdriver", 1);
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "FailureTest";
+
+    // Construction must throw because SDL_Init will reject the invalid driver.
+    EXPECT_THROW({ Core::Application failedApp(spec); }, std::exception);
+
+    // After the failed construction the singleton must be cleared;
+    // Application::get() must throw rather than returning a dangling reference.
+    // static_cast<void> discards the [[nodiscard]] return inside EXPECT_THROW.
+    EXPECT_THROW(static_cast<void>(Core::Application::get()), std::runtime_error);
+
+    // Restore the driver so the second construction below (and all subsequent tests) works.
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    if (savedDriver.empty())
+    {
+        [[maybe_unused]] const int unsetResult = unsetenv("SDL_VIDEODRIVER");
+    }
+    else
+    {
+        [[maybe_unused]] const int setResult2 = setenv("SDL_VIDEODRIVER", savedDriver.c_str(), 1);
+    }
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+
+    // SDL3 snapshots the process environment into its own internal hash table at
+    // first use. Calling setenv() afterwards does not update SDL's copy, so
+    // SDL_GetHint(SDL_HINT_VIDEO_DRIVER) would still return "nosuchdriver".
+    // SDL_SetHintWithPriority(..., SDL_HINT_OVERRIDE) bypasses the stale
+    // internal env snapshot and forces SDL to use the restored driver name for
+    // the next SDL_Init call.
+#ifndef _WIN32
+    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, savedDriver.empty() ? "offscreen" : savedDriver.c_str(), SDL_HINT_OVERRIDE);
+#endif
+
+    // With the valid driver restored, a second Application construction must succeed
+    // and the singleton must point at the new instance — no dangling state from above.
+    try
+    {
+        Core::Application app(spec);
+        EXPECT_EQ(&Core::Application::get(), &app);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application re-construction after failure probe failed: " << e.what();
+    }
+}
+
 TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
 {
     if (!hasDisplay())

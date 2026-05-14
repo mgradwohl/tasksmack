@@ -1,65 +1,10 @@
 #pragma once
 
 #include <cstdlib>
-#include <optional>
-#include <stdexcept>
-#include <string>
 #include <string_view>
-#include <utility>
 
 namespace Platform::TestSupport
 {
-
-// RAII helper that saves and restores a single environment variable.
-// Useful in tests that need to temporarily override env-vars for non-dlopen paths;
-// note that LD_LIBRARY_PATH mutations at runtime do NOT affect the dynamic linker's
-// dlopen() search path (which is cached at process startup).
-class ScopedEnvironmentVariable
-{
-  public:
-    ScopedEnvironmentVariable(std::string name, std::string value) : m_Name(std::move(name))
-    {
-        // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-        // Single-threaded test setup; env-var access is safe here.
-        if (const char* previous = std::getenv(m_Name.c_str()))
-        {
-            m_PreviousValue = previous;
-        }
-        const int setResult = setenv(m_Name.c_str(), value.c_str(), 1);
-        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-        if (setResult != 0)
-        {
-            throw std::runtime_error("Failed to set environment variable: " + m_Name);
-        }
-    }
-
-    ~ScopedEnvironmentVariable()
-    {
-        // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-        if (m_PreviousValue.has_value())
-        {
-            if (setenv(m_Name.c_str(), m_PreviousValue->c_str(), 1) != 0)
-            {
-                std::abort();
-            }
-            return;
-        }
-        if (unsetenv(m_Name.c_str()) != 0)
-        {
-            std::abort();
-        }
-        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    }
-
-    ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
-    ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) = delete;
-    ScopedEnvironmentVariable(ScopedEnvironmentVariable&&) = delete;
-    ScopedEnvironmentVariable& operator=(ScopedEnvironmentVariable&&) = delete;
-
-  private:
-    std::string m_Name;
-    std::optional<std::string> m_PreviousValue;
-};
 
 // MockGpuLibraryStatus detects at construction whether the mock library directory was
 // already added to LD_LIBRARY_PATH by CTest (ENVIRONMENT_MODIFICATION) or coverage.sh

@@ -20,19 +20,33 @@ namespace TestSupport
     const char* videoDriver = std::getenv("SDL_VIDEODRIVER");
     if (videoDriver != nullptr && videoDriver[0] != '\0')
     {
-        // A driver is already configured. Verify that it can both initialise the
-        // SDL video subsystem and load an OpenGL library. Drivers such as 'dummy'
-        // pass SDL_Init(SDL_INIT_VIDEO) but cannot create GL contexts; returning
-        // true for such a driver would cause Window construction to hit FAIL()
-        // instead of GTEST_SKIP(). Clear the variable and fall through to the
-        // offscreen driver if either check fails.
+        // The offscreen driver is the intended headless fallback; trust it immediately.
+        // Core::Window tests already handle GL context failure with GTEST_SKIP() via
+        // isOffscreenVideoDriver(), so no GL capability probe is needed here.
+        if (std::string_view(videoDriver) == "offscreen")
+        {
+            return true;
+        }
+
+        // For any other pre-configured driver (e.g. x11, wayland, dummy), verify GL
+        // capability by actually creating a minimal GL window and context.
+        // Drivers such as 'dummy' pass SDL_Init(SDL_INIT_VIDEO) and can load libGL,
+        // but cannot create GL contexts; returning true for such a driver would cause
+        // Window construction to hit FAIL() instead of GTEST_SKIP().
+        // Clear the variable and fall through to offscreen if the probe fails.
         bool glCapable = false;
         if (SDL_Init(SDL_INIT_VIDEO))
         {
-            if (SDL_GL_LoadLibrary(nullptr))
+            SDL_Window* testWin = SDL_CreateWindow("gl_probe", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+            if (testWin != nullptr)
             {
-                SDL_GL_UnloadLibrary();
-                glCapable = true;
+                SDL_GLContext ctx = SDL_GL_CreateContext(testWin);
+                if (ctx != nullptr)
+                {
+                    SDL_GL_DestroyContext(ctx);
+                    glCapable = true;
+                }
+                SDL_DestroyWindow(testWin);
             }
             SDL_Quit();
         }
