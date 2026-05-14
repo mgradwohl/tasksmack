@@ -379,6 +379,15 @@ TEST_F(LinuxDiskProbeReadTest, MmcPartitionLineIsFiltered)
     EXPECT_TRUE(probe.read().disks.empty());
 }
 
+TEST_F(LinuxDiskProbeReadTest, MmcBootPartitionLineIsFiltered)
+{
+    // mmcblk0boot0 / mmcblk0boot1 end with a digit and contain "mmcblk" but the
+    // suffix after "mmcblk" is not all-digits ("0boot0"), so they must be excluded.
+    writeDiskstats(makeLine("mmcblk0boot0") + makeLine("mmcblk0boot1"));
+    LinuxDiskProbe probe(m_DiskstatsPath);
+    EXPECT_TRUE(probe.read().disks.empty());
+}
+
 } // namespace
 } // namespace Platform
 

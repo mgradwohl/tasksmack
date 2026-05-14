@@ -55,11 +55,23 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
     // Check if it ends with a digit (likely a partition)
     if (!deviceName.empty() && (std::isdigit(static_cast<unsigned char>(deviceName.back())) != 0))
     {
-        // Exceptions: some whole-disk names end with a digit.
-        //   NVMe:  nvme0n1, nvme1n1  — contain "nvme", no 'p'
-        //   eMMC:  mmcblk0, mmcblk1  — contain "mmcblk", no 'p'
-        // Partitions (e.g. nvme0n1p1, mmcblk0p1) contain 'p' and are excluded.
-        return (deviceName.contains("nvme") || deviceName.contains("mmcblk")) && !deviceName.contains('p');
+        // Exception: NVMe whole namespaces (nvme0n1, nvme1n2) — contain "nvme", no 'p'.
+        if (deviceName.contains("nvme") && !deviceName.contains('p'))
+        {
+            return true;
+        }
+
+        // Exception: eMMC whole-disk devices (mmcblk0, mmcblk1).
+        // Match only "mmcblk" + all-digit suffix to exclude boot partitions
+        // (mmcblk0boot0, mmcblk0boot1) and RPMB devices that also end in a digit.
+        if (deviceName.starts_with("mmcblk"))
+        {
+            const std::string_view suffix{deviceName.data() + 6, deviceName.size() - 6};
+            const bool allDigits = !suffix.empty() && std::ranges::all_of(suffix, [](unsigned char c) { return std::isdigit(c) != 0; });
+            return allDigits;
+        }
+
+        return false;
     }
 
     return true;
