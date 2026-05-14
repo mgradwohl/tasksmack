@@ -198,5 +198,63 @@ TEST_F(WindowTest, WindowStateControlMethodsDoNotThrow)
     }
 }
 
+TEST_F(WindowTest, IsMaximizedTracksStateForBorderlessWindow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "WindowMaximizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+
+        // A freshly-created borderless window should not be maximized.
+        EXPECT_FALSE(window.isMaximized());
+
+        // maximize() sets m_IsMaximizedBorderless only when both
+        // SDL_GetDisplayForWindow() and SDL_GetDisplayUsableBounds() succeed.
+        // In headless / offscreen environments those calls fail and the flag
+        // stays false. Skip rather than fail in that case.
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "SDL display-usable-bounds path unavailable; "
+                            "borderless maximize flag not set (headless environment)";
+        }
+
+        // After restore(), the flag must be cleared.
+        window.restore();
+        EXPECT_FALSE(window.isMaximized());
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "HitTestCallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+
+        // Setting a no-op hit-test callback must not crash or throw.
+        EXPECT_NO_THROW(window.setHitTestCallback([](SDL_Window* /*win*/, const SDL_Point* /*area*/, void* /*data*/) -> SDL_HitTestResult
+                                                  { return SDL_HITTEST_NORMAL; },
+                                                  nullptr));
+
+        // Clearing the callback (nullptr) must also be safe.
+        EXPECT_NO_THROW(window.setHitTestCallback(nullptr, nullptr));
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
 } // namespace
 } // namespace Core

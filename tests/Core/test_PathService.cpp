@@ -15,10 +15,13 @@
 ///       cannot function at all in that environment.
 
 #include "Core/PathService.h"
+#include "Platform/IPathProvider.h"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <type_traits>
 
 namespace Core
@@ -100,6 +103,97 @@ TEST(PathServiceTest, TwoInstancesReturnSamePaths)
     PathService svc2;
     EXPECT_EQ(svc1.executableDir(), svc2.executableDir());
     EXPECT_EQ(svc1.userConfigDir(), svc2.userConfigDir());
+}
+
+} // namespace
+} // namespace Core
+
+// =============================================================================
+// Injection constructor (testability)
+// FakePathProvider is outside the anonymous namespace so std::make_unique works.
+// =============================================================================
+
+/// Minimal fake provider: returns caller-specified paths.
+class FakePathProvider final : public Platform::IPathProvider
+{
+  public:
+    FakePathProvider(std::filesystem::path execDir, std::filesystem::path configDir)
+        : m_ExecDir(std::move(execDir)), m_ConfigDir(std::move(configDir))
+    {}
+
+    [[nodiscard]] std::filesystem::path getExecutableDir() const override
+    {
+        return m_ExecDir;
+    }
+    [[nodiscard]] std::filesystem::path getUserConfigDir() const override
+    {
+        return m_ConfigDir;
+    }
+
+  private:
+    std::filesystem::path m_ExecDir;
+    std::filesystem::path m_ConfigDir;
+};
+
+namespace Core
+{
+namespace
+{
+
+TEST(PathServiceTest, InjectionConstructorReturnsProvidedPaths)
+{
+    // Use temp_directory_path() as the absolute base so the test is
+    // platform-neutral (avoids POSIX-only roots like /usr that are invalid on
+    // Windows).
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path execDir = base / "tasksmack_test_exec";
+    const std::filesystem::path configDir = base / "tasksmack_test_config";
+
+    auto provider = std::make_unique<FakePathProvider>(execDir, configDir);
+    Core::PathService svc(std::move(provider));
+
+    // toAbsolute() calls lexically_normal() on already-absolute paths, which
+    // leaves them unchanged when there are no redundant components.
+    EXPECT_EQ(svc.executableDir(), execDir.lexically_normal());
+    EXPECT_EQ(svc.userConfigDir(), configDir.lexically_normal());
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+    EXPECT_TRUE(svc.userConfigDir().is_absolute());
+}
+
+TEST(PathServiceTest, InjectionConstructorNormalizesRedundantComponents)
+{
+    // Build an absolute base from temp_directory_path() and insert redundant
+    // '.' and '..' components to verify lexically_normal() is applied.
+    const std::filesystem::path base = std::filesystem::temp_directory_path();
+    const std::filesystem::path rawExec = base / "a" / "." / "extra" / ".." / "bin";
+    const std::filesystem::path rawConfig = base / "cfg" / "." / "app";
+    const std::filesystem::path expectedExec = (base / "a" / "bin").lexically_normal();
+    const std::filesystem::path expectedConfig = (base / "cfg" / "app").lexically_normal();
+
+    auto provider = std::make_unique<FakePathProvider>(rawExec, rawConfig);
+    Core::PathService svc(std::move(provider));
+
+    EXPECT_EQ(svc.executableDir(), expectedExec);
+    EXPECT_EQ(svc.userConfigDir(), expectedConfig);
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+}
+
+TEST(PathServiceTest, InjectionConstructorWithRelativePathBecomesAbsolute)
+{
+    // A relative path is made absolute by toAbsolute() via std::filesystem::absolute().
+    auto provider = std::make_unique<FakePathProvider>("relative/bin", "relative/config");
+    Core::PathService svc(std::move(provider));
+
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+    EXPECT_TRUE(svc.userConfigDir().is_absolute());
+    EXPECT_FALSE(svc.executableDir().empty());
+    EXPECT_FALSE(svc.userConfigDir().empty());
+}
+
+TEST(PathServiceTest, InjectionConstructorWithNullProviderThrows)
+{
+    // Passing nullptr must throw std::invalid_argument rather than crashing.
+    EXPECT_THROW(Core::PathService(nullptr), std::invalid_argument);
 }
 
 } // namespace
