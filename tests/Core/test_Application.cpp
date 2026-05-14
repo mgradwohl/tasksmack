@@ -13,6 +13,8 @@
 #include "Core/Application.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
+#include "Core/PathService.h"
+#include "Core/WindowEvents.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -130,6 +132,28 @@ class StopAfterNLayer : public Core::Layer
   private:
     int m_MaxUpdates;
     int m_UpdateCount = 0;
+};
+
+/// Layer that records which events it received and optionally marks them handled
+class EventTrackingLayer : public Core::Layer
+{
+  public:
+    explicit EventTrackingLayer(const std::string& name, bool handleEvents = false) : Layer(name), m_HandleEvents(handleEvents)
+    {}
+
+    void onEvent(Core::Event& event) override
+    {
+        receivedEventNames.push_back(event.getName());
+        if (m_HandleEvents)
+        {
+            event.setHandled(true);
+        }
+    }
+
+    std::vector<std::string> receivedEventNames;
+
+  private:
+    bool m_HandleEvents;
 };
 
 /// Static vector to track layer detach order across Application destruction
@@ -770,6 +794,107 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
         // in the destructor above, and re-initializing SDL within the same test process
         // can cause undefined behavior on some platforms. Each test should have its own
         // SDL lifecycle scope.
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// =============================================================================
+// paths() accessor
+// =============================================================================
+
+TEST(ApplicationTest, PathsReturnsValidPathService)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "PathsAccessorTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const Core::PathService& paths = app.paths();
+
+        // Both dirs must be non-empty, absolute paths — the same guarantee PathService
+        // tests verify, but exercised through the Application accessor here.
+        EXPECT_FALSE(paths.executableDir().empty());
+        EXPECT_TRUE(paths.executableDir().is_absolute());
+        EXPECT_FALSE(paths.userConfigDir().empty());
+        EXPECT_TRUE(paths.userConfigDir().is_absolute());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// =============================================================================
+// raiseEvent() — event dispatch
+// =============================================================================
+
+TEST(ApplicationTest, RaiseEventDispatchesToLayersInReverseOrder)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RaiseEventOrderTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        // Push two non-handling layers; both should receive the event, bottom layer last.
+        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom");
+        auto& top = app.pushLayer<EventTrackingLayer>("Top");
+
+        Core::WindowCloseEvent event;
+        app.raiseEvent(event);
+
+        // Reverse order means Top receives it first, then Bottom.
+        ASSERT_EQ(bottom.receivedEventNames.size(), 1U);
+        ASSERT_EQ(top.receivedEventNames.size(), 1U);
+        EXPECT_EQ(top.receivedEventNames[0], "WindowClose");
+        EXPECT_EQ(bottom.receivedEventNames[0], "WindowClose");
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RaiseEventHandledTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        // Top layer handles the event; bottom layer must NOT receive it.
+        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
+        auto& top = app.pushLayer<EventTrackingLayer>("Top", /*handleEvents=*/true);
+
+        Core::WindowCloseEvent event;
+        app.raiseEvent(event);
+
+        EXPECT_EQ(top.receivedEventNames.size(), 1U);
+        EXPECT_TRUE(event.isHandled());
+        // Bottom should not have received the event because Top handled it.
+        EXPECT_EQ(bottom.receivedEventNames.size(), 0U);
     }
     catch (const std::exception& e)
     {

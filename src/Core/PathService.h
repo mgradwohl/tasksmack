@@ -1,6 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
+
+namespace Platform
+{
+class IPathProvider;
+} // namespace Platform
 
 namespace Core
 {
@@ -15,6 +21,10 @@ class PathService
 {
   public:
     PathService();
+
+    /// Testability constructor: accepts an already-constructed provider.
+    /// Useful for unit tests that supply a fake provider to control path inputs.
+    explicit PathService(std::unique_ptr<Platform::IPathProvider> provider);
 
     PathService(const PathService&) = delete;
     PathService& operator=(const PathService&) = delete;

@@ -1,10 +1,12 @@
 #include "PathService.h"
 
 #include "Platform/Factory.h"
+#include "Platform/IPathProvider.h"
 
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 
@@ -86,12 +88,14 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
 
 } // namespace
 
-PathService::PathService()
+PathService::PathService(std::unique_ptr<Platform::IPathProvider> provider)
 {
-    auto provider = Platform::makePathProvider();
     m_ExecutableDir = toAbsolute(provider->getExecutableDir());
     m_UserConfigDir = toAbsolute(provider->getUserConfigDir());
 }
+
+PathService::PathService() : PathService(Platform::makePathProvider())
+{}
 
 const std::filesystem::path& PathService::executableDir() const noexcept
 {

@@ -15,10 +15,12 @@
 ///       cannot function at all in that environment.
 
 #include "Core/PathService.h"
+#include "Platform/IPathProvider.h"
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <memory>
 #include <type_traits>
 
 namespace Core
@@ -100,6 +102,76 @@ TEST(PathServiceTest, TwoInstancesReturnSamePaths)
     PathService svc2;
     EXPECT_EQ(svc1.executableDir(), svc2.executableDir());
     EXPECT_EQ(svc1.userConfigDir(), svc2.userConfigDir());
+}
+
+} // namespace
+} // namespace Core
+
+// =============================================================================
+// Injection constructor (testability)
+// FakePathProvider is outside the anonymous namespace so std::make_unique works.
+// =============================================================================
+
+/// Minimal fake provider: returns caller-specified paths.
+class FakePathProvider final : public Platform::IPathProvider
+{
+  public:
+    FakePathProvider(std::filesystem::path execDir, std::filesystem::path configDir)
+        : m_ExecDir(std::move(execDir)), m_ConfigDir(std::move(configDir))
+    {}
+
+    [[nodiscard]] std::filesystem::path getExecutableDir() const override
+    {
+        return m_ExecDir;
+    }
+    [[nodiscard]] std::filesystem::path getUserConfigDir() const override
+    {
+        return m_ConfigDir;
+    }
+
+  private:
+    std::filesystem::path m_ExecDir;
+    std::filesystem::path m_ConfigDir;
+};
+
+namespace Core
+{
+namespace
+{
+
+TEST(PathServiceTest, InjectionConstructorReturnsProvidedPaths)
+{
+    // Both inputs are already absolute — toAbsolute() returns them as-is (normalized).
+    auto provider = std::make_unique<FakePathProvider>("/usr/local/bin", "/home/user/.config/app");
+    Core::PathService svc(std::move(provider));
+
+    EXPECT_EQ(svc.executableDir(), std::filesystem::path("/usr/local/bin"));
+    EXPECT_EQ(svc.userConfigDir(), std::filesystem::path("/home/user/.config/app"));
+}
+
+TEST(PathServiceTest, InjectionConstructorNormalizesRedundantComponents)
+{
+    // Paths with '.' and '..' components should be normalized by lexically_normal().
+    const std::filesystem::path rawExec = std::filesystem::path("/usr") / "local" / "." / "extra" / ".." / "bin";
+    const std::filesystem::path rawConfig = std::filesystem::path("/home") / "user" / ".config" / "." / "app";
+    auto provider = std::make_unique<FakePathProvider>(rawExec, rawConfig);
+    Core::PathService svc(std::move(provider));
+
+    EXPECT_EQ(svc.executableDir(), std::filesystem::path("/usr/local/bin"));
+    EXPECT_EQ(svc.userConfigDir(), std::filesystem::path("/home/user/.config/app"));
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+}
+
+TEST(PathServiceTest, InjectionConstructorWithRelativePathBecomesAbsolute)
+{
+    // A relative path is made absolute by toAbsolute() via std::filesystem::absolute().
+    auto provider = std::make_unique<FakePathProvider>("relative/bin", "relative/config");
+    Core::PathService svc(std::move(provider));
+
+    EXPECT_TRUE(svc.executableDir().is_absolute());
+    EXPECT_TRUE(svc.userConfigDir().is_absolute());
+    EXPECT_FALSE(svc.executableDir().empty());
+    EXPECT_FALSE(svc.userConfigDir().empty());
 }
 
 } // namespace
