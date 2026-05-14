@@ -138,12 +138,22 @@ class StopAfterNLayer : public Core::Layer
 class EventTrackingLayer : public Core::Layer
 {
   public:
-    explicit EventTrackingLayer(const std::string& name, bool handleEvents = false) : Layer(name), m_HandleEvents(handleEvents)
+    /// @param name         Layer name.
+    /// @param handleEvents If true, marks every received event as handled.
+    /// @param dispatchLog  Optional shared vector; when non-null, appends the
+    ///                     layer name on each received event so callers can
+    ///                     assert dispatch order across multiple layers.
+    explicit EventTrackingLayer(const std::string& name, bool handleEvents = false, std::vector<std::string>* dispatchLog = nullptr)
+        : Layer(name), m_HandleEvents(handleEvents), m_DispatchLog(dispatchLog)
     {}
 
     void onEvent(Core::Event& event) override
     {
         receivedEventNames.push_back(event.getName());
+        if (m_DispatchLog != nullptr)
+        {
+            m_DispatchLog->push_back(getName());
+        }
         if (m_HandleEvents)
         {
             event.setHandled(true);
@@ -154,6 +164,7 @@ class EventTrackingLayer : public Core::Layer
 
   private:
     bool m_HandleEvents;
+    std::vector<std::string>* m_DispatchLog;
 };
 
 /// Static vector to track layer detach order across Application destruction
@@ -851,18 +862,20 @@ TEST(ApplicationTest, RaiseEventDispatchesToLayersInReverseOrder)
     {
         Core::Application app(spec);
 
-        // Push two non-handling layers; both should receive the event, bottom layer last.
-        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom");
-        auto& top = app.pushLayer<EventTrackingLayer>("Top");
+        // Push two non-handling layers. dispatchLog records the exact call order so
+        // we can assert that Top (pushed last = highest index) is invoked before
+        // Bottom, i.e., the layer stack is iterated in reverse-push order.
+        std::vector<std::string> dispatchLog;
+        app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false, &dispatchLog);
+        app.pushLayer<EventTrackingLayer>("Top", /*handleEvents=*/false, &dispatchLog);
 
         Core::WindowCloseEvent event;
         app.raiseEvent(event);
 
         // Reverse order means Top receives it first, then Bottom.
-        ASSERT_EQ(bottom.receivedEventNames.size(), 1U);
-        ASSERT_EQ(top.receivedEventNames.size(), 1U);
-        EXPECT_EQ(top.receivedEventNames[0], "WindowClose");
-        EXPECT_EQ(bottom.receivedEventNames[0], "WindowClose");
+        ASSERT_EQ(dispatchLog.size(), 2U);
+        EXPECT_EQ(dispatchLog[0], "Top");
+        EXPECT_EQ(dispatchLog[1], "Bottom");
     }
     catch (const std::exception& e)
     {
