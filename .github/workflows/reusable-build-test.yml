@@ -22,8 +22,6 @@ on:
         type: string
         default: '22.1.0'
 
-permissions: read-all
-
 jobs:
   build-test:
     name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
