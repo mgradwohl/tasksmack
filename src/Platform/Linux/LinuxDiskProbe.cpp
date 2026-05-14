@@ -10,6 +10,7 @@
 
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -17,10 +18,13 @@
 namespace Platform
 {
 
-LinuxDiskProbe::LinuxDiskProbe()
+LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath) : m_DiskstatsPath(std::move(diskstatsPath))
 {
     spdlog::debug("LinuxDiskProbe: initialized");
 }
+
+LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats")
+{}
 
 bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
 {
@@ -62,10 +66,10 @@ SystemDiskCounters LinuxDiskProbe::read()
 {
     SystemDiskCounters result;
 
-    std::ifstream diskstats("/proc/diskstats");
+    std::ifstream diskstats(m_DiskstatsPath);
     if (!diskstats.is_open())
     {
-        spdlog::warn("LinuxDiskProbe: Failed to open /proc/diskstats");
+        spdlog::warn("LinuxDiskProbe: Failed to open {}", m_DiskstatsPath.string());
         return result;
     }
 
