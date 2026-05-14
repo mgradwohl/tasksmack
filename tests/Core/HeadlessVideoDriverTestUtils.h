@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <string_view>
 
 #ifndef _WIN32
 #include <SDL3/SDL.h>
