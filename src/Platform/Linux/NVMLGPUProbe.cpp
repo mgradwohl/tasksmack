@@ -59,7 +59,7 @@ bool NVMLGPUProbe::Impl::loadNVML()
     }
 
     // Try to load libnvidia-ml.so (dynamic loading for graceful fallback)
-    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT)
+    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (nvmlHandle == nullptr)
     {
         nvmlHandle = dlopen("libnvidia-ml.so.1", RTLD_NOW);

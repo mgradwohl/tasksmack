@@ -13,32 +13,41 @@ constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
 constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 2;
 
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
 {
     RSMI_TEMP_TYPE_EDGE = 0,
     RSMI_TEMP_TYPE_JUNCTION = 1
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming)
 
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_metric_t : std::uint32_t
 {
     RSMI_TEMP_CURRENT = 0
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming)
 
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_clk_type_t : std::uint32_t
 {
     RSMI_CLK_TYPE_SYS = 0,
     RSMI_CLK_TYPE_MEM = 4
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming)
 
+// NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_memory_type_t : std::uint32_t
 {
     RSMI_MEM_TYPE_VRAM = 0
 };
+// NOLINTEND(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming)
 
 struct rsmi_frequencies_t
 {
     std::uint32_t num_supported;
     std::uint32_t current;
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays) - must match AMD ROCm SMI API ABI
     std::uint64_t frequency[32];
 };
 

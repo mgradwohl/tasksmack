@@ -39,6 +39,7 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         g_StackApplicationInstance = std::ref(*this);
     }
 
+    bool sdlInitialized = false;
     try
     {
         spdlog::info("Initializing {} application", m_Spec.Name);
@@ -61,6 +62,7 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
             throw std::runtime_error("Failed to initialize SDL");
         }
+        sdlInitialized = true;
 
         spdlog::info("SDL initialized: {}", SDL_GetRevision());
 
@@ -81,6 +83,13 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         if (singletonSetHere)
         {
             g_StackApplicationInstance.reset();
+        }
+        // Undo SDL initialization if it succeeded but Window construction failed.
+        // The destructor never runs for a failed construction, so we must balance
+        // SDL_Init() here to avoid leaking global SDL state into later tests.
+        if (sdlInitialized)
+        {
+            SDL_Quit();
         }
         throw;
     }

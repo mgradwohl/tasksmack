@@ -355,7 +355,8 @@ pwsh tools/coverage.ps1 -OpenReport
 ```
 
 > **Note (Linux GPU mock tests):** The Linux GPU probe tests depend on mock shared libraries
-> (`libnvidia-ml.so.1`, `librocm_smi64.so.6`) built into `build/debug/tests/mocks/`.
+> (`libnvidia-ml.so.1`, `librocm_smi64.so.6`) built into `build/<preset>/tests/mocks/`
+> (e.g. `build/debug/tests/mocks/` or `build/coverage/tests/mocks/`).
 > CTest sets `LD_LIBRARY_PATH` automatically via `ENVIRONMENT_MODIFICATION`, and
 > `tools/coverage.sh` exports it before the direct binary run.  If you run the test binary
 > directly (e.g. `./build/debug/tests/TaskSmackTests`) without setting `LD_LIBRARY_PATH`,

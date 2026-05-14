@@ -25,8 +25,9 @@ TEST(LinuxROCmGPUProbeTest, UnavailableProbeReportsNoCapabilities)
     ROCmGPUProbe probe;
     if (probe.isAvailable())
     {
-        // Under CTest, LD_LIBRARY_PATH points at the mock library so the probe is
-        // always available. The unavailable path cannot be exercised in this process.
+        // Under CTest (ENVIRONMENT_MODIFICATION), LD_LIBRARY_PATH is prepended with the
+        // mock library so the probe is always available. The unavailable path cannot be
+        // exercised in this process.
         GTEST_SKIP() << "ROCm probe is available (mock library loaded); unavailable path not testable in this environment";
     }
 

@@ -272,7 +272,7 @@ else()
     # dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6") find the mock shared
     # libraries built in the mocks/ directory. The dynamic linker caches LD_LIBRARY_PATH at
     # process startup; runtime setenv() does not affect subsequent dlopen() calls, so the
-    # environment must be set here via CTest.
+    # path must be injected via CTest's ENVIRONMENT_MODIFICATION test property.
     # ENVIRONMENT_MODIFICATION prepends rather than replacing, preserving any SDL/driver/system
     # library paths already set by the developer or CI runner.
     gtest_discover_tests(TaskSmackTests

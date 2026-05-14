@@ -20,38 +20,32 @@ class ScopedEnvironmentVariable
     ScopedEnvironmentVariable(std::string name, std::string value) : m_Name(std::move(name))
     {
         // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-        // single-threaded test startup; safe to call getenv/setenv here
+        // Single-threaded test setup; env-var access is safe here.
         if (const char* previous = std::getenv(m_Name.c_str()))
         {
             m_PreviousValue = previous;
         }
-
-        if (setenv(m_Name.c_str(), value.c_str(), 1) != 0)
+        const int setResult = setenv(m_Name.c_str(), value.c_str(), 1);
+        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+        if (setResult != 0)
         {
-            // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
             throw std::runtime_error("Failed to set environment variable: " + m_Name);
         }
-        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     }
 
     ~ScopedEnvironmentVariable()
     {
+        // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
         if (m_PreviousValue.has_value())
         {
-            // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
             if (setenv(m_Name.c_str(), m_PreviousValue->c_str(), 1) != 0)
             {
-                // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
                 std::abort();
             }
-            // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
             return;
         }
-
-        // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
         if (unsetenv(m_Name.c_str()) != 0)
         {
-            // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
             std::abort();
         }
         // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)

@@ -162,7 +162,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     }
 
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
-    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT)
+    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (rocmHandle == nullptr)
     {
         rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
