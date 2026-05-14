@@ -69,7 +69,8 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
         // (mmcblk0boot0, mmcblk0boot1) and RPMB devices that also end in a digit.
         if (deviceName.starts_with("mmcblk"))
         {
-            const std::string_view suffix{deviceName.data() + 6, deviceName.size() - 6};
+            constexpr std::string_view k_MmcblkPrefix{"mmcblk"};
+            const std::string_view suffix = std::string_view{deviceName}.substr(k_MmcblkPrefix.size());
             const bool allDigits = !suffix.empty() && std::ranges::all_of(suffix, [](unsigned char c) { return std::isdigit(c) != 0; });
             return allDigits;
         }
