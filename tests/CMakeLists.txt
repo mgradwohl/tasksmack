@@ -91,6 +91,7 @@ else()
         Platform/test_LinuxROCmGPUProbe.cpp
         Platform/test_NetlinkSocketStats.cpp
         Platform/test_DRMGPUProbe.cpp
+        Platform/test_Factory.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
