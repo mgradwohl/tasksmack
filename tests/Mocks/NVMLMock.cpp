@@ -1,7 +1,9 @@
 #include "Platform/NVMLTypes.h"
 
 #include <array>
+#include <cstddef>
 #include <cstring>
+#include <limits>
 
 namespace
 {
@@ -60,6 +62,9 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
 
 std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
 
+// Sentinel returned by deviceIndex() when the handle is not found
+constexpr std::size_t INVALID_DEVICE_INDEX = std::numeric_limits<std::size_t>::max();
+
 [[nodiscard]] auto deviceIndex(NVML::nvmlDevice_t device) -> std::size_t
 {
     for (std::size_t i = 0; i < MOCK_HANDLES.size(); ++i)
@@ -70,7 +75,19 @@ std::array<int, MOCK_DEVICES.size()> MOCK_HANDLES{1, 2};
         }
     }
 
-    return 0;
+    // Return sentinel — callers must check before indexing MOCK_DEVICES
+    return INVALID_DEVICE_INDEX;
+}
+
+// Returns a pointer to the mock device for the given handle, or nullptr for invalid handles.
+[[nodiscard]] auto safeDevice(NVML::nvmlDevice_t device) -> const MockDevice*
+{
+    const auto idx = deviceIndex(device);
+    if (idx == INVALID_DEVICE_INDEX || idx >= MOCK_DEVICES.size())
+    {
+        return nullptr;
+    }
+    return &MOCK_DEVICES[idx];
 }
 
 void writeString(const char* source, char* destination, unsigned int length)
@@ -107,37 +124,60 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetHandleByIndex_v2(unsigned int index, NVML::nvmlDevice_t* device)
     {
-        *device = &MOCK_HANDLES.at(index);
+        if (index >= MOCK_HANDLES.size())
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *device = &MOCK_HANDLES[index];
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetName(NVML::nvmlDevice_t device, char* name, unsigned int length)
     {
-        writeString(MOCK_DEVICES.at(deviceIndex(device)).name, name, length);
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        writeString(dev->name, name, length);
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetUUID(NVML::nvmlDevice_t device, char* uuid, unsigned int length)
     {
-        const auto& mockDevice = MOCK_DEVICES.at(deviceIndex(device));
-        if (!mockDevice.hasUuid)
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        if (!dev->hasUuid)
         {
             return NVML::NVML_ERROR_NOT_FOUND;
         }
 
-        writeString(mockDevice.uuid, uuid, length);
+        writeString(dev->uuid, uuid, length);
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetMemoryInfo(NVML::nvmlDevice_t device, NVML::nvmlMemory_t* memory)
     {
-        *memory = MOCK_DEVICES.at(deviceIndex(device)).memory;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *memory = dev->memory;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetUtilizationRates(NVML::nvmlDevice_t device, NVML::nvmlUtilization_t* utilization)
     {
-        utilization->gpu = MOCK_DEVICES.at(deviceIndex(device)).utilizationPercent;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        utilization->gpu = dev->utilizationPercent;
         utilization->memory = 0;
         return NVML::NVML_SUCCESS;
     }
@@ -145,45 +185,74 @@ extern "C"
     NVML::nvmlReturn_t
     nvmlDeviceGetTemperature(NVML::nvmlDevice_t device, NVML::nvmlTemperatureSensors_t /*sensor*/, unsigned int* temperature)
     {
-        *temperature = MOCK_DEVICES.at(deviceIndex(device)).temperatureC;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *temperature = dev->temperatureC;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetPowerUsage(NVML::nvmlDevice_t device, unsigned int* power)
     {
-        *power = MOCK_DEVICES.at(deviceIndex(device)).powerMilliwatts;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *power = dev->powerMilliwatts;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetPowerManagementLimit(NVML::nvmlDevice_t device, unsigned int* limit)
     {
-        *limit = MOCK_DEVICES.at(deviceIndex(device)).powerLimitMilliwatts;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *limit = dev->powerLimitMilliwatts;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetClockInfo(NVML::nvmlDevice_t device, NVML::nvmlClockType_t type, unsigned int* clock)
     {
-        const auto& mockDevice = MOCK_DEVICES.at(deviceIndex(device));
-        *clock = (type == NVML::NVML_CLOCK_MEM) ? mockDevice.memoryClockMHz : mockDevice.graphicsClockMHz;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *clock = (type == NVML::NVML_CLOCK_MEM) ? dev->memoryClockMHz : dev->graphicsClockMHz;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetFanSpeed(NVML::nvmlDevice_t device, unsigned int* fanSpeed)
     {
-        *fanSpeed = MOCK_DEVICES.at(deviceIndex(device)).fanPercent;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *fanSpeed = dev->fanPercent;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetPcieThroughput(NVML::nvmlDevice_t device, NVML::nvmlPcieUtilCounter_t counter, unsigned int* throughput)
     {
-        const auto& mockDevice = MOCK_DEVICES.at(deviceIndex(device));
-        *throughput = (counter == NVML::NVML_PCIE_UTIL_TX_BYTES) ? mockDevice.pcieTxKilobytes : mockDevice.pcieRxKilobytes;
+        const auto* dev = safeDevice(device);
+        if (dev == nullptr)
+        {
+            return NVML::NVML_ERROR_INVALID_ARGUMENT;
+        }
+        *throughput = (counter == NVML::NVML_PCIE_UTIL_TX_BYTES) ? dev->pcieTxKilobytes : dev->pcieRxKilobytes;
         return NVML::NVML_SUCCESS;
     }
 
     NVML::nvmlReturn_t nvmlDeviceGetComputeRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfo_t* infos)
     {
-        if (deviceIndex(device) != 0)
+        const auto idx = deviceIndex(device);
+        if (idx == INVALID_DEVICE_INDEX || idx != 0)
         {
             *count = 0;
             return NVML::NVML_SUCCESS;
@@ -201,7 +270,8 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfo_t* infos)
     {
-        if (deviceIndex(device) != 0)
+        const auto idx = deviceIndex(device);
+        if (idx == INVALID_DEVICE_INDEX || idx != 0)
         {
             *count = 0;
             return NVML::NVML_SUCCESS;

@@ -7,11 +7,8 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
-#include <filesystem>
 #include <memory>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -61,33 +58,8 @@ bool NVMLGPUProbe::Impl::loadNVML()
         return true;
     }
 
-    // Try optional explicit override first (useful for tests via TASKSMACK_NVML_LIB_PATH)
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - getenv() called during single-threaded probe initialization
-    const char* overridePath = std::getenv("TASKSMACK_NVML_LIB_PATH");
-    if (overridePath != nullptr && overridePath[0] != '\0')
-    {
-        // Validate the path points to a regular file before passing it to dlopen
-        std::error_code fileError;
-        if (std::filesystem::is_regular_file(overridePath, fileError))
-        {
-            nvmlHandle = dlopen(overridePath, RTLD_NOW);
-        }
-        else
-        {
-            if (fileError)
-            {
-                spdlog::warn("NVMLGPUProbe: TASKSMACK_NVML_LIB_PATH override '{}' could not be validated ({}), ignoring",
-                             overridePath,
-                             fileError.message());
-            }
-            else
-            {
-                spdlog::warn("NVMLGPUProbe: TASKSMACK_NVML_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
-            }
-        }
-    }
-
     // Try to load libnvidia-ml.so (dynamic loading for graceful fallback)
+    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT)
     if (nvmlHandle == nullptr)
     {
         nvmlHandle = dlopen("libnvidia-ml.so.1", RTLD_NOW);

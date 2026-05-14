@@ -73,24 +73,16 @@ class ScopedEnvironmentVariable
     return ScopedEnvironmentVariable("LD_LIBRARY_PATH", prependToLibrarySearchPath(TASKSMACK_TEST_GPU_MOCK_DIR));
 }
 
-class ScopedGpuMockLibraries
-{
-  public:
-    ScopedGpuMockLibraries()
-        : m_NvmlPath("TASKSMACK_NVML_LIB_PATH", std::string(TASKSMACK_TEST_GPU_MOCK_DIR) + "/libnvidia-ml.so.1"),
-          m_RocmPath("TASKSMACK_ROCM_LIB_PATH", std::string(TASKSMACK_TEST_GPU_MOCK_DIR) + "/librocm_smi64.so.6"),
-          m_LibraryPath(useMockGpuLibraries())
-    {}
-
-  private:
-    ScopedEnvironmentVariable m_NvmlPath;
-    ScopedEnvironmentVariable m_RocmPath;
-    ScopedEnvironmentVariable m_LibraryPath;
-};
+// ScopedGpuMockLibraries is a no-op: the mock libraries are made available by CTest setting
+// LD_LIBRARY_PATH=${TASKSMACK_TEST_GPU_MOCK_DIR} before the test process starts, so dlopen()
+// finds them without any runtime env-var manipulation. The guard is kept for API compatibility
+// with existing tests that hold an envGuard to document their dependency on the mock.
+struct ScopedGpuMockLibraries
+{};
 
 [[nodiscard]] inline ScopedGpuMockLibraries useMockGpuLibrariesWithOverrides()
 {
-    return ScopedGpuMockLibraries();
+    return ScopedGpuMockLibraries{};
 }
 
 } // namespace Platform::TestSupport

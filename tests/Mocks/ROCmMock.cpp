@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace
 {
@@ -10,6 +11,7 @@ using rsmi_status_t = std::uint32_t;
 
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
+constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 2;
 
 enum rsmi_temperature_type_t : std::uint32_t
 {
@@ -64,8 +66,7 @@ struct MockRocmDevice
     bool hasFanSpeed;
 };
 
-[[maybe_unused]] constexpr rsmi_frequencies_t
-makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
+[[maybe_unused]] rsmi_frequencies_t makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t activeFrequency)
 {
     rsmi_frequencies_t result{};
     result.num_supported = numSupported;
@@ -74,7 +75,7 @@ makeFrequencies(std::uint32_t numSupported, std::uint32_t current, std::uint64_t
     return result;
 }
 
-constexpr std::array<MockRocmDevice, 3> MOCK_DEVICES{{
+const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
     {.name = "Mock AMD GPU 0",
      .hasName = true,
      .uniqueId = 4001ULL,
@@ -137,6 +138,18 @@ constexpr std::array<MockRocmDevice, 3> MOCK_DEVICES{{
      .hasFanSpeed = true},
 }};
 
+// Returns a pointer to the mock device for a given index, or nullptr for out-of-range indices.
+// Use this in every C API function instead of MOCK_DEVICES.at() to avoid throwing a C++ exception
+// through a C API boundary.
+[[nodiscard]] const MockRocmDevice* safeDevice(std::uint32_t deviceIndex)
+{
+    if (deviceIndex >= MOCK_DEVICES.size())
+    {
+        return nullptr;
+    }
+    return &MOCK_DEVICES[deviceIndex];
+}
+
 } // namespace
 
 extern "C"
@@ -160,13 +173,17 @@ extern "C"
 
     rsmi_status_t rsmi_dev_name_get(std::uint32_t deviceIndex, char* name, std::size_t length)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
-        if (!device.hasName)
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (!device->hasName)
         {
             return RSMI_STATUS_NOT_FOUND;
         }
 
-        ::snprintf(name, length, "%s", device.name);
+        ::snprintf(name, length, "%s", device->name);
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -178,43 +195,66 @@ extern "C"
 
     rsmi_status_t rsmi_dev_pci_id_get(std::uint32_t deviceIndex, std::uint64_t* pciId)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
-        if (!device.hasPciId)
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (!device->hasPciId)
         {
             return RSMI_STATUS_NOT_FOUND;
         }
 
-        *pciId = device.pciId;
+        *pciId = device->pciId;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_unique_id_get(std::uint32_t deviceIndex, std::uint64_t* uniqueId)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
-        if (!device.hasUniqueId)
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (!device->hasUniqueId)
         {
             return RSMI_STATUS_NOT_FOUND;
         }
 
-        *uniqueId = device.uniqueId;
+        *uniqueId = device->uniqueId;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_gpu_busy_percent_get(std::uint32_t deviceIndex, std::uint32_t* busyPercent)
     {
-        *busyPercent = MOCK_DEVICES.at(deviceIndex).busyPercent;
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *busyPercent = device->busyPercent;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_memory_usage_get(std::uint32_t deviceIndex, rsmi_memory_type_t /*memoryType*/, std::uint64_t* usedBytes)
     {
-        *usedBytes = MOCK_DEVICES.at(deviceIndex).memoryUsedBytes;
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *usedBytes = device->memoryUsedBytes;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_memory_total_get(std::uint32_t deviceIndex, rsmi_memory_type_t /*memoryType*/, std::uint64_t* totalBytes)
     {
-        *totalBytes = MOCK_DEVICES.at(deviceIndex).memoryTotalBytes;
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *totalBytes = device->memoryTotalBytes;
         return RSMI_STATUS_SUCCESS;
     }
 
@@ -223,34 +263,52 @@ extern "C"
                                            rsmi_temperature_metric_t /*metric*/,
                                            std::int64_t* temperature)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
-        if (type == RSMI_TEMP_TYPE_JUNCTION && !device.hasHotspot)
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (type == RSMI_TEMP_TYPE_JUNCTION && !device->hasHotspot)
         {
             return RSMI_STATUS_NOT_FOUND;
         }
 
-        *temperature = (type == RSMI_TEMP_TYPE_JUNCTION) ? device.hotspotTempMilliC : device.edgeTempMilliC;
+        *temperature = (type == RSMI_TEMP_TYPE_JUNCTION) ? device->hotspotTempMilliC : device->edgeTempMilliC;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_power_ave_get(std::uint32_t deviceIndex, std::uint32_t /*sensor*/, std::uint64_t* power)
     {
-        *power = MOCK_DEVICES.at(deviceIndex).powerMicroWatts;
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *power = device->powerMicroWatts;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_power_cap_get(std::uint32_t deviceIndex, std::uint32_t /*sensor*/, std::uint64_t* powerCap)
     {
-        *powerCap = MOCK_DEVICES.at(deviceIndex).powerCapMicroWatts;
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        *powerCap = device->powerCapMicroWatts;
         return RSMI_STATUS_SUCCESS;
     }
 
     rsmi_status_t rsmi_dev_gpu_clk_freq_get(std::uint32_t deviceIndex, rsmi_clk_type_t type, rsmi_frequencies_t* frequencies)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
         const bool isMemory = (type == RSMI_CLK_TYPE_MEM);
-        const auto& source = isMemory ? device.memoryFrequency : device.gpuFrequency;
-        const bool available = isMemory ? device.hasMemoryFrequency : device.hasGpuFrequency;
+        const auto& source = isMemory ? device->memoryFrequency : device->gpuFrequency;
+        const bool available = isMemory ? device->hasMemoryFrequency : device->hasGpuFrequency;
         if (!available)
         {
             return RSMI_STATUS_NOT_FOUND;
@@ -262,13 +320,17 @@ extern "C"
 
     rsmi_status_t rsmi_dev_fan_speed_get(std::uint32_t deviceIndex, std::uint32_t /*sensorIndex*/, std::int64_t* fanSpeed)
     {
-        const auto& device = MOCK_DEVICES.at(deviceIndex);
-        if (!device.hasFanSpeed)
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (!device->hasFanSpeed)
         {
             return RSMI_STATUS_NOT_FOUND;
         }
 
-        *fanSpeed = device.fanSpeed;
+        *fanSpeed = device->fanSpeed;
         return RSMI_STATUS_SUCCESS;
     }
 

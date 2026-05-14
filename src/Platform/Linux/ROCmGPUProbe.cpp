@@ -6,11 +6,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <filesystem>
 #include <memory>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -160,33 +157,8 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         return true;
     }
 
-    // Try optional explicit override first (useful for tests via TASKSMACK_ROCM_LIB_PATH)
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - getenv() called during single-threaded probe initialization
-    const char* overridePath = std::getenv("TASKSMACK_ROCM_LIB_PATH");
-    if (overridePath != nullptr && overridePath[0] != '\0')
-    {
-        // Validate the path points to a regular file before passing it to dlopen
-        std::error_code fileError;
-        if (std::filesystem::is_regular_file(overridePath, fileError))
-        {
-            rocmHandle = dlopen(overridePath, RTLD_NOW);
-        }
-        else
-        {
-            if (fileError)
-            {
-                spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' could not be validated ({}), ignoring",
-                             overridePath,
-                             fileError.message());
-            }
-            else
-            {
-                spdlog::warn("ROCmGPUProbe: TASKSMACK_ROCM_LIB_PATH override '{}' is not a regular file, ignoring", overridePath);
-            }
-        }
-    }
-
     // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
+    // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT)
     if (rocmHandle == nullptr)
     {
         rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);

@@ -266,5 +266,12 @@ if(WIN32)
         DISCOVERY_TIMEOUT 30
     )
 else()
-    gtest_discover_tests(TaskSmackTests)
+    # Set LD_LIBRARY_PATH before the test process starts so dlopen("libnvidia-ml.so.1") and
+    # dlopen("librocm_smi64.so.6") find the mock shared libraries built in the mocks/ directory.
+    # The dynamic linker caches LD_LIBRARY_PATH at process startup; runtime setenv() does not
+    # affect subsequent dlopen() calls, so the environment must be set here via CTest.
+    gtest_discover_tests(TaskSmackTests
+        PROPERTIES
+            ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}/mocks"
+    )
 endif()
