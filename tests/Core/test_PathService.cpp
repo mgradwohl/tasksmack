@@ -21,6 +21,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 
 namespace Core
@@ -187,6 +188,12 @@ TEST(PathServiceTest, InjectionConstructorWithRelativePathBecomesAbsolute)
     EXPECT_TRUE(svc.userConfigDir().is_absolute());
     EXPECT_FALSE(svc.executableDir().empty());
     EXPECT_FALSE(svc.userConfigDir().empty());
+}
+
+TEST(PathServiceTest, InjectionConstructorWithNullProviderThrows)
+{
+    // Passing nullptr must throw std::invalid_argument rather than crashing.
+    EXPECT_THROW(Core::PathService(nullptr), std::invalid_argument);
 }
 
 } // namespace

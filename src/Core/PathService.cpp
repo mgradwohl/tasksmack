@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 
@@ -90,6 +91,10 @@ std::filesystem::path toAbsolute(const std::filesystem::path& raw)
 
 PathService::PathService(std::unique_ptr<Platform::IPathProvider> provider)
 {
+    if (!provider)
+    {
+        throw std::invalid_argument("PathService: provider must not be null");
+    }
     m_ExecutableDir = toAbsolute(provider->getExecutableDir());
     m_UserConfigDir = toAbsolute(provider->getUserConfigDir());
 }
