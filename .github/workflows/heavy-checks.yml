@@ -18,6 +18,8 @@ env:
   LINUX_COVERAGE_THRESHOLD: '80'
   WINDOWS_COVERAGE_THRESHOLD: '60'
 
+permissions: read-all
+
 jobs:
   validate-environment:
     runs-on: ubuntu-24.04
@@ -25,7 +27,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -50,7 +52,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -62,13 +64,13 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
           key: linux-coverage
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -159,7 +161,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-report
           path: coverage/
@@ -167,7 +169,7 @@ jobs:
           retention-days: 30
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage.lcov
@@ -185,7 +187,7 @@ jobs:
     env:
       LLVM_ROOT: C:\Program Files\LLVM
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -196,13 +198,13 @@ jobs:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
           key: windows-coverage
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -287,7 +289,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-coverage-report
           path: coverage/
@@ -295,7 +297,7 @@ jobs:
           retention-days: 30
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage.lcov
@@ -317,7 +319,7 @@ jobs:
       matrix:
         preset: [asan-ubsan, tsan]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
@@ -328,13 +330,13 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
           key: linux-${{ matrix.preset }}
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -483,7 +485,7 @@ jobs:
 
       - name: Upload sanitizer logs and reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.preset }}-report
           path: |
