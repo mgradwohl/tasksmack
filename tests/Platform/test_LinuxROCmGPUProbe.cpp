@@ -48,7 +48,7 @@ TEST(LinuxROCmGPUProbeTest, ProcessCountersAreEmptyWhenAvailableOrUnavailable)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -72,7 +72,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -98,7 +98,7 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryEnumeratesDevicesWithFallbackIdentifiers)
 
 TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;

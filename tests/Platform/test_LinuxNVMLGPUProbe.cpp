@@ -63,7 +63,7 @@ TEST(LinuxNVMLGPUProbeTest, AvailableProbeReturnsConsistentIds)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -87,7 +87,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -114,7 +114,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnumeratesDevicesAndUsesUuidFallback)
 
 TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEngines)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;

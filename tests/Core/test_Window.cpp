@@ -27,11 +27,15 @@ bool hasDisplay()
 {
 #ifdef _WIN32
     // Check for CI environment - headless Windows CI runners cannot create windows.
-    // Mirror the guard used in test_Application.cpp.
-    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    const char* ciEnv = std::getenv("CI");
-    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    if (ciEnv != nullptr && std::string_view(ciEnv) == "true")
+    // Mirror the guard used in test_Application.cpp: use _dupenv_s to avoid the
+    // MSVC CRT deprecation warning on std::getenv that is treated as an error under /WX.
+    char* ciEnv = nullptr;
+    std::size_t len = 0;
+    _dupenv_s(&ciEnv, &len, "CI");
+    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc; must free with free()
+    free(ciEnv);
+    if (isCI)
     {
         return false;
     }
@@ -102,7 +106,13 @@ TEST_F(WindowTest, CloseRequestLifecycle)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Window creation failed: " << e.what();
+        // Offscreen SDL driver does not support OpenGL context creation; skip.
+        // On a real display this is an unexpected failure — report it.
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
 
@@ -122,7 +132,11 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Window creation failed: " << e.what();
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
 
@@ -148,7 +162,11 @@ TEST_F(WindowTest, SetAndGetPositionRoundTrip)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Window creation failed: " << e.what();
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
 
@@ -166,7 +184,11 @@ TEST_F(WindowTest, WindowStateControlMethodsDoNotThrow)
     }
     catch (const std::exception& e)
     {
-        GTEST_SKIP() << "Window creation failed: " << e.what();
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
 

@@ -33,41 +33,57 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
 {
     // For stack-allocated instances (tests), track in thread-local.
     // Only set if neither ownership mechanism is already active.
-    if (!s_Instance && !g_StackApplicationInstance.has_value())
+    const bool singletonSetHere = !s_Instance && !g_StackApplicationInstance.has_value();
+    if (singletonSetHere)
     {
         g_StackApplicationInstance = std::ref(*this);
     }
 
-    spdlog::info("Initializing {} application", m_Spec.Name);
-
-    // Validate window dimensions; fall back to a sensible default rather than
-    // passing zero to the windowing system, which would produce undefined behavior.
-    constexpr int DEFAULT_WIDTH = 1280;
-    constexpr int DEFAULT_HEIGHT = 720;
-    if (m_Spec.Width <= 0 || m_Spec.Height <= 0)
+    try
     {
-        spdlog::warn("Invalid window dimensions {}x{}, using defaults {}x{}", m_Spec.Width, m_Spec.Height, DEFAULT_WIDTH, DEFAULT_HEIGHT);
-        m_Spec.Width = DEFAULT_WIDTH;
-        m_Spec.Height = DEFAULT_HEIGHT;
-    }
+        spdlog::info("Initializing {} application", m_Spec.Name);
 
-    // Initialize SDL video subsystem
-    if (!SDL_Init(SDL_INIT_VIDEO))
+        // Validate window dimensions; fall back to a sensible default rather than
+        // passing zero to the windowing system, which would produce undefined behavior.
+        constexpr int DEFAULT_WIDTH = 1280;
+        constexpr int DEFAULT_HEIGHT = 720;
+        if (m_Spec.Width <= 0 || m_Spec.Height <= 0)
+        {
+            spdlog::warn(
+                "Invalid window dimensions {}x{}, using defaults {}x{}", m_Spec.Width, m_Spec.Height, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+            m_Spec.Width = DEFAULT_WIDTH;
+            m_Spec.Height = DEFAULT_HEIGHT;
+        }
+
+        // Initialize SDL video subsystem
+        if (!SDL_Init(SDL_INIT_VIDEO))
+        {
+            spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
+            throw std::runtime_error("Failed to initialize SDL");
+        }
+
+        spdlog::info("SDL initialized: {}", SDL_GetRevision());
+
+        WindowSpecification windowSpec;
+        windowSpec.Title = m_Spec.Name;
+        windowSpec.Width = m_Spec.Width;
+        windowSpec.Height = m_Spec.Height;
+        windowSpec.VSync = m_Spec.VSync;
+        windowSpec.Borderless = true; // Enable custom title bar
+
+        m_Window = std::make_unique<Window>(windowSpec);
+    }
+    catch (...)
     {
-        spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
-        throw std::runtime_error("Failed to initialize SDL");
+        // If construction fails, clear the singleton reference we set above so
+        // subsequent tests do not observe a dangling reference to the partially-
+        // constructed (and already-unwound) Application object.
+        if (singletonSetHere)
+        {
+            g_StackApplicationInstance.reset();
+        }
+        throw;
     }
-
-    spdlog::info("SDL initialized: {}", SDL_GetRevision());
-
-    WindowSpecification windowSpec;
-    windowSpec.Title = m_Spec.Name;
-    windowSpec.Width = m_Spec.Width;
-    windowSpec.Height = m_Spec.Height;
-    windowSpec.VSync = m_Spec.VSync;
-    windowSpec.Borderless = true; // Enable custom title bar
-
-    m_Window = std::make_unique<Window>(windowSpec);
 }
 
 Application::~Application()

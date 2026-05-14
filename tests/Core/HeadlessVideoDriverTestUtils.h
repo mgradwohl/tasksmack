@@ -1,8 +1,10 @@
 #pragma once
 
-#include <SDL3/SDL.h>
-
 #include <cstdlib>
+
+#ifndef _WIN32
+#include <SDL3/SDL.h>
+#endif
 
 namespace TestSupport
 {
@@ -12,19 +14,30 @@ namespace TestSupport
 #ifdef _WIN32
     return false;
 #else
-    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - process env setup during single-threaded test startup
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    // All env-var access below is during single-threaded test startup.
+
     const char* videoDriver = std::getenv("SDL_VIDEODRIVER");
     if (videoDriver != nullptr && videoDriver[0] != '\0')
     {
-        return true;
+        // A driver is already configured; verify it can actually initialise the
+        // SDL video subsystem. If it cannot (e.g. a non-functional or non-OpenGL
+        // driver), clear it and fall through to try the offscreen driver below.
+        if (SDL_Init(SDL_INIT_VIDEO))
+        {
+            SDL_Quit();
+            // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+            return true;
+        }
+        unsetenv("SDL_VIDEODRIVER");
     }
 
     if (setenv("SDL_VIDEODRIVER", "offscreen", 1) != 0)
     {
+        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
         return false;
     }
     [[maybe_unused]] const int audioSetResult = setenv("SDL_AUDIODRIVER", "dummy", 1);
-    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
 
     // Verify the offscreen driver can actually initialize the SDL video subsystem before
     // returning true. Application construction registers a thread-local singleton before
@@ -33,11 +46,11 @@ namespace TestSupport
     if (!SDL_Init(SDL_INIT_VIDEO))
     {
         // The offscreen driver is not functional; clear the env var so tests skip cleanly.
-        // NOLINTBEGIN(concurrency-mt-unsafe)
         unsetenv("SDL_VIDEODRIVER");
-        // NOLINTEND(concurrency-mt-unsafe)
+        // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
         return false;
     }
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     SDL_Quit();
     return true;
 #endif

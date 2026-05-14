@@ -48,7 +48,7 @@ TEST(LinuxGPUProbeTest, ProcessGpuCountersAreStructurallyValid)
 
 TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -70,7 +70,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 
 TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
@@ -93,7 +93,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
 
 TEST(LinuxGPUProbeTest, MockLibrariesProvidePerProcessCountersFromNvmlProbe)
 {
-    const auto envGuard = TestSupport::useMockGpuLibrariesWithOverrides();
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
     if (!envGuard.mocksPreloaded())
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;

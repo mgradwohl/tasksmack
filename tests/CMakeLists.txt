@@ -207,6 +207,7 @@ if(UNIX AND NOT APPLE)
         OUTPUT_NAME "libnvidia-ml.so.1"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
+    tasksmack_apply_default_warnings(TaskSmackNVMLMock)
 
     add_library(TaskSmackROCmMock SHARED
         Mocks/ROCmMock.cpp
@@ -220,6 +221,7 @@ if(UNIX AND NOT APPLE)
         OUTPUT_NAME "librocm_smi64.so.6"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
+    tasksmack_apply_default_warnings(TaskSmackROCmMock)
 
     add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
     target_compile_definitions(TaskSmackTests PRIVATE
