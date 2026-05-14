@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cstddef>
 #include <set>
 #include <type_traits>

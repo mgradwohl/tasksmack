@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cstdlib>
-#include <string_view>
-
 #ifndef _WIN32
 #include <SDL3/SDL.h>
 #endif
+
+#include <cstdlib>
+#include <string_view>
 
 namespace TestSupport
 {

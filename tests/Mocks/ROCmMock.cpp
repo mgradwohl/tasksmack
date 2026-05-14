@@ -1,7 +1,6 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 
 namespace
 {
@@ -11,7 +10,7 @@ using rsmi_status_t = std::uint32_t;
 
 constexpr rsmi_status_t RSMI_STATUS_SUCCESS = 0;
 constexpr rsmi_status_t RSMI_STATUS_NOT_FOUND = 10;
-constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 2;
+constexpr rsmi_status_t RSMI_STATUS_INVALID_ARGS = 1;
 
 // NOLINTBEGIN(cppcoreguidelines-use-enum-class, performance-enum-size, readability-identifier-naming) - must match AMD ROCm SMI API
 enum rsmi_temperature_type_t : std::uint32_t
@@ -196,8 +195,13 @@ extern "C"
         return RSMI_STATUS_SUCCESS;
     }
 
-    rsmi_status_t rsmi_dev_id_get(std::uint32_t /*deviceIndex*/, std::uint16_t* id)
+    rsmi_status_t rsmi_dev_id_get(std::uint32_t deviceIndex, std::uint16_t* id)
     {
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
         *id = 0;
         return RSMI_STATUS_SUCCESS;
     }

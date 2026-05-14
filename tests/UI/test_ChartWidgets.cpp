@@ -279,22 +279,36 @@ TEST(ChartWidgetsTimeAxisTest, BuildTimeAxisDoublesRespectsDesiredCount)
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
     const std::vector<float> axisF{-10.0F, -5.0F, 0.0F};
-    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -99.0).value(), 0U);
-    EXPECT_EQ(hoveredIndexFromPlotX(axisF, 99.0).value(), 2U);
-    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -4.2).value(), 1U);
+    const auto resF_lo = hoveredIndexFromPlotX(axisF, -99.0);
+    ASSERT_TRUE(resF_lo.has_value());
+    EXPECT_EQ(resF_lo.value(), 0U);
+    const auto resF_hi = hoveredIndexFromPlotX(axisF, 99.0);
+    ASSERT_TRUE(resF_hi.has_value());
+    EXPECT_EQ(resF_hi.value(), 2U);
+    const auto resF_mid = hoveredIndexFromPlotX(axisF, -4.2);
+    ASSERT_TRUE(resF_mid.has_value());
+    EXPECT_EQ(resF_mid.value(), 1U);
 
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
-    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -9.9).value(), 0U);
-    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -2.5).value(), 1U);
+    const auto resD_lo = hoveredIndexFromPlotX(axisD, -9.9);
+    ASSERT_TRUE(resD_lo.has_value());
+    EXPECT_EQ(resD_lo.value(), 0U);
+    const auto resD_mid = hoveredIndexFromPlotX(axisD, -2.5);
+    ASSERT_TRUE(resD_mid.has_value());
+    EXPECT_EQ(resD_mid.value(), 1U);
 }
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
 {
     const std::vector<float> axisF{-10.0F, -5.0F};
-    EXPECT_EQ(hoveredIndexFromPlotX(axisF, -7.5).value(), 0U);
+    const auto resFTie = hoveredIndexFromPlotX(axisF, -7.5);
+    ASSERT_TRUE(resFTie.has_value());
+    EXPECT_EQ(resFTie.value(), 0U);
 
     const std::vector<double> axisD{-10.0, -5.0};
-    EXPECT_EQ(hoveredIndexFromPlotX(axisD, -7.5).value(), 0U);
+    const auto resDTie = hoveredIndexFromPlotX(axisD, -7.5);
+    ASSERT_TRUE(resDTie.has_value());
+    EXPECT_EQ(resDTie.value(), 0U);
 }
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
