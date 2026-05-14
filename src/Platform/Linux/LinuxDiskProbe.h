@@ -3,6 +3,7 @@
 #include "Platform/IDiskProbe.h"
 
 #include <filesystem>
+#include <string>
 
 namespace Platform
 {

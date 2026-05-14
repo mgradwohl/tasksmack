@@ -202,10 +202,14 @@ class LinuxDiskProbeReadTest : public ::testing::Test
     void writeDiskstats(const std::string& content) const
     {
         std::ofstream f(m_DiskstatsPath);
-        ASSERT_TRUE(f.is_open()) << "Failed to open temp diskstats file: " << m_DiskstatsPath;
+        // Use EXPECT_* (not ASSERT_*): fatal assertions inside helper methods only
+        // return from the helper in gtest, so ASSERT_* would leave the test
+        // continuing with an unwritten file. EXPECT_* marks the test as failed
+        // while still propagating the error to the caller.
+        EXPECT_TRUE(f.is_open()) << "Failed to open temp diskstats file: " << m_DiskstatsPath;
         f << content;
         f.flush();
-        ASSERT_TRUE(f.good()) << "Failed to write temp diskstats file: " << m_DiskstatsPath;
+        EXPECT_TRUE(f.good()) << "Failed to write temp diskstats file: " << m_DiskstatsPath;
     }
 
     // Build one valid /proc/diskstats line with all required fields.
