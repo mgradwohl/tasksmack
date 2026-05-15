@@ -16,6 +16,10 @@ namespace Platform
 namespace
 {
 
+/// RAII guard for safely overriding APPDATA environment variable during testing.
+/// Thread-safety note: This assumes GoogleTest runs tests serially within a process (default behavior).
+/// If tests are run with --gtest_parallel, concurrent APPDATA reads may fail. For production use,
+/// see https://github.com/google/googletest/issues/2945 for thread-safe env var testing patterns.
 class ScopedAppDataOverride
 {
   public:
