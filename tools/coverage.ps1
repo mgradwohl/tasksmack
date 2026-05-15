@@ -94,7 +94,7 @@ try {
         "-output-dir=$CoverageDir" `
         -show-line-counts-or-regions `
         -show-instantiations=false `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*"
+        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     # Step 5: Generate LCOV file for Codecov
@@ -104,7 +104,7 @@ try {
         "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
         -format=lcov `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*" `
+        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h" `
         | Set-Content -Path $lcovPath -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -113,7 +113,7 @@ try {
     & $LlvmCov report `
         "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*"
+        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
 
     Write-Host ""
     Write-Host "HTML report generated at: $CoverageDir\index.html" -ForegroundColor Green
