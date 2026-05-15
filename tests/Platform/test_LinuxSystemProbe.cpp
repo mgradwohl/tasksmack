@@ -1,8 +1,11 @@
 /// @file test_LinuxSystemProbe.cpp
 /// @brief Integration tests for Platform::LinuxSystemProbe
 ///
-/// These are integration tests that interact with the real /proc filesystem.
-/// They verify that the probe correctly reads and parses system information.
+/// This file contains two kinds of coverage:
+///   - Integration tests that interact with the real /proc filesystem, verifying
+///     that the probe correctly reads and parses system information.
+///   - Error-path / injection tests that use a synthetic proc root (ScopedTempDir)
+///     to exercise missing-file and malformed-input handling without touching /proc.
 
 #include <gtest/gtest.h>
 
@@ -565,7 +568,7 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
 
 // ========== Error Path / Injection Tests ==========
 
-using Platform::Test::ScopedTempDir;
+using Platform::TestSupport::ScopedTempDir;
 
 TEST(LinuxSystemProbeTest, MissingStatFileReturnsZeroCpu)
 {

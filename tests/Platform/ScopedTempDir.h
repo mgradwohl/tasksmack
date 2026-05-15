@@ -15,7 +15,7 @@
 
 #include <unistd.h>
 
-namespace Platform::Test
+namespace Platform::TestSupport
 {
 
 /// RAII temporary directory. The directory name is formed from a caller-supplied
@@ -51,6 +51,6 @@ struct ScopedTempDir
     }
 };
 
-} // namespace Platform::Test
+} // namespace Platform::TestSupport
 
 #endif // defined(__linux__) && __has_include(<unistd.h>)

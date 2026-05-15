@@ -1,8 +1,11 @@
 /// @file test_LinuxProcessProbe.cpp
 /// @brief Integration tests for Platform::LinuxProcessProbe
 ///
-/// These are integration tests that interact with the real /proc filesystem.
-/// They verify that the probe correctly reads and parses process information.
+/// This file contains two kinds of coverage:
+///   - Integration tests that interact with the real /proc filesystem, verifying
+///     that the probe correctly reads and parses process information.
+///   - Error-path / injection tests that use a synthetic proc root (ScopedTempDir)
+///     to exercise missing-file and malformed-input handling without touching /proc.
 
 #include <gtest/gtest.h>
 
@@ -674,7 +677,7 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
 
 // ========== Error Path / Injection Tests ==========
 
-using Platform::Test::ScopedTempDir;
+using Platform::TestSupport::ScopedTempDir;
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
