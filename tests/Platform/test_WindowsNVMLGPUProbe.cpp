@@ -36,23 +36,33 @@ TEST(WindowsNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 TEST(WindowsNVMLGPUProbeTest, IsAvailableReturnsBool)
 {
     NVMLGPUProbe probe;
-    [[maybe_unused]] bool available = probe.isAvailable();
-    // Just verify it doesn't throw and returns a bool (always true or false)
+    const bool available1 = probe.isAvailable();
+    const bool available2 = probe.isAvailable();
+    EXPECT_EQ(available1, available2) << "isAvailable() should be stable across consecutive calls";
 }
 
 TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsFalseForIsAvailable)
 {
-    // If NVML is not available on this system (common if no NVIDIA GPU),
-    // isAvailable() should return false
     NVMLGPUProbe probe;
-    if (!probe.isAvailable())
+    const bool available = probe.isAvailable();
+    const auto caps = probe.capabilities();
+
+    if (!available)
     {
-        EXPECT_FALSE(probe.isAvailable());
+        EXPECT_FALSE(caps.hasTemperature);
+        EXPECT_FALSE(caps.hasPowerMetrics);
+        EXPECT_FALSE(caps.hasClockSpeeds);
+        EXPECT_FALSE(caps.hasFanSpeed);
+        EXPECT_FALSE(caps.hasPCIeMetrics);
+        EXPECT_FALSE(caps.hasPerProcessMetrics);
     }
     else
     {
-        // NVML is available (NVIDIA GPU present), skip this check
-        GTEST_SKIP() << "NVML is available on this system (NVIDIA GPU detected); skipping unavailable path";
+        EXPECT_TRUE(caps.hasTemperature);
+        EXPECT_TRUE(caps.hasPowerMetrics);
+        EXPECT_TRUE(caps.hasClockSpeeds);
+        EXPECT_TRUE(caps.hasFanSpeed);
+        EXPECT_TRUE(caps.hasPCIeMetrics);
     }
 }
 
@@ -138,8 +148,11 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeReturnsConsistentData)
 
     // Verify capabilities are appropriately reported
     const auto caps = probe.capabilities();
-    // When available, we expect these to be true for NVML
-    EXPECT_TRUE(caps.hasTemperature || !caps.hasTemperature); // Always true, just verify it doesn't throw
+    EXPECT_TRUE(caps.hasTemperature);
+    EXPECT_TRUE(caps.hasPowerMetrics);
+    EXPECT_TRUE(caps.hasClockSpeeds);
+    EXPECT_TRUE(caps.hasFanSpeed);
+    EXPECT_TRUE(caps.hasPCIeMetrics);
 }
 
 } // namespace

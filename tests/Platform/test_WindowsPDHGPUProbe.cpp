@@ -35,8 +35,9 @@ TEST(WindowsPDHGPUProbeTest, BasicOperationsDoNotThrow)
 TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
 {
     PDHGPUProbe probe;
-    [[maybe_unused]] bool available = probe.isAvailable();
-    // Just verify it doesn't throw and returns a bool
+    const bool available1 = probe.isAvailable();
+    const bool available2 = probe.isAvailable();
+    EXPECT_EQ(available1, available2) << "isAvailable() should be stable across consecutive calls";
 }
 
 // ==========================================================================
@@ -47,9 +48,10 @@ TEST(WindowsPDHGPUProbeTest, ProbeReturnsValidProcessCountersOrEmpty)
 {
     PDHGPUProbe probe;
     auto counters = probe.readProcessGPUCounters();
-    // PDH per-process metrics if available
-    // If not available, returns empty (deterministic fallback)
-    EXPECT_TRUE(counters.empty() || !counters.empty()); // Always true - just verify it doesn't throw
+    for (const auto& counter : counters)
+    {
+        EXPECT_GE(counter.pid, 0) << "Process ID should be non-negative";
+    }
 }
 
 TEST(WindowsPDHGPUProbeTest, ProbeCounterResultsAreWellFormed)
@@ -72,14 +74,17 @@ TEST(WindowsPDHGPUProbeTest, ProbeCounterResultsAreWellFormed)
 TEST(WindowsPDHGPUProbeTest, CapabilitiesIsConsistent)
 {
     PDHGPUProbe probe;
+    const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
 
-    // Verify capabilities object is well-formed
-    // PDH is a Performance Data Helper, so it may or may not report certain capabilities
-    // depending on system configuration and whether the probe initialized successfully
-    EXPECT_TRUE(caps.hasTemperature || !caps.hasTemperature); // Always true
-    EXPECT_TRUE(caps.hasPowerMetrics || !caps.hasPowerMetrics);
-    EXPECT_TRUE(caps.hasClockSpeeds || !caps.hasClockSpeeds);
+    EXPECT_EQ(caps.hasPerProcessMetrics, available);
+    EXPECT_EQ(caps.hasEngineUtilization, available);
+    EXPECT_EQ(caps.supportsMultiGPU, available);
+
+    EXPECT_FALSE(caps.hasTemperature);
+    EXPECT_FALSE(caps.hasPowerMetrics);
+    EXPECT_FALSE(caps.hasClockSpeeds);
+    EXPECT_FALSE(caps.hasFanSpeed);
 }
 
 // ==========================================================================

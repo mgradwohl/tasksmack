@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <unordered_set>
+
 namespace Platform
 {
 namespace
@@ -36,14 +38,14 @@ TEST(WindowsGPUProbeTest, EnumerateGPUsReturnsValidList)
     WindowsGPUProbe probe;
     auto gpus = probe.enumerateGPUs();
 
-    // Even if no hardware GPUs, should return valid vector (empty or populated)
-    EXPECT_TRUE(gpus.empty() || !gpus.empty()); // Always true, but exercises code path
+    std::unordered_set<std::string> ids;
 
     // If GPUs are present, validate their fields
     for (const auto& gpu : gpus)
     {
         EXPECT_FALSE(gpu.id.empty()) << "GPU id should not be empty";
         EXPECT_FALSE(gpu.name.empty()) << "GPU name should not be empty";
+        EXPECT_TRUE(ids.insert(gpu.id).second) << "GPU ids should be unique";
         // luidId may be present for DXGI enumeration
     }
 }
@@ -152,9 +154,12 @@ TEST(WindowsGPUProbeTest, EnumerateGPUsHandlesUnavailableProbes)
     WindowsGPUProbe probe;
     auto gpus = probe.enumerateGPUs();
 
-    // Should not throw and should return a valid vector
-    // (may be empty on systems with no hardware GPUs or only software adapters)
-    EXPECT_TRUE(gpus.empty() || !gpus.empty()); // Always true
+    // If any GPUs are returned, they should always have stable identifiers.
+    for (const auto& gpu : gpus)
+    {
+        EXPECT_FALSE(gpu.id.empty());
+        EXPECT_FALSE(gpu.name.empty());
+    }
 }
 
 TEST(WindowsGPUProbeTest, ReadGPUCountersHandlesEmptyEnumeration)
@@ -164,14 +169,10 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersHandlesEmptyEnumeration)
     // Don't enumerate (or if enumeration returns empty)
     auto counters = probe.readGPUCounters();
 
-    // Should handle empty enumeration gracefully and return empty counter list
-    if (counters.empty())
-    {
-        EXPECT_EQ(counters.size(), 0UL);
-    }
-    // If counters are returned, they should be valid
+    // Should handle empty enumeration gracefully; if counters are returned, they must be valid.
     for (const auto& counter : counters)
     {
+        EXPECT_FALSE(counter.gpuId.empty());
         EXPECT_GE(counter.utilizationPercent, 0.0);
         EXPECT_LE(counter.utilizationPercent, 100.0);
     }
@@ -205,15 +206,11 @@ TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
     WindowsGPUProbe probe;
     auto caps = probe.capabilities();
 
-    // Just verify the capabilities struct is well-formed
-    // (all fields are either true or false)
-    EXPECT_TRUE(caps.hasTemperature || !caps.hasTemperature);
-    EXPECT_TRUE(caps.hasPowerMetrics || !caps.hasPowerMetrics);
-    EXPECT_TRUE(caps.hasClockSpeeds || !caps.hasClockSpeeds);
-    EXPECT_TRUE(caps.hasFanSpeed || !caps.hasFanSpeed);
-    EXPECT_TRUE(caps.hasPCIeMetrics || !caps.hasPCIeMetrics);
-    EXPECT_TRUE(caps.hasPerProcessMetrics || !caps.hasPerProcessMetrics);
-    EXPECT_TRUE(caps.supportsMultiGPU || !caps.supportsMultiGPU);
+    // Capability relationships are deterministic across DXGI + NVML + PDH composition.
+    EXPECT_EQ(caps.hasPowerMetrics, caps.hasClockSpeeds);
+    EXPECT_EQ(caps.hasFanSpeed, caps.hasTemperature);
+    EXPECT_EQ(caps.hasPCIeMetrics, caps.hasTemperature);
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
 }
 
 } // namespace

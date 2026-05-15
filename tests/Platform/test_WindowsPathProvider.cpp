@@ -50,6 +50,8 @@ class ScopedAppDataOverride
 
     ScopedAppDataOverride(const ScopedAppDataOverride&) = delete;
     ScopedAppDataOverride& operator=(const ScopedAppDataOverride&) = delete;
+    ScopedAppDataOverride(ScopedAppDataOverride&&) = delete;
+    ScopedAppDataOverride& operator=(ScopedAppDataOverride&&) = delete;
 
   private:
     std::string m_originalValue;
