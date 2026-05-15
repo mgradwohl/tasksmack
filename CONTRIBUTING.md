@@ -372,6 +372,13 @@ cmake --build --preset asan-ubsan
 ctest --preset asan-ubsan
 ```
 
+`ctest --preset asan-ubsan` injects:
+
+- `LSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp`
+
+This suppression filters a known SDL3 LeakSanitizer false positive used by the
+Core window/application tests.
+
 ThreadSanitizer:
 
 ```bash
@@ -379,6 +386,13 @@ cmake --preset tsan
 cmake --build --preset tsan
 ctest --preset tsan
 ```
+
+`ctest --preset tsan` injects:
+
+- `TSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp`
+
+This suppression filters known ThreadSanitizer false positives in third-party
+pthread barrier paths.
 
 ## Benchmarks
 
