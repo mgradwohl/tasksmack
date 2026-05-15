@@ -22,7 +22,8 @@ on:
         type: string
         default: '22.1.0'
 
-permissions: read-all
+# Deny all permissions by default; each job must explicitly declare what it needs.
+permissions: {}
 
 jobs:
   build-test:
