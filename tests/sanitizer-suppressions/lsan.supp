@@ -1,6 +1,6 @@
 # LeakSanitizer suppressions for TaskSmack tests
 #
-# SDL3 retains internal video/audio subsystem state after SDL_Quit() that the
-# LeakSanitizer reports as leaked.  This is a known false positive: the memory
-# is held in SDL3's own shared library and is not a bug in our code.
+# SDL3 intentionally retains internal subsystem state after SDL_Quit() for
+# performance reasons. LeakSanitizer reports this as leaked, but it is expected
+# behavior in SDL3's cleanup model and not a TaskSmack bug.
 leak:libSDL3
