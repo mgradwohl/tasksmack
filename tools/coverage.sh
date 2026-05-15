@@ -110,7 +110,16 @@ $LLVM_COV show \
     -show-instantiations=false \
     -ignore-filename-regex="${COV_IGNORE_REGEX}"
 
-# Step 5: Generate summary
+# Step 5: Generate LCOV file for Codecov
+echo "==> Generating LCOV report..."
+$LLVM_COV export \
+    "${BUILD_DIR}/tests/TaskSmackTests" \
+    -instr-profile="${BUILD_DIR}/default.profdata" \
+    -format=lcov \
+    -ignore-filename-regex="${COV_IGNORE_REGEX}" \
+    > "${COVERAGE_DIR}/coverage.lcov"
+
+# Step 6: Generate summary
 echo "==> Coverage Summary:"
 $LLVM_COV report \
     "${BUILD_DIR}/tests/TaskSmackTests" \
