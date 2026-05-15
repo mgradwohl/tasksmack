@@ -1,0 +1,10 @@
+# ThreadSanitizer suppressions for TaskSmack tests
+#
+# GoogleTest (v1.15) uses pthread_barrier internally for test-thread
+# synchronization.  SDL3 also spawns background threads during video
+# initialization.  The interaction between those threads and gtest's barrier
+# code triggers false-positive data-race reports from TSAN on the
+# pthread_barrier_destroy / pthread_barrier_wait entry points.
+# These races are in third-party code, not in TaskSmack itself.
+race:pthread_barrier_destroy
+race:pthread_barrier_wait

@@ -113,6 +113,19 @@ cmake --build --preset asan-ubsan
 ctest --preset asan-ubsan
 ```
 
+`ctest --preset asan-ubsan` sets `LSAN_OPTIONS` to the project suppression file
+followed by any inherited `LSAN_OPTIONS` from the environment:
+
+```
+suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp:$penv{LSAN_OPTIONS}
+```
+
+`${sourceDir}` is the CMake Presets variable for the repository root.
+Caller-provided options (verbosity, `halt_on_error`, etc.) are preserved. Because
+`suppressions=` is a scalar key where the last occurrence wins, if the caller
+provides their own `suppressions=` entry it will override the project's suppression
+file — add entries directly to `lsan.supp` in that case.
+
 ### ThreadSanitizer
 
 ```bash
@@ -120,6 +133,17 @@ cmake --preset tsan
 cmake --build --preset tsan
 ctest --preset tsan
 ```
+
+`ctest --preset tsan` sets `TSAN_OPTIONS` to the project suppression file followed
+by any inherited `TSAN_OPTIONS` from the environment:
+
+```
+suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp:$penv{TSAN_OPTIONS}
+```
+
+Caller-provided options are preserved. If the caller provides their own
+`suppressions=` entry, it overrides the project's — add entries to `tsan.supp`
+in that case.
 
 ---
 
