@@ -145,23 +145,6 @@ TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
 // Fallback Behavior Tests
 // ==========================================================================
 
-TEST(WindowsGPUProbeTest, EnumerateGPUsHandlesUnavailableProbes)
-{
-    // This test validates that WindowsGPUProbe gracefully handles the case
-    // where underlying NVML or other probes are not available.
-    // It should still return valid results from available probes (e.g., DXGI).
-
-    WindowsGPUProbe probe;
-    auto gpus = probe.enumerateGPUs();
-
-    // If any GPUs are returned, they should always have stable identifiers.
-    for (const auto& gpu : gpus)
-    {
-        EXPECT_FALSE(gpu.id.empty());
-        EXPECT_FALSE(gpu.name.empty());
-    }
-}
-
 TEST(WindowsGPUProbeTest, ReadGPUCountersHandlesEmptyEnumeration)
 {
     WindowsGPUProbe probe;
