@@ -70,62 +70,95 @@ TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsFalseForIsAvailable)
 // Empty Enumeration Tests (when probe is unavailable)
 // ==========================================================================
 
-TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsEmptyEnumeration)
+TEST(WindowsNVMLGPUProbeTest, EnumerationBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
-    if (probe.isAvailable())
-    {
-        GTEST_SKIP() << "NVML is available on this system; skipping unavailable path";
-    }
-
+    const bool available = probe.isAvailable();
     auto gpus = probe.enumerateGPUs();
-    EXPECT_EQ(gpus.size(), 0UL) << "Unavailable NVML should return empty GPU list";
+
+    if (!available)
+    {
+        EXPECT_TRUE(gpus.empty()) << "Unavailable NVML should return empty GPU list";
+    }
+    else
+    {
+        for (const auto& gpu : gpus)
+        {
+            EXPECT_FALSE(gpu.id.empty()) << "GPU id should not be empty when NVML is available";
+            EXPECT_FALSE(gpu.name.empty()) << "GPU name should not be empty when NVML is available";
+        }
+    }
 }
 
-TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsEmptyCounters)
+TEST(WindowsNVMLGPUProbeTest, CounterBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
-    if (probe.isAvailable())
-    {
-        GTEST_SKIP() << "NVML is available on this system; skipping unavailable path";
-    }
-
+    const bool available = probe.isAvailable();
     auto counters = probe.readGPUCounters();
-    EXPECT_EQ(counters.size(), 0UL) << "Unavailable NVML should return empty counter list";
+
+    if (!available)
+    {
+        EXPECT_TRUE(counters.empty()) << "Unavailable NVML should return empty counter list";
+    }
+    else
+    {
+        for (const auto& counter : counters)
+        {
+            EXPECT_FALSE(counter.gpuId.empty()) << "GPU counter id should not be empty when NVML is available";
+            EXPECT_GE(counter.utilizationPercent, 0.0);
+            EXPECT_LE(counter.utilizationPercent, 100.0);
+        }
+    }
 }
 
-TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsEmptyProcessCounters)
+TEST(WindowsNVMLGPUProbeTest, ProcessCounterBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
-    if (probe.isAvailable())
-    {
-        GTEST_SKIP() << "NVML is available on this system; skipping unavailable path";
-    }
-
+    const bool available = probe.isAvailable();
     auto counters = probe.readProcessGPUCounters();
-    EXPECT_EQ(counters.size(), 0UL) << "Unavailable NVML should return empty process counter list";
+
+    if (!available)
+    {
+        EXPECT_TRUE(counters.empty()) << "Unavailable NVML should return empty process counter list";
+    }
+    else
+    {
+        for (const auto& counter : counters)
+        {
+            EXPECT_GE(counter.pid, 0) << "Process id should be non-negative";
+        }
+    }
 }
 
 // ==========================================================================
 // Capabilities Tests
 // ==========================================================================
 
-TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
+TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
 {
     NVMLGPUProbe probe;
-    if (probe.isAvailable())
-    {
-        GTEST_SKIP() << "NVML is available on this system; skipping unavailable path";
-    }
-
+    const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
-    EXPECT_FALSE(caps.hasTemperature);
-    EXPECT_FALSE(caps.hasPowerMetrics);
-    EXPECT_FALSE(caps.hasClockSpeeds);
-    EXPECT_FALSE(caps.hasFanSpeed);
-    EXPECT_FALSE(caps.hasPCIeMetrics);
-    EXPECT_FALSE(caps.hasPerProcessMetrics);
-    EXPECT_FALSE(caps.supportsMultiGPU);
+
+    if (!available)
+    {
+        EXPECT_FALSE(caps.hasTemperature);
+        EXPECT_FALSE(caps.hasPowerMetrics);
+        EXPECT_FALSE(caps.hasClockSpeeds);
+        EXPECT_FALSE(caps.hasFanSpeed);
+        EXPECT_FALSE(caps.hasPCIeMetrics);
+        EXPECT_FALSE(caps.hasPerProcessMetrics);
+        EXPECT_FALSE(caps.supportsMultiGPU);
+    }
+    else
+    {
+        EXPECT_TRUE(caps.hasTemperature);
+        EXPECT_TRUE(caps.hasPowerMetrics);
+        EXPECT_TRUE(caps.hasClockSpeeds);
+        EXPECT_TRUE(caps.hasFanSpeed);
+        EXPECT_TRUE(caps.hasPCIeMetrics);
+        EXPECT_TRUE(caps.supportsMultiGPU);
+    }
 }
 
 TEST(WindowsNVMLGPUProbeTest, AvailableProbeReturnsConsistentData)
