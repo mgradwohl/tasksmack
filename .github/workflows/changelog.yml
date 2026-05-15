@@ -91,17 +91,10 @@ jobs:
           fi
           git add CHANGELOG.md
           if git diff --staged --quiet; then
-            if [ "$PR_EXISTS" = false ]; then
-              gh pr create \
-                --base main \
-                --head "$BRANCH" \
-                --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
-                --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
-                --label "documentation"
-            else
+            if [ "$PR_EXISTS" = true ]; then
               echo "PR for $BRANCH already exists — nothing to update."
+              gh workflow run CI --ref "$BRANCH"
             fi
-            gh workflow run CI --ref "$BRANCH"
             exit 0
           fi
           # Use a non-conventional commit message so git-cliff does not
