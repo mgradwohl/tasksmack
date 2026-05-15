@@ -105,12 +105,27 @@ jobs:
           git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
           git push origin "$BRANCH"
           if [ "$PR_EXISTS" = false ]; then
-            gh pr create \
+            PR_CREATE_ERROR_FILE=$(mktemp)
+            # Guarantee temp file cleanup on all exits (success, error, and restricted-token fallback)
+            # shellcheck disable=SC2064
+            trap "rm -f \"$PR_CREATE_ERROR_FILE\"" EXIT
+            if ! gh pr create \
               --base main \
               --head "$BRANCH" \
               --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
               --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
-              --label "documentation"
+              --label "documentation" 2>"$PR_CREATE_ERROR_FILE"; then
+              if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible by integration|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
+                echo "Unable to create PR from workflow token."
+                # Encode slashes in branch name so the compare URL works correctly
+                ENCODED_BRANCH="${BRANCH//\//%2F}"
+                echo "Create it manually: https://github.com/${{ github.repository }}/compare/main...${ENCODED_BRANCH}?expand=1"
+                exit 0
+              fi
+
+              cat "$PR_CREATE_ERROR_FILE" >&2
+              exit 1
+            fi
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
