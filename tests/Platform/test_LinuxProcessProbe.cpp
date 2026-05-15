@@ -674,6 +674,7 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_empty";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxProcessProbe probe(tmpDir);
     auto processes = probe.enumerate();
@@ -693,6 +694,7 @@ TEST(LinuxProcessProbeTest, NonexistentProcDirDoesNotCrash)
 TEST(LinuxProcessProbeTest, MissingStatReturnZeroTotalCpuTime)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nocputime";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxProcessProbe probe(tmpDir);
     EXPECT_EQ(probe.totalCpuTime(), 0ULL);
@@ -702,6 +704,7 @@ TEST(LinuxProcessProbeTest, MissingStatReturnZeroTotalCpuTime)
 TEST(LinuxProcessProbeTest, MissingMeminfoReturnZeroSystemMemory)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nomeminfo";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxProcessProbe probe(tmpDir);
     EXPECT_EQ(probe.systemTotalMemory(), 0ULL);
@@ -711,7 +714,7 @@ TEST(LinuxProcessProbeTest, MissingMeminfoReturnZeroSystemMemory)
 TEST(LinuxProcessProbeTest, ParseProcessStatMissingFileDoesNotCrash)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nostatfile";
-    // Create a pid subdirectory with no stat file inside
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir / "1234");
     LinuxProcessProbe probe(tmpDir);
     auto result = probe.enumerate();
@@ -722,6 +725,7 @@ TEST(LinuxProcessProbeTest, ParseProcessStatMissingFileDoesNotCrash)
 TEST(LinuxProcessProbeTest, ParseProcessStatMalformedContentDoesNotCrash)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_badstat";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir / "1234");
     {
         // Write garbage to stat — no valid fields

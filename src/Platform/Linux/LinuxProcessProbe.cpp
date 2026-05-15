@@ -153,7 +153,7 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 
     if (m_BootTimeEpoch == 0)
     {
-        spdlog::warn("Failed to read boot time from /proc/stat");
+        spdlog::warn("Failed to read boot time from {}", (m_ProcRoot / "stat").string());
     }
 
     // Detect and initialize power monitoring if available
@@ -223,7 +223,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         ProcessCounters counters{};
         if (!parseProcessStat(pid, counters))
         {
-            spdlog::debug("Failed to parse /proc/{}/stat", pid);
+            spdlog::debug("Failed to parse {}", (procPath / std::to_string(pid) / "stat").string());
             continue;
         }
 
@@ -250,7 +250,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
     if (errorCode)
     {
-        spdlog::warn("Error iterating /proc: {}", errorCode.message());
+        spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
     }
 
     // Attribute energy to processes if power monitoring is available
@@ -709,10 +709,11 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     // Format: /proc/stat
     // First line: cpu user nice system idle iowait irq softirq steal guest guest_nice
 
-    std::ifstream statFile(m_ProcRoot / "stat");
+    const auto statPath = m_ProcRoot / "stat";
+    std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/stat");
+        spdlog::warn("Failed to open {}", statPath.string());
         return 0;
     }
 
@@ -730,7 +731,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
 
     if (statFile.fail() || cpuLabel != "cpu")
     {
-        spdlog::warn("Failed to parse /proc/stat");
+        spdlog::warn("Failed to parse {}", statPath.string());
         return 0;
     }
 
@@ -743,10 +744,11 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
     // Format: /proc/stat contains a line: btime <epoch_seconds>
     // btime is the time the system booted in seconds since Unix epoch
 
-    std::ifstream statFile(procRoot / "stat");
+    const auto statPath = procRoot / "stat";
+    std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/stat for boot time");
+        spdlog::warn("Failed to open {} for boot time", statPath.string());
         return 0;
     }
 
@@ -772,10 +774,11 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
 
 uint64_t LinuxProcessProbe::systemTotalMemory() const
 {
-    std::ifstream meminfo(m_ProcRoot / "meminfo");
+    const auto meminfoPath = m_ProcRoot / "meminfo";
+    std::ifstream meminfo(meminfoPath);
     if (!meminfo.is_open())
     {
-        spdlog::error("Failed to open /proc/meminfo");
+        spdlog::error("Failed to open {}", meminfoPath.string());
         return 0;
     }
 

@@ -567,6 +567,7 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
 TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nostat";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxSystemProbe probe(tmpDir);
     auto counters = probe.read();
@@ -578,6 +579,7 @@ TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
 TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nomem";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxSystemProbe probe(tmpDir);
     auto counters = probe.read();
@@ -589,6 +591,7 @@ TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
 TEST(LinuxSystemProbeTest, MissingNetDevSilentlyReturnsZeroNetwork)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nonet";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir / "net");
     LinuxSystemProbe probe(tmpDir);
     auto counters = probe.read();
@@ -600,6 +603,7 @@ TEST(LinuxSystemProbeTest, MissingNetDevSilentlyReturnsZeroNetwork)
 TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nocpu";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     LinuxSystemProbe probe(tmpDir);
     auto counters = probe.read();
@@ -610,6 +614,7 @@ TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
 TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badnet";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir / "net");
     {
         std::ofstream f(tmpDir / "net" / "dev");
@@ -631,6 +636,7 @@ TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
 TEST(LinuxSystemProbeTest, StatWithNoCpuLineSilentlyReturnsZero)
 {
     auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badstat";
+    std::filesystem::remove_all(tmpDir);
     std::filesystem::create_directories(tmpDir);
     {
         std::ofstream f(tmpDir / "stat");
