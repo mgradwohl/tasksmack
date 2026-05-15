@@ -84,17 +84,31 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           BRANCH="chore/changelog-${{ github.ref_name }}"
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            PR_EXISTS=false
+          else
+            PR_EXISTS=true
+          fi
           git add CHANGELOG.md
-          # Nothing to do if the file did not change.
           if git diff --staged --quiet; then
-            echo "CHANGELOG.md unchanged — skipping PR creation/update."
+            if [ "$PR_EXISTS" = false ]; then
+              gh pr create \
+                --base main \
+                --head "$BRANCH" \
+                --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
+                --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
+                --label "documentation"
+            else
+              echo "PR for $BRANCH already exists — nothing to update."
+            fi
+            gh workflow run CI --ref "$BRANCH"
             exit 0
           fi
           # Use a non-conventional commit message so git-cliff does not
           # include this generated changelog commit in future release notes.
           git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
           git push origin "$BRANCH"
-          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+          if [ "$PR_EXISTS" = false ]; then
             gh pr create \
               --base main \
               --head "$BRANCH" \
