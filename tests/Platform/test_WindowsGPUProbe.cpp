@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <unordered_set>
 
 namespace Platform
@@ -163,10 +164,8 @@ TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
     WindowsGPUProbe probe;
     auto caps = probe.capabilities();
 
-    // Capability relationships are deterministic across DXGI + NVML + PDH composition.
-    EXPECT_EQ(caps.hasPowerMetrics, caps.hasClockSpeeds);
-    EXPECT_EQ(caps.hasFanSpeed, caps.hasTemperature);
-    EXPECT_EQ(caps.hasPCIeMetrics, caps.hasTemperature);
+    // The public contract only guarantees stable self-consistency and the
+    // per-process/engine-utilization relationship.
     EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
 }
 

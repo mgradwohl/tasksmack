@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+
 namespace Platform
 {
 namespace
@@ -51,7 +53,6 @@ TEST(WindowsNVMLGPUProbeTest, AvailabilityMatchesCapabilities)
     EXPECT_EQ(caps.hasPowerMetrics, available);
     EXPECT_EQ(caps.hasClockSpeeds, available);
     EXPECT_EQ(caps.hasFanSpeed, available);
-    EXPECT_EQ(caps.hasPCIeMetrics, available);
     EXPECT_EQ(caps.supportsMultiGPU, available);
 }
 

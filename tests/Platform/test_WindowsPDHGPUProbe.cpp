@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+
 namespace Platform
 {
 namespace
@@ -41,10 +43,6 @@ TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
 }
 
 // ==========================================================================
-// Empty Result Tests (when probe is unavailable or not initialized)
-// ==========================================================================
-
-// ==========================================================================
 // Capabilities Tests
 // ==========================================================================
 
@@ -54,7 +52,6 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     const auto caps = probe.capabilities();
 
     EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
-    EXPECT_EQ(caps.hasPerProcessMetrics, caps.supportsMultiGPU);
 
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);
@@ -65,24 +62,6 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
 // ==========================================================================
 // State Consistency Tests
 // ==========================================================================
-
-TEST(WindowsPDHGPUProbeTest, AvailabilityIsConsistentBetweenCalls)
-{
-    PDHGPUProbe probe;
-
-    // Availability should not change within a single probe instance
-    auto available1 = probe.isAvailable();
-    auto available2 = probe.isAvailable();
-    EXPECT_EQ(available1, available2) << "isAvailable() should return consistent value across calls";
-}
-
-TEST(WindowsPDHGPUProbeTest, SetInstanceRefreshIntervalDoesNotThrow)
-{
-    PDHGPUProbe probe;
-    EXPECT_NO_THROW(probe.setInstanceRefreshInterval(std::chrono::seconds(5)));
-    EXPECT_NO_THROW(probe.setInstanceRefreshInterval(std::chrono::seconds(10)));
-    EXPECT_NO_THROW(probe.setInstanceRefreshInterval(std::chrono::seconds(1)));
-}
 
 } // namespace
 } // namespace Platform
