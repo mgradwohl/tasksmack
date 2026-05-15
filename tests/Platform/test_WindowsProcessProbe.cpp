@@ -407,7 +407,7 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 // Multithreading Tests
 // =============================================================================
 
-TEST(WindowsProcessProbeTest, ConcurrentEnumerationAcrossIndependentProbeInstances)
+TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
 {
     std::atomic<int> successCount{0};
     std::atomic<bool> running{true};
@@ -434,8 +434,7 @@ TEST(WindowsProcessProbeTest, ConcurrentEnumerationAcrossIndependentProbeInstanc
         }
     };
 
-    // Start multiple threads enumerating with independent probe instances.
-    // This validates concurrent enumeration behavior without sharing probe state.
+    // Start multiple threads enumerating concurrently
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i)
     {
