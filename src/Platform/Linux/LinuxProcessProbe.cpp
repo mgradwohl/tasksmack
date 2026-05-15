@@ -239,7 +239,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
         std::call_once(m_IoCountersCheckFlag,
-                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed); });
+                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
             parseProcessIo(pid, counters, m_ProcRoot);
@@ -274,7 +274,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
     std::call_once(m_IoCountersCheckFlag,
-                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
+                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
@@ -635,12 +635,12 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     }
 }
 
-bool LinuxProcessProbe::checkIoCountersAvailability()
+bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
-    // Check if we can read /proc/self/io to determine I/O counter availability.
+    // Check if procRoot/self/io is readable to determine I/O counter availability.
     // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
     // or being the owner of the target process.
-    const std::ifstream selfIo("/proc/self/io");
+    const std::ifstream selfIo(procRoot / "self" / "io");
     return selfIo.is_open();
 }
 

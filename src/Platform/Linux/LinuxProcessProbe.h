@@ -98,8 +98,8 @@ class LinuxProcessProbe : public IProcessProbe
     /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
     static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
-    /// Check if we can read I/O counters (checks own process)
-    [[nodiscard]] static bool checkIoCountersAvailability();
+    /// Check if we can read I/O counters using the injected proc root
+    [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
 
     /// Get process status from cgroups (Suspended state detection)
     [[nodiscard]] static std::string getProcessStatus(int32_t pid, const std::filesystem::path& procRoot);

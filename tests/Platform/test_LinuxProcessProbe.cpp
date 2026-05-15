@@ -710,7 +710,8 @@ TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 TEST(LinuxProcessProbeTest, NonexistentProcDirDoesNotCrash)
 {
     const auto tmpDir = std::filesystem::temp_directory_path() / std::format("ts_test_proc_nonexist_{}", getpid());
-    std::filesystem::remove_all(tmpDir); // ensure it does not exist
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec); // ensure it does not exist; ignore error
     LinuxProcessProbe probe(tmpDir);
     auto result = probe.enumerate();
     EXPECT_TRUE(result.empty());
