@@ -374,10 +374,16 @@ ctest --preset asan-ubsan
 
 `ctest --preset asan-ubsan` injects:
 
-- `LSAN_OPTIONS=$penv{LSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp`
+- `LSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp:$penv{LSAN_OPTIONS}`
+
+The project suppression comes first; any caller-provided `LSAN_OPTIONS` are
+appended after it, so caller options take precedence. Caller-provided flags such
+as verbosity or `halt_on_error` are preserved. Note that `suppressions=` is a
+scalar key — if the caller already provides a `suppressions=` entry, it overrides
+the project's; in that case add required entries to `lsan.supp` directly.
 
 This suppression filters a known SDL3 LeakSanitizer false positive that affects
-Core window/application tests, while preserving any caller-provided LSAN flags.
+Core window/application tests.
 
 ThreadSanitizer:
 
@@ -389,7 +395,12 @@ ctest --preset tsan
 
 `ctest --preset tsan` injects:
 
-- `TSAN_OPTIONS=$penv{TSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp`
+- `TSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp:$penv{TSAN_OPTIONS}`
+
+The project suppression comes first; caller-provided `TSAN_OPTIONS` are appended
+after it and take precedence. Because `suppressions=` is a scalar key, a
+caller-provided `suppressions=` will override the project's — add entries to
+`tsan.supp` directly in that case.
 
 This suppression filters known ThreadSanitizer false positives in third-party
 pthread barrier paths, while preserving any caller-provided TSAN flags.

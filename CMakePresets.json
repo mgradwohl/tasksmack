@@ -491,7 +491,7 @@
                 "outputOnFailure": true
             },
             "environment": {
-                "LSAN_OPTIONS": "$penv{LSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp"
+                "LSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp:$penv{LSAN_OPTIONS}"
             }
         },
         {
@@ -502,7 +502,7 @@
                 "outputOnFailure": true
             },
             "environment": {
-                "TSAN_OPTIONS": "$penv{TSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp"
+                "TSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp:$penv{TSAN_OPTIONS}"
             }
         },
         {
