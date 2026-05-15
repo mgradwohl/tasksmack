@@ -20,6 +20,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      actions: write
 
     steps:
       - name: Validate tag is strict semver
@@ -57,6 +58,7 @@ jobs:
         run: |
           BRANCH="chore/changelog-${{ github.ref_name }}"
           if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+            git fetch origin "$BRANCH"
             git checkout -B "$BRANCH" "origin/$BRANCH"
           else
             git checkout -B "$BRANCH" origin/main
