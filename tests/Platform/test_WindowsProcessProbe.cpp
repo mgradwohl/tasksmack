@@ -407,53 +407,57 @@ TEST(WindowsProcessProbeTest, HandlesRapidEnumeration)
 // Multithreading Tests
 // =============================================================================
 
-// Temporarily disabled - investigating CI failures
-// TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
-// {
-//     WindowsProcessProbe probe;
-//
-//     std::atomic<int> successCount{0};
-//     std::atomic<bool> running{true};
-//
-//     auto enumerateTask = [&]()
-//     {
-//         while (running)
-//         {
-//             try
-//             {
-//                 const auto processes = probe.enumerate();
-//                 if (!processes.empty())
-//                 {
-//                     ++successCount;
-//                 }
-//             }
-//             catch (...)
-//             {
-//                 // Enumeration should not throw
-//                 FAIL() << "Enumeration threw an exception";
-//             }
-//         }
-//     };
-//
-//     // Start multiple threads enumerating concurrently
-//     std::vector<std::thread> threads;
-//     for (int i = 0; i < 4; ++i)
-//     {
-//         threads.emplace_back(enumerateTask);
-//     }
-//
-//     // Let them run for a bit
-//     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-//     running = false;
-//
-//     for (auto& t : threads)
-//     {
-//         t.join();
-//     }
-//
-//     // All enumerations should have succeeded
-//     EXPECT_GT(successCount.load(), 0);
-// }
+TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
+{
+    std::atomic<int> successCount{0};
+    std::atomic<bool> running{true};
+    constexpr int TARGET_SUCCESSES = 4; // Ensure each thread completes at least one iteration
+
+    auto enumerateTask = [&]()
+    {
+        WindowsProcessProbe probe;
+        while (running)
+        {
+            try
+            {
+                const auto processes = probe.enumerate();
+                if (!processes.empty())
+                {
+                    ++successCount;
+                }
+            }
+            catch (...)
+            {
+                // Enumeration should not throw
+                FAIL() << "Enumeration threw an exception";
+            }
+        }
+    };
+
+    // Start multiple threads enumerating concurrently
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i)
+    {
+        threads.emplace_back(enumerateTask);
+    }
+
+    // Wait until we reach the target success count or timeout (500ms to handle heavily-loaded CI agents)
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline && successCount.load() < TARGET_SUCCESSES)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    running = false;
+
+    for (auto& t : threads)
+    {
+        t.join();
+    }
+
+    // Each thread should have completed at least one successful enumeration
+    EXPECT_GE(successCount.load(), TARGET_SUCCESSES)
+        << "Expected at least " << TARGET_SUCCESSES << " successful enumerations, got " << successCount.load();
+}
 
 // =============================================================================
 // Publisher, Type, and GDI Object Tests (Issues #184, #185, #195)

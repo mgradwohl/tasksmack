@@ -49,6 +49,21 @@ TEST(WindowsProcessActionsTest, ResumeNotSupported)
     EXPECT_GT(result.errorMessage.size(), 0ULL);
 }
 
+TEST(WindowsProcessActionsTest, SetPriorityRejectsInvalidPid)
+{
+    WindowsProcessActions actions;
+
+    // Test PID 0 (boundary)
+    auto result = actions.setPriority(0, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Invalid PID");
+
+    // Test negative PID (covers full range of `pid <= 0` check)
+    result = actions.setPriority(-1, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Invalid PID");
+}
+
 TEST(WindowsProcessActionsTest, TerminateNonExistentProcess)
 {
     WindowsProcessActions actions;
