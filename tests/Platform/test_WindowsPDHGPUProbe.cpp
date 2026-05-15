@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+
 namespace Platform
 {
 namespace

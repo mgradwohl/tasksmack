@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <unordered_set>
 
 namespace Platform

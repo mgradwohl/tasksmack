@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+
 namespace Platform
 {
 namespace
