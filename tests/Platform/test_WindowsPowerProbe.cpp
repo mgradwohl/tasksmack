@@ -35,6 +35,12 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     if (caps.hasBattery)
     {
         EXPECT_TRUE(caps.hasChargePercent);
+        EXPECT_FALSE(caps.hasChargeCapacity);
+        EXPECT_FALSE(caps.hasPowerRate);
+        EXPECT_FALSE(caps.hasVoltage);
+        EXPECT_FALSE(caps.hasTechnology);
+        EXPECT_FALSE(caps.hasCycleCount);
+        EXPECT_FALSE(caps.hasHealthPercent);
     }
 }
 
@@ -62,6 +68,7 @@ TEST(WindowsPowerProbeTest, ReadSucceeds)
         // No battery present
         EXPECT_EQ(counters.state, BatteryState::NotPresent);
         EXPECT_TRUE(counters.isOnAc);
+        EXPECT_EQ(counters.chargePercent, -1);
     }
 }
 
