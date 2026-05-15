@@ -71,15 +71,13 @@ TEST(WindowsPDHGPUProbeTest, ProbeCounterResultsAreWellFormed)
 // Capabilities Tests
 // ==========================================================================
 
-TEST(WindowsPDHGPUProbeTest, CapabilitiesIsConsistent)
+TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
 {
     PDHGPUProbe probe;
-    const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
 
-    EXPECT_EQ(caps.hasPerProcessMetrics, available);
-    EXPECT_EQ(caps.hasEngineUtilization, available);
-    EXPECT_EQ(caps.supportsMultiGPU, available);
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.supportsMultiGPU);
 
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);

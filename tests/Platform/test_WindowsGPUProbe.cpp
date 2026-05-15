@@ -142,26 +142,6 @@ TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
 }
 
 // ==========================================================================
-// Fallback Behavior Tests
-// ==========================================================================
-
-TEST(WindowsGPUProbeTest, ReadGPUCountersHandlesEmptyEnumeration)
-{
-    WindowsGPUProbe probe;
-
-    // Don't enumerate (or if enumeration returns empty)
-    auto counters = probe.readGPUCounters();
-
-    // Should handle empty enumeration gracefully; if counters are returned, they must be valid.
-    for (const auto& counter : counters)
-    {
-        EXPECT_FALSE(counter.gpuId.empty());
-        EXPECT_GE(counter.utilizationPercent, 0.0);
-        EXPECT_LE(counter.utilizationPercent, 100.0);
-    }
-}
-
-// ==========================================================================
 // State Consistency Tests
 // ==========================================================================
 

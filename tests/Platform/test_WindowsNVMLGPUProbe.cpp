@@ -41,29 +41,18 @@ TEST(WindowsNVMLGPUProbeTest, IsAvailableReturnsBool)
     EXPECT_EQ(available1, available2) << "isAvailable() should be stable across consecutive calls";
 }
 
-TEST(WindowsNVMLGPUProbeTest, UnavailableProbeReturnsFalseForIsAvailable)
+TEST(WindowsNVMLGPUProbeTest, AvailabilityMatchesCapabilities)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
 
-    if (!available)
-    {
-        EXPECT_FALSE(caps.hasTemperature);
-        EXPECT_FALSE(caps.hasPowerMetrics);
-        EXPECT_FALSE(caps.hasClockSpeeds);
-        EXPECT_FALSE(caps.hasFanSpeed);
-        EXPECT_FALSE(caps.hasPCIeMetrics);
-        EXPECT_FALSE(caps.hasPerProcessMetrics);
-    }
-    else
-    {
-        EXPECT_TRUE(caps.hasTemperature);
-        EXPECT_TRUE(caps.hasPowerMetrics);
-        EXPECT_TRUE(caps.hasClockSpeeds);
-        EXPECT_TRUE(caps.hasFanSpeed);
-        EXPECT_TRUE(caps.hasPCIeMetrics);
-    }
+    EXPECT_EQ(caps.hasTemperature, available);
+    EXPECT_EQ(caps.hasPowerMetrics, available);
+    EXPECT_EQ(caps.hasClockSpeeds, available);
+    EXPECT_EQ(caps.hasFanSpeed, available);
+    EXPECT_EQ(caps.hasPCIeMetrics, available);
+    EXPECT_EQ(caps.supportsMultiGPU, available);
 }
 
 // ==========================================================================
