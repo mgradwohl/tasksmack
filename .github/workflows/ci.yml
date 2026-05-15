@@ -46,7 +46,9 @@ jobs:
         id: set_output
         run: |
           if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
-            if [[ "${{ github.head_ref }}" == chore/changelog-* ]]; then
+            if [[ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" && \
+                  "${{ github.event.pull_request.user.login }}" = 'github-actions[bot]' && \
+                  "${{ github.head_ref }}" == chore/changelog-* ]]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
             else
               echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
