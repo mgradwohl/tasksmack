@@ -105,12 +105,17 @@ jobs:
           git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
           git push origin "$BRANCH"
           if [ "$PR_EXISTS" = false ]; then
-            gh pr create \
+            if ! gh pr create \
               --base main \
               --head "$BRANCH" \
               --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
               --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
-              --label "documentation"
+              --label "documentation"; then
+              echo "Unable to create PR from workflow token."
+              echo "Create it manually: https://github.com/${{ github.repository }}/pull/new/$BRANCH"
+              # Do not fail release-related automation if PR creation is restricted by repo settings.
+              exit 0
+            fi
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
