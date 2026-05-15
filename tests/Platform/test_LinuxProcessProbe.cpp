@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <thread>
 
@@ -671,71 +672,82 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
 
 // ========== Error Path / Injection Tests ==========
 
+// RAII helper: creates a uniquely-named temp directory (with PID suffix to
+// avoid parallel-test collisions) and removes it on destruction so cleanup
+// happens even if an assertion fires.
+struct ScopedTempDir
+{
+    std::filesystem::path path;
+
+    explicit ScopedTempDir(std::string_view name) : path(std::filesystem::temp_directory_path() / std::format("{}_{}", name, getpid()))
+    {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+    }
+
+    ~ScopedTempDir()
+    {
+        std::filesystem::remove_all(path);
+    }
+
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+    ScopedTempDir(ScopedTempDir&&) = delete;
+    ScopedTempDir& operator=(ScopedTempDir&&) = delete;
+};
+
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_empty";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxProcessProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_proc_empty");
+    LinuxProcessProbe probe(scoped.path);
     auto processes = probe.enumerate();
     EXPECT_TRUE(processes.empty());
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxProcessProbeTest, NonexistentProcDirDoesNotCrash)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nonexist_12345xyz";
-    // Do not create the directory — it should not exist
+    const auto tmpDir = std::filesystem::temp_directory_path() / std::format("ts_test_proc_nonexist_{}", getpid());
+    std::filesystem::remove_all(tmpDir); // ensure it does not exist
     LinuxProcessProbe probe(tmpDir);
     auto result = probe.enumerate();
     EXPECT_TRUE(result.empty());
 }
 
-TEST(LinuxProcessProbeTest, MissingStatReturnZeroTotalCpuTime)
+TEST(LinuxProcessProbeTest, MissingStatReturnsZeroTotalCpuTime)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nocputime";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxProcessProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_proc_nocputime");
+    LinuxProcessProbe probe(scoped.path);
     EXPECT_EQ(probe.totalCpuTime(), 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
-TEST(LinuxProcessProbeTest, MissingMeminfoReturnZeroSystemMemory)
+TEST(LinuxProcessProbeTest, MissingMeminfoReturnsZeroSystemMemory)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nomeminfo";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxProcessProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_proc_nomeminfo");
+    LinuxProcessProbe probe(scoped.path);
     EXPECT_EQ(probe.systemTotalMemory(), 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxProcessProbeTest, ParseProcessStatMissingFileDoesNotCrash)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nostatfile";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir / "1234");
-    LinuxProcessProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_proc_nostatfile");
+    std::filesystem::create_directories(scoped.path / "1234");
+    LinuxProcessProbe probe(scoped.path);
     auto result = probe.enumerate();
     EXPECT_TRUE(result.empty());
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxProcessProbeTest, ParseProcessStatMalformedContentDoesNotCrash)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_badstat";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir / "1234");
+    ScopedTempDir scoped("ts_test_proc_badstat");
+    std::filesystem::create_directories(scoped.path / "1234");
     {
-        // Write garbage to stat — no valid fields
-        std::ofstream f(tmpDir / "1234" / "stat");
+        // Write garbage to stat — no valid fields; parse fails, enumerate returns empty
+        std::ofstream f(scoped.path / "1234" / "stat");
         f << "not valid stat content at all\n";
     }
-    LinuxProcessProbe probe(tmpDir);
+    LinuxProcessProbe probe(scoped.path);
     auto result = probe.enumerate();
-    (void) result; // Result may be empty or contain partial data
-    std::filesystem::remove_all(tmpDir);
+    EXPECT_TRUE(result.empty());
 }
 
 } // namespace

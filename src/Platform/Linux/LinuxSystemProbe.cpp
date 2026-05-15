@@ -148,10 +148,11 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
     // cpu0 user nice system idle iowait irq softirq steal guest guest_nice
     // cpu1 ...
 
-    std::ifstream statFile(procRoot / "stat");
+    const auto statPath = procRoot / "stat";
+    std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/stat");
+        spdlog::warn("Failed to open {}", statPath.string());
         return;
     }
 
@@ -193,7 +194,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
 
     if (!foundTotal)
     {
-        spdlog::warn("Failed to parse aggregate CPU line from /proc/stat");
+        spdlog::warn("Failed to parse aggregate CPU line from {}", statPath.string());
     }
 }
 
@@ -209,10 +210,11 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     // SwapFree:        2097152 kB
     // ...
 
-    std::ifstream memFile(procRoot / "meminfo");
+    const auto meminfoPath = procRoot / "meminfo";
+    std::ifstream memFile(meminfoPath);
     if (!memFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/meminfo");
+        spdlog::warn("Failed to open {}", meminfoPath.string());
         return;
     }
 
@@ -345,10 +347,11 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     //     lo: 1234567   12345    0    0    0     0          0         0  1234567   12345    0    0    0     0       0          0
     //   eth0: 9876543   98765    0    0    0     0          0         0  5432109   54321    0    0    0     0       0          0
 
-    std::ifstream netFile(m_ProcRoot / "net" / "dev");
+    const auto netDevPath = m_ProcRoot / "net" / "dev";
+    std::ifstream netFile(netDevPath);
     if (!netFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/net/dev");
+        spdlog::warn("Failed to open {}", netDevPath.string());
         return;
     }
 

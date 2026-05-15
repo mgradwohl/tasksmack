@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <thread>
 #include <unordered_map>
@@ -564,60 +565,72 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
 
 // ========== Error Path / Injection Tests ==========
 
+// RAII helper: creates a uniquely-named temp directory (with PID suffix to
+// avoid parallel-test collisions) and removes it on destruction so cleanup
+// happens even if an assertion fires.
+struct ScopedTempDir
+{
+    std::filesystem::path path;
+
+    explicit ScopedTempDir(std::string_view name) : path(std::filesystem::temp_directory_path() / std::format("{}_{}", name, getpid()))
+    {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+    }
+
+    ~ScopedTempDir()
+    {
+        std::filesystem::remove_all(path);
+    }
+
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+    ScopedTempDir(ScopedTempDir&&) = delete;
+    ScopedTempDir& operator=(ScopedTempDir&&) = delete;
+};
+
 TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nostat";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxSystemProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_sys_nostat");
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_EQ(counters.cpuTotal.user, 0ULL);
     EXPECT_EQ(counters.cpuTotal.system, 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nomem";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxSystemProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_sys_nomem");
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_EQ(counters.memory.totalBytes, 0ULL);
     EXPECT_EQ(counters.memory.availableBytes, 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxSystemProbeTest, MissingNetDevSilentlyReturnsZeroNetwork)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nonet";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir / "net");
-    LinuxSystemProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_sys_nonet");
+    std::filesystem::create_directories(scoped.path / "net");
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_EQ(counters.netRxBytes, 0ULL);
     EXPECT_EQ(counters.netTxBytes, 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nocpu";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
-    LinuxSystemProbe probe(tmpDir);
+    ScopedTempDir scoped("ts_test_sys_nocpu");
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_EQ(counters.cpuModel, "Unknown CPU");
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badnet";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir / "net");
+    ScopedTempDir scoped("ts_test_sys_badnet");
+    std::filesystem::create_directories(scoped.path / "net");
     {
-        std::ofstream f(tmpDir / "net" / "dev");
+        std::ofstream f(scoped.path / "net" / "dev");
         f << "Inter-|   Receive\n";
         f << " face |bytes packets\n";
         // Line without colon — should be skipped
@@ -627,26 +640,22 @@ TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
         // Valid line
         f << "   eth0:   12345 100 0 0 0 0 0 0   67890 200 0 0 0 0 0 0\n";
     }
-    LinuxSystemProbe probe(tmpDir);
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_GE(counters.netRxBytes, 12345ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 TEST(LinuxSystemProbeTest, StatWithNoCpuLineSilentlyReturnsZero)
 {
-    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badstat";
-    std::filesystem::remove_all(tmpDir);
-    std::filesystem::create_directories(tmpDir);
+    ScopedTempDir scoped("ts_test_sys_badstat");
     {
-        std::ofstream f(tmpDir / "stat");
+        std::ofstream f(scoped.path / "stat");
         f << "btime 1000000\n";
         f << "processes 1234\n";
     }
-    LinuxSystemProbe probe(tmpDir);
+    LinuxSystemProbe probe(scoped.path);
     auto counters = probe.read();
     EXPECT_EQ(counters.cpuTotal.user, 0ULL);
-    std::filesystem::remove_all(tmpDir);
 }
 
 } // namespace
