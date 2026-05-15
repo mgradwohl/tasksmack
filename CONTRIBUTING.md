@@ -787,12 +787,9 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 
 **Do not edit CHANGELOG.md manually.** The `changelog` workflow commits the regenerated file back to `main` automatically.
 
-#### Producing Your First Changelog
+#### Producing a Changelog
 
-> **One-time setup — branch protection:** The `changelog` workflow pushes a commit directly to `main`. If your repo has branch protection rules that require pull requests, you must first allow `github-actions[bot]` to bypass them:
-> _Settings → Branches → Branch protection rule for `main` → Allow specified actors to bypass required pull requests → add `github-actions[bot]`_
-
-Once that is done (or if you have no branch protection), producing a changelog is a single command:
+Producing a changelog is a single command:
 
 ```bash
 # 1. Make sure you are on main and fully up to date
@@ -809,7 +806,8 @@ The `changelog` workflow then runs automatically and:
 1. Validates the tag is strict semver (`vMAJOR.MINOR.PATCH`). Tags like `v1.0.0-rc1` or `v1.0.0.4` are rejected.
 2. Verifies the tag points to the current `HEAD` of `main`. Tagging from a branch or an older commit will abort the workflow.
 3. Runs git-cliff over the full commit history to generate `CHANGELOG.md`.
-4. Commits and pushes the updated `CHANGELOG.md` back to `main`.
+4. Opens a pull request (`chore/changelog-vX.Y.Z → main`) with the updated `CHANGELOG.md`.
+5. Merge the PR once CI passes — it will be labeled `documentation` for easy filtering.
 
 You can watch the progress under **Actions → Changelog** in the GitHub UI.
 
