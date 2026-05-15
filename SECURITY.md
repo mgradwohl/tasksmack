@@ -8,10 +8,10 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in this project, please report it responsibly:
+If you discover a security vulnerability in this project, please report it responsibly using [GitHub's private vulnerability reporting](https://github.com/mgradwohl/tasksmack/security/advisories/new):
 
 1. **Do not** open a public GitHub issue for security vulnerabilities
-2. Instead, please email the maintainer directly or use GitHub's private vulnerability reporting feature
+2. Use GitHub's private vulnerability reporting: https://github.com/mgradwohl/tasksmack/security/advisories/new
 
 ### What to Include
 
