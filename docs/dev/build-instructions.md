@@ -117,6 +117,7 @@ ctest --preset asan-ubsan
 `suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp` to inherited
 `LSAN_OPTIONS` (via `$penv{LSAN_OPTIONS}`), preserving caller-provided LSAN
 flags while enabling the project suppression.
+Here, `${sourceDir}` is the CMake Presets variable for the repository root.
 
 ### ThreadSanitizer
 

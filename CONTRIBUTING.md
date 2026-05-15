@@ -376,7 +376,7 @@ ctest --preset asan-ubsan
 
 - `LSAN_OPTIONS=$penv{LSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp`
 
-This suppression filters a known SDL3 LeakSanitizer false positive used by the
+This suppression filters a known SDL3 LeakSanitizer false positive that affects
 Core window/application tests, while preserving any caller-provided LSAN flags.
 
 ThreadSanitizer:
