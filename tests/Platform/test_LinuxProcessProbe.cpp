@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <system_error>
 #include <thread>
 
 #include <sys/wait.h>
@@ -681,13 +682,15 @@ struct ScopedTempDir
 
     explicit ScopedTempDir(std::string_view name) : path(std::filesystem::temp_directory_path() / std::format("{}_{}", name, getpid()))
     {
-        std::filesystem::remove_all(path);
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec); // best-effort pre-clean; ignore error
         std::filesystem::create_directories(path);
     }
 
-    ~ScopedTempDir()
+    ~ScopedTempDir() noexcept
     {
-        std::filesystem::remove_all(path);
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec); // must not throw from destructor
     }
 
     ScopedTempDir(const ScopedTempDir&) = delete;
