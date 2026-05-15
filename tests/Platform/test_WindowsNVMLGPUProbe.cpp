@@ -1,4 +1,4 @@
-#if defined(_WIN32)
+#ifdef _WIN32
 
 #include "Platform/Windows/NVMLGPUProbe.h"
 
@@ -94,6 +94,7 @@ TEST(WindowsNVMLGPUProbeTest, CounterBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
+    const auto gpus = probe.enumerateGPUs();
     auto counters = probe.readGPUCounters();
 
     if (!available)
@@ -102,6 +103,7 @@ TEST(WindowsNVMLGPUProbeTest, CounterBehaviorMatchesAvailability)
     }
     else
     {
+        EXPECT_FALSE(gpus.empty()) << "Available NVML should enumerate at least one GPU before reading counters";
         for (const auto& counter : counters)
         {
             EXPECT_FALSE(counter.gpuId.empty()) << "GPU counter id should not be empty when NVML is available";
@@ -115,6 +117,7 @@ TEST(WindowsNVMLGPUProbeTest, ProcessCounterBehaviorMatchesAvailability)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
+    const auto gpus = probe.enumerateGPUs();
     auto counters = probe.readProcessGPUCounters();
 
     if (!available)
@@ -123,6 +126,7 @@ TEST(WindowsNVMLGPUProbeTest, ProcessCounterBehaviorMatchesAvailability)
     }
     else
     {
+        EXPECT_FALSE(gpus.empty()) << "Available NVML should enumerate at least one GPU before reading process counters";
         for (const auto& counter : counters)
         {
             EXPECT_GE(counter.pid, 0) << "Process id should be non-negative";
@@ -191,4 +195,4 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeReturnsConsistentData)
 } // namespace
 } // namespace Platform
 
-#endif // defined(_WIN32)
+#endif // _WIN32

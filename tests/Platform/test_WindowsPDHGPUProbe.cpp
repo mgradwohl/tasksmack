@@ -1,4 +1,4 @@
-#if defined(_WIN32)
+#ifdef _WIN32
 
 #include "Platform/Windows/PDHGPUProbe.h"
 
@@ -112,4 +112,4 @@ TEST(WindowsPDHGPUProbeTest, SetInstanceRefreshIntervalDoesNotThrow)
 } // namespace
 } // namespace Platform
 
-#endif // defined(_WIN32)
+#endif // _WIN32

@@ -1,4 +1,4 @@
-#if defined(_WIN32)
+#ifdef _WIN32
 
 #include "Platform/Windows/WindowsGPUProbe.h"
 
@@ -199,4 +199,4 @@ TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
 } // namespace
 } // namespace Platform
 
-#endif // defined(_WIN32)
+#endif // _WIN32
