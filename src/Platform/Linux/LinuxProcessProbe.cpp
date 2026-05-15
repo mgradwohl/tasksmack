@@ -320,7 +320,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const auto statPath = (m_ProcRoot / std::to_string(pid) / "stat").string();
+    const auto statPath = m_ProcRoot / std::to_string(pid) / "stat";
     std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
@@ -613,7 +613,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     // Each entry is a symlink to an open file descriptor.
     // Note: May fail due to permissions (needs same user or root).
 
-    const auto fdPath = (procRoot / std::to_string(pid) / "fd").string();
+    const auto fdPath = procRoot / std::to_string(pid) / "fd";
 
     int32_t count = 0;
     try
@@ -631,7 +631,7 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, 
     catch (const std::exception& ex)
     {
         // Permission errors and other exceptional situations - leave handleCount at 0
-        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath, ex.what());
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
     }
 }
 
