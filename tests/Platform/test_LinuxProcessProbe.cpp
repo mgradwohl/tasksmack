@@ -19,6 +19,7 @@
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -673,31 +674,7 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
 
 // ========== Error Path / Injection Tests ==========
 
-// RAII helper: creates a uniquely-named temp directory (with PID suffix to
-// avoid parallel-test collisions) and removes it on destruction so cleanup
-// happens even if an assertion fires.
-struct ScopedTempDir
-{
-    std::filesystem::path path;
-
-    explicit ScopedTempDir(std::string_view name) : path(std::filesystem::temp_directory_path() / std::format("{}_{}", name, getpid()))
-    {
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec); // best-effort pre-clean; ignore error
-        std::filesystem::create_directories(path);
-    }
-
-    ~ScopedTempDir() noexcept
-    {
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec); // must not throw from destructor
-    }
-
-    ScopedTempDir(const ScopedTempDir&) = delete;
-    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
-    ScopedTempDir(ScopedTempDir&&) = delete;
-    ScopedTempDir& operator=(ScopedTempDir&&) = delete;
-};
+using Platform::Test::ScopedTempDir;
 
 TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
 {
