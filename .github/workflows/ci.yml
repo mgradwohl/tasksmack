@@ -116,7 +116,6 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: debug
-      llvm-version: '22'
 
   build-linux-release:
     needs: [detect-docs-only, validate-environment]
@@ -127,7 +126,6 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: release
-      llvm-version: '22'
 
   build-windows-debug:
     needs: [detect-docs-only, validate-environment-windows]
@@ -161,7 +159,7 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
-    needs: [detect-docs-only, validate-environment, build-linux-debug]
+    needs: [detect-docs-only, validate-environment]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
