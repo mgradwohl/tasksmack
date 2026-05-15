@@ -83,6 +83,11 @@ try {
     & $LlvmProfdata merge -sparse $profrawFiles -o "$BuildDir\default.profdata"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    # Files excluded from coverage: generated/third-party paths, test sources,
+    # and ImGui-only rendering files that cannot be exercised in unit tests.
+    # Keep in sync with tools/coverage.sh COV_IGNORE_REGEX.
+    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
+
     # Step 4: Generate HTML report
     Write-Host "==> Generating HTML report..."
     New-Item -ItemType Directory -Force -Path $CoverageDir | Out-Null
@@ -94,7 +99,7 @@ try {
         "-output-dir=$CoverageDir" `
         -show-line-counts-or-regions `
         -show-instantiations=false `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
+        "-ignore-filename-regex=$IgnoreRegex"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     # Step 5: Generate LCOV file for Codecov
@@ -104,7 +109,7 @@ try {
         "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
         -format=lcov `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h" `
+        "-ignore-filename-regex=$IgnoreRegex" `
         | Set-Content -Path $lcovPath -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -113,7 +118,7 @@ try {
     & $LlvmCov report `
         "$BuildDir\tests\TaskSmackTests.exe" `
         "-instr-profile=$BuildDir\default.profdata" `
-        "-ignore-filename-regex=.*(\\|/)(build|_deps|tests|\.cache)(\\|/).*|(\\|/)UI(\\|/)Widgets\.h|(\\|/)App(\\|/)Panels(\\|/)(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h"
+        "-ignore-filename-regex=$IgnoreRegex"
 
     Write-Host ""
     Write-Host "HTML report generated at: $CoverageDir\index.html" -ForegroundColor Green
