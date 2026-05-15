@@ -6,6 +6,7 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <string>

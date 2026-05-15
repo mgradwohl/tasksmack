@@ -567,7 +567,7 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
 
 using Platform::Test::ScopedTempDir;
 
-TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
+TEST(LinuxSystemProbeTest, MissingStatFileReturnsZeroCpu)
 {
     ScopedTempDir scoped("ts_test_sys_nostat");
     LinuxSystemProbe probe(scoped.path);
@@ -576,7 +576,7 @@ TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
     EXPECT_EQ(counters.cpuTotal.system, 0ULL);
 }
 
-TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
+TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
 {
     ScopedTempDir scoped("ts_test_sys_nomem");
     LinuxSystemProbe probe(scoped.path);
@@ -585,7 +585,7 @@ TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
     EXPECT_EQ(counters.memory.availableBytes, 0ULL);
 }
 
-TEST(LinuxSystemProbeTest, MissingNetDevSilentlyReturnsZeroNetwork)
+TEST(LinuxSystemProbeTest, MissingNetDevReturnsZeroNetwork)
 {
     ScopedTempDir scoped("ts_test_sys_nonet");
     std::filesystem::create_directories(scoped.path / "net");
@@ -603,7 +603,7 @@ TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
     EXPECT_EQ(counters.cpuModel, "Unknown CPU");
 }
 
-TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
+TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSkips)
 {
     ScopedTempDir scoped("ts_test_sys_badnet");
     std::filesystem::create_directories(scoped.path / "net");
@@ -623,7 +623,7 @@ TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
     EXPECT_GE(counters.netRxBytes, 12345ULL);
 }
 
-TEST(LinuxSystemProbeTest, StatWithNoCpuLineSilentlyReturnsZero)
+TEST(LinuxSystemProbeTest, StatWithNoCpuLineReturnsZero)
 {
     ScopedTempDir scoped("ts_test_sys_badstat");
     {
