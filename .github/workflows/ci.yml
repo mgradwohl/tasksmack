@@ -107,7 +107,6 @@ jobs:
         build_type: [debug, release]
     permissions:
       contents: read
-      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -123,7 +122,6 @@ jobs:
         build_type: [debug, release]
     permissions:
       contents: read
-      actions: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest
@@ -148,7 +146,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      actions: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -201,7 +198,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      actions: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

@@ -22,6 +22,9 @@ on:
         type: string
         default: '22.1.0'
 
+# Deny all permissions by default; each job must explicitly declare what it needs.
+permissions: {}
+
 jobs:
   build-test:
     name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
@@ -29,7 +32,6 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
-      actions: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
