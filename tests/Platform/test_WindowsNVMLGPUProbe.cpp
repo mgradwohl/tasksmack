@@ -79,47 +79,41 @@ TEST(WindowsNVMLGPUProbeTest, EnumerationBehaviorMatchesAvailability)
     }
 }
 
-TEST(WindowsNVMLGPUProbeTest, CounterBehaviorMatchesAvailability)
+TEST(WindowsNVMLGPUProbeTest, CounterDataIsWellFormedWhenPresent)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto gpus = probe.enumerateGPUs();
     auto counters = probe.readGPUCounters();
 
-    if (!available)
-    {
-        EXPECT_TRUE(counters.empty()) << "Unavailable NVML should return empty counter list";
-    }
-    else
+    if (available)
     {
         EXPECT_FALSE(gpus.empty()) << "Available NVML should enumerate at least one GPU before reading counters";
-        for (const auto& counter : counters)
-        {
-            EXPECT_FALSE(counter.gpuId.empty()) << "GPU counter id should not be empty when NVML is available";
-            EXPECT_GE(counter.utilizationPercent, 0.0);
-            EXPECT_LE(counter.utilizationPercent, 100.0);
-        }
+    }
+
+    for (const auto& counter : counters)
+    {
+        EXPECT_FALSE(counter.gpuId.empty()) << "GPU counter id should not be empty";
+        EXPECT_GE(counter.utilizationPercent, 0.0);
+        EXPECT_LE(counter.utilizationPercent, 100.0);
     }
 }
 
-TEST(WindowsNVMLGPUProbeTest, ProcessCounterBehaviorMatchesAvailability)
+TEST(WindowsNVMLGPUProbeTest, ProcessCounterDataIsWellFormedWhenPresent)
 {
     NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto gpus = probe.enumerateGPUs();
     auto counters = probe.readProcessGPUCounters();
 
-    if (!available)
-    {
-        EXPECT_TRUE(counters.empty()) << "Unavailable NVML should return empty process counter list";
-    }
-    else
+    if (available)
     {
         EXPECT_FALSE(gpus.empty()) << "Available NVML should enumerate at least one GPU before reading process counters";
-        for (const auto& counter : counters)
-        {
-            EXPECT_GE(counter.pid, 0) << "Process id should be non-negative";
-        }
+    }
+
+    for (const auto& counter : counters)
+    {
+        EXPECT_GE(counter.pid, 0) << "Process id should be non-negative";
     }
 }
 

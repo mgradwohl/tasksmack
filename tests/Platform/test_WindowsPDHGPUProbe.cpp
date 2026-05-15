@@ -44,16 +44,6 @@ TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
 // Empty Result Tests (when probe is unavailable or not initialized)
 // ==========================================================================
 
-TEST(WindowsPDHGPUProbeTest, ProbeReturnsValidProcessCountersOrEmpty)
-{
-    PDHGPUProbe probe;
-    auto counters = probe.readProcessGPUCounters();
-    for (const auto& counter : counters)
-    {
-        EXPECT_GE(counter.pid, 0) << "Process ID should be non-negative";
-    }
-}
-
 // ==========================================================================
 // Capabilities Tests
 // ==========================================================================

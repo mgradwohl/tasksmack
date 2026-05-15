@@ -33,7 +33,7 @@ TEST(WindowsGPUProbeTest, BasicOperationsDoNotThrow)
 // Enumeration Tests
 // ==========================================================================
 
-TEST(WindowsGPUProbeTest, EnumerateGPUsReturnsValidList)
+TEST(WindowsGPUProbeTest, EnumerateGPUsSmokeReturnsWellFormedDataWhenPresent)
 {
     WindowsGPUProbe probe;
     auto gpus = probe.enumerateGPUs();
