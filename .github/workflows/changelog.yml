@@ -20,7 +20,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      actions: write
 
     steps:
       - name: Validate tag is strict semver
@@ -54,16 +53,21 @@ jobs:
 
       - name: Prepare changelog branch
         # Reset the branch before generation so reruns always start from the
-        # existing changelog branch when it exists, or from main on first run.
+        # existing changelog PR branch when it exists, or from main on first run.
         run: |
           BRANCH="chore/changelog-${{ github.ref_name }}"
-          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+              git push origin --delete "$BRANCH"
+            fi
+            git checkout -B "$BRANCH" origin/main
+          else
             git fetch origin "$BRANCH"
             git checkout -B "$BRANCH" "origin/$BRANCH"
-          else
-            git checkout -B "$BRANCH" origin/main
           fi
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Changelog
         uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4
@@ -93,7 +97,6 @@ jobs:
           if git diff --staged --quiet; then
             if [ "$PR_EXISTS" = true ]; then
               echo "PR for $BRANCH already exists — nothing to update."
-              gh workflow run CI --ref "$BRANCH"
             fi
             exit 0
           fi
@@ -111,8 +114,5 @@ jobs:
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
-          # GITHUB_TOKEN-triggered pushes may not start downstream workflows,
-          # so trigger CI explicitly to ensure required checks are produced.
-          gh workflow run CI --ref "$BRANCH"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
