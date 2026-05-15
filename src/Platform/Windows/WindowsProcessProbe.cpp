@@ -39,6 +39,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -365,16 +366,19 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // Normalise to lowercase before lookup so that different-cased paths for the same
     // binary (which QueryFullProcessImageNameW does not guarantee to be stable) share
     // a single cache entry.
-    // NOTE: not guarded by a mutex. enumerate() is invoked on the main thread and
-    // BackgroundSampler (which would require a lock) is not yet active. If concurrent
-    // enumeration is enabled in the future, this cache must be protected by a mutex.
+    // Only cache lookups and inserts are serialised; the expensive version-info I/O
+    // is performed outside the lock so concurrent threads do not stall each other.
+    static std::mutex s_cacheMutex;
     static std::unordered_map<std::wstring, std::string> s_cache;
     std::wstring cacheKey(imagePath);
     std::ranges::transform(
         cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
-    if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
     {
-        return it->second;
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
+        {
+            return it->second;
+        }
     }
 
     // GetFileVersionInfoSizeW requires a LPDWORD that receives an internal handle.
@@ -383,14 +387,16 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.c_str(), &unused);
     if (infoSize == 0)
     {
-        s_cache.emplace(cacheKey, std::string{});
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
 
     std::vector<BYTE> buffer(infoSize);
     if (GetFileVersionInfoW(imagePath.c_str(), 0, infoSize, buffer.data()) == 0)
     {
-        s_cache.emplace(cacheKey, std::string{});
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
 
@@ -443,7 +449,10 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         result = queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
     }
 
-    s_cache.emplace(cacheKey, result);
+    {
+        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        s_cache.try_emplace(cacheKey, result);
+    }
     return result;
 }
 
