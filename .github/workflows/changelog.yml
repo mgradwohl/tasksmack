@@ -64,27 +64,36 @@ jobs:
       - name: Commit and push CHANGELOG.md via PR
         # Branch protection rulesets on main require status checks to pass,
         # so we cannot push directly. Instead, open a PR via the GitHub CLI.
-        # The PR is marked auto-merge so it merges as soon as CI passes.
+        # This step is rerun-safe: it reuses the same branch/PR if they exist.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="chore/changelog-${{ github.ref_name }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
           git add CHANGELOG.md
           # Nothing to do if the file did not change.
           if git diff --staged --quiet; then
-            echo "CHANGELOG.md unchanged — skipping PR."
+            echo "CHANGELOG.md unchanged — skipping PR creation/update."
             exit 0
           fi
-          BRANCH="chore/changelog-${{ github.ref_name }}"
-          git checkout -b "$BRANCH"
           # Use a non-conventional commit message so git-cliff does not
           # include this generated changelog commit in future release notes.
           git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
-          git push origin "$BRANCH"
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
-            --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
-            --label "documentation"
+          git push --force-with-lease origin "$BRANCH"
+          if gh pr view "$BRANCH" --json url > /dev/null 2>&1; then
+            echo "PR for $BRANCH already exists — branch updated."
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
+              --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
+              --label "documentation"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
