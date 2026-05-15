@@ -14,6 +14,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -53,8 +54,13 @@ template<std::integral T> [[nodiscard]] constexpr auto checkedPositiveToSizeT(T 
 
 } // namespace
 
-LinuxSystemProbe::LinuxSystemProbe()
-    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
+LinuxSystemProbe::LinuxSystemProbe() : LinuxSystemProbe(std::filesystem::path("/proc"))
+{}
+
+LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot)
+    : m_ProcRoot(std::move(procRoot)),
+      m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
+      m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
     if (m_TicksPerSecond <= 0)
     {
@@ -74,7 +80,7 @@ LinuxSystemProbe::LinuxSystemProbe()
     }
 
     // Read CPU model from /proc/cpuinfo (cached)
-    std::ifstream cpuInfo("/proc/cpuinfo");
+    std::ifstream cpuInfo(m_ProcRoot / "cpuinfo");
     if (cpuInfo.is_open())
     {
         std::string line;
@@ -107,10 +113,10 @@ LinuxSystemProbe::LinuxSystemProbe()
 SystemCounters LinuxSystemProbe::read()
 {
     SystemCounters counters;
-    readCpuCounters(counters);
-    readMemoryCounters(counters);
-    readUptime(counters);
-    readLoadAvg(counters);
+    readCpuCounters(counters, m_ProcRoot);
+    readMemoryCounters(counters, m_ProcRoot);
+    readUptime(counters, m_ProcRoot);
+    readLoadAvg(counters, m_ProcRoot);
     readCpuFreq(counters);
     readNetworkCounters(counters);
     readStaticInfo(counters);
@@ -135,14 +141,14 @@ long LinuxSystemProbe::ticksPerSecond() const
     return m_TicksPerSecond;
 }
 
-void LinuxSystemProbe::readCpuCounters(SystemCounters& counters)
+void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/stat
     // cpu  user nice system idle iowait irq softirq steal guest guest_nice
     // cpu0 user nice system idle iowait irq softirq steal guest guest_nice
     // cpu1 ...
 
-    std::ifstream statFile("/proc/stat");
+    std::ifstream statFile(procRoot / "stat");
     if (!statFile.is_open())
     {
         spdlog::warn("Failed to open /proc/stat");
@@ -191,7 +197,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters)
     }
 }
 
-void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters)
+void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/meminfo
     // MemTotal:       16384000 kB
@@ -203,7 +209,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters)
     // SwapFree:        2097152 kB
     // ...
 
-    std::ifstream memFile("/proc/meminfo");
+    std::ifstream memFile(procRoot / "meminfo");
     if (!memFile.is_open())
     {
         spdlog::warn("Failed to open /proc/meminfo");
@@ -260,12 +266,12 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters)
     }
 }
 
-void LinuxSystemProbe::readUptime(SystemCounters& counters)
+void LinuxSystemProbe::readUptime(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/uptime
     // uptime_seconds idle_seconds
 
-    std::ifstream uptimeFile("/proc/uptime");
+    std::ifstream uptimeFile(procRoot / "uptime");
     if (!uptimeFile.is_open())
     {
         return;
@@ -287,13 +293,13 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.cpuCoreCount = m_NumCores;
 }
 
-void LinuxSystemProbe::readLoadAvg(SystemCounters& counters)
+void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/loadavg
     // 0.31 0.65 0.97 1/330 12345
     // load1 load5 load15 running/total lastpid
 
-    std::ifstream loadFile("/proc/loadavg");
+    std::ifstream loadFile(procRoot / "loadavg");
     if (!loadFile.is_open())
     {
         return;
@@ -339,7 +345,7 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     //     lo: 1234567   12345    0    0    0     0          0         0  1234567   12345    0    0    0     0       0          0
     //   eth0: 9876543   98765    0    0    0     0          0         0  5432109   54321    0    0    0     0       0          0
 
-    std::ifstream netFile("/proc/net/dev");
+    std::ifstream netFile(m_ProcRoot / "net" / "dev");
     if (!netFile.is_open())
     {
         spdlog::warn("Failed to open /proc/net/dev");

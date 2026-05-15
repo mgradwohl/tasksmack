@@ -13,6 +13,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -558,6 +560,87 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
     // All reads should succeed
     EXPECT_EQ(successCount.load(), 200); // 4 threads * 50 reads
     EXPECT_EQ(errorCount.load(), 0);
+}
+
+// ========== Error Path / Injection Tests ==========
+
+TEST(LinuxSystemProbeTest, MissingStatFileSilentlyReturnsZeroCpu)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nostat";
+    std::filesystem::create_directories(tmpDir);
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuTotal.user, 0ULL);
+    EXPECT_EQ(counters.cpuTotal.system, 0ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxSystemProbeTest, MissingMeminfoSilentlyReturnsZeroMemory)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nomem";
+    std::filesystem::create_directories(tmpDir);
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.memory.totalBytes, 0ULL);
+    EXPECT_EQ(counters.memory.availableBytes, 0ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxSystemProbeTest, MissingNetDevSilentlyReturnsZeroNetwork)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nonet";
+    std::filesystem::create_directories(tmpDir / "net");
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.netRxBytes, 0ULL);
+    EXPECT_EQ(counters.netTxBytes, 0ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_nocpu";
+    std::filesystem::create_directories(tmpDir);
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuModel, "Unknown CPU");
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSilentlySkips)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badnet";
+    std::filesystem::create_directories(tmpDir / "net");
+    {
+        std::ofstream f(tmpDir / "net" / "dev");
+        f << "Inter-|   Receive\n";
+        f << " face |bytes packets\n";
+        // Line without colon — should be skipped
+        f << "no colon here at all\n";
+        // Line with whitespace-only interface name — should be skipped
+        f << "   :   0 0 0 0 0 0 0 0   0 0 0 0 0 0 0 0\n";
+        // Valid line
+        f << "   eth0:   12345 100 0 0 0 0 0 0   67890 200 0 0 0 0 0 0\n";
+    }
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_GE(counters.netRxBytes, 12345ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxSystemProbeTest, StatWithNoCpuLineSilentlyReturnsZero)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_sys_badstat";
+    std::filesystem::create_directories(tmpDir);
+    {
+        std::ofstream f(tmpDir / "stat");
+        f << "btime 1000000\n";
+        f << "processes 1234\n";
+    }
+    LinuxSystemProbe probe(tmpDir);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuTotal.user, 0ULL);
+    std::filesystem::remove_all(tmpDir);
 }
 
 } // namespace

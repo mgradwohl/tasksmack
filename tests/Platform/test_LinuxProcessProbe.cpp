@@ -669,6 +669,71 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
 }
 #endif
 
+// ========== Error Path / Injection Tests ==========
+
+TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_empty";
+    std::filesystem::create_directories(tmpDir);
+    LinuxProcessProbe probe(tmpDir);
+    auto processes = probe.enumerate();
+    EXPECT_TRUE(processes.empty());
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxProcessProbeTest, NonexistentProcDirDoesNotCrash)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nonexist_12345xyz";
+    // Do not create the directory — it should not exist
+    LinuxProcessProbe probe(tmpDir);
+    auto result = probe.enumerate();
+    EXPECT_TRUE(result.empty());
+}
+
+TEST(LinuxProcessProbeTest, MissingStatReturnZeroTotalCpuTime)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nocputime";
+    std::filesystem::create_directories(tmpDir);
+    LinuxProcessProbe probe(tmpDir);
+    EXPECT_EQ(probe.totalCpuTime(), 0ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxProcessProbeTest, MissingMeminfoReturnZeroSystemMemory)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nomeminfo";
+    std::filesystem::create_directories(tmpDir);
+    LinuxProcessProbe probe(tmpDir);
+    EXPECT_EQ(probe.systemTotalMemory(), 0ULL);
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxProcessProbeTest, ParseProcessStatMissingFileDoesNotCrash)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_nostatfile";
+    // Create a pid subdirectory with no stat file inside
+    std::filesystem::create_directories(tmpDir / "1234");
+    LinuxProcessProbe probe(tmpDir);
+    auto result = probe.enumerate();
+    EXPECT_TRUE(result.empty());
+    std::filesystem::remove_all(tmpDir);
+}
+
+TEST(LinuxProcessProbeTest, ParseProcessStatMalformedContentDoesNotCrash)
+{
+    auto tmpDir = std::filesystem::temp_directory_path() / "ts_test_proc_badstat";
+    std::filesystem::create_directories(tmpDir / "1234");
+    {
+        // Write garbage to stat — no valid fields
+        std::ofstream f(tmpDir / "1234" / "stat");
+        f << "not valid stat content at all\n";
+    }
+    LinuxProcessProbe probe(tmpDir);
+    auto result = probe.enumerate();
+    (void) result; // Result may be empty or contain partial data
+    std::filesystem::remove_all(tmpDir);
+}
+
 } // namespace
 } // namespace Platform
 

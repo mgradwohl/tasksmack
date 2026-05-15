@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -18,6 +19,11 @@ class LinuxSystemProbe : public ISystemProbe
 {
   public:
     LinuxSystemProbe();
+
+    /// Testability constructor: reads from a custom proc root instead of /proc.
+    /// Useful for unit tests that supply synthetic /proc content.
+    explicit LinuxSystemProbe(std::filesystem::path procRoot);
+
     ~LinuxSystemProbe() override = default;
 
     // Non-copyable, non-movable (contains mutex)
@@ -31,10 +37,10 @@ class LinuxSystemProbe : public ISystemProbe
     [[nodiscard]] long ticksPerSecond() const override;
 
   private:
-    static void readCpuCounters(SystemCounters& counters);
-    static void readMemoryCounters(SystemCounters& counters);
-    static void readUptime(SystemCounters& counters);
-    static void readLoadAvg(SystemCounters& counters);
+    static void readCpuCounters(SystemCounters& counters, const std::filesystem::path& procRoot);
+    static void readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot);
+    static void readUptime(SystemCounters& counters, const std::filesystem::path& procRoot);
+    static void readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readCpuFreq(SystemCounters& counters);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
@@ -61,6 +67,7 @@ class LinuxSystemProbe : public ISystemProbe
     /// @param currentInterfaces Vector of interface names seen in current enumeration
     void cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces);
 
+    std::filesystem::path m_ProcRoot;
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 

@@ -93,6 +93,10 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 echo "==> Merging coverage data..."
 $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"
 
+# Files excluded from coverage: generated/third-party paths, test sources,
+# and ImGui-only rendering files that cannot be exercised in unit tests.
+COV_IGNORE_REGEX='.*/(build|_deps|tests|\.cache)/.*|.*/UI/Widgets\.h|.*/App/Panels/(ProcessDetailsPanel|ProcessesPanel|SystemMetricsPanel)\.h'
+
 # Step 4: Generate HTML report
 echo "==> Generating HTML report..."
 mkdir -p "$COVERAGE_DIR"
@@ -104,14 +108,14 @@ $LLVM_COV show \
     -output-dir="$COVERAGE_DIR" \
     -show-line-counts-or-regions \
     -show-instantiations=false \
-    -ignore-filename-regex='.*/(build|_deps|tests|\.cache)/.*'
+    -ignore-filename-regex="${COV_IGNORE_REGEX}"
 
 # Step 5: Generate summary
 echo "==> Coverage Summary:"
 $LLVM_COV report \
     "${BUILD_DIR}/tests/TaskSmackTests" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
-    -ignore-filename-regex='.*/(build|_deps|tests|\.cache)/.*'
+    -ignore-filename-regex="${COV_IGNORE_REGEX}"
 
 echo ""
 echo "HTML report generated at: ${COVERAGE_DIR}/index.html"
