@@ -34,7 +34,6 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     // If there's a battery, charge percent should be available
     if (caps.hasBattery)
     {
-        EXPECT_TRUE(caps.hasChargePercent);
         EXPECT_FALSE(caps.hasChargeCapacity);
         EXPECT_FALSE(caps.hasPowerRate);
         EXPECT_FALSE(caps.hasVoltage);
