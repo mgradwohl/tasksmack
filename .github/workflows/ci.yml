@@ -5,6 +5,9 @@ on:
     branches: ['dev/**']
   pull_request:
     branches: [main, 'dev/**']
+  schedule:
+    # Run weekly on Sundays at 09:00 UTC
+    - cron: '0 9 * * 0'
   workflow_dispatch:
 
 concurrency:
@@ -104,35 +107,45 @@ jobs:
         shell: pwsh
         run: ./tools/check-prereqs.ps1
 
-  build-linux:
+  build-linux-debug:
     needs: [detect-docs-only, validate-environment]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
-    strategy:
-      fail-fast: true
-      matrix:
-        build_type: [debug, release]
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
-      build_type: ${{ matrix.build_type }}
-      llvm-version: '22'
+      build_type: debug
 
-  build-windows:
+  build-linux-release:
+    needs: [detect-docs-only, validate-environment]
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-24.04
+      build_type: release
+
+  build-windows-debug:
     needs: [detect-docs-only, validate-environment-windows]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
-    strategy:
-      fail-fast: true
-      matrix:
-        build_type: [debug, release]
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest
-      build_type: ${{ matrix.build_type }}
-      llvm-semver-version: '22.1.0'
+      build_type: debug
+
+  build-windows-release:
+    needs: [detect-docs-only, validate-environment-windows]
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: windows-latest
+      build_type: release
 
   docs-hygiene:
     runs-on: ubuntu-24.04
@@ -146,8 +159,8 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
-    needs: [detect-docs-only, validate-environment, build-linux]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
+    needs: [detect-docs-only, validate-environment]
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -198,7 +211,7 @@ jobs:
           retention-days: 14
 
   include-analysis:
-    needs: [detect-docs-only, validate-environment, build-linux]
+    needs: [detect-docs-only, validate-environment, build-linux-debug]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
