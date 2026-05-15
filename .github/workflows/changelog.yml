@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: write
+      issues: write
 
     steps:
       - name: Validate tag is strict semver
@@ -49,6 +51,24 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare changelog branch
+        # Reset the branch before generation so reruns always start from the
+        # existing changelog PR branch when it exists, or from main on first run.
+        run: |
+          BRANCH="chore/changelog-${{ github.ref_name }}"
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+              git push origin --delete "$BRANCH"
+            fi
+            git checkout -B "$BRANCH" origin/main
+          else
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+          fi
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate Changelog
         uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4
         id: git-cliff
@@ -60,19 +80,39 @@ jobs:
           GITHUB_REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Commit and push CHANGELOG.md
-        # NOTE: This step pushes directly to main. For this to work with branch
-        # protection rules, the repository must allow the github-actions[bot] to
-        # bypass push restrictions (Settings → Branches → Allow specified actors
-        # to bypass required pull requests → add github-actions[bot]).
-        # Tags should only be pushed from main to avoid branch mismatches.
+      - name: Commit and push CHANGELOG.md via PR
+        # Branch protection rulesets on main require status checks to pass,
+        # so we cannot push directly. Instead, open a PR via the GitHub CLI.
+        # This step is rerun-safe: it reuses the same branch/PR if they exist.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="chore/changelog-${{ github.ref_name }}"
+          if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            PR_EXISTS=false
+          else
+            PR_EXISTS=true
+          fi
           git add CHANGELOG.md
-          # Only commit if the file actually changed. Use a non-conventional
-          # message so git-cliff does not include this generated changelog
-          # maintenance commit in the next release notes.
-          git diff --staged --quiet || \
-            git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
-          git push origin main
+          if git diff --staged --quiet; then
+            if [ "$PR_EXISTS" = true ]; then
+              echo "PR for $BRANCH already exists — nothing to update."
+            fi
+            exit 0
+          fi
+          # Use a non-conventional commit message so git-cliff does not
+          # include this generated changelog commit in future release notes.
+          git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
+          git push origin "$BRANCH"
+          if [ "$PR_EXISTS" = false ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
+              --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
+              --label "documentation"
+          else
+            echo "PR for $BRANCH already exists — branch updated."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
