@@ -11,7 +11,7 @@ if(POLICY CMP0069)
 endif()
 
 
-project(TaskSmack VERSION 0.7.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.7.1 LANGUAGES C CXX)
 
 # Windows: Configure MSVC runtime library linkage for Clang
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -843,8 +843,8 @@ set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} - TaskSmack")
 set(CPACK_PACKAGE_DESCRIPTION "TaskSmack - Modern cross-platform system monitor")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mgradwohl/tasksmack")
-set(CPACK_PACKAGE_VENDOR "")
-set(CPACK_PACKAGE_CONTACT "")
+set(CPACK_PACKAGE_VENDOR "TaskSmack Contributors")
+set(CPACK_PACKAGE_CONTACT "mgradwohl@users.noreply.github.com")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
