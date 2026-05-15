@@ -109,7 +109,7 @@ jobs:
 
   build-linux-debug:
     needs: [detect-docs-only, validate-environment]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
     uses: ./.github/workflows/reusable-build-test.yml
@@ -131,14 +131,13 @@ jobs:
 
   build-windows-debug:
     needs: [detect-docs-only, validate-environment-windows]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
+    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-latest
       build_type: debug
-      llvm-semver-version: '22.1.0'
 
   build-windows-release:
     needs: [detect-docs-only, validate-environment-windows]
@@ -149,7 +148,6 @@ jobs:
     with:
       os: windows-latest
       build_type: release
-      llvm-semver-version: '22.1.0'
 
   docs-hygiene:
     runs-on: ubuntu-24.04
