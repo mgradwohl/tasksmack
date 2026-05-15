@@ -16,6 +16,42 @@ namespace Platform
 namespace
 {
 
+class ScopedAppDataOverride
+{
+  public:
+    ScopedAppDataOverride()
+    {
+        char* appData = nullptr;
+        if ((_dupenv_s(&appData, nullptr, "APPDATA") == 0) && (appData != nullptr))
+        {
+            m_hadOriginalValue = true;
+            m_originalValue = appData;
+            std::free(appData);
+        }
+
+        _putenv_s("APPDATA", "");
+    }
+
+    ~ScopedAppDataOverride()
+    {
+        if (m_hadOriginalValue)
+        {
+            _putenv_s("APPDATA", m_originalValue.c_str());
+        }
+        else
+        {
+            _putenv_s("APPDATA", "");
+        }
+    }
+
+    ScopedAppDataOverride(const ScopedAppDataOverride&) = delete;
+    ScopedAppDataOverride& operator=(const ScopedAppDataOverride&) = delete;
+
+  private:
+    std::string m_originalValue;
+    bool m_hadOriginalValue = false;
+};
+
 // =============================================================================
 // Construction and Basic Operations
 // =============================================================================
@@ -125,12 +161,14 @@ TEST(WindowsPathProviderTest, GetUserConfigDirRespectsAPPDATA)
 
 TEST(WindowsPathProviderTest, GetUserConfigDirHandlesMissingAPPDATA)
 {
-    // Modifying process-wide environment variables like APPDATA in tests can
-    // interfere with other tests running in the same process and cause flaky
-    // behavior. To avoid this, we skip this integration test here. The
-    // fallback behavior for missing APPDATA should be covered by more
-    // isolated tests that do not mutate global process state.
-    GTEST_SKIP() << "Skipped: cannot safely modify APPDATA environment variable in-process.";
+    ScopedAppDataOverride appDataGuard;
+
+    WindowsPathProvider provider;
+    const auto dir = provider.getUserConfigDir();
+    const auto cwd = std::filesystem::current_path();
+
+    EXPECT_EQ(dir, cwd) << "Missing APPDATA should fall back to the current directory";
+    EXPECT_TRUE(dir.is_absolute());
 }
 
 TEST(WindowsPathProviderTest, GetUserConfigDirHasValidWindowsPath)

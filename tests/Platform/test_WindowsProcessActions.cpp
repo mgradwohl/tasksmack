@@ -49,6 +49,16 @@ TEST(WindowsProcessActionsTest, ResumeNotSupported)
     EXPECT_GT(result.errorMessage.size(), 0ULL);
 }
 
+TEST(WindowsProcessActionsTest, SetPriorityRejectsInvalidPid)
+{
+    WindowsProcessActions actions;
+
+    const auto result = actions.setPriority(0, 0);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Invalid PID");
+}
+
 TEST(WindowsProcessActionsTest, TerminateNonExistentProcess)
 {
     WindowsProcessActions actions;
