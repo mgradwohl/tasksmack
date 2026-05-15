@@ -167,7 +167,6 @@ TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
     // The public contract only guarantees stable self-consistency and the
     // per-process/engine-utilization relationship.
     EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
-    EXPECT_FALSE(caps.hasPerProcessMetrics && !caps.hasEngineUtilization);
 }
 
 } // namespace

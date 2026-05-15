@@ -30,17 +30,18 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     WindowsPowerProbe probe;
     auto caps = probe.capabilities();
 
-    // Windows API has limited capabilities compared to Linux
-    // If there's a battery, charge percent should be available
-    if (caps.hasBattery)
-    {
-        EXPECT_FALSE(caps.hasChargeCapacity);
-        EXPECT_FALSE(caps.hasPowerRate);
-        EXPECT_FALSE(caps.hasVoltage);
-        EXPECT_FALSE(caps.hasTechnology);
-        EXPECT_FALSE(caps.hasCycleCount);
-        EXPECT_FALSE(caps.hasHealthPercent);
-    }
+    // Windows API has limited capabilities compared to Linux.
+    // Charge percent is only reported when a battery exists, but the value may
+    // still be unknown on some systems. The stable relationship is that
+    // charge-percent capability implies a battery is present.
+    EXPECT_FALSE(caps.hasChargePercent && !caps.hasBattery);
+
+    EXPECT_FALSE(caps.hasChargeCapacity);
+    EXPECT_FALSE(caps.hasPowerRate);
+    EXPECT_FALSE(caps.hasVoltage);
+    EXPECT_FALSE(caps.hasTechnology);
+    EXPECT_FALSE(caps.hasCycleCount);
+    EXPECT_FALSE(caps.hasHealthPercent);
 }
 
 TEST(WindowsPowerProbeTest, ReadSucceeds)
