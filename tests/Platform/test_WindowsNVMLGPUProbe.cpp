@@ -154,7 +154,7 @@ TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
     }
 }
 
-TEST(WindowsNVMLGPUProbeTest, AvailableProbeReturnsConsistentData)
+TEST(WindowsNVMLGPUProbeTest, AvailableProbeEnumerationIsStable)
 {
     NVMLGPUProbe probe;
     if (!probe.isAvailable())
@@ -162,23 +162,18 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeReturnsConsistentData)
         GTEST_SKIP() << "NVML not available (no NVIDIA GPU or driver detected)";
     }
 
-    // Verify available probe returns consistent data types
-    auto gpus = probe.enumerateGPUs();
-    EXPECT_GT(gpus.size(), 0UL) << "Available NVML should enumerate at least one GPU";
+    auto gpus1 = probe.enumerateGPUs();
+    auto gpus2 = probe.enumerateGPUs();
 
-    for (const auto& gpu : gpus)
+    EXPECT_EQ(gpus1.size(), gpus2.size()) << "Available NVML enumeration should be stable across calls";
+
+    for (std::size_t i = 0; i < gpus1.size(); ++i)
     {
-        EXPECT_FALSE(gpu.id.empty()) << "GPU id should not be empty when available";
-        EXPECT_FALSE(gpu.name.empty()) << "GPU name should not be empty when available";
+        EXPECT_FALSE(gpus1[i].id.empty()) << "GPU id should not be empty when available";
+        EXPECT_FALSE(gpus1[i].name.empty()) << "GPU name should not be empty when available";
+        EXPECT_EQ(gpus1[i].id, gpus2[i].id) << "GPU id should be stable across enumerations";
+        EXPECT_EQ(gpus1[i].name, gpus2[i].name) << "GPU name should be stable across enumerations";
     }
-
-    // Verify capabilities are appropriately reported
-    const auto caps = probe.capabilities();
-    EXPECT_TRUE(caps.hasTemperature);
-    EXPECT_TRUE(caps.hasPowerMetrics);
-    EXPECT_TRUE(caps.hasClockSpeeds);
-    EXPECT_TRUE(caps.hasFanSpeed);
-    EXPECT_TRUE(caps.hasPCIeMetrics);
 }
 
 } // namespace

@@ -54,19 +54,6 @@ TEST(WindowsPDHGPUProbeTest, ProbeReturnsValidProcessCountersOrEmpty)
     }
 }
 
-TEST(WindowsPDHGPUProbeTest, ProbeCounterResultsAreWellFormed)
-{
-    PDHGPUProbe probe;
-    auto counters = probe.readProcessGPUCounters();
-
-    // If counters are returned, verify they're well-formed
-    for (const auto& counter : counters)
-    {
-        EXPECT_GE(counter.pid, 0) << "Process ID should be non-negative";
-        // Other fields may be zero/empty depending on availability
-    }
-}
-
 // ==========================================================================
 // Capabilities Tests
 // ==========================================================================

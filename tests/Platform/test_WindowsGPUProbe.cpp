@@ -121,12 +121,6 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateIsConsistent)
 // Process Counter Reading Tests
 // ==========================================================================
 
-TEST(WindowsGPUProbeTest, ReadProcessGPUCountersDoesNotThrow)
-{
-    WindowsGPUProbe probe;
-    EXPECT_NO_THROW([[maybe_unused]] auto counters = probe.readProcessGPUCounters());
-}
-
 TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
 {
     WindowsGPUProbe probe;
