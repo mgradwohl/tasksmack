@@ -106,6 +106,9 @@ jobs:
           git push origin "$BRANCH"
           if [ "$PR_EXISTS" = false ]; then
             PR_CREATE_ERROR_FILE=$(mktemp)
+            # Guarantee temp file cleanup on all exits (success, error, and restricted-token fallback)
+            # shellcheck disable=SC2064
+            trap "rm -f \"$PR_CREATE_ERROR_FILE\"" EXIT
             if ! gh pr create \
               --base main \
               --head "$BRANCH" \
@@ -114,15 +117,15 @@ jobs:
               --label "documentation" 2>"$PR_CREATE_ERROR_FILE"; then
               if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible by integration|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
                 echo "Unable to create PR from workflow token."
-                echo "Create it manually: https://github.com/${{ github.repository }}/pull/new/$BRANCH"
+                # Encode slashes in branch name so the compare URL works correctly
+                ENCODED_BRANCH="${BRANCH//\//%2F}"
+                echo "Create it manually: https://github.com/${{ github.repository }}/compare/main...${ENCODED_BRANCH}?expand=1"
                 exit 0
               fi
 
               cat "$PR_CREATE_ERROR_FILE" >&2
-              rm -f "$PR_CREATE_ERROR_FILE"
               exit 1
             fi
-            rm -f "$PR_CREATE_ERROR_FILE"
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
