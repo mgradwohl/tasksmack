@@ -1,8 +1,11 @@
 /// @file test_LinuxProcessProbe.cpp
 /// @brief Integration tests for Platform::LinuxProcessProbe
 ///
-/// These are integration tests that interact with the real /proc filesystem.
-/// They verify that the probe correctly reads and parses process information.
+/// This file contains two kinds of coverage:
+///   - Integration tests that interact with the real /proc filesystem, verifying
+///     that the probe correctly reads and parses process information.
+///   - Error-path / injection tests that use a synthetic proc root (ScopedTempDir)
+///     to exercise missing-file and malformed-input handling without touching /proc.
 
 #include <gtest/gtest.h>
 
@@ -19,13 +22,16 @@
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <system_error>
 #include <thread>
 
 #include <sys/wait.h>
@@ -668,6 +674,65 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(10000)));
 }
 #endif
+
+// ========== Error Path / Injection Tests ==========
+
+using Platform::TestSupport::ScopedTempDir;
+
+TEST(LinuxProcessProbeTest, EmptyProcDirReturnsNoProcesses)
+{
+    ScopedTempDir scoped("ts_test_proc_empty");
+    LinuxProcessProbe probe(scoped.path);
+    auto processes = probe.enumerate();
+    EXPECT_TRUE(processes.empty());
+}
+
+TEST(LinuxProcessProbeTest, NonexistentProcDirDoesNotCrash)
+{
+    const auto tmpDir = std::filesystem::temp_directory_path() / std::format("ts_test_proc_nonexist_{}", getpid());
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec); // ensure it does not exist; ignore error
+    LinuxProcessProbe probe(tmpDir);
+    auto result = probe.enumerate();
+    EXPECT_TRUE(result.empty());
+}
+
+TEST(LinuxProcessProbeTest, MissingStatReturnsZeroTotalCpuTime)
+{
+    ScopedTempDir scoped("ts_test_proc_nocputime");
+    LinuxProcessProbe probe(scoped.path);
+    EXPECT_EQ(probe.totalCpuTime(), 0ULL);
+}
+
+TEST(LinuxProcessProbeTest, MissingMeminfoReturnsZeroSystemMemory)
+{
+    ScopedTempDir scoped("ts_test_proc_nomeminfo");
+    LinuxProcessProbe probe(scoped.path);
+    EXPECT_EQ(probe.systemTotalMemory(), 0ULL);
+}
+
+TEST(LinuxProcessProbeTest, ParseProcessStatMissingFileDoesNotCrash)
+{
+    ScopedTempDir scoped("ts_test_proc_nostatfile");
+    std::filesystem::create_directories(scoped.path / "1234");
+    LinuxProcessProbe probe(scoped.path);
+    auto result = probe.enumerate();
+    EXPECT_TRUE(result.empty());
+}
+
+TEST(LinuxProcessProbeTest, ParseProcessStatMalformedContentDoesNotCrash)
+{
+    ScopedTempDir scoped("ts_test_proc_badstat");
+    std::filesystem::create_directories(scoped.path / "1234");
+    {
+        // Write garbage to stat — no valid fields; parse fails, enumerate returns empty
+        std::ofstream f(scoped.path / "1234" / "stat");
+        f << "not valid stat content at all\n";
+    }
+    LinuxProcessProbe probe(scoped.path);
+    auto result = probe.enumerate();
+    EXPECT_TRUE(result.empty());
+}
 
 } // namespace
 } // namespace Platform

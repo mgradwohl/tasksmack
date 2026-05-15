@@ -133,8 +133,14 @@ std::mutex& getUsernameCacheMutex()
 
 } // namespace
 
-LinuxProcessProbe::LinuxProcessProbe()
-    : m_TicksPerSecond(sysconf(_SC_CLK_TCK)), m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)), m_BootTimeEpoch(readBootTime())
+LinuxProcessProbe::LinuxProcessProbe() : LinuxProcessProbe(std::filesystem::path("/proc"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
+    : m_ProcRoot(std::move(procRoot)),
+      m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
+      m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
+      m_BootTimeEpoch(readBootTime(m_ProcRoot))
 {
     if (m_TicksPerSecond <= 0)
     {
@@ -147,7 +153,7 @@ LinuxProcessProbe::LinuxProcessProbe()
 
     if (m_BootTimeEpoch == 0)
     {
-        spdlog::warn("Failed to read boot time from /proc/stat");
+        spdlog::warn("Failed to read boot time from {}", (m_ProcRoot / "stat").string());
     }
 
     // Detect and initialize power monitoring if available
@@ -194,7 +200,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // Reserving a fixed constant (e.g. 500) wastes memory on light systems
     // and still reallocates on busy ones. Let the allocator manage growth.
 
-    const std::filesystem::path procPath("/proc");
+    const std::filesystem::path& procPath = m_ProcRoot;
     std::error_code errorCode;
 
     for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
@@ -217,34 +223,34 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         ProcessCounters counters{};
         if (!parseProcessStat(pid, counters))
         {
-            spdlog::debug("Failed to parse /proc/{}/stat", pid);
+            spdlog::debug("Failed to parse {}", (procPath / std::to_string(pid) / "stat").string());
             continue;
         }
 
         parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters);
-        parseProcessCmdline(pid, counters);
+        parseProcessStatus(pid, counters, m_ProcRoot);
+        parseProcessCmdline(pid, counters, m_ProcRoot);
         // CPU affinity is always safe to query; failures zero the mask
         parseProcessAffinity(pid, counters);
 
         // Count open file descriptors (may fail for some processes due to permissions)
-        countProcessFds(pid, counters);
+        countProcessFds(pid, counters, m_ProcRoot);
 
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
         std::call_once(m_IoCountersCheckFlag,
-                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_relaxed); });
+                       [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
-            parseProcessIo(pid, counters);
+            parseProcessIo(pid, counters, m_ProcRoot);
         }
-        counters.status = getProcessStatus(pid); // Get cgroup freezer status
+        counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
     if (errorCode)
     {
-        spdlog::warn("Error iterating /proc: {}", errorCode.message());
+        spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
     }
 
     // Attribute energy to processes if power monitoring is available
@@ -268,7 +274,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
 {
     // Check I/O counters availability on first call (thread-safe)
     std::call_once(m_IoCountersCheckFlag,
-                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(), std::memory_order_release); });
+                   [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_release); });
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const bool hasNetworkCounters = m_HasNetworkCounters;
@@ -314,7 +320,7 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const auto statPath = std::format("/proc/{}/stat", pid);
+    const auto statPath = m_ProcRoot / std::to_string(pid) / "stat";
     std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
@@ -417,7 +423,7 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    const auto statmPath = std::format("/proc/{}/statm", pid);
+    const auto statmPath = (m_ProcRoot / std::to_string(pid) / "statm").string();
     std::ifstream statmFile(statmPath);
     if (!statmFile.is_open())
     {
@@ -437,13 +443,13 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     }
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters)
+void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Read /proc/[pid]/status for UID (owner) information
     // Format is key:value pairs, one per line
     // We need: Uid: <real> <effective> <saved> <filesystem>
 
-    const auto statusPath = std::format("/proc/{}/status", pid);
+    const auto statusPath = (procRoot / std::to_string(pid) / "status").string();
     std::ifstream statusFile(statusPath);
     if (!statusFile.is_open())
     {
@@ -473,12 +479,12 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     }
 }
 
-void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters)
+void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/[pid]/cmdline
     // Arguments are separated by null bytes
 
-    const auto cmdlinePath = std::format("/proc/{}/cmdline", pid);
+    const auto cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
     std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
     if (!cmdlineFile.is_open())
     {
@@ -539,7 +545,7 @@ void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& count
     }
 }
 
-void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
+void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/[pid]/io
     // Key-value pairs, one per line:
@@ -555,7 +561,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
     // or being the owner of the process. If we can't read it, we silently skip
     // (capabilities() already reports hasIoCounters = false by default).
 
-    const auto ioPath = std::format("/proc/{}/io", pid);
+    const auto ioPath = (procRoot / std::to_string(pid) / "io").string();
     std::ifstream ioFile(ioPath);
     if (!ioFile.is_open())
     {
@@ -601,13 +607,13 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters)
     }
 }
 
-void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
+void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Count entries in /proc/[pid]/fd directory.
     // Each entry is a symlink to an open file descriptor.
     // Note: May fail due to permissions (needs same user or root).
 
-    const auto fdPath = std::format("/proc/{}/fd", pid);
+    const auto fdPath = procRoot / std::to_string(pid) / "fd";
 
     int32_t count = 0;
     try
@@ -625,20 +631,20 @@ void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters)
     catch (const std::exception& ex)
     {
         // Permission errors and other exceptional situations - leave handleCount at 0
-        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath, ex.what());
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
     }
 }
 
-bool LinuxProcessProbe::checkIoCountersAvailability()
+bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
-    // Check if we can read /proc/self/io to determine I/O counter availability.
+    // Check if procRoot/self/io is readable to determine I/O counter availability.
     // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
     // or being the owner of the target process.
-    const std::ifstream selfIo("/proc/self/io");
+    const std::ifstream selfIo(procRoot / "self" / "io");
     return selfIo.is_open();
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
+std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
 {
     // Try cgroup v2 first: freezer.state
     const auto cgroupV2FreezerPath = std::format("/sys/fs/cgroup/{}/freezer.state", pid);
@@ -655,7 +661,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
 
     // Fallback to cgroup v1 freezer hierarchy
     // /proc/[pid]/cgroup lists all cgroups for the process
-    const auto cgroupPath = std::format("/proc/{}/cgroup", pid);
+    const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
     std::ifstream cgroupFile(cgroupPath);
     if (cgroupFile.is_open())
     {
@@ -698,15 +704,16 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid)
     // No special status
     return {};
 }
-uint64_t LinuxProcessProbe::readTotalCpuTime()
+uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
     // Format: /proc/stat
     // First line: cpu user nice system idle iowait irq softirq steal guest guest_nice
 
-    std::ifstream statFile("/proc/stat");
+    const auto statPath = m_ProcRoot / "stat";
+    std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/stat");
+        spdlog::warn("Failed to open {}", statPath.string());
         return 0;
     }
 
@@ -724,7 +731,7 @@ uint64_t LinuxProcessProbe::readTotalCpuTime()
 
     if (statFile.fail() || cpuLabel != "cpu")
     {
-        spdlog::warn("Failed to parse /proc/stat");
+        spdlog::warn("Failed to parse {}", statPath.string());
         return 0;
     }
 
@@ -732,15 +739,16 @@ uint64_t LinuxProcessProbe::readTotalCpuTime()
     return user + nice + system + idle + iowait + irq + softirq + steal;
 }
 
-uint64_t LinuxProcessProbe::readBootTime()
+uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
 {
     // Format: /proc/stat contains a line: btime <epoch_seconds>
     // btime is the time the system booted in seconds since Unix epoch
 
-    std::ifstream statFile("/proc/stat");
+    const auto statPath = procRoot / "stat";
+    std::ifstream statFile(statPath);
     if (!statFile.is_open())
     {
-        spdlog::warn("Failed to open /proc/stat for boot time");
+        spdlog::warn("Failed to open {} for boot time", statPath.string());
         return 0;
     }
 
@@ -766,10 +774,11 @@ uint64_t LinuxProcessProbe::readBootTime()
 
 uint64_t LinuxProcessProbe::systemTotalMemory() const
 {
-    std::ifstream meminfo("/proc/meminfo");
+    const auto meminfoPath = m_ProcRoot / "meminfo";
+    std::ifstream meminfo(meminfoPath);
     if (!meminfo.is_open())
     {
-        spdlog::error("Failed to open /proc/meminfo");
+        spdlog::error("Failed to open {}", meminfoPath.string());
         return 0;
     }
 

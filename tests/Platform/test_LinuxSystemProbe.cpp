@@ -1,18 +1,24 @@
 /// @file test_LinuxSystemProbe.cpp
 /// @brief Integration tests for Platform::LinuxSystemProbe
 ///
-/// These are integration tests that interact with the real /proc filesystem.
-/// They verify that the probe correctly reads and parses system information.
+/// This file contains two kinds of coverage:
+///   - Integration tests that interact with the real /proc filesystem, verifying
+///     that the probe correctly reads and parses system information.
+///   - Error-path / injection tests that use a synthetic proc root (ScopedTempDir)
+///     to exercise missing-file and malformed-input handling without touching /proc.
 
 #include <gtest/gtest.h>
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
 #include "Platform/Linux/LinuxSystemProbe.h"
+#include "Platform/ScopedTempDir.h"
 #include "Platform/SystemTypes.h"
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -558,6 +564,79 @@ TEST(LinuxSystemProbeTest, CacheConcurrentAccessIsSafe)
     // All reads should succeed
     EXPECT_EQ(successCount.load(), 200); // 4 threads * 50 reads
     EXPECT_EQ(errorCount.load(), 0);
+}
+
+// ========== Error Path / Injection Tests ==========
+
+using Platform::TestSupport::ScopedTempDir;
+
+TEST(LinuxSystemProbeTest, MissingStatFileReturnsZeroCpu)
+{
+    ScopedTempDir scoped("ts_test_sys_nostat");
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuTotal.user, 0ULL);
+    EXPECT_EQ(counters.cpuTotal.system, 0ULL);
+}
+
+TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)
+{
+    ScopedTempDir scoped("ts_test_sys_nomem");
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.memory.totalBytes, 0ULL);
+    EXPECT_EQ(counters.memory.availableBytes, 0ULL);
+}
+
+TEST(LinuxSystemProbeTest, MissingNetDevReturnsZeroNetwork)
+{
+    ScopedTempDir scoped("ts_test_sys_nonet");
+    std::filesystem::create_directories(scoped.path / "net");
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.netRxBytes, 0ULL);
+    EXPECT_EQ(counters.netTxBytes, 0ULL);
+}
+
+TEST(LinuxSystemProbeTest, MissingCpuinfoReportsUnknownCpu)
+{
+    ScopedTempDir scoped("ts_test_sys_nocpu");
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuModel, "Unknown CPU");
+}
+
+TEST(LinuxSystemProbeTest, NetDevWithMalformedLinesSkips)
+{
+    ScopedTempDir scoped("ts_test_sys_badnet");
+    std::filesystem::create_directories(scoped.path / "net");
+    {
+        std::ofstream f(scoped.path / "net" / "dev");
+        f << "Inter-|   Receive\n";
+        f << " face |bytes packets\n";
+        // Line without colon — should be skipped
+        f << "no colon here at all\n";
+        // Line with whitespace-only interface name — should be skipped
+        f << "   :   0 0 0 0 0 0 0 0   0 0 0 0 0 0 0 0\n";
+        // Valid line
+        f << "   eth0:   12345 100 0 0 0 0 0 0   67890 200 0 0 0 0 0 0\n";
+    }
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_GE(counters.netRxBytes, 12345ULL);
+}
+
+TEST(LinuxSystemProbeTest, StatWithNoCpuLineReturnsZero)
+{
+    ScopedTempDir scoped("ts_test_sys_badstat");
+    {
+        std::ofstream f(scoped.path / "stat");
+        f << "btime 1000000\n";
+        f << "processes 1234\n";
+    }
+    LinuxSystemProbe probe(scoped.path);
+    auto counters = probe.read();
+    EXPECT_EQ(counters.cpuTotal.user, 0ULL);
 }
 
 } // namespace

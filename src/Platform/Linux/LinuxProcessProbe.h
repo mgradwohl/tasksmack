@@ -11,6 +11,7 @@
 #endif
 
 #include <atomic>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 
@@ -23,6 +24,11 @@ class LinuxProcessProbe : public IProcessProbe
 {
   public:
     LinuxProcessProbe();
+
+    /// Testability constructor: reads from a custom proc root instead of /proc.
+    /// Useful for unit tests that supply synthetic /proc content.
+    explicit LinuxProcessProbe(std::filesystem::path procRoot);
+
     ~LinuxProcessProbe() override = default;
 
     LinuxProcessProbe(const LinuxProcessProbe&) = delete;
@@ -45,6 +51,7 @@ class LinuxProcessProbe : public IProcessProbe
 #endif
 
   private:
+    std::filesystem::path m_ProcRoot;
     long m_TicksPerSecond;
     uint64_t m_PageSize;
     uint64_t m_BootTimeEpoch = 0;                            // System boot time (Unix epoch seconds)
@@ -77,31 +84,31 @@ class LinuxProcessProbe : public IProcessProbe
     void parseProcessStatm(int32_t pid, ProcessCounters& counters) const;
 
     /// Parse /proc/[pid]/status for owner (UID) info
-    static void parseProcessStatus(int32_t pid, ProcessCounters& counters);
+    static void parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Parse /proc/[pid]/cmdline for full command line
-    static void parseProcessCmdline(int32_t pid, ProcessCounters& counters);
+    static void parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Parse CPU affinity mask for a process using sched_getaffinity
     static void parseProcessAffinity(int32_t pid, ProcessCounters& counters);
 
     /// Parse /proc/[pid]/io for I/O counters (requires permissions)
-    static void parseProcessIo(int32_t pid, ProcessCounters& counters);
+    static void parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
     /// Count file descriptors in /proc/[pid]/fd (may fail due to permissions)
-    static void countProcessFds(int32_t pid, ProcessCounters& counters);
+    static void countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot);
 
-    /// Check if we can read I/O counters (checks own process)
-    [[nodiscard]] static bool checkIoCountersAvailability();
+    /// Check if we can read I/O counters using the injected proc root
+    [[nodiscard]] static bool checkIoCountersAvailability(const std::filesystem::path& procRoot);
 
     /// Get process status from cgroups (Suspended state detection)
-    [[nodiscard]] static std::string getProcessStatus(int32_t pid);
+    [[nodiscard]] static std::string getProcessStatus(int32_t pid, const std::filesystem::path& procRoot);
 
     /// Read total CPU time from /proc/stat
-    [[nodiscard]] static uint64_t readTotalCpuTime();
+    [[nodiscard]] uint64_t readTotalCpuTime() const;
 
     /// Read system boot time from /proc/stat (returns Unix epoch seconds, 0 if unavailable)
-    [[nodiscard]] static uint64_t readBootTime();
+    [[nodiscard]] static uint64_t readBootTime(const std::filesystem::path& procRoot);
 
     /// Check if RAPL powercap is available and find the path
     [[nodiscard]] bool detectPowerCap();
