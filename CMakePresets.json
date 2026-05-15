@@ -489,6 +489,9 @@
             "configurePreset": "asan-ubsan",
             "output": {
                 "outputOnFailure": true
+            },
+            "environment": {
+                "LSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp"
             }
         },
         {
@@ -497,6 +500,9 @@
             "configurePreset": "tsan",
             "output": {
                 "outputOnFailure": true
+            },
+            "environment": {
+                "TSAN_OPTIONS": "suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp"
             }
         },
         {
