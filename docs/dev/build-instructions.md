@@ -113,6 +113,11 @@ cmake --build --preset asan-ubsan
 ctest --preset asan-ubsan
 ```
 
+`ctest --preset asan-ubsan` appends
+`suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp` to inherited
+`LSAN_OPTIONS` (via `$penv{LSAN_OPTIONS}`), preserving caller-provided LSAN
+flags while enabling the project suppression.
+
 ### ThreadSanitizer
 
 ```bash
@@ -120,6 +125,11 @@ cmake --preset tsan
 cmake --build --preset tsan
 ctest --preset tsan
 ```
+
+`ctest --preset tsan` appends
+`suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp` to inherited
+`TSAN_OPTIONS` (via `$penv{TSAN_OPTIONS}`), preserving caller-provided TSAN
+flags while enabling the project suppression.
 
 ---
 

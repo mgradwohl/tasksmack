@@ -374,10 +374,10 @@ ctest --preset asan-ubsan
 
 `ctest --preset asan-ubsan` injects:
 
-- `LSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp`
+- `LSAN_OPTIONS=$penv{LSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/lsan.supp`
 
 This suppression filters a known SDL3 LeakSanitizer false positive used by the
-Core window/application tests.
+Core window/application tests, while preserving any caller-provided LSAN flags.
 
 ThreadSanitizer:
 
@@ -389,10 +389,10 @@ ctest --preset tsan
 
 `ctest --preset tsan` injects:
 
-- `TSAN_OPTIONS=suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp`
+- `TSAN_OPTIONS=$penv{TSAN_OPTIONS}:suppressions=${sourceDir}/tests/sanitizer-suppressions/tsan.supp`
 
 This suppression filters known ThreadSanitizer false positives in third-party
-pthread barrier paths.
+pthread barrier paths, while preserving any caller-provided TSAN flags.
 
 ## Benchmarks
 
