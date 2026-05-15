@@ -1,6 +1,10 @@
 # LeakSanitizer suppressions for TaskSmack tests
 #
-# SDL3 intentionally retains internal subsystem state after SDL_Quit() for
-# performance reasons. LeakSanitizer reports this as leaked, but it is expected
+# SDL3 is built as a static library (SDL_STATIC ON), so LSAN cannot match
+# module names like "libSDL3". Suppressions must match function names instead.
+#
+# SDL_EGL_InitializeOffscreen allocates an EGL display and context that SDL3
+# intentionally retains after SDL_Quit() for performance reasons (avoiding
+# re-initialization overhead). LSAN reports this as leaked, but it is expected
 # behavior in SDL3's cleanup model and not a TaskSmack bug.
-leak:libSDL3
+leak:SDL_EGL_InitializeOffscreen
