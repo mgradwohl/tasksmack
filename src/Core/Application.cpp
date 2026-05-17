@@ -27,6 +27,9 @@ namespace
 // Uses std::reference_wrapper to avoid storing a raw pointer; cleared in the destructor on the same thread.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - intentionally mutable for state tracking
 thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicationInstance;
+
+// Maximum delta time clamped in the render loop to avoid large jumps after stalls or resize pauses.
+constexpr float MAX_DELTA_TIME = 0.1F;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -154,8 +157,7 @@ void Application::run()
                 layer->onSDLEvent(&sdlEvent);
             }
 
-            // Only translate window close events to our event system for clean shutdown coordination
-            // All other input events are handled via SDL directly
+            // Translate window close events to our event system for clean shutdown coordination
             if (sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
             {
                 WindowCloseEvent event;
@@ -164,6 +166,19 @@ void Application::run()
                 {
                     stop();
                 }
+            }
+
+            // Respond to framebuffer pixel size changes (user drag-resize or DPI change).
+            // Dispatching the event lets layers react (e.g. invalidate caches), then we
+            // immediately render a full frame so the new window area is never left blank.
+            if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+            {
+                const float currentTime = getTime();
+                const float resizeDelta = std::min(currentTime - lastTime, MAX_DELTA_TIME);
+
+                WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
+                raiseEvent(resizeEvent);
+                renderFrame(resizeDelta);
             }
         }
 
@@ -178,31 +193,35 @@ void Application::run()
         lastTime = currentTime;
 
         // Clamp delta time to avoid huge jumps
-        constexpr float MAX_DELTA_TIME = 0.1F;
         deltaTime = std::min(deltaTime, MAX_DELTA_TIME);
 
-        // Update all layers
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onUpdate(deltaTime);
-        }
-
-        // Render all layers
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onRender();
-        }
-
-        // Post-render (for ImGui frame end, etc.)
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onPostRender();
-        }
-
-        m_Window->swapBuffers();
+        renderFrame(deltaTime);
     }
 
     spdlog::info("Exiting main loop");
+}
+
+void Application::renderFrame(float deltaTime)
+{
+    // Update all layers
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onUpdate(deltaTime);
+    }
+
+    // Render all layers
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onRender();
+    }
+
+    // Post-render (for ImGui frame end, etc.)
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onPostRender();
+    }
+
+    m_Window->swapBuffers();
 }
 
 void Application::stop()

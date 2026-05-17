@@ -914,3 +914,36 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
         GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
 }
+
+// =============================================================================
+// WindowResizedEvent dispatch
+// =============================================================================
+
+TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "ResizeEventDispatchTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        auto& tracker = app.pushLayer<EventTrackingLayer>("Tracker", /*handleEvents=*/false);
+
+        Core::WindowResizedEvent event(1280, 720);
+        app.raiseEvent(event);
+
+        ASSERT_EQ(tracker.receivedEventNames.size(), 1U);
+        EXPECT_STREQ(tracker.receivedEventNames[0].c_str(), "WindowResized");
+        EXPECT_FALSE(event.isHandled()); // layer did not consume it
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}

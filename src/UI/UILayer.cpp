@@ -324,6 +324,21 @@ void UILayer::beginFrame()
         ImGui::PushFont(font);
     }
 
+    // Update the OpenGL viewport to match the current framebuffer size.
+    // This must be done every frame so the viewport stays correct after
+    // user-initiated drag-resizes and HiDPI scale changes.
+    SDL_Window* window = Core::Application::get().getWindow().getHandle();
+    int pixelW = 0;
+    int pixelH = 0;
+    if (window != nullptr)
+    {
+        SDL_GetWindowSizeInPixels(window, &pixelW, &pixelH);
+    }
+    if (pixelW > 0 && pixelH > 0)
+    {
+        glViewport(0, 0, pixelW, pixelH);
+    }
+
     // Clear screen with ImGui's window background color (follows theme)
     const ImVec4& bgColor = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
     glClearColor(bgColor.x, bgColor.y, bgColor.z, bgColor.w);

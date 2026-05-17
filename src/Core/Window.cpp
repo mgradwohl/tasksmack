@@ -280,6 +280,45 @@ auto Window::getSize() const -> std::pair<int, int>
     return {width, height};
 }
 
+int Window::getWidth() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return m_Spec.Width;
+    }
+
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSize(m_Handle, &width, &height);
+    return width;
+}
+
+int Window::getHeight() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return m_Spec.Height;
+    }
+
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSize(m_Handle, &width, &height);
+    return height;
+}
+
+auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>
+{
+    if (m_Handle == nullptr)
+    {
+        return {m_Spec.Width, m_Spec.Height};
+    }
+
+    int pixelW = 0;
+    int pixelH = 0;
+    SDL_GetWindowSizeInPixels(m_Handle, &pixelW, &pixelH);
+    return {pixelW, pixelH};
+}
+
 bool Window::isMaximized() const
 {
     if (m_Handle == nullptr)

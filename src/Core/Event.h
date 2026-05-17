@@ -11,6 +11,7 @@ enum class EventType : uint8_t
 {
     None = 0,
     WindowClose,
+    WindowResized,
     // Application events (for UI coordination)
     ProcessSelected,
     RefreshRateChanged,

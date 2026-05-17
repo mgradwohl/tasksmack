@@ -34,14 +34,17 @@ class Window
     void requestClose() noexcept;
     void clearCloseRequest() noexcept; // Reset close flag after handling WindowCloseEvent
 
-    [[nodiscard]] int getWidth() const noexcept
-    {
-        return m_Spec.Width;
-    }
-    [[nodiscard]] int getHeight() const noexcept
-    {
-        return m_Spec.Height;
-    }
+    /// Return the current logical width in screen coordinates.
+    /// Queries SDL directly so the value stays accurate after user-initiated drag-resizes.
+    [[nodiscard]] int getWidth() const noexcept;
+
+    /// Return the current logical height in screen coordinates.
+    /// Queries SDL directly so the value stays accurate after user-initiated drag-resizes.
+    [[nodiscard]] int getHeight() const noexcept;
+
+    /// Return the current framebuffer size in physical pixels.
+    /// Use this for OpenGL calls (e.g. glViewport) on HiDPI displays.
+    [[nodiscard]] auto getSizeInPixels() const noexcept -> std::pair<int, int>;
 
     [[nodiscard]] SDL_Window* getHandle() const noexcept
     {
