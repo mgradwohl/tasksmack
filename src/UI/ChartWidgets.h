@@ -114,9 +114,12 @@ inline void plotLineWithFill(const char* label,
     }
 
     const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
-    const std::string shadedLabel = std::format("##{}Fill", label);
 
-    ImPlot::PlotShaded(shadedLabel.c_str(), xData, yData, count, 0.0, {ImPlotProp_FillColor, fill});
+    // Stack buffer avoids a heap allocation on every call; "##<label>Fill" is always short.
+    std::array<char, 256> shadedLabelBuf{};
+    std::snprintf(shadedLabelBuf.data(), shadedLabelBuf.size(), "##%sFill", label);
+
+    ImPlot::PlotShaded(shadedLabelBuf.data(), xData, yData, count, 0.0, {ImPlotProp_FillColor, fill});
     ImPlot::PlotLine(label, xData, yData, count, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
 }
 

@@ -102,6 +102,11 @@ class ProcessDetailsPanel : public Panel
     double m_MaxHistorySeconds = 300.0;
     double m_PeakMemoryPercent = 0.0; // Peak working set (never decreases)
 
+    // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation)
+    std::vector<double> m_CpuStackY0;
+    std::vector<double> m_CpuStackYUser;
+    std::vector<double> m_CpuStackYSystem;
+
     // Cached snapshot for rendering
     Domain::ProcessSnapshot m_CachedSnapshot;
     bool m_HasSnapshot = false;

@@ -39,12 +39,12 @@ using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
-/// Scale each sample to a 0–100 percentage relative to maxVal.
-[[nodiscard]] std::vector<float> normalizeToPercent(std::span<const float> hist, float maxVal)
+/// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
+/// Accepts a reusable buffer to avoid per-call heap allocation.
+void normalizeToPercent(std::span<const float> hist, float maxVal, std::vector<float>& out)
 {
-    std::vector<float> result(hist.size());
-    std::ranges::transform(hist, result.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
-    return result;
+    out.resize(hist.size());
+    std::ranges::transform(hist, out.begin(), [maxVal](float v) { return (v / maxVal) * 100.0F; });
 }
 
 /// Render a "Note: This system does not report GPU X, Y or Z" line in muted text.
@@ -115,6 +115,12 @@ void renderGpuSection(RenderContext& ctx)
     {
         updateSmoothedGPU(snap.gpuId, snap, ctx);
     }
+
+    // Scratch buffers for normalizeToPercent — declared before the GPU loop so they are reused
+    // across multiple GPU iterations in the same frame (resize only allocates when count grows).
+    std::vector<float> clockPercentBuf;
+    std::vector<float> tempPercentBuf;
+    std::vector<float> powerPercentBuf;
 
     // Render each GPU
     for (size_t gpuIdx = 0; gpuIdx < gpuSnapshots.size(); ++gpuIdx)
@@ -230,11 +236,11 @@ void renderGpuSection(RenderContext& ctx)
                 // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
                 if (caps.hasClockSpeeds && !clockHist.empty())
                 {
-                    const auto clockPercent = normalizeToPercent(clockHist, maxClockMHz);
+                    normalizeToPercent(clockHist, maxClockMHz, clockPercentBuf);
                     plotLineWithFill("Clock",
                                      timeData.data(),
-                                     clockPercent.data(),
-                                     UI::Format::checkedCount(clockPercent.size()),
+                                     clockPercentBuf.data(),
+                                     UI::Format::checkedCount(clockPercentBuf.size()),
                                      theme.scheme().gpuClockFill);
                 }
 
@@ -451,22 +457,22 @@ void renderGpuSection(RenderContext& ctx)
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempHist.empty())
                     {
-                        const auto tempPercent = normalizeToPercent(tempHist, maxTempC);
+                        normalizeToPercent(tempHist, maxTempC, tempPercentBuf);
                         plotLineWithFill("Temp",
                                          timeData.data(),
-                                         tempPercent.data(),
-                                         UI::Format::checkedCount(tempPercent.size()),
+                                         tempPercentBuf.data(),
+                                         UI::Format::checkedCount(tempPercentBuf.size()),
                                          theme.scheme().gpuTemperature);
                     }
 
                     // Power (normalized to power limit percentage)
                     if (caps.hasPowerMetrics && !powerHist.empty())
                     {
-                        const auto powerPercent = normalizeToPercent(powerHist, maxPowerW);
+                        normalizeToPercent(powerHist, maxPowerW, powerPercentBuf);
                         plotLineWithFill("Power",
                                          timeData.data(),
-                                         powerPercent.data(),
-                                         UI::Format::checkedCount(powerPercent.size()),
+                                         powerPercentBuf.data(),
+                                         UI::Format::checkedCount(powerPercentBuf.size()),
                                          theme.scheme().gpuPower);
                     }
 

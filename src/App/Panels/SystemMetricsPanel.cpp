@@ -547,10 +547,14 @@ void SystemMetricsPanel::renderOverview()
 
             if (breakdownCount > 0)
             {
-                std::vector<float> y0(breakdownCount, 0.0F);
-                std::vector<float> yUserTop(breakdownCount);
-                std::vector<float> ySystemTop(breakdownCount);
-                std::vector<float> yIowaitTop(breakdownCount);
+                m_CpuStackY0.assign(breakdownCount, 0.0F);
+                m_CpuStackYUser.resize(breakdownCount);
+                m_CpuStackYSystem.resize(breakdownCount);
+                m_CpuStackYIowait.resize(breakdownCount);
+                auto& y0 = m_CpuStackY0;
+                auto& yUserTop = m_CpuStackYUser;
+                auto& ySystemTop = m_CpuStackYSystem;
+                auto& yIowaitTop = m_CpuStackYIowait;
 
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
