@@ -21,13 +21,6 @@
 
 namespace
 {
-// Per-frame state shared between beginFrame() and endFrame().
-// Both methods are static (UILayer is a singleton); these file-scope variables
-// replace what would otherwise be instance members.
-ImFont* g_PushedFont = nullptr; // font pushed in beginFrame, popped in endFrame
-int g_CachedPixelW = 0;         // last known framebuffer width  (avoids redundant glViewport)
-int g_CachedPixelH = 0;         // last known framebuffer height (avoids redundant glViewport)
-
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -283,10 +276,10 @@ void UILayer::onAttach()
     // eliminating the per-frame SDL_GetWindowSizeInPixels() query that beginFrame() used.
     if (window != nullptr)
     {
-        SDL_GetWindowSizeInPixels(window, &g_CachedPixelW, &g_CachedPixelH);
-        if (g_CachedPixelW > 0 && g_CachedPixelH > 0)
+        SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
+        if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
         {
-            glViewport(0, 0, g_CachedPixelW, g_CachedPixelH);
+            glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
         }
     }
 
@@ -333,14 +326,14 @@ void UILayer::onEvent(Core::Event& event)
     // glViewport() is called exactly once per pixel-size change, driven by the event system.
     Core::EventDispatcher dispatcher(event);
     dispatcher.dispatch<Core::WindowResizedEvent>(
-        [](Core::WindowResizedEvent& e)
+        [this](Core::WindowResizedEvent& e)
         {
             const int w = e.getWidth();
             const int h = e.getHeight();
             if (w > 0 && h > 0)
             {
-                g_CachedPixelW = w;
-                g_CachedPixelH = h;
+                m_CachedPixelW = w;
+                m_CachedPixelH = h;
                 glViewport(0, 0, w, h);
             }
             return false; // Do not consume; other layers may need the resize notification
@@ -359,10 +352,10 @@ void UILayer::beginFrame()
 
     // Push the current font - store pointer so endFrame() can pop without a
     // second Theme lookup.
-    g_PushedFont = Theme::get().regularFont();
-    if (g_PushedFont != nullptr)
+    m_PushedFont = Theme::get().regularFont();
+    if (m_PushedFont != nullptr)
     {
-        ImGui::PushFont(g_PushedFont);
+        ImGui::PushFont(m_PushedFont);
     }
 
     // Viewport is kept up-to-date by onEvent(WindowResizedEvent) and seeded in
@@ -378,10 +371,10 @@ void UILayer::endFrame()
 {
     // Pop the font pushed in beginFrame() using the cached pointer (avoids a
     // second Theme::regularFont() lookup on every frame).
-    if (g_PushedFont != nullptr)
+    if (m_PushedFont != nullptr)
     {
         ImGui::PopFont();
-        g_PushedFont = nullptr;
+        m_PushedFont = nullptr;
     }
 
     ImGui::Render();

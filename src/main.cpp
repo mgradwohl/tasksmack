@@ -130,9 +130,7 @@ auto runApp() -> int
 
 #endif
 
-#ifdef NDEBUG
-    spdlog::set_level(spdlog::level::off);
-#else
+#ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);
     spdlog::flush_on(spdlog::level::debug);
 #endif
