@@ -248,13 +248,15 @@ FetchContent_MakeAvailable(spdlog)
 if(TARGET spdlog_header_only)
     target_compile_definitions(spdlog_header_only INTERFACE
         SPDLOG_USE_STD_FORMAT
-        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>
+        $<$<CONFIG:Release>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF>)
 endif()
 
 if(TARGET spdlog)
     target_compile_definitions(spdlog PUBLIC
         SPDLOG_USE_STD_FORMAT
-        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+        $<$<PLATFORM_ID:Windows>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>
+        $<$<CONFIG:Release>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_OFF>)
 endif()
 
 # toml++ for configuration files

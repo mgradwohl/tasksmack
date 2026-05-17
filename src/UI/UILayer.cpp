@@ -20,6 +20,13 @@
 
 namespace
 {
+// Per-frame state shared between beginFrame() and endFrame().
+// Both methods are static (UILayer is a singleton); these file-scope variables
+// replace what would otherwise be instance members.
+ImFont* g_PushedFont = nullptr; // font pushed in beginFrame, popped in endFrame
+int g_CachedPixelW = 0;         // last known framebuffer width  (avoids redundant glViewport)
+int g_CachedPixelH = 0;         // last known framebuffer height (avoids redundant glViewport)
+
 // Convert typographic points to pixels based on display DPI
 // Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
 float pointsToPixels(float points)
@@ -317,16 +324,18 @@ void UILayer::beginFrame()
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    // Push the current font size - this applies to all ImGui rendering this frame
-    ImFont* font = Theme::get().regularFont();
-    if (font != nullptr)
+    // Push the current font - store pointer so endFrame() can pop without a
+    // second Theme lookup.
+    g_PushedFont = Theme::get().regularFont();
+    if (g_PushedFont != nullptr)
     {
-        ImGui::PushFont(font);
+        ImGui::PushFont(g_PushedFont);
     }
 
-    // Update the OpenGL viewport to match the current framebuffer size.
-    // This must be done every frame so the viewport stays correct after
-    // user-initiated drag-resizes and HiDPI scale changes.
+    // Update the OpenGL viewport only when the framebuffer size actually changes
+    // (covers user drag-resizes and HiDPI scale changes). Skipping the SDL query
+    // and GL state change on the ~59/60 frames where the size is unchanged saves
+    // a system call and a redundant pipeline stall.
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
     int pixelW = 0;
     int pixelH = 0;
@@ -334,8 +343,10 @@ void UILayer::beginFrame()
     {
         SDL_GetWindowSizeInPixels(window, &pixelW, &pixelH);
     }
-    if (pixelW > 0 && pixelH > 0)
+    if (pixelW > 0 && pixelH > 0 && (pixelW != g_CachedPixelW || pixelH != g_CachedPixelH))
     {
+        g_CachedPixelW = pixelW;
+        g_CachedPixelH = pixelH;
         glViewport(0, 0, pixelW, pixelH);
     }
 
@@ -347,11 +358,12 @@ void UILayer::beginFrame()
 
 void UILayer::endFrame()
 {
-    // Pop the font we pushed in beginFrame()
-    const ImFont* const font = Theme::get().regularFont();
-    if (font != nullptr)
+    // Pop the font pushed in beginFrame() using the cached pointer (avoids a
+    // second Theme::regularFont() lookup on every frame).
+    if (g_PushedFont != nullptr)
     {
         ImGui::PopFont();
+        g_PushedFont = nullptr;
     }
 
     ImGui::Render();

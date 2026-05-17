@@ -168,17 +168,17 @@ void Application::run()
                 }
             }
 
-            // Respond to framebuffer pixel size changes (user drag-resize or DPI change).
-            // Dispatching the event lets layers react (e.g. invalidate caches), then we
-            // immediately render a full frame so the new window area is never left blank.
+            // Notify layers of framebuffer pixel size changes (user drag-resize or DPI change).
+            // We do NOT render here — calling renderFrame() inside the event loop causes one
+            // vsync stall (~16 ms at 60 Hz) per resize event. When events batch up during an
+            // active drag, that serialises many vsync waits and makes resize extremely sluggish.
+            // UILayer::beginFrame() queries SDL_GetWindowSizeInPixels() and calls glViewport()
+            // every frame, so the unconditional renderFrame() below keeps the framebuffer
+            // correct without extra renders inside the event loop.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
-                const float currentTime = getTime();
-                const float resizeDelta = std::min(currentTime - lastTime, MAX_DELTA_TIME);
-
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
-                renderFrame(resizeDelta);
             }
         }
 
@@ -189,11 +189,8 @@ void Application::run()
         }
 
         const float currentTime = getTime();
-        float deltaTime = currentTime - lastTime;
+        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
         lastTime = currentTime;
-
-        // Clamp delta time to avoid huge jumps
-        deltaTime = std::min(deltaTime, MAX_DELTA_TIME);
 
         renderFrame(deltaTime);
     }

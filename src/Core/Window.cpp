@@ -188,7 +188,20 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     spdlog::info("  Renderer: {}", glString(GL_RENDERER));
     spdlog::info("  Version: {}", glString(GL_VERSION));
 
-    SDL_GL_SetSwapInterval(m_Spec.VSync ? 1 : 0);
+    if (m_Spec.VSync)
+    {
+        // Prefer adaptive vsync: presents immediately when a frame is late instead of
+        // stalling until the next vblank. Falls back to regular vsync if the driver
+        // does not support GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear.
+        if (!SDL_GL_SetSwapInterval(-1))
+        {
+            SDL_GL_SetSwapInterval(1);
+        }
+    }
+    else
+    {
+        SDL_GL_SetSwapInterval(0);
+    }
 
 #ifdef _WIN32
     // Set window icon from embedded resource (title bar and taskbar)
