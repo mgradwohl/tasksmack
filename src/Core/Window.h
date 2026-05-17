@@ -63,6 +63,7 @@ class Window
     [[nodiscard]] auto getSize() const -> std::pair<int, int>;
 
     [[nodiscard]] bool isMaximized() const;
+    [[nodiscard]] bool isMinimized() const noexcept;
     void maximize();
     void restore();
     void minimize() const;

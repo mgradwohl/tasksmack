@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
+#include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -277,6 +278,18 @@ void UILayer::onAttach()
     ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
+    // Seed the cached pixel size and set the initial OpenGL viewport.
+    // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
+    // eliminating the per-frame SDL_GetWindowSizeInPixels() query that beginFrame() used.
+    if (window != nullptr)
+    {
+        SDL_GetWindowSizeInPixels(window, &g_CachedPixelW, &g_CachedPixelH);
+        if (g_CachedPixelW > 0 && g_CachedPixelH > 0)
+        {
+            glViewport(0, 0, g_CachedPixelW, g_CachedPixelH);
+        }
+    }
+
     spdlog::info("ImGui initialized successfully");
 }
 
@@ -314,6 +327,26 @@ void UILayer::onSDLEvent(SDL_Event* event)
     ImGui_ImplSDL3_ProcessEvent(event);
 }
 
+void UILayer::onEvent(Core::Event& event)
+{
+    // Keep the OpenGL viewport in sync with the framebuffer without polling SDL every frame.
+    // glViewport() is called exactly once per pixel-size change, driven by the event system.
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::WindowResizedEvent>(
+        [](Core::WindowResizedEvent& e)
+        {
+            const int w = e.getWidth();
+            const int h = e.getHeight();
+            if (w > 0 && h > 0)
+            {
+                g_CachedPixelW = w;
+                g_CachedPixelH = h;
+                glViewport(0, 0, w, h);
+            }
+            return false; // Do not consume; other layers may need the resize notification
+        });
+}
+
 void UILayer::beginFrame()
 {
     // Apply any pending theme change BEFORE starting the ImGui frame
@@ -332,23 +365,8 @@ void UILayer::beginFrame()
         ImGui::PushFont(g_PushedFont);
     }
 
-    // Update the OpenGL viewport only when the framebuffer size actually changes
-    // (covers user drag-resizes and HiDPI scale changes). Skipping the SDL query
-    // and GL state change on the ~59/60 frames where the size is unchanged saves
-    // a system call and a redundant pipeline stall.
-    SDL_Window* window = Core::Application::get().getWindow().getHandle();
-    int pixelW = 0;
-    int pixelH = 0;
-    if (window != nullptr)
-    {
-        SDL_GetWindowSizeInPixels(window, &pixelW, &pixelH);
-    }
-    if (pixelW > 0 && pixelH > 0 && (pixelW != g_CachedPixelW || pixelH != g_CachedPixelH))
-    {
-        g_CachedPixelW = pixelW;
-        g_CachedPixelH = pixelH;
-        glViewport(0, 0, pixelW, pixelH);
-    }
+    // Viewport is kept up-to-date by onEvent(WindowResizedEvent) and seeded in
+    // onAttach(); no per-frame SDL_GetWindowSizeInPixels() query is needed.
 
     // Clear screen with ImGui's window background color (follows theme)
     const ImVec4& bgColor = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];

@@ -138,6 +138,12 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 #ifndef NDEBUG
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
+    // Explicitly request double buffering. Depth and stencil buffers are not used
+    // by the 2-D ImGui render path; requesting 0 bits reduces framebuffer memory
+    // and eliminates any driver-side depth/stencil pipeline overhead.
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
 
     // Create window flags
     SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -420,6 +426,15 @@ void Window::minimize() const
     }
 
     SDL_MinimizeWindow(m_Handle);
+}
+
+bool Window::isMinimized() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
 void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const

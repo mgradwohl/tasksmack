@@ -25,6 +25,7 @@ class UILayer : public Core::Layer
     void onUpdate(float deltaTime) override;
     void onRender() override;
     void onPostRender() override;
+    void onEvent(Core::Event& event) override;
     void onSDLEvent(SDL_Event* event) override;
 
   private:

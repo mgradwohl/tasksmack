@@ -36,6 +36,11 @@ constexpr float MAX_DELTA_TIME = 0.1F;
 // hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
 // so interactive frame rate is unaffected.
 constexpr int IDLE_FRAME_SLEEP_MS = 50;
+
+// When the window is minimized there is nothing visible to render, so the sleep
+// is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
+// immediately, so restore latency is unaffected.
+constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -180,9 +185,8 @@ void Application::run()
             // We do NOT render here — calling renderFrame() inside the event loop causes one
             // vsync stall (~16 ms at 60 Hz) per resize event. When events batch up during an
             // active drag, that serialises many vsync waits and makes resize extremely sluggish.
-            // UILayer::beginFrame() queries SDL_GetWindowSizeInPixels() and calls glViewport()
-            // every frame, so the unconditional renderFrame() below keeps the framebuffer
-            // correct without extra renders inside the event loop.
+            // UILayer::onEvent(WindowResizedEvent) keeps glViewport in sync; the unconditional
+            // renderFrame() below presents the correct framebuffer each iteration.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
@@ -200,9 +204,11 @@ void Application::run()
         // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
         // display hasn't changed. Any SDL event (mouse move, key press, focus, resize)
         // wakes the sleep immediately, so interactive frame rate is unaffected.
+        // Use a longer sleep while minimized — nothing is visible, so 5 fps is ample.
         if (!hadEvents)
         {
-            SDL_WaitEventTimeout(nullptr, IDLE_FRAME_SLEEP_MS);
+            const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
+            SDL_WaitEventTimeout(nullptr, sleepMs);
         }
 
         const float currentTime = getTime();
