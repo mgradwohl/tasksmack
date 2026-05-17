@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -65,6 +66,10 @@ class ProcessesPanel : public Panel
 
     /// Get the current process snapshots.
     [[nodiscard]] std::vector<Domain::ProcessSnapshot> snapshots() const;
+
+    /// Find a single snapshot by PID without copying the full vector.
+    /// Searches the cached render snapshots; returns std::nullopt if not found.
+    [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
     /// Get column settings (for persistence)
     [[nodiscard]] const ProcessColumnSettings& columnSettings() const

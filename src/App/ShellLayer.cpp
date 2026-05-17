@@ -51,6 +51,12 @@ void ShellLayer::onAttach()
 
     spdlog::info("Panels initialized");
 
+    // Build stable tab labels. Hostname doesn't change for the process lifetime,
+    // so the system tab label is built once here.
+    m_CachedSystemTabLabel = std::string(ICON_FA_COMPUTER) + "  " + m_SystemMetricsPanel.hostname();
+    m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  Select a process";
+    m_CachedLabelPid = -1;
+
     // Cache privilege status and trigger the startup notice if needed.
     // Elevation state is constant for process lifetime; cache once at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
@@ -141,36 +147,42 @@ void ShellLayer::onUpdate(float deltaTime)
     const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     if (selectedPid != -1)
     {
-        auto currentSnapshots = m_ProcessesPanel.snapshots();
-        for (const auto& snap : currentSnapshots)
+        // Use findSnapshot() to search the cached render snapshot vector in-place,
+        // avoiding a full vector copy (which could be 200+ ProcessSnapshot objects).
+        if (auto foundSnap = m_ProcessesPanel.findSnapshot(selectedPid))
         {
-            if (snap.pid == selectedPid)
+            const auto& snap = *foundSnap;
+            cachedSnapshot = snap;
+            selectedSnapshot = &cachedSnapshot;
+
+            // Debug: Log when GPU data becomes available for the selected PID.
+            // This avoids spamming logs every frame while a GPU-using process is selected.
+            const bool hasGpuData = (!snap.gpuDevices.empty() || (snap.gpuMemoryBytes > 0));
+
+            if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
             {
-                cachedSnapshot = snap;
-                selectedSnapshot = &cachedSnapshot;
-
-                // Debug: Log when GPU data becomes available for the selected PID.
-                // This avoids spamming logs every frame while a GPU-using process is selected.
-                const bool hasGpuData = (!snap.gpuDevices.empty() || (snap.gpuMemoryBytes > 0));
-
-                if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
+                if (hasGpuData)
                 {
-                    if (hasGpuData)
-                    {
-                        spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
-                                      selectedPid,
-                                      snap.gpuDevices,
-                                      snap.gpuMemoryBytes);
-                    }
-
-                    m_LastGpuLogPid = selectedPid;
-                    m_LastGpuLogHasData = hasGpuData;
+                    spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
+                                  selectedPid,
+                                  snap.gpuDevices,
+                                  snap.gpuMemoryBytes);
                 }
-                break;
+
+                m_LastGpuLogPid = selectedPid;
+                m_LastGpuLogHasData = hasGpuData;
             }
         }
     }
     m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, deltaTime);
+
+    // Update the cached details tab label only when the selected process changes.
+    // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.
+    if (selectedPid != m_CachedLabelPid)
+    {
+        m_CachedLabelPid = selectedPid;
+        m_CachedDetailsTabLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
+    }
 
     // Handle keyboard shortcuts for font size
     const ImGuiIO& io = ImGui::GetIO();
@@ -270,9 +282,8 @@ void ShellLayer::renderTabBar()
         const ActiveTab previousTab = m_ActiveTab;
 
         // Tab 1: System Overview (hostname)
-        const std::string& hostname = m_SystemMetricsPanel.hostname();
-        const std::string systemLabel = std::string(ICON_FA_COMPUTER) + "  " + hostname;
-        if (ImGui::BeginTabItem(systemLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+        // m_CachedSystemTabLabel is built in onAttach(); hostname is stable for the process lifetime.
+        if (ImGui::BeginTabItem(m_CachedSystemTabLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
         {
             m_ActiveTab = ActiveTab::SystemOverview;
             ImGui::EndTabItem();
@@ -286,8 +297,8 @@ void ShellLayer::renderTabBar()
         }
 
         // Tab 3: Process Details (shows process name or "Select a process")
-        const std::string detailsLabel = std::string(ICON_FA_CIRCLE_INFO) + "  " + m_ProcessDetailsPanel.tabLabel();
-        if (ImGui::BeginTabItem(detailsLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+        // m_CachedDetailsTabLabel is rebuilt in onUpdate() only when the selected PID changes.
+        if (ImGui::BeginTabItem(m_CachedDetailsTabLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
         {
             m_ActiveTab = ActiveTab::ProcessDetails;
             ImGui::EndTabItem();

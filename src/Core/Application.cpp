@@ -30,6 +30,12 @@ thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicati
 
 // Maximum delta time clamped in the render loop to avoid large jumps after stalls or resize pauses.
 constexpr float MAX_DELTA_TIME = 0.1F;
+
+// When no SDL events arrive, sleep this long before rendering the next frame.
+// This limits the idle render rate to ~20 fps, reducing CPU usage when the display
+// hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
+// so interactive frame rate is unaffected.
+constexpr int IDLE_FRAME_SLEEP_MS = 50;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -148,9 +154,11 @@ void Application::run()
     while (m_Running)
     {
         // Process SDL events
+        bool hadEvents = false;
         SDL_Event sdlEvent;
         while (SDL_PollEvent(&sdlEvent))
         {
+            hadEvents = true;
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
@@ -186,6 +194,15 @@ void Application::run()
         {
             stop();
             break;
+        }
+
+        // When the event queue is empty, sleep briefly before rendering the next frame.
+        // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
+        // display hasn't changed. Any SDL event (mouse move, key press, focus, resize)
+        // wakes the sleep immediately, so interactive frame rate is unaffected.
+        if (!hadEvents)
+        {
+            SDL_WaitEventTimeout(nullptr, IDLE_FRAME_SLEEP_MS);
         }
 
         const float currentTime = getTime();
