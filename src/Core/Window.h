@@ -12,6 +12,10 @@ namespace Core
 /// Must match the clamp bounds in main.cpp and UserConfig.cpp.
 constexpr int WINDOW_MIN_DIMENSION = 200;
 
+/// Maximum window dimension (width or height) in pixels.
+/// Must match the clamp bounds in main.cpp and UserConfig.cpp.
+constexpr int WINDOW_MAX_DIMENSION = 16'384;
+
 struct WindowSpecification
 {
     std::string Title = "Window";

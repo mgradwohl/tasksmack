@@ -485,6 +485,8 @@ void TitleBarLayer::updateWindowInteraction()
     {
         constexpr int MIN_WINDOW_WIDTH = Core::WINDOW_MIN_DIMENSION;
         constexpr int MIN_WINDOW_HEIGHT = Core::WINDOW_MIN_DIMENSION;
+        constexpr int MAX_WINDOW_WIDTH = Core::WINDOW_MAX_DIMENSION;
+        constexpr int MAX_WINDOW_HEIGHT = Core::WINDOW_MAX_DIMENSION;
 
         const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
         const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
@@ -544,6 +546,11 @@ void TitleBarLayer::updateWindowInteraction()
             newWidth = MIN_WINDOW_WIDTH;
         }
 
+        if (newWidth > MAX_WINDOW_WIDTH)
+        {
+            newWidth = MAX_WINDOW_WIDTH;
+        }
+
         if (newHeight < MIN_WINDOW_HEIGHT)
         {
             if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
@@ -552,6 +559,11 @@ void TitleBarLayer::updateWindowInteraction()
                 newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MIN_WINDOW_HEIGHT);
             }
             newHeight = MIN_WINDOW_HEIGHT;
+        }
+
+        if (newHeight > MAX_WINDOW_HEIGHT)
+        {
+            newHeight = MAX_WINDOW_HEIGHT;
         }
 
         const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
@@ -706,10 +718,14 @@ void TitleBarLayer::updateResizeCursor()
         if (insideWindow)
         {
             edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
+#ifdef _WIN32
+            // On Windows the custom resize path owns all resizing; suppress the
+            // cursor over title-bar controls to match the hit-test exemptions.
             if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
             {
                 edge = ResizeEdge::None;
             }
+#endif
         }
     }
 
