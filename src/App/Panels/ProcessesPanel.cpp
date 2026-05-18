@@ -874,6 +874,22 @@ std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
     return {};
 }
 
+std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
+{
+    if (!m_ProcessModel)
+    {
+        return std::nullopt;
+    }
+    for (const auto& snap : m_ProcessModel->snapshots())
+    {
+        if (snap.pid == pid)
+        {
+            return snap;
+        }
+    }
+    return std::nullopt;
+}
+
 std::unordered_map<std::uint64_t, std::vector<std::size_t>>
 ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots)
 {

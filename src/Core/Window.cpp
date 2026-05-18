@@ -138,6 +138,12 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
 #ifndef NDEBUG
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
 #endif
+    // Explicitly request double buffering. Depth and stencil buffers are not used
+    // by the 2-D ImGui render path; requesting 0 bits reduces framebuffer memory
+    // and eliminates any driver-side depth/stencil pipeline overhead.
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
 
     // Create window flags
     SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
@@ -188,7 +194,20 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     spdlog::info("  Renderer: {}", glString(GL_RENDERER));
     spdlog::info("  Version: {}", glString(GL_VERSION));
 
-    SDL_GL_SetSwapInterval(m_Spec.VSync ? 1 : 0);
+    if (m_Spec.VSync)
+    {
+        // Prefer adaptive vsync: presents immediately when a frame is late instead of
+        // stalling until the next vblank. Falls back to regular vsync if the driver
+        // does not support GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear.
+        if (!SDL_GL_SetSwapInterval(-1))
+        {
+            SDL_GL_SetSwapInterval(1);
+        }
+    }
+    else
+    {
+        SDL_GL_SetSwapInterval(0);
+    }
 
 #ifdef _WIN32
     // Set window icon from embedded resource (title bar and taskbar)
@@ -263,21 +282,50 @@ void Window::setSize(int width, int height)
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
     SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight);
+    // Block until the OS has applied the resize so that subsequent SDL_GetWindowSize
+    // calls return the new dimensions immediately. On asynchronous windowing systems
+    // (X11, Wayland) this pumps X11 events internally and waits for the ConfigureNotify.
+    // NOTE: Do not call setSize() from the render loop or from any hot path — this call
+    // can block for the duration of a window-manager animation on async platforms.
+    SDL_SyncWindow(m_Handle);
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
 }
 
-auto Window::getSize() const -> std::pair<int, int>
+auto Window::getSize() const noexcept -> std::pair<int, int>
 {
     if (m_Handle == nullptr)
     {
-        return {0, 0};
+        return {m_Spec.Width, m_Spec.Height};
     }
 
     int width = 0;
     int height = 0;
     SDL_GetWindowSize(m_Handle, &width, &height);
     return {width, height};
+}
+
+int Window::getWidth() const noexcept
+{
+    return getSize().first;
+}
+
+int Window::getHeight() const noexcept
+{
+    return getSize().second;
+}
+
+auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>
+{
+    if (m_Handle == nullptr)
+    {
+        return {m_Spec.Width, m_Spec.Height};
+    }
+
+    int pixelW = 0;
+    int pixelH = 0;
+    SDL_GetWindowSizeInPixels(m_Handle, &pixelW, &pixelH);
+    return {pixelW, pixelH};
 }
 
 bool Window::isMaximized() const
@@ -368,6 +416,15 @@ void Window::minimize() const
     }
 
     SDL_MinimizeWindow(m_Handle);
+}
+
+bool Window::isMinimized() const noexcept
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MINIMIZED) != 0;
 }
 
 void Window::setHitTestCallback(SDL_HitTest callback, void* callbackData) const

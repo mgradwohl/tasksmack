@@ -711,9 +711,12 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                 if (alignedCount > 0)
                 {
                     const int plotCount = UI::Format::checkedCount(alignedCount);
-                    std::vector<double> y0(alignedCount, 0.0);
-                    std::vector<double> yUserTop(alignedCount);
-                    std::vector<double> ySystemTop(alignedCount);
+                    m_CpuStackY0.assign(alignedCount, 0.0);
+                    m_CpuStackYUser.resize(alignedCount);
+                    m_CpuStackYSystem.resize(alignedCount);
+                    auto& y0 = m_CpuStackY0;
+                    auto& yUserTop = m_CpuStackYUser;
+                    auto& ySystemTop = m_CpuStackYSystem;
 
                     for (size_t i = 0; i < alignedCount; ++i)
                     {

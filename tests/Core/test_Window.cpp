@@ -146,6 +146,56 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
     }
 }
 
+TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
+{
+    // getWidth()/getHeight() must query SDL live, not a stale spec cache.
+    // We verify this by calling setSize() and checking the getters reflect the new size.
+    try
+    {
+        Window window(WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+
+        EXPECT_EQ(window.getWidth(), 640);
+        EXPECT_EQ(window.getHeight(), 480);
+
+        window.setSize(800, 600);
+        EXPECT_EQ(window.getWidth(), 800);
+        EXPECT_EQ(window.getHeight(), 600);
+
+        window.setSize(1024, 768);
+        EXPECT_EQ(window.getWidth(), 1024);
+        EXPECT_EQ(window.getHeight(), 768);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(WindowTest, GetSizeInPixelsReturnsPositiveDimensions)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+
+        const auto [pixelW, pixelH] = window.getSizeInPixels();
+        // Physical pixel size must be at least as large as logical size on any display.
+        EXPECT_GE(pixelW, 640);
+        EXPECT_GE(pixelH, 480);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
 TEST_F(WindowTest, SetAndGetPositionRoundTrip)
 {
     if (isOffscreenVideoDriver())

@@ -6,6 +6,7 @@
 #include "Panels/SystemMetricsPanel.h"
 
 #include <cstdint>
+#include <string>
 
 namespace App
 {
@@ -67,6 +68,12 @@ class ShellLayer : public Core::Layer
     // Deferred startup notice: set in onAttach() if the privilege notice should fire.
     // Dispatched in the first onUpdate() call, after all layers are fully stacked.
     bool m_PendingPrivilegeNotice = false;
+
+    // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
+    // Avoids per-frame heap allocations from string concatenation in renderTabBar().
+    std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
+    std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt on PID change
+    std::int32_t m_CachedLabelPid = -1;  // PID for which m_CachedDetailsTabLabel was built
 };
 
 } // namespace App

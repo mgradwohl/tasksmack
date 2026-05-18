@@ -114,6 +114,7 @@ inline void plotLineWithFill(const char* label,
     }
 
     const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+
     const std::string shadedLabel = std::format("##{}Fill", label);
 
     ImPlot::PlotShaded(shadedLabel.c_str(), xData, yData, count, 0.0, {ImPlotProp_FillColor, fill});

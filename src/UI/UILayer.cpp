@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "Core/Layer.h"
+#include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -270,6 +271,18 @@ void UILayer::onAttach()
     ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
     ImGui_ImplOpenGL3_Init("#version 330 core");
 
+    // Seed the cached pixel size and set the initial OpenGL viewport.
+    // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
+    // eliminating the per-frame SDL_GetWindowSizeInPixels() query that beginFrame() used.
+    if (window != nullptr)
+    {
+        SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
+        if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
+        {
+            glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+        }
+    }
+
     spdlog::info("ImGui initialized successfully");
 }
 
@@ -307,6 +320,26 @@ void UILayer::onSDLEvent(SDL_Event* event)
     ImGui_ImplSDL3_ProcessEvent(event);
 }
 
+void UILayer::onEvent(Core::Event& event)
+{
+    // Keep the OpenGL viewport in sync with the framebuffer without polling SDL every frame.
+    // glViewport() is called exactly once per pixel-size change, driven by the event system.
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::WindowResizedEvent>(
+        [this](Core::WindowResizedEvent& e)
+        {
+            const int w = e.getWidth();
+            const int h = e.getHeight();
+            if (w > 0 && h > 0)
+            {
+                m_CachedPixelW = w;
+                m_CachedPixelH = h;
+                glViewport(0, 0, w, h);
+            }
+            return false; // Do not consume; other layers may need the resize notification
+        });
+}
+
 void UILayer::beginFrame()
 {
     // Apply any pending theme change BEFORE starting the ImGui frame
@@ -317,12 +350,16 @@ void UILayer::beginFrame()
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    // Push the current font size - this applies to all ImGui rendering this frame
-    ImFont* font = Theme::get().regularFont();
-    if (font != nullptr)
+    // Push the current font - store pointer so endFrame() can pop without a
+    // second Theme lookup.
+    m_PushedFont = Theme::get().regularFont();
+    if (m_PushedFont != nullptr)
     {
-        ImGui::PushFont(font);
+        ImGui::PushFont(m_PushedFont);
     }
+
+    // Viewport is kept up-to-date by onEvent(WindowResizedEvent) and seeded in
+    // onAttach(); no per-frame SDL_GetWindowSizeInPixels() query is needed.
 
     // Clear screen with ImGui's window background color (follows theme)
     const ImVec4& bgColor = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
@@ -332,11 +369,12 @@ void UILayer::beginFrame()
 
 void UILayer::endFrame()
 {
-    // Pop the font we pushed in beginFrame()
-    const ImFont* const font = Theme::get().regularFont();
-    if (font != nullptr)
+    // Pop the font pushed in beginFrame() using the cached pointer (avoids a
+    // second Theme::regularFont() lookup on every frame).
+    if (m_PushedFont != nullptr)
     {
         ImGui::PopFont();
+        m_PushedFont = nullptr;
     }
 
     ImGui::Render();

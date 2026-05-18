@@ -601,15 +601,15 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
     try
     {
         auto app = std::make_unique<Core::Application>(spec);
-        const int width = app->getWindow().getWidth();
-        const int height = app->getWindow().getHeight();
+        const auto [width, height] = app->getWindow().getSize();
 
         Core::Application::setInstance(std::move(app));
 
         // Window properties should be preserved
         auto& instance = Core::Application::get();
-        EXPECT_EQ(instance.getWindow().getWidth(), width);
-        EXPECT_EQ(instance.getWindow().getHeight(), height);
+        const auto [newWidth, newHeight] = instance.getWindow().getSize();
+        EXPECT_EQ(newWidth, width);
+        EXPECT_EQ(newHeight, height);
 
         Core::Application::setInstance(nullptr);
     }
@@ -908,6 +908,39 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
         EXPECT_TRUE(event.isHandled());
         // Bottom should not have received the event because Top handled it.
         EXPECT_EQ(bottom.receivedEventNames.size(), 0U);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// =============================================================================
+// WindowResizedEvent dispatch
+// =============================================================================
+
+TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "ResizeEventDispatchTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        auto& tracker = app.pushLayer<EventTrackingLayer>("Tracker", /*handleEvents=*/false);
+
+        Core::WindowResizedEvent event(1280, 720);
+        app.raiseEvent(event);
+
+        ASSERT_EQ(tracker.receivedEventNames.size(), 1U);
+        EXPECT_STREQ(tracker.receivedEventNames[0].c_str(), "WindowResized");
+        EXPECT_FALSE(event.isHandled()); // layer did not consume it
     }
     catch (const std::exception& e)
     {

@@ -27,6 +27,20 @@ namespace
 // Uses std::reference_wrapper to avoid storing a raw pointer; cleared in the destructor on the same thread.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - intentionally mutable for state tracking
 thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicationInstance;
+
+// Maximum delta time clamped in the render loop to avoid large jumps after stalls or resize pauses.
+constexpr float MAX_DELTA_TIME = 0.1F;
+
+// When no SDL events arrive, sleep this long before rendering the next frame.
+// This limits the idle render rate to ~20 fps, reducing CPU usage when the display
+// hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
+// so interactive frame rate is unaffected.
+constexpr int IDLE_FRAME_SLEEP_MS = 50;
+
+// When the window is minimized there is nothing visible to render, so the sleep
+// is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
+// immediately, so restore latency is unaffected.
+constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -145,17 +159,18 @@ void Application::run()
     while (m_Running)
     {
         // Process SDL events
+        bool hadEvents = false;
         SDL_Event sdlEvent;
         while (SDL_PollEvent(&sdlEvent))
         {
+            hadEvents = true;
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
                 layer->onSDLEvent(&sdlEvent);
             }
 
-            // Only translate window close events to our event system for clean shutdown coordination
-            // All other input events are handled via SDL directly
+            // Translate window close events to our event system for clean shutdown coordination
             if (sdlEvent.type == SDL_EVENT_QUIT || sdlEvent.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
             {
                 WindowCloseEvent event;
@@ -165,6 +180,18 @@ void Application::run()
                     stop();
                 }
             }
+
+            // Notify layers of framebuffer pixel size changes (user drag-resize or DPI change).
+            // We do NOT render here — calling renderFrame() inside the event loop causes one
+            // vsync stall (~16 ms at 60 Hz) per resize event. When events batch up during an
+            // active drag, that serialises many vsync waits and makes resize extremely sluggish.
+            // UILayer::onEvent(WindowResizedEvent) keeps glViewport in sync; the unconditional
+            // renderFrame() below presents the correct framebuffer each iteration.
+            if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+            {
+                WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
+                raiseEvent(resizeEvent);
+            }
         }
 
         if (m_Window->shouldClose())
@@ -173,36 +200,48 @@ void Application::run()
             break;
         }
 
+        // When the event queue is empty, sleep briefly before rendering the next frame.
+        // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
+        // display hasn't changed. Any SDL event (mouse move, key press, focus, resize)
+        // wakes the sleep immediately, so interactive frame rate is unaffected.
+        // Use a longer sleep while minimized — nothing is visible, so 5 fps is ample.
+        if (!hadEvents)
+        {
+            const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
+            SDL_WaitEventTimeout(nullptr, sleepMs);
+        }
+
         const float currentTime = getTime();
-        float deltaTime = currentTime - lastTime;
+        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
         lastTime = currentTime;
 
-        // Clamp delta time to avoid huge jumps
-        constexpr float MAX_DELTA_TIME = 0.1F;
-        deltaTime = std::min(deltaTime, MAX_DELTA_TIME);
-
-        // Update all layers
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onUpdate(deltaTime);
-        }
-
-        // Render all layers
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onRender();
-        }
-
-        // Post-render (for ImGui frame end, etc.)
-        for (const auto& layer : m_LayerStack)
-        {
-            layer->onPostRender();
-        }
-
-        m_Window->swapBuffers();
+        renderFrame(deltaTime);
     }
 
     spdlog::info("Exiting main loop");
+}
+
+void Application::renderFrame(float deltaTime)
+{
+    // Update all layers
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onUpdate(deltaTime);
+    }
+
+    // Render all layers
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onRender();
+    }
+
+    // Post-render (for ImGui frame end, etc.)
+    for (const auto& layer : m_LayerStack)
+    {
+        layer->onPostRender();
+    }
+
+    m_Window->swapBuffers();
 }
 
 void Application::stop()
