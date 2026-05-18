@@ -41,6 +41,12 @@ constexpr int IDLE_FRAME_SLEEP_MS = 50;
 // is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
 // immediately, so restore latency is unaffected.
 constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
+
+// During interactive move/resize, event delivery can be bursty depending on
+// compositor/window-manager behavior. Keep redraw active for a short grace
+// window after each relevant window event so the framebuffer stays responsive
+// without forcing continuous high-rate rendering when idle.
+constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -162,6 +168,8 @@ void Application::run()
         return deltaTime;
     };
 
+    float forceInteractionRedrawUntil = 0.0F;
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
@@ -199,6 +207,7 @@ void Application::run()
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
+                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
             {
@@ -208,7 +217,12 @@ void Application::run()
                     WindowResizedEvent resizeEvent(pixelW, pixelH);
                     raiseEvent(resizeEvent);
                     needsResizeRedraw = true;
+                    forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 }
+            }
+            else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
+            {
+                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
         }
 
@@ -218,18 +232,16 @@ void Application::run()
             break;
         }
 
-#ifdef _WIN32
-        // Keep interactive resize visually responsive on Windows without reintroducing
-        // per-event rendering stalls: render at most once per drained event batch.
+        // Keep interactive move/resize visually responsive across platforms
+        // without reintroducing per-event rendering stalls: render at most once
+        // per drained event batch.
         bool didImmediateResizeRedraw = false;
-        if (needsResizeRedraw && !m_Window->isMinimized())
+        const bool forceInteractionRedraw = getTime() < forceInteractionRedrawUntil;
+        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
             renderFrame(computeDeltaTime());
             didImmediateResizeRedraw = true;
         }
-#else
-        constexpr bool didImmediateResizeRedraw = false;
-#endif
 
         // When the event queue is empty, sleep briefly before rendering the next frame.
         // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
@@ -238,6 +250,11 @@ void Application::run()
         // Use a longer sleep while minimized — nothing is visible, so 5 fps is ample.
         if (!hadEvents)
         {
+            const bool keepInteractionRedrawActive = getTime() < forceInteractionRedrawUntil;
+            if (keepInteractionRedrawActive)
+            {
+                continue;
+            }
             const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
             SDL_WaitEventTimeout(nullptr, sleepMs);
         }

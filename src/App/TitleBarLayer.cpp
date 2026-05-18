@@ -50,101 +50,12 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
 // Hit test callback for SDL - determines if a point is draggable
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
-    auto* layer = static_cast<TitleBarLayer*>(data);
-    if (layer == nullptr || area == nullptr)
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // SDL hit test coordinates are in LOGICAL (window) coordinates
-    // ImGui also uses logical coordinates for positioning (SDL backend handles DPI)
-    // Button bounds from renderTitleBar() are in logical coordinates
-    // So we use coordinates WITHOUT scaling
-    const auto x = static_cast<float>(area->x);
-    const auto y = static_cast<float>(area->y);
-
-    // Title bar height is in logical coordinates
-    const float titleBarHeight = TitleBarLayer::height();
-
-    // Get window size in LOGICAL coordinates for consistency
-    int windowWidth = 0;
-    int windowHeight = 0;
-    if (!SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight))
-    {
-        spdlog::error("SDL_GetWindowSize failed in hitTestCallback: {}", SDL_GetError());
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // Check if window is maximized - no resize borders when maximized
-    const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
-
-    // Check window resize edges first (8px border in logical coordinates)
-    // Skip resize edge detection when maximized
-    constexpr float resizeBorder = 8.0F;
-
-    if (!isMaximized)
-    {
-        // Bottom corners and edges
-        if (y >= static_cast<float>(windowHeight) - resizeBorder)
-        {
-            if (x < resizeBorder)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            }
-            if (x >= static_cast<float>(windowWidth) - resizeBorder)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_BOTTOM;
-        }
-
-        // Side edges
-        if (x < resizeBorder)
-        {
-            if (y < resizeBorder)
-            {
-                return SDL_HITTEST_RESIZE_TOPLEFT;
-            }
-            return SDL_HITTEST_RESIZE_LEFT;
-        }
-        if (x >= static_cast<float>(windowWidth) - resizeBorder)
-        {
-            if (y < resizeBorder)
-            {
-                return SDL_HITTEST_RESIZE_TOPRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_RIGHT;
-        }
-
-        // Top edge (but only if not in button area)
-        if (y < resizeBorder)
-        {
-            // Don't resize if clicking in the button area on the right
-            const auto& helpBounds = layer->getHelpBounds();
-            if (helpBounds.maxX > helpBounds.minX && x >= helpBounds.minX)
-            {
-                return SDL_HITTEST_NORMAL; // Let ImGui handle buttons
-            }
-            return SDL_HITTEST_RESIZE_TOP;
-        }
-    }
-
-    // Not in title bar area - let ImGui handle it normally
-    if (y > titleBarHeight)
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // In title bar area - check if on any button or the icon
-    if (isInsideBounds(x, y, layer->getIconBounds()) || isInsideBounds(x, y, layer->getHelpBounds()) ||
-        isInsideBounds(x, y, layer->getSettingsBounds()) || isInsideBounds(x, y, layer->getMinimizeBounds()) ||
-        isInsideBounds(x, y, layer->getMaximizeBounds()) || isInsideBounds(x, y, layer->getCloseBounds()))
-    {
-        return SDL_HITTEST_NORMAL; // Let ImGui handle button/icon clicks
-    }
-
-    // In title bar but not on a button - this area is draggable
-    return SDL_HITTEST_DRAGGABLE;
+    (void) sdlWindow;
+    (void) area;
+    (void) data;
+    // Always return NORMAL so SDL does not enter native modal move/resize loops
+    // that pause rendering. Drag/resize is handled in TitleBarLayer::onSDLEvent.
+    return SDL_HITTEST_NORMAL;
 }
 
 } // namespace
@@ -236,6 +147,7 @@ void TitleBarLayer::onAttach()
 
     // Set up hit test for window dragging
     setupHitTest();
+    createSystemCursors();
 }
 
 void TitleBarLayer::onDetach()
@@ -248,13 +160,16 @@ void TitleBarLayer::onDetach()
         m_IconTexture = 0;
     }
 
+    destroySystemCursors();
+
     // Remove hit test callback
     Core::Application::get().getWindow().setHitTestCallback(nullptr, nullptr);
 }
 
 void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
-    // No update logic needed
+    updateWindowInteraction();
+    updateResizeCursor();
 }
 
 void TitleBarLayer::onSDLEvent(SDL_Event* event)
@@ -309,6 +224,396 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
             m_ShowSystemMenu = true;
         }
     }
+
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
+    {
+        beginWindowInteraction(*event);
+    }
+    else if ((event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT) ||
+             event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
+    {
+        endWindowInteraction();
+    }
+}
+
+auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
+{
+    return isInsideBounds(x, y, m_IconBounds) || isInsideBounds(x, y, m_HelpBounds) || isInsideBounds(x, y, m_SettingsBounds) ||
+           isInsideBounds(x, y, m_MinimizeBounds) || isInsideBounds(x, y, m_MaximizeBounds) || isInsideBounds(x, y, m_CloseBounds);
+}
+
+auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
+{
+    if (isMaximized)
+    {
+        return ResizeEdge::None;
+    }
+
+    constexpr float RESIZE_BORDER = 8.0F;
+    const bool nearLeft = x < RESIZE_BORDER;
+    const bool nearRight = x >= (static_cast<float>(windowWidth) - RESIZE_BORDER);
+    const bool nearTop = y < RESIZE_BORDER;
+    const bool nearBottom = y >= (static_cast<float>(windowHeight) - RESIZE_BORDER);
+
+    if (nearTop && nearLeft)
+    {
+        return ResizeEdge::TopLeft;
+    }
+    if (nearTop && nearRight)
+    {
+        return ResizeEdge::TopRight;
+    }
+    if (nearBottom && nearLeft)
+    {
+        return ResizeEdge::BottomLeft;
+    }
+    if (nearBottom && nearRight)
+    {
+        return ResizeEdge::BottomRight;
+    }
+    if (nearLeft)
+    {
+        return ResizeEdge::Left;
+    }
+    if (nearRight)
+    {
+        return ResizeEdge::Right;
+    }
+    if (nearTop)
+    {
+        return ResizeEdge::Top;
+    }
+    if (nearBottom)
+    {
+        return ResizeEdge::Bottom;
+    }
+    return ResizeEdge::None;
+}
+
+void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
+{
+    auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr)
+    {
+        return;
+    }
+
+    const SDL_WindowID thisWindowId = SDL_GetWindowID(sdlWindow);
+    if (event.button.windowID != thisWindowId)
+    {
+        return;
+    }
+
+    const float mouseX = event.button.x;
+    const float mouseY = event.button.y;
+    const auto [windowWidth, windowHeight] = window.getSize();
+    const bool isMaximized = window.isMaximized();
+
+    if (isPointInControlArea(mouseX, mouseY))
+    {
+        return;
+    }
+
+    const ResizeEdge edge = detectResizeEdge(mouseX, mouseY, windowWidth, windowHeight, isMaximized);
+    float globalMouseXF = 0.0F;
+    float globalMouseYF = 0.0F;
+    SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
+    const int globalMouseX = static_cast<int>(globalMouseXF);
+    const int globalMouseY = static_cast<int>(globalMouseYF);
+
+    if (edge != ResizeEdge::None)
+    {
+        const auto [startX, startY] = window.getPosition();
+        m_CustomResizeActive = true;
+        m_ActiveResizeEdge = edge;
+        m_ResizeStartMouseGlobalX = globalMouseX;
+        m_ResizeStartMouseGlobalY = globalMouseY;
+        m_ResizeStartWindowX = startX;
+        m_ResizeStartWindowY = startY;
+        m_ResizeStartWindowWidth = windowWidth;
+        m_ResizeStartWindowHeight = windowHeight;
+        m_LastAppliedWindowX = startX;
+        m_LastAppliedWindowY = startY;
+        m_LastAppliedWindowWidth = windowWidth;
+        m_LastAppliedWindowHeight = windowHeight;
+        m_CustomDragActive = false;
+        return;
+    }
+
+    if (!isMaximized && mouseY <= height())
+    {
+        const auto [startX, startY] = window.getPosition();
+        m_CustomDragActive = true;
+        m_DragStartMouseGlobalX = globalMouseX;
+        m_DragStartMouseGlobalY = globalMouseY;
+        m_DragStartWindowX = startX;
+        m_DragStartWindowY = startY;
+        m_LastAppliedWindowX = startX;
+        m_LastAppliedWindowY = startY;
+        m_CustomResizeActive = false;
+        m_ActiveResizeEdge = ResizeEdge::None;
+    }
+}
+
+void TitleBarLayer::updateWindowInteraction()
+{
+    if (!m_CustomDragActive && !m_CustomResizeActive)
+    {
+        return;
+    }
+
+    float globalMouseXF = 0.0F;
+    float globalMouseYF = 0.0F;
+    const SDL_MouseButtonFlags mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
+    if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
+    {
+        endWindowInteraction();
+        return;
+    }
+
+    const int globalMouseX = static_cast<int>(globalMouseXF);
+    const int globalMouseY = static_cast<int>(globalMouseYF);
+    auto& window = Core::Application::get().getWindow();
+
+    if (m_CustomDragActive)
+    {
+        const int dx = globalMouseX - m_DragStartMouseGlobalX;
+        const int dy = globalMouseY - m_DragStartMouseGlobalY;
+        const int targetX = m_DragStartWindowX + dx;
+        const int targetY = m_DragStartWindowY + dy;
+        if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
+        {
+            window.setPosition(targetX, targetY);
+            m_LastAppliedWindowX = targetX;
+            m_LastAppliedWindowY = targetY;
+        }
+        return;
+    }
+
+    if (m_CustomResizeActive)
+    {
+        constexpr int MIN_WINDOW_WIDTH = 320;
+        constexpr int MIN_WINDOW_HEIGHT = 240;
+
+        const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
+        const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
+
+        int newX = m_ResizeStartWindowX;
+        int newY = m_ResizeStartWindowY;
+        int newWidth = m_ResizeStartWindowWidth;
+        int newHeight = m_ResizeStartWindowHeight;
+
+        switch (m_ActiveResizeEdge)
+        {
+        case ResizeEdge::Left:
+            newX = m_ResizeStartWindowX + dx;
+            newWidth = m_ResizeStartWindowWidth - dx;
+            break;
+        case ResizeEdge::Right:
+            newWidth = m_ResizeStartWindowWidth + dx;
+            break;
+        case ResizeEdge::Top:
+            newY = m_ResizeStartWindowY + dy;
+            newHeight = m_ResizeStartWindowHeight - dy;
+            break;
+        case ResizeEdge::Bottom:
+            newHeight = m_ResizeStartWindowHeight + dy;
+            break;
+        case ResizeEdge::TopLeft:
+            newX = m_ResizeStartWindowX + dx;
+            newWidth = m_ResizeStartWindowWidth - dx;
+            newY = m_ResizeStartWindowY + dy;
+            newHeight = m_ResizeStartWindowHeight - dy;
+            break;
+        case ResizeEdge::TopRight:
+            newWidth = m_ResizeStartWindowWidth + dx;
+            newY = m_ResizeStartWindowY + dy;
+            newHeight = m_ResizeStartWindowHeight - dy;
+            break;
+        case ResizeEdge::BottomLeft:
+            newX = m_ResizeStartWindowX + dx;
+            newWidth = m_ResizeStartWindowWidth - dx;
+            newHeight = m_ResizeStartWindowHeight + dy;
+            break;
+        case ResizeEdge::BottomRight:
+            newWidth = m_ResizeStartWindowWidth + dx;
+            newHeight = m_ResizeStartWindowHeight + dy;
+            break;
+        case ResizeEdge::None:
+            break;
+        }
+
+        if (newWidth < MIN_WINDOW_WIDTH)
+        {
+            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
+                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
+            {
+                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MIN_WINDOW_WIDTH);
+            }
+            newWidth = MIN_WINDOW_WIDTH;
+        }
+
+        if (newHeight < MIN_WINDOW_HEIGHT)
+        {
+            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
+                m_ActiveResizeEdge == ResizeEdge::TopRight)
+            {
+                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MIN_WINDOW_HEIGHT);
+            }
+            newHeight = MIN_WINDOW_HEIGHT;
+        }
+
+        const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
+        const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);
+
+        if (positionChanged)
+        {
+            window.setPosition(newX, newY);
+            m_LastAppliedWindowX = newX;
+            m_LastAppliedWindowY = newY;
+        }
+        if (sizeChanged)
+        {
+            SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
+            m_LastAppliedWindowWidth = newWidth;
+            m_LastAppliedWindowHeight = newHeight;
+        }
+    }
+}
+
+void TitleBarLayer::endWindowInteraction()
+{
+    m_CustomDragActive = false;
+    m_CustomResizeActive = false;
+    m_ActiveResizeEdge = ResizeEdge::None;
+}
+
+void TitleBarLayer::createSystemCursors()
+{
+    m_DefaultCursor = SDL_GetDefaultCursor();
+    m_NsResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+    m_EwResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+    m_NeswResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
+    m_NwseResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
+}
+
+void TitleBarLayer::destroySystemCursors()
+{
+    if (m_DefaultCursor != nullptr)
+    {
+        SDL_SetCursor(m_DefaultCursor);
+    }
+
+    if (m_NsResizeCursor != nullptr)
+    {
+        SDL_DestroyCursor(m_NsResizeCursor);
+        m_NsResizeCursor = nullptr;
+    }
+    if (m_EwResizeCursor != nullptr)
+    {
+        SDL_DestroyCursor(m_EwResizeCursor);
+        m_EwResizeCursor = nullptr;
+    }
+    if (m_NeswResizeCursor != nullptr)
+    {
+        SDL_DestroyCursor(m_NeswResizeCursor);
+        m_NeswResizeCursor = nullptr;
+    }
+    if (m_NwseResizeCursor != nullptr)
+    {
+        SDL_DestroyCursor(m_NwseResizeCursor);
+        m_NwseResizeCursor = nullptr;
+    }
+}
+
+void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
+{
+    SDL_Cursor* cursor = m_DefaultCursor;
+
+    switch (edge)
+    {
+    case ResizeEdge::Top:
+    case ResizeEdge::Bottom:
+        cursor = m_NsResizeCursor;
+        break;
+    case ResizeEdge::Left:
+    case ResizeEdge::Right:
+        cursor = m_EwResizeCursor;
+        break;
+    case ResizeEdge::TopLeft:
+    case ResizeEdge::BottomRight:
+        cursor = m_NwseResizeCursor;
+        break;
+    case ResizeEdge::TopRight:
+    case ResizeEdge::BottomLeft:
+        cursor = m_NeswResizeCursor;
+        break;
+    case ResizeEdge::None:
+        cursor = m_DefaultCursor;
+        break;
+    }
+
+    if (cursor != nullptr)
+    {
+        SDL_SetCursor(cursor);
+    }
+}
+
+void TitleBarLayer::updateResizeCursor()
+{
+    auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr)
+    {
+        return;
+    }
+
+    ResizeEdge edge = ResizeEdge::None;
+
+    if (m_CustomResizeActive)
+    {
+        edge = m_ActiveResizeEdge;
+    }
+    else
+    {
+        float globalMouseXF = 0.0F;
+        float globalMouseYF = 0.0F;
+        SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
+        const int mouseGlobalX = static_cast<int>(globalMouseXF);
+        const int mouseGlobalY = static_cast<int>(globalMouseYF);
+
+        if (m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX && mouseGlobalY == m_LastCursorMouseGlobalY)
+        {
+            return;
+        }
+
+        m_LastCursorMouseGlobalX = mouseGlobalX;
+        m_LastCursorMouseGlobalY = mouseGlobalY;
+        m_HasCursorSample = true;
+
+        const auto [windowX, windowY] = window.getPosition();
+        const auto [windowWidth, windowHeight] = window.getSize();
+        const float localX = globalMouseXF - static_cast<float>(windowX);
+        const float localY = globalMouseYF - static_cast<float>(windowY);
+
+        const bool insideWindow =
+            (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
+        if (insideWindow)
+        {
+            edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, window.isMaximized());
+            if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
+            {
+                edge = ResizeEdge::None;
+            }
+        }
+    }
+
+    if (edge != m_HoverResizeEdge)
+    {
+        applyCursorForEdge(edge);
+        m_HoverResizeEdge = edge;
+    }
 }
 
 void TitleBarLayer::onRender()
@@ -325,7 +630,7 @@ void TitleBarLayer::renderTitleBar()
 {
     const auto& scheme = UI::Theme::get().scheme();
     auto& window = Core::Application::get().getWindow();
-    const auto [windowWidth, _] = window.getSize();
+    const auto [windowWidth, windowHeight] = window.getSize();
 
     const float titleBarHeight = height();
     // Set up window for title bar - no padding, no scrolling, fixed position
@@ -518,6 +823,19 @@ void TitleBarLayer::renderTitleBar()
     renderSystemMenu();
 
     ImGui::End();
+
+    if (!window.isMaximized())
+    {
+        constexpr float BORDER_THICKNESS = 1.0F;
+        ImDrawList* drawList = ImGui::GetForegroundDrawList();
+        drawList->AddRect(ImVec2(0.0F, 0.0F),
+                          ImVec2(static_cast<float>(windowWidth), static_cast<float>(windowHeight)),
+                          ImGui::ColorConvertFloat4ToU32(scheme.border),
+                          0.0F,
+                          ImDrawFlags_None,
+                          BORDER_THICKNESS);
+    }
+
     ImGui::PopStyleColor(); // WindowBg
     ImGui::PopStyleVar(2);  // WindowPadding, WindowBorderSize
 }
