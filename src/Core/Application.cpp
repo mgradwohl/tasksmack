@@ -154,12 +154,21 @@ void Application::run()
 
     float lastTime = getTime();
 
+    const auto computeDeltaTime = [&lastTime]() -> float
+    {
+        const float currentTime = getTime();
+        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
+        lastTime = currentTime;
+        return deltaTime;
+    };
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
     {
         // Process SDL events
         bool hadEvents = false;
+        bool needsResizeRedraw = false;
         SDL_Event sdlEvent;
         while (SDL_PollEvent(&sdlEvent))
         {
@@ -181,16 +190,25 @@ void Application::run()
                 }
             }
 
-            // Notify layers of framebuffer pixel size changes (user drag-resize or DPI change).
-            // We do NOT render here — calling renderFrame() inside the event loop causes one
-            // vsync stall (~16 ms at 60 Hz) per resize event. When events batch up during an
-            // active drag, that serialises many vsync waits and makes resize extremely sluggish.
-            // UILayer::onEvent(WindowResizedEvent) keeps glViewport in sync; the unconditional
-            // renderFrame() below presents the correct framebuffer each iteration.
+            // Drive viewport updates from resize-related events.
+            // On Windows, interactive border drag can surface WINDOW_RESIZED/EXPOSED before
+            // (or instead of) WINDOW_PIXEL_SIZE_CHANGED in some paths. Handle all relevant
+            // variants and use physical pixel size when explicit dimensions are unavailable.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
+                needsResizeRedraw = true;
+            }
+            else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
+            {
+                const auto [pixelW, pixelH] = m_Window->getSizeInPixels();
+                if (pixelW > 0 && pixelH > 0)
+                {
+                    WindowResizedEvent resizeEvent(pixelW, pixelH);
+                    raiseEvent(resizeEvent);
+                    needsResizeRedraw = true;
+                }
             }
         }
 
@@ -199,6 +217,19 @@ void Application::run()
             stop();
             break;
         }
+
+#ifdef _WIN32
+        // Keep interactive resize visually responsive on Windows without reintroducing
+        // per-event rendering stalls: render at most once per drained event batch.
+        bool didImmediateResizeRedraw = false;
+        if (needsResizeRedraw && !m_Window->isMinimized())
+        {
+            renderFrame(computeDeltaTime());
+            didImmediateResizeRedraw = true;
+        }
+#else
+        constexpr bool didImmediateResizeRedraw = false;
+#endif
 
         // When the event queue is empty, sleep briefly before rendering the next frame.
         // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
@@ -211,11 +242,10 @@ void Application::run()
             SDL_WaitEventTimeout(nullptr, sleepMs);
         }
 
-        const float currentTime = getTime();
-        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
-        lastTime = currentTime;
-
-        renderFrame(deltaTime);
+        if (!didImmediateResizeRedraw)
+        {
+            renderFrame(computeDeltaTime());
+        }
     }
 
     spdlog::info("Exiting main loop");
