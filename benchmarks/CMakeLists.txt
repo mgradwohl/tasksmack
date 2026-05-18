@@ -99,7 +99,6 @@ target_include_directories(TaskSmackBenchmarks PRIVATE
 
 target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
-    benchmark::benchmark_main
     spdlog::spdlog_header_only
 )
 
