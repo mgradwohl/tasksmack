@@ -3,6 +3,7 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
+#include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -674,6 +675,15 @@ void TitleBarLayer::updateWindowInteraction()
             SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
             m_LastAppliedWindowWidth = newWidth;
             m_LastAppliedWindowHeight = newHeight;
+            // Immediately raise a resize event so UILayer updates the GL viewport
+            // for this frame. Without this, the viewport lags one frame behind
+            // the window until SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED is processed
+            // in the next event-poll iteration.
+            int pixelW = 0;
+            int pixelH = 0;
+            SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
+            Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
+            Core::Application::get().raiseEvent(resizeEvent);
         }
     }
 }
@@ -820,14 +830,24 @@ void TitleBarLayer::updateResizeCursor()
             {
                 edge = ResizeEdge::None;
             }
+#ifndef _WIN32
+            // On non-Windows, hitTestCallback returns NORMAL for the top-edge
+            // band right of helpBounds.minX (so the WM doesn't intercept clicks
+            // on that region). Suppress the resize cursor there to match.
+            if (edge == ResizeEdge::Top && m_HelpBounds.maxX > m_HelpBounds.minX && localX >= m_HelpBounds.minX)
+            {
+                edge = ResizeEdge::None;
+            }
+#endif
         }
     }
 
-    if (edge != m_HoverResizeEdge)
-    {
-        applyCursorForEdge(edge);
-        m_HoverResizeEdge = edge;
-    }
+    // Always apply the cursor each frame: the SDL/ImGui backend
+    // (ImGui_ImplSDL3_NewFrame) may reset the cursor between frames, so we
+    // must reapply on every call to keep the resize cursor visible while
+    // hovering an edge.
+    applyCursorForEdge(edge);
+    m_HoverResizeEdge = edge;
 }
 
 void TitleBarLayer::onRender()
