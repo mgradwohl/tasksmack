@@ -282,8 +282,11 @@ void Window::setSize(int width, int height)
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
     SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight);
-    // Block until the OS has applied the resize so that subsequent
-    // SDL_GetWindowSize calls return the new dimensions immediately.
+    // Block until the OS has applied the resize so that subsequent SDL_GetWindowSize
+    // calls return the new dimensions immediately. On asynchronous windowing systems
+    // (X11, Wayland) this pumps X11 events internally and waits for the ConfigureNotify.
+    // NOTE: Do not call setSize() from the render loop or from any hot path — this call
+    // can block for the duration of a window-manager animation on async platforms.
     SDL_SyncWindow(m_Handle);
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
