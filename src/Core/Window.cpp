@@ -286,11 +286,11 @@ void Window::setSize(int width, int height)
     m_Spec.Height = clampedHeight;
 }
 
-auto Window::getSize() const -> std::pair<int, int>
+auto Window::getSize() const noexcept -> std::pair<int, int>
 {
     if (m_Handle == nullptr)
     {
-        return {0, 0};
+        return {m_Spec.Width, m_Spec.Height};
     }
 
     int width = 0;
@@ -301,28 +301,12 @@ auto Window::getSize() const -> std::pair<int, int>
 
 int Window::getWidth() const noexcept
 {
-    if (m_Handle == nullptr)
-    {
-        return m_Spec.Width;
-    }
-
-    int width = 0;
-    int height = 0;
-    SDL_GetWindowSize(m_Handle, &width, &height);
-    return width;
+    return getSize().first;
 }
 
 int Window::getHeight() const noexcept
 {
-    if (m_Handle == nullptr)
-    {
-        return m_Spec.Height;
-    }
-
-    int width = 0;
-    int height = 0;
-    SDL_GetWindowSize(m_Handle, &width, &height);
-    return height;
+    return getSize().second;
 }
 
 auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>

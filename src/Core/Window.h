@@ -60,7 +60,7 @@ class Window
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
 
     void setSize(int width, int height);
-    [[nodiscard]] auto getSize() const -> std::pair<int, int>;
+    [[nodiscard]] auto getSize() const noexcept -> std::pair<int, int>;
 
     [[nodiscard]] bool isMaximized() const;
     [[nodiscard]] bool isMinimized() const noexcept;
