@@ -491,29 +491,23 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     {
         if (isMaximized)
         {
-            // Restore the window before starting the drag so the title bar can be
-            // dragged out of the maximized state (mirrors native caption behavior).
-            // Reposition so the cursor stays at the same horizontal proportion in
-            // the restored title bar as it was in the maximized window.
+            // Don't restore yet — defer restore until the pointer has actually moved
+            // past the drag threshold so a bare click doesn't unmaximize the window.
             const auto [maxX, maxY] = window.getPosition();
-            const float xProportion = (static_cast<float>(globalMouseX) - static_cast<float>(maxX)) / static_cast<float>(windowWidth);
-            window.restore();
-            const auto [restoredX, restoredY] = window.getPosition();
-            const auto [restoredWidth, restoredHeight] = window.getSize();
-            // Place the window so the cursor is at the proportionally same spot.
-            const int adjustedX = globalMouseX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
-            window.setPosition(adjustedX, restoredY);
+            m_PendingDragRestore = true;
+            m_MaximizedWindowX = maxX;
+            m_MaximizedWindowWidth = windowWidth;
             m_CustomDragActive = true;
             m_DragStartMouseGlobalX = globalMouseX;
             m_DragStartMouseGlobalY = globalMouseY;
-            m_DragStartWindowX = adjustedX;
-            m_DragStartWindowY = restoredY;
-            m_LastAppliedWindowX = adjustedX;
-            m_LastAppliedWindowY = restoredY;
+            // Placeholder positions replaced once restore actually happens.
+            m_DragStartWindowX = maxX;
+            m_DragStartWindowY = maxY;
+            m_LastAppliedWindowX = maxX;
+            m_LastAppliedWindowY = maxY;
             m_CustomResizeActive = false;
             m_ActiveResizeEdge = ResizeEdge::None;
-            // Silence unused variable warning when restoredHeight is unreferenced.
-            (void) restoredHeight;
+            (void) maxY;
         }
         else
         {
@@ -555,6 +549,34 @@ void TitleBarLayer::updateWindowInteraction()
     {
         const int dx = globalMouseX - m_DragStartMouseGlobalX;
         const int dy = globalMouseY - m_DragStartMouseGlobalY;
+
+        if (m_PendingDragRestore)
+        {
+            // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
+            // any direction so a bare click on the title bar does not unmaximize.
+            constexpr int DRAG_THRESHOLD = 5;
+            if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
+            {
+                return;
+            }
+            // Threshold crossed — restore and rebase the drag origin.
+            const float xProportion =
+                static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
+            window.restore();
+            const auto [restoredX, restoredY] = window.getPosition();
+            const auto [restoredWidth, restoredHeight] = window.getSize();
+            const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+            window.setPosition(adjustedX, restoredY);
+            m_DragStartWindowX = adjustedX;
+            m_DragStartWindowY = restoredY;
+            m_LastAppliedWindowX = adjustedX;
+            m_LastAppliedWindowY = restoredY;
+            m_PendingDragRestore = false;
+            (void) restoredX;
+            (void) restoredHeight;
+            return;
+        }
+
         const int targetX = m_DragStartWindowX + dx;
         const int targetY = m_DragStartWindowY + dy;
         if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
@@ -693,6 +715,7 @@ void TitleBarLayer::endWindowInteraction()
     m_CustomDragActive = false;
     m_CustomResizeActive = false;
     m_ActiveResizeEdge = ResizeEdge::None;
+    m_PendingDragRestore = false;
     m_HasCursorSample = false;
 }
 
@@ -847,7 +870,6 @@ void TitleBarLayer::updateResizeCursor()
     // must reapply on every call to keep the resize cursor visible while
     // hovering an edge.
     applyCursorForEdge(edge);
-    m_HoverResizeEdge = edge;
 }
 
 void TitleBarLayer::onRender()
