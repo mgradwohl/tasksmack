@@ -86,6 +86,7 @@ class TitleBarLayer : public Core::Layer
     };
 
     void beginWindowInteraction(const SDL_Event& event);
+    void handleTitleBarDoubleClick(const SDL_Event& event);
     void updateWindowInteraction();
     void endWindowInteraction();
 

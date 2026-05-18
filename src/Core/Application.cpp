@@ -243,20 +243,20 @@ void Application::run()
             didImmediateResizeRedraw = true;
         }
 
-        // When the event queue is empty, sleep briefly before rendering the next frame.
-        // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
-        // display hasn't changed. Any SDL event (mouse move, key press, focus, resize)
-        // wakes the sleep immediately, so interactive frame rate is unaffected.
-        // Use a longer sleep while minimized — nothing is visible, so 5 fps is ample.
+        // When the event queue is empty, decide whether to sleep or render immediately:
+        // - Inside the grace period: skip the sleep and fall through to renderFrame so the
+        //   display stays current during burst gaps between resize/move events.
+        // - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized) to
+        //   reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
+        //   sleep immediately, keeping interactive frame rate unaffected.
         if (!hadEvents)
         {
             const bool keepInteractionRedrawActive = getTime() < forceInteractionRedrawUntil;
-            if (keepInteractionRedrawActive)
+            if (!keepInteractionRedrawActive)
             {
-                continue;
+                const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
+                SDL_WaitEventTimeout(nullptr, sleepMs);
             }
-            const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
-            SDL_WaitEventTimeout(nullptr, sleepMs);
         }
 
         if (!didImmediateResizeRedraw)

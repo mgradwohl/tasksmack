@@ -317,7 +317,17 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 #ifdef _WIN32
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
-        beginWindowInteraction(*event);
+        if (event->button.clicks == 2)
+        {
+            // Double-click on the title bar: cancel any drag started by the first
+            // click and toggle maximize / restore (mirrors OS caption double-click).
+            endWindowInteraction();
+            handleTitleBarDoubleClick(*event);
+        }
+        else
+        {
+            beginWindowInteraction(*event);
+        }
     }
     else if ((event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT) ||
              event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
@@ -380,6 +390,51 @@ auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int wind
     return ResizeEdge::None;
 }
 
+void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event)
+{
+    auto& window = Core::Application::get().getWindow();
+    SDL_Window* sdlWindow = window.getHandle();
+    if (sdlWindow == nullptr)
+    {
+        return;
+    }
+
+    const SDL_WindowID thisWindowId = SDL_GetWindowID(sdlWindow);
+    if (event.button.windowID != thisWindowId)
+    {
+        return;
+    }
+
+    const float mouseX = event.button.x;
+    const float mouseY = event.button.y;
+
+    // Only act on double-clicks in the title bar, not on a control or resize edge.
+    if (isPointInControlArea(mouseX, mouseY))
+    {
+        return;
+    }
+    if (mouseY > height())
+    {
+        return;
+    }
+    const auto [windowWidth, windowHeight] = window.getSize();
+    const bool isMaximized = window.isMaximized();
+    if (detectResizeEdge(mouseX, mouseY, windowWidth, windowHeight, isMaximized) != ResizeEdge::None)
+    {
+        return;
+    }
+
+    // Toggle maximize / restore.
+    if (isMaximized)
+    {
+        window.restore();
+    }
+    else
+    {
+        window.maximize();
+    }
+}
+
 void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
 {
     auto& window = Core::Application::get().getWindow();
@@ -431,18 +486,47 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
         return;
     }
 
-    if (!isMaximized && mouseY <= height())
+    if (mouseY <= height())
     {
-        const auto [startX, startY] = window.getPosition();
-        m_CustomDragActive = true;
-        m_DragStartMouseGlobalX = globalMouseX;
-        m_DragStartMouseGlobalY = globalMouseY;
-        m_DragStartWindowX = startX;
-        m_DragStartWindowY = startY;
-        m_LastAppliedWindowX = startX;
-        m_LastAppliedWindowY = startY;
-        m_CustomResizeActive = false;
-        m_ActiveResizeEdge = ResizeEdge::None;
+        if (isMaximized)
+        {
+            // Restore the window before starting the drag so the title bar can be
+            // dragged out of the maximized state (mirrors native caption behavior).
+            // Reposition so the cursor stays at the same horizontal proportion in
+            // the restored title bar as it was in the maximized window.
+            const auto [maxX, maxY] = window.getPosition();
+            const float xProportion = (static_cast<float>(globalMouseX) - static_cast<float>(maxX)) / static_cast<float>(windowWidth);
+            window.restore();
+            const auto [restoredX, restoredY] = window.getPosition();
+            const auto [restoredWidth, restoredHeight] = window.getSize();
+            // Place the window so the cursor is at the proportionally same spot.
+            const int adjustedX = globalMouseX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+            window.setPosition(adjustedX, restoredY);
+            m_CustomDragActive = true;
+            m_DragStartMouseGlobalX = globalMouseX;
+            m_DragStartMouseGlobalY = globalMouseY;
+            m_DragStartWindowX = adjustedX;
+            m_DragStartWindowY = restoredY;
+            m_LastAppliedWindowX = adjustedX;
+            m_LastAppliedWindowY = restoredY;
+            m_CustomResizeActive = false;
+            m_ActiveResizeEdge = ResizeEdge::None;
+            // Silence unused variable warning when restoredHeight is unreferenced.
+            (void) restoredHeight;
+        }
+        else
+        {
+            const auto [startX, startY] = window.getPosition();
+            m_CustomDragActive = true;
+            m_DragStartMouseGlobalX = globalMouseX;
+            m_DragStartMouseGlobalY = globalMouseY;
+            m_DragStartWindowX = startX;
+            m_DragStartWindowY = startY;
+            m_LastAppliedWindowX = startX;
+            m_LastAppliedWindowY = startY;
+            m_CustomResizeActive = false;
+            m_ActiveResizeEdge = ResizeEdge::None;
+        }
     }
 }
 
@@ -548,6 +632,11 @@ void TitleBarLayer::updateWindowInteraction()
 
         if (newWidth > MAX_WINDOW_WIDTH)
         {
+            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
+                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
+            {
+                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MAX_WINDOW_WIDTH);
+            }
             newWidth = MAX_WINDOW_WIDTH;
         }
 
@@ -563,6 +652,11 @@ void TitleBarLayer::updateWindowInteraction()
 
         if (newHeight > MAX_WINDOW_HEIGHT)
         {
+            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
+                m_ActiveResizeEdge == ResizeEdge::TopRight)
+            {
+                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MAX_WINDOW_HEIGHT);
+            }
             newHeight = MAX_WINDOW_HEIGHT;
         }
 
