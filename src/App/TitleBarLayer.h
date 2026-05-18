@@ -140,6 +140,11 @@ class TitleBarLayer : public Core::Layer
     ResizeEdge m_HoverResizeEdge = ResizeEdge::None;
     int m_LastCursorMouseGlobalX = 0;
     int m_LastCursorMouseGlobalY = 0;
+    int m_LastCursorWindowX = 0;
+    int m_LastCursorWindowY = 0;
+    int m_LastCursorWindowWidth = 0;
+    int m_LastCursorWindowHeight = 0;
+    bool m_LastCursorWindowMaximized = false;
     bool m_HasCursorSample = false;
 
     SDL_Cursor* m_DefaultCursor = nullptr;

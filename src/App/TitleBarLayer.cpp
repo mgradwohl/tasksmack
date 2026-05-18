@@ -47,15 +47,97 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
     return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
 }
 
-// Hit test callback for SDL - determines if a point is draggable
+// Hit-test callback behavior is platform dependent:
+// - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
+// - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
+#ifdef _WIN32
     (void) sdlWindow;
     (void) area;
     (void) data;
     // Always return NORMAL so SDL does not enter native modal move/resize loops
     // that pause rendering. Drag/resize is handled in TitleBarLayer::onSDLEvent.
     return SDL_HITTEST_NORMAL;
+#else
+    auto* layer = static_cast<TitleBarLayer*>(data);
+    if (layer == nullptr || area == nullptr)
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+
+    const float x = static_cast<float>(area->x);
+    const float y = static_cast<float>(area->y);
+    const float titleBarHeight = TitleBarLayer::height();
+
+    int windowWidth = 0;
+    int windowHeight = 0;
+    if (!SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight))
+    {
+        spdlog::error("SDL_GetWindowSize failed in hitTestCallback: {}", SDL_GetError());
+        return SDL_HITTEST_NORMAL;
+    }
+
+    const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
+    constexpr float resizeBorder = 8.0F;
+
+    if (!isMaximized)
+    {
+        if (y >= static_cast<float>(windowHeight) - resizeBorder)
+        {
+            if (x < resizeBorder)
+            {
+                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+            }
+            if (x >= static_cast<float>(windowWidth) - resizeBorder)
+            {
+                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+            }
+            return SDL_HITTEST_RESIZE_BOTTOM;
+        }
+
+        if (x < resizeBorder)
+        {
+            if (y < resizeBorder)
+            {
+                return SDL_HITTEST_RESIZE_TOPLEFT;
+            }
+            return SDL_HITTEST_RESIZE_LEFT;
+        }
+        if (x >= static_cast<float>(windowWidth) - resizeBorder)
+        {
+            if (y < resizeBorder)
+            {
+                return SDL_HITTEST_RESIZE_TOPRIGHT;
+            }
+            return SDL_HITTEST_RESIZE_RIGHT;
+        }
+
+        if (y < resizeBorder)
+        {
+            const auto& helpBounds = layer->getHelpBounds();
+            if (helpBounds.maxX > helpBounds.minX && x >= helpBounds.minX)
+            {
+                return SDL_HITTEST_NORMAL;
+            }
+            return SDL_HITTEST_RESIZE_TOP;
+        }
+    }
+
+    if (y > titleBarHeight)
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+
+    if (isInsideBounds(x, y, layer->getIconBounds()) || isInsideBounds(x, y, layer->getHelpBounds()) ||
+        isInsideBounds(x, y, layer->getSettingsBounds()) || isInsideBounds(x, y, layer->getMinimizeBounds()) ||
+        isInsideBounds(x, y, layer->getMaximizeBounds()) || isInsideBounds(x, y, layer->getCloseBounds()))
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+
+    return SDL_HITTEST_DRAGGABLE;
+#endif
 }
 
 } // namespace
@@ -168,7 +250,9 @@ void TitleBarLayer::onDetach()
 
 void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
+#ifdef _WIN32
     updateWindowInteraction();
+#endif
     updateResizeCursor();
 }
 
@@ -225,6 +309,7 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
+#ifdef _WIN32
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         beginWindowInteraction(*event);
@@ -234,6 +319,7 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     {
         endWindowInteraction();
     }
+#endif
 }
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
@@ -487,6 +573,7 @@ void TitleBarLayer::endWindowInteraction()
     m_CustomDragActive = false;
     m_CustomResizeActive = false;
     m_ActiveResizeEdge = ResizeEdge::None;
+    m_HasCursorSample = false;
 }
 
 void TitleBarLayer::createSystemCursors()
@@ -583,17 +670,26 @@ void TitleBarLayer::updateResizeCursor()
         const int mouseGlobalX = static_cast<int>(globalMouseXF);
         const int mouseGlobalY = static_cast<int>(globalMouseYF);
 
-        if (m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX && mouseGlobalY == m_LastCursorMouseGlobalY)
+        const auto [windowX, windowY] = window.getPosition();
+        const auto [windowWidth, windowHeight] = window.getSize();
+        const bool isMaximized = window.isMaximized();
+
+        if (m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX && mouseGlobalY == m_LastCursorMouseGlobalY &&
+            windowX == m_LastCursorWindowX && windowY == m_LastCursorWindowY && windowWidth == m_LastCursorWindowWidth &&
+            windowHeight == m_LastCursorWindowHeight && isMaximized == m_LastCursorWindowMaximized)
         {
             return;
         }
 
         m_LastCursorMouseGlobalX = mouseGlobalX;
         m_LastCursorMouseGlobalY = mouseGlobalY;
+        m_LastCursorWindowX = windowX;
+        m_LastCursorWindowY = windowY;
+        m_LastCursorWindowWidth = windowWidth;
+        m_LastCursorWindowHeight = windowHeight;
+        m_LastCursorWindowMaximized = isMaximized;
         m_HasCursorSample = true;
 
-        const auto [windowX, windowY] = window.getPosition();
-        const auto [windowWidth, windowHeight] = window.getSize();
         const float localX = globalMouseXF - static_cast<float>(windowX);
         const float localY = globalMouseYF - static_cast<float>(windowY);
 
@@ -601,7 +697,7 @@ void TitleBarLayer::updateResizeCursor()
             (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
         if (insideWindow)
         {
-            edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, window.isMaximized());
+            edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
             if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
             {
                 edge = ResizeEdge::None;
