@@ -143,6 +143,7 @@ class TitleBarLayer : public Core::Layer
     int m_MaximizedWindowX = 0;
     int m_MaximizedWindowWidth = 0;
 
+    ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseGlobalX = 0;
     int m_LastCursorMouseGlobalY = 0;
     int m_LastCursorWindowX = 0;

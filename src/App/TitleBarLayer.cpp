@@ -803,7 +803,10 @@ void TitleBarLayer::updateResizeCursor()
         return;
     }
 
-    ResizeEdge edge = ResizeEdge::None;
+    // Seed from the cache so the state-unchanged fast-path still reaches the
+    // cursor-apply step at the end (ImGui may reset the cursor each frame).
+    const ResizeEdge prevEdge = m_CachedHoverEdge;
+    ResizeEdge edge = m_CachedHoverEdge;
 
     if (m_CustomResizeActive)
     {
@@ -821,55 +824,65 @@ void TitleBarLayer::updateResizeCursor()
         const auto [windowWidth, windowHeight] = window.getSize();
         const bool isMaximized = window.isMaximized();
 
-        if (m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX && mouseGlobalY == m_LastCursorMouseGlobalY &&
-            windowX == m_LastCursorWindowX && windowY == m_LastCursorWindowY && windowWidth == m_LastCursorWindowWidth &&
-            windowHeight == m_LastCursorWindowHeight && isMaximized == m_LastCursorWindowMaximized)
+        const bool stateUnchanged = m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX &&
+                                    mouseGlobalY == m_LastCursorMouseGlobalY && windowX == m_LastCursorWindowX &&
+                                    windowY == m_LastCursorWindowY && windowWidth == m_LastCursorWindowWidth &&
+                                    windowHeight == m_LastCursorWindowHeight && isMaximized == m_LastCursorWindowMaximized;
+
+        if (!stateUnchanged)
         {
-            return;
-        }
+            m_LastCursorMouseGlobalX = mouseGlobalX;
+            m_LastCursorMouseGlobalY = mouseGlobalY;
+            m_LastCursorWindowX = windowX;
+            m_LastCursorWindowY = windowY;
+            m_LastCursorWindowWidth = windowWidth;
+            m_LastCursorWindowHeight = windowHeight;
+            m_LastCursorWindowMaximized = isMaximized;
+            m_HasCursorSample = true;
 
-        m_LastCursorMouseGlobalX = mouseGlobalX;
-        m_LastCursorMouseGlobalY = mouseGlobalY;
-        m_LastCursorWindowX = windowX;
-        m_LastCursorWindowY = windowY;
-        m_LastCursorWindowWidth = windowWidth;
-        m_LastCursorWindowHeight = windowHeight;
-        m_LastCursorWindowMaximized = isMaximized;
-        m_HasCursorSample = true;
+            const float localX = globalMouseXF - static_cast<float>(windowX);
+            const float localY = globalMouseYF - static_cast<float>(windowY);
 
-        const float localX = globalMouseXF - static_cast<float>(windowX);
-        const float localY = globalMouseYF - static_cast<float>(windowY);
-
-        const bool insideWindow =
-            (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
-        if (insideWindow)
-        {
-            edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
-            // Suppress the resize cursor over title-bar controls on all platforms:
-            // Windows routes these through the custom resize path, and on non-Windows
-            // the hit-test callback returns NORMAL for control areas, so the cursor
-            // must match the action regardless of platform.
-            if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
+            const bool insideWindow =
+                (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
+            edge = ResizeEdge::None;
+            if (insideWindow)
             {
-                edge = ResizeEdge::None;
-            }
+                edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
+                // Suppress the resize cursor over title-bar controls on all platforms:
+                // Windows routes these through the custom resize path, and on non-Windows
+                // the hit-test callback returns NORMAL for control areas, so the cursor
+                // must match the action regardless of platform.
+                if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
+                {
+                    edge = ResizeEdge::None;
+                }
 #ifndef _WIN32
-            // On non-Windows, hitTestCallback returns NORMAL for the top-edge
-            // band right of helpBounds.minX (so the WM doesn't intercept clicks
-            // on that region). Suppress the resize cursor there to match.
-            if (edge == ResizeEdge::Top && m_HelpBounds.maxX > m_HelpBounds.minX && localX >= m_HelpBounds.minX)
-            {
-                edge = ResizeEdge::None;
-            }
+                // On non-Windows, hitTestCallback returns NORMAL for the top-edge
+                // band right of helpBounds.minX (so the WM doesn't intercept clicks
+                // on that region). Suppress the resize cursor there to match.
+                if (edge == ResizeEdge::Top && m_HelpBounds.maxX > m_HelpBounds.minX && localX >= m_HelpBounds.minX)
+                {
+                    edge = ResizeEdge::None;
+                }
 #endif
+            }
+            m_CachedHoverEdge = edge;
         }
+        // State unchanged: edge == m_CachedHoverEdge, falls through to apply.
     }
 
-    // Always apply the cursor each frame: the SDL/ImGui backend
-    // (ImGui_ImplSDL3_NewFrame) may reset the cursor between frames, so we
-    // must reapply on every call to keep the resize cursor visible while
-    // hovering an edge.
-    applyCursorForEdge(edge);
+    // Set a resize cursor while on a border. Restore the default only when
+    // leaving one so ImGui-provided cursors (text inputs, splitters, etc.) are
+    // not overridden while the pointer is away from window borders.
+    if (edge != ResizeEdge::None)
+    {
+        applyCursorForEdge(edge);
+    }
+    else if (prevEdge != ResizeEdge::None)
+    {
+        applyCursorForEdge(ResizeEdge::None);
+    }
 }
 
 void TitleBarLayer::onRender()
