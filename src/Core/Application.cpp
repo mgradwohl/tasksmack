@@ -41,6 +41,12 @@ constexpr int IDLE_FRAME_SLEEP_MS = 50;
 // is extended to ~5 fps. Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes
 // immediately, so restore latency is unaffected.
 constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
+
+// During interactive move/resize, event delivery can be bursty depending on
+// compositor/window-manager behavior. Keep redraw active for a short grace
+// window after each relevant window event so the framebuffer stays responsive
+// without forcing continuous high-rate rendering when idle.
+constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -154,12 +160,23 @@ void Application::run()
 
     float lastTime = getTime();
 
+    const auto computeDeltaTime = [&lastTime]() -> float
+    {
+        const float currentTime = getTime();
+        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
+        lastTime = currentTime;
+        return deltaTime;
+    };
+
+    float forceInteractionRedrawUntil = 0.0F;
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
     {
         // Process SDL events
         bool hadEvents = false;
+        bool needsResizeRedraw = false;
         SDL_Event sdlEvent;
         while (SDL_PollEvent(&sdlEvent))
         {
@@ -181,16 +198,31 @@ void Application::run()
                 }
             }
 
-            // Notify layers of framebuffer pixel size changes (user drag-resize or DPI change).
-            // We do NOT render here — calling renderFrame() inside the event loop causes one
-            // vsync stall (~16 ms at 60 Hz) per resize event. When events batch up during an
-            // active drag, that serialises many vsync waits and makes resize extremely sluggish.
-            // UILayer::onEvent(WindowResizedEvent) keeps glViewport in sync; the unconditional
-            // renderFrame() below presents the correct framebuffer each iteration.
+            // Drive viewport updates from resize-related events.
+            // On Windows, interactive border drag can surface WINDOW_RESIZED/EXPOSED before
+            // (or instead of) WINDOW_PIXEL_SIZE_CHANGED in some paths. Handle all relevant
+            // variants and use physical pixel size when explicit dimensions are unavailable.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
+                needsResizeRedraw = true;
+                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+            }
+            else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
+            {
+                const auto [pixelW, pixelH] = m_Window->getSizeInPixels();
+                if (pixelW > 0 && pixelH > 0)
+                {
+                    WindowResizedEvent resizeEvent(pixelW, pixelH);
+                    raiseEvent(resizeEvent);
+                    needsResizeRedraw = true;
+                    forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                }
+            }
+            else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
+            {
+                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
         }
 
@@ -200,22 +232,37 @@ void Application::run()
             break;
         }
 
-        // When the event queue is empty, sleep briefly before rendering the next frame.
-        // This caps the idle render rate to ~20 fps, reducing CPU/GPU usage when the
-        // display hasn't changed. Any SDL event (mouse move, key press, focus, resize)
-        // wakes the sleep immediately, so interactive frame rate is unaffected.
-        // Use a longer sleep while minimized — nothing is visible, so 5 fps is ample.
-        if (!hadEvents)
+        // Keep interactive move/resize visually responsive across platforms
+        // without reintroducing per-event rendering stalls: render at most once
+        // per drained event batch.
+        bool didImmediateResizeRedraw = false;
+        const bool forceInteractionRedraw = getTime() < forceInteractionRedrawUntil;
+        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
-            const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
-            SDL_WaitEventTimeout(nullptr, sleepMs);
+            renderFrame(computeDeltaTime());
+            didImmediateResizeRedraw = true;
         }
 
-        const float currentTime = getTime();
-        const float deltaTime = std::min(currentTime - lastTime, MAX_DELTA_TIME);
-        lastTime = currentTime;
+        // When the event queue is empty, decide whether to sleep or render immediately:
+        // - Inside the grace period: skip the sleep and fall through to renderFrame so the
+        //   display stays current during burst gaps between resize/move events.
+        // - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized) to
+        //   reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
+        //   sleep immediately, keeping interactive frame rate unaffected.
+        if (!hadEvents)
+        {
+            const bool keepInteractionRedrawActive = getTime() < forceInteractionRedrawUntil;
+            if (!keepInteractionRedrawActive)
+            {
+                const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
+                SDL_WaitEventTimeout(nullptr, sleepMs);
+            }
+        }
 
-        renderFrame(deltaTime);
+        if (!didImmediateResizeRedraw)
+        {
+            renderFrame(computeDeltaTime());
+        }
     }
 
     spdlog::info("Exiting main loop");

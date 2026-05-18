@@ -129,12 +129,12 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
         Window window(WindowSpecification{.Title = "WindowClampTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         window.setSize(0, -10);
-        EXPECT_EQ(window.getWidth(), 1);
-        EXPECT_EQ(window.getHeight(), 1);
+        EXPECT_EQ(window.getWidth(), WINDOW_MIN_DIMENSION);
+        EXPECT_EQ(window.getHeight(), WINDOW_MIN_DIMENSION);
 
         window.setSize(20000, 50000);
-        EXPECT_EQ(window.getWidth(), 16384);
-        EXPECT_EQ(window.getHeight(), 16384);
+        EXPECT_EQ(window.getWidth(), WINDOW_MAX_DIMENSION);
+        EXPECT_EQ(window.getHeight(), WINDOW_MAX_DIMENSION);
     }
     catch (const std::exception& e)
     {
