@@ -60,6 +60,10 @@ class Window
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
 
     void setSize(int width, int height);
+    /// Return the current logical size as {width, height} in screen coordinates.
+    /// Returns {m_Spec.Width, m_Spec.Height} when the window handle has not yet
+    /// been created. Callers that need both dimensions should prefer this over
+    /// separate getWidth()/getHeight() calls to avoid issuing two SDL queries.
     [[nodiscard]] auto getSize() const noexcept -> std::pair<int, int>;
 
     [[nodiscard]] bool isMaximized() const;

@@ -282,6 +282,9 @@ void Window::setSize(int width, int height)
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
     SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight);
+    // Block until the OS has applied the resize so that subsequent
+    // SDL_GetWindowSize calls return the new dimensions immediately.
+    SDL_SyncWindow(m_Handle);
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
 }

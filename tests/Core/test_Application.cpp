@@ -601,15 +601,15 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
     try
     {
         auto app = std::make_unique<Core::Application>(spec);
-        const int width = app->getWindow().getWidth();
-        const int height = app->getWindow().getHeight();
+        const auto [width, height] = app->getWindow().getSize();
 
         Core::Application::setInstance(std::move(app));
 
         // Window properties should be preserved
         auto& instance = Core::Application::get();
-        EXPECT_EQ(instance.getWindow().getWidth(), width);
-        EXPECT_EQ(instance.getWindow().getHeight(), height);
+        const auto [newWidth, newHeight] = instance.getWindow().getSize();
+        EXPECT_EQ(newWidth, width);
+        EXPECT_EQ(newHeight, height);
 
         Core::Application::setInstance(nullptr);
     }
