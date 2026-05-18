@@ -8,6 +8,10 @@
 namespace Core
 {
 
+/// Minimum window dimension (width or height) in pixels.
+/// Must match the clamp bounds in main.cpp and UserConfig.cpp.
+constexpr int WINDOW_MIN_DIMENSION = 200;
+
 struct WindowSpecification
 {
     std::string Title = "Window";

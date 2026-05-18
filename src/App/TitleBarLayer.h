@@ -31,6 +31,7 @@ class TitleBarLayer : public Core::Layer
     void onDetach() override;
     void onUpdate(float deltaTime) override;
     void onRender() override;
+    void onPostRender() override;
     void onSDLEvent(SDL_Event* event) override;
 
     /// Get the title bar height (for content offset) - matches ImGui tab bar height

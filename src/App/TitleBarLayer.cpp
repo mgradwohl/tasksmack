@@ -47,6 +47,9 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
     return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
 }
 
+// Shared resize border thickness — must stay in sync between hit-test and cursor detection.
+constexpr float kResizeBorderThickness = 8.0F;
+
 // Hit-test callback behavior is platform dependent:
 // - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
 // - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
@@ -79,41 +82,39 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     }
 
     const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
-    constexpr float resizeBorder = 8.0F;
-
     if (!isMaximized)
     {
-        if (y >= static_cast<float>(windowHeight) - resizeBorder)
+        if (y >= static_cast<float>(windowHeight) - kResizeBorderThickness)
         {
-            if (x < resizeBorder)
+            if (x < kResizeBorderThickness)
             {
                 return SDL_HITTEST_RESIZE_BOTTOMLEFT;
             }
-            if (x >= static_cast<float>(windowWidth) - resizeBorder)
+            if (x >= static_cast<float>(windowWidth) - kResizeBorderThickness)
             {
                 return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
             }
             return SDL_HITTEST_RESIZE_BOTTOM;
         }
 
-        if (x < resizeBorder)
+        if (x < kResizeBorderThickness)
         {
-            if (y < resizeBorder)
+            if (y < kResizeBorderThickness)
             {
                 return SDL_HITTEST_RESIZE_TOPLEFT;
             }
             return SDL_HITTEST_RESIZE_LEFT;
         }
-        if (x >= static_cast<float>(windowWidth) - resizeBorder)
+        if (x >= static_cast<float>(windowWidth) - kResizeBorderThickness)
         {
-            if (y < resizeBorder)
+            if (y < kResizeBorderThickness)
             {
                 return SDL_HITTEST_RESIZE_TOPRIGHT;
             }
             return SDL_HITTEST_RESIZE_RIGHT;
         }
 
-        if (y < resizeBorder)
+        if (y < kResizeBorderThickness)
         {
             const auto& helpBounds = layer->getHelpBounds();
             if (helpBounds.maxX > helpBounds.minX && x >= helpBounds.minX)
@@ -253,6 +254,10 @@ void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 #ifdef _WIN32
     updateWindowInteraction();
 #endif
+}
+
+void TitleBarLayer::onPostRender()
+{
     updateResizeCursor();
 }
 
@@ -335,11 +340,10 @@ auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int wind
         return ResizeEdge::None;
     }
 
-    constexpr float RESIZE_BORDER = 8.0F;
-    const bool nearLeft = x < RESIZE_BORDER;
-    const bool nearRight = x >= (static_cast<float>(windowWidth) - RESIZE_BORDER);
-    const bool nearTop = y < RESIZE_BORDER;
-    const bool nearBottom = y >= (static_cast<float>(windowHeight) - RESIZE_BORDER);
+    const bool nearLeft = x < kResizeBorderThickness;
+    const bool nearRight = x >= (static_cast<float>(windowWidth) - kResizeBorderThickness);
+    const bool nearTop = y < kResizeBorderThickness;
+    const bool nearBottom = y >= (static_cast<float>(windowHeight) - kResizeBorderThickness);
 
     if (nearTop && nearLeft)
     {
@@ -479,8 +483,8 @@ void TitleBarLayer::updateWindowInteraction()
 
     if (m_CustomResizeActive)
     {
-        constexpr int MIN_WINDOW_WIDTH = 320;
-        constexpr int MIN_WINDOW_HEIGHT = 240;
+        constexpr int MIN_WINDOW_WIDTH = Core::WINDOW_MIN_DIMENSION;
+        constexpr int MIN_WINDOW_HEIGHT = Core::WINDOW_MIN_DIMENSION;
 
         const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
         const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
@@ -641,6 +645,10 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
         break;
     }
 
+    if (cursor == nullptr)
+    {
+        cursor = m_DefaultCursor;
+    }
     if (cursor != nullptr)
     {
         SDL_SetCursor(cursor);
