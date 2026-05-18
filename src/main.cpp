@@ -134,10 +134,11 @@ auto runApp() -> int
     spdlog::set_level(spdlog::level::debug);
     spdlog::flush_on(spdlog::level::debug);
 #else
-    // Suppress info/debug log output in release builds. The compile-time
-    // SPDLOG_ACTIVE_LEVEL guard only silences the SPDLOG_* macros; direct
-    // spdlog::info() calls are always compiled in and respect the runtime level.
-    spdlog::set_level(spdlog::level::off);
+    // In release builds, silence info/debug noise while preserving warnings,
+    // errors, and critical failures so production issues remain diagnosable.
+    // The compile-time SPDLOG_ACTIVE_LEVEL guard only silences the SPDLOG_*
+    // macros; direct spdlog::info() calls respect this runtime level.
+    spdlog::set_level(spdlog::level::warn);
 #endif
 
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);

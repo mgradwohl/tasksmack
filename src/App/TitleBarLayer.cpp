@@ -812,14 +812,14 @@ void TitleBarLayer::updateResizeCursor()
         if (insideWindow)
         {
             edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
-#ifdef _WIN32
-            // On Windows the custom resize path owns all resizing; suppress the
-            // cursor over title-bar controls to match the hit-test exemptions.
+            // Suppress the resize cursor over title-bar controls on all platforms:
+            // Windows routes these through the custom resize path, and on non-Windows
+            // the hit-test callback returns NORMAL for control areas, so the cursor
+            // must match the action regardless of platform.
             if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
             {
                 edge = ResizeEdge::None;
             }
-#endif
         }
     }
 

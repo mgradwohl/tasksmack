@@ -24,7 +24,7 @@ namespace
 {
 [[nodiscard]] int clampWindowDimension(const int value) noexcept
 {
-    return std::clamp(value, 1, 16384);
+    return std::clamp(value, WINDOW_MIN_DIMENSION, WINDOW_MAX_DIMENSION);
 }
 
 [[nodiscard]] std::string_view glString(GLenum name)
