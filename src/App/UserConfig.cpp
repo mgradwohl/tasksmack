@@ -1,6 +1,7 @@
 #include "UserConfig.h"
 
 #include "App/UserConfigHelpers.h"
+#include "Core/Window.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "ProcessColumnConfig.h"
@@ -315,8 +316,10 @@ void UserConfig::load()
         // Note: panels visibility is no longer used (removed in favor of tabbed UI)
 
         // Window state
-        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "width", m_Settings.windowWidth, 800, 200, 16'384);
-        UserConfigHelpers::loadAndNarrowIntWithClamp(config, "window", "height", m_Settings.windowHeight, 600, 200, 16'384);
+        UserConfigHelpers::loadAndNarrowIntWithClamp(
+            config, "window", "width", m_Settings.windowWidth, 800, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+        UserConfigHelpers::loadAndNarrowIntWithClamp(
+            config, "window", "height", m_Settings.windowHeight, 600, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
         if (auto val = config["window"]["x"].value<std::int64_t>())
         {
             // Use default x position of 100 if narrowOr fails

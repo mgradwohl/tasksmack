@@ -137,7 +137,7 @@ auto runApp() -> int
     // Suppress info/debug log output in release builds. The compile-time
     // SPDLOG_ACTIVE_LEVEL guard only silences the SPDLOG_* macros; direct
     // spdlog::info() calls are always compiled in and respect the runtime level.
-    spdlog::set_level(spdlog::level::warn);
+    spdlog::set_level(spdlog::level::off);
 #endif
 
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
@@ -152,8 +152,8 @@ auto runApp() -> int
     // Create application and transfer ownership to the singleton
     Core::ApplicationSpecification appSpec;
     appSpec.Name = "TaskSmack";
-    appSpec.Width = std::clamp(settings.windowWidth, 200, 16'384);
-    appSpec.Height = std::clamp(settings.windowHeight, 200, 16'384);
+    appSpec.Width = std::clamp(settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    appSpec.Height = std::clamp(settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.VSync = true;
 
     auto app = std::make_unique<Core::Application>(appSpec);
