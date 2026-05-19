@@ -85,10 +85,12 @@ class Application
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;
     float m_InteractionRedrawUntil = 0.0F;
+    bool m_ResizePerfTraceEnabled = false;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic.
-    void renderFrame(float deltaTime);
+    void renderFrame(
+        float deltaTime, double* updateMs = nullptr, double* renderMs = nullptr, double* postRenderMs = nullptr, double* swapMs = nullptr);
 
     // Global application instance (managed via setInstance)
     // Note: Using std::unique_ptr allows main() to control initialization order

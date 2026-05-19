@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -16,6 +18,7 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #ifndef _WIN32
@@ -54,6 +57,107 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
+constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
+constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+
+[[nodiscard]] bool isEnvFlagEnabled(const char* value) noexcept
+{
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    const std::string_view text(value);
+    return !text.empty() && (text != "0") && (text != "false") && (text != "FALSE") && (text != "off") && (text != "OFF");
+}
+
+struct ResizePerfTraceStats
+{
+    std::uint32_t eventBatches = 0;
+    std::uint32_t frames = 0;
+    std::uint32_t resizeFrames = 0;
+    std::uint32_t drainedEvents = 0;
+    std::uint32_t resizeEvents = 0;
+    std::uint32_t maxEventsPerBatch = 0;
+    double drainMs = 0.0;
+    double updateMs = 0.0;
+    double renderMs = 0.0;
+    double postRenderMs = 0.0;
+    double swapMs = 0.0;
+    double maxDrainMs = 0.0;
+    double maxUpdateMs = 0.0;
+    double maxRenderMs = 0.0;
+    double maxPostRenderMs = 0.0;
+    double maxSwapMs = 0.0;
+
+    void recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs) noexcept
+    {
+        ++eventBatches;
+        drainedEvents += eventCount;
+        resizeEvents += resizeEventCount;
+        maxEventsPerBatch = std::max(maxEventsPerBatch, eventCount);
+        drainMs += durationMs;
+        maxDrainMs = std::max(maxDrainMs, durationMs);
+    }
+
+    void recordFrame(
+        bool wasResizeFrame, double updateDurationMs, double renderDurationMs, double postRenderDurationMs, double swapDurationMs) noexcept
+    {
+        ++frames;
+        if (wasResizeFrame)
+        {
+            ++resizeFrames;
+        }
+
+        updateMs += updateDurationMs;
+        renderMs += renderDurationMs;
+        postRenderMs += postRenderDurationMs;
+        swapMs += swapDurationMs;
+        maxUpdateMs = std::max(maxUpdateMs, updateDurationMs);
+        maxRenderMs = std::max(maxRenderMs, renderDurationMs);
+        maxPostRenderMs = std::max(maxPostRenderMs, postRenderDurationMs);
+        maxSwapMs = std::max(maxSwapMs, swapDurationMs);
+    }
+
+    [[nodiscard]] bool hasSamples() const noexcept
+    {
+        return (eventBatches > 0) || (frames > 0);
+    }
+};
+
+void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::string_view reason)
+{
+    if (!stats.hasSamples())
+    {
+        return;
+    }
+
+    const auto avg = [](const double total, const std::uint32_t count) noexcept -> double
+    {
+        return (count == 0) ? 0.0 : (total / static_cast<double>(count));
+    };
+
+    spdlog::info(
+        "ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} frames={} resizeFrames={} drain avg/max={:.3f}/{:.3f} ms "
+        "update avg/max={:.3f}/{:.3f} ms render avg/max={:.3f}/{:.3f} ms post avg/max={:.3f}/{:.3f} ms swap avg/max={:.3f}/{:.3f} ms",
+        reason,
+        stats.eventBatches,
+        stats.drainedEvents,
+        stats.resizeEvents,
+        stats.maxEventsPerBatch,
+        stats.frames,
+        stats.resizeFrames,
+        avg(stats.drainMs, stats.eventBatches),
+        stats.maxDrainMs,
+        avg(stats.updateMs, stats.frames),
+        stats.maxUpdateMs,
+        avg(stats.renderMs, stats.frames),
+        stats.maxRenderMs,
+        avg(stats.postRenderMs, stats.frames),
+        stats.maxPostRenderMs,
+        avg(stats.swapMs, stats.frames),
+        stats.maxSwapMs);
+}
 
 #ifndef _WIN32
 [[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
@@ -186,7 +290,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     bool sdlInitialized = false;
     try
     {
+        m_ResizePerfTraceEnabled = isEnvFlagEnabled(SDL_getenv(RESIZE_PERF_TRACE_ENV));
         spdlog::info("Initializing {} application", m_Spec.Name);
+        if (m_ResizePerfTraceEnabled)
+        {
+            spdlog::info("Resize performance tracing enabled via {}", RESIZE_PERF_TRACE_ENV);
+        }
 
         // Validate window dimensions; fall back to a sensible default rather than
         // passing zero to the windowing system, which would produce undefined behavior.
@@ -297,6 +406,10 @@ void Application::run()
 
     m_InteractionRedrawUntil = 0.0F;
 
+    ResizePerfTraceStats resizeTraceStats;
+    bool wasTracingInteraction = false;
+    float lastResizeTraceLogTime = getTime();
+
     spdlog::info("Entering main loop");
 
     while (m_Running)
@@ -304,10 +417,14 @@ void Application::run()
         // Process SDL events
         bool hadEvents = false;
         bool needsResizeRedraw = false;
+        std::uint32_t drainedEventCount = 0;
+        std::uint32_t resizeEventCount = 0;
         SDL_Event sdlEvent;
+        const auto eventDrainStart = std::chrono::steady_clock::now();
         while (SDL_PollEvent(&sdlEvent))
         {
             hadEvents = true;
+            ++drainedEventCount;
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
@@ -331,6 +448,7 @@ void Application::run()
             // variants and use physical pixel size when explicit dimensions are unavailable.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
+                ++resizeEventCount;
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
@@ -338,6 +456,7 @@ void Application::run()
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
             {
+                ++resizeEventCount;
                 const auto [pixelW, pixelH] = m_Window->getSizeInPixels();
                 if (pixelW > 0 && pixelH > 0)
                 {
@@ -349,8 +468,15 @@ void Application::run()
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
             {
+                ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
+        }
+        const auto eventDrainEnd = std::chrono::steady_clock::now();
+        if (m_ResizePerfTraceEnabled)
+        {
+            resizeTraceStats.recordEventBatch(
+                drainedEventCount, resizeEventCount, std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count());
         }
 
         if (m_Window->shouldClose())
@@ -364,9 +490,23 @@ void Application::run()
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
         const bool forceInteractionRedraw = getTime() < m_InteractionRedrawUntil;
+        const bool tracingInteraction = m_ResizePerfTraceEnabled && (needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0));
+        if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
+        {
+            logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
+            resizeTraceStats = {};
+        }
         if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
-            renderFrame(computeDeltaTime());
+            double updateMs = 0.0;
+            double renderMs = 0.0;
+            double postRenderMs = 0.0;
+            double swapMs = 0.0;
+            renderFrame(computeDeltaTime(), &updateMs, &renderMs, &postRenderMs, &swapMs);
+            if (tracingInteraction)
+            {
+                resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
+            }
             didImmediateResizeRedraw = true;
         }
 
@@ -388,34 +528,81 @@ void Application::run()
 
         if (!didImmediateResizeRedraw)
         {
-            renderFrame(computeDeltaTime());
+            double updateMs = 0.0;
+            double renderMs = 0.0;
+            double postRenderMs = 0.0;
+            double swapMs = 0.0;
+            renderFrame(computeDeltaTime(), &updateMs, &renderMs, &postRenderMs, &swapMs);
+            if (tracingInteraction)
+            {
+                resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
+            }
         }
+
+        if (tracingInteraction && ((getTime() - lastResizeTraceLogTime) >= RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS))
+        {
+            logResizePerfTraceSummary(resizeTraceStats, "interaction-progress");
+            resizeTraceStats = {};
+            lastResizeTraceLogTime = getTime();
+        }
+
+        wasTracingInteraction = tracingInteraction;
+    }
+
+    if (m_ResizePerfTraceEnabled)
+    {
+        logResizePerfTraceSummary(resizeTraceStats, "shutdown");
     }
 
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(float deltaTime)
+void Application::renderFrame(float deltaTime, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
+    const auto updateStart = std::chrono::steady_clock::now();
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onUpdate(deltaTime);
     }
+    const auto updateEnd = std::chrono::steady_clock::now();
 
+    const auto renderStart = updateEnd;
     // Render all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onRender();
     }
+    const auto renderEnd = std::chrono::steady_clock::now();
 
+    const auto postRenderStart = renderEnd;
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
         layer->onPostRender();
     }
+    const auto postRenderEnd = std::chrono::steady_clock::now();
 
+    const auto swapStart = postRenderEnd;
     m_Window->swapBuffers();
+    const auto swapEnd = std::chrono::steady_clock::now();
+
+    if (updateMs != nullptr)
+    {
+        *updateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
+    }
+    if (renderMs != nullptr)
+    {
+        *renderMs = std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+    }
+    if (postRenderMs != nullptr)
+    {
+        *postRenderMs = std::chrono::duration<double, std::milli>(postRenderEnd - postRenderStart).count();
+    }
+    if (swapMs != nullptr)
+    {
+        *swapMs = std::chrono::duration<double, std::milli>(swapEnd - swapStart).count();
+    }
 }
 
 void Application::stop()
