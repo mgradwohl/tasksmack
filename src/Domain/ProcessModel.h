@@ -10,7 +10,6 @@
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace Domain
@@ -77,13 +76,6 @@ class ProcessModel
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
     Platform::ProcessCapabilities m_Capabilities;
 
-    // Previous counters for delta calculation (keyed by uniqueKey)
-    std::unordered_map<std::uint64_t, Platform::ProcessCounters> m_PrevCounters;
-    // Peak RSS tracking (keyed by uniqueKey)
-    std::unordered_map<std::uint64_t, std::uint64_t> m_PeakRss;
-    // Active keys tracking (reused to avoid allocations during pruning)
-    std::unordered_set<std::uint64_t> m_ActiveKeys;
-
     // ==========================================================================
     // Network Rate Baseline Tracking
     // ==========================================================================
@@ -122,7 +114,24 @@ class ProcessModel
         std::uint64_t netReceivedBytes = 0;
         std::chrono::steady_clock::time_point firstSeenTime;
     };
-    std::unordered_map<std::uint64_t, NetworkBaseline> m_NetworkBaselines;
+
+    // Per-process tracking state.  Consolidating previous counters, network
+    // baseline, and peak-RSS into one struct reduces per-process map lookups
+    // in computeSnapshots() from 3-4 separate finds/inserts to a single
+    // try_emplace, improving cache locality and reducing map overhead.
+    struct PerProcessState
+    {
+        Platform::ProcessCounters counters{}; // counters from last refresh (for delta)
+        NetworkBaseline networkBaseline{};    // network rate baseline (see above)
+        std::uint64_t peakRss = 0;            // tracked peak RSS
+        std::uint64_t generation = 0;         // refresh generation when last seen
+    };
+
+    // Single map replaces m_PrevCounters + m_NetworkBaselines + m_PeakRss + m_ActiveKeys.
+    std::unordered_map<std::uint64_t, PerProcessState> m_PerProcessState;
+    // Monotonically increasing counter; bumped each computeSnapshots() call.
+    // Entries with generation != m_CurrentGeneration belong to dead processes.
+    std::uint64_t m_CurrentGeneration = 0;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0;                  // For memoryPercent calculation

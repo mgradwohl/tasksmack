@@ -19,7 +19,6 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -106,13 +105,10 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     newSnapshots.clear();                 // drop elements, keep capacity
     newSnapshots.reserve(counters.size());
 
-    // Track active keys to prune stale entries (reuse existing set)
-    m_ActiveKeys.clear();
-    m_ActiveKeys.reserve(counters.size());
-
-    // Carry forward network baselines for existing processes, add new ones
-    std::unordered_map<std::uint64_t, NetworkBaseline> newNetworkBaselines;
-    newNetworkBaselines.reserve(counters.size());
+    // Bump the generation counter once per refresh.  At the end of the loop we
+    // prune any PerProcessState entry that was NOT touched this refresh (i.e.
+    // its generation is still the previous value) in a single erase_if pass.
+    ++m_CurrentGeneration;
 
     double aggNetSent = 0.0;
     double aggNetRecv = 0.0;
@@ -124,55 +120,42 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
-        m_ActiveKeys.insert(key);
 
-        const Platform::ProcessCounters* previous = nullptr;
-        auto prevIt = m_PrevCounters.find(key);
-        if (prevIt != m_PrevCounters.end())
+        // Single map operation replaces three separate find/insert calls for
+        // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.
+        // try_emplace returns {iterator, inserted}: inserted==true means a brand-new
+        // process; inserted==false means we have state from the previous refresh.
+        auto [it, inserted] = m_PerProcessState.try_emplace(key);
+        PerProcessState& state = it->second;
+        state.generation = m_CurrentGeneration;
+
+        // --- previous CPU counters (for delta calculation) ---
+        const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
+
+        // --- network baseline ---
+        // For new processes: initialise to current counters so the very first rate
+        // is 0 rather than a spike from pre-existing cumulative TCP counters.
+        // For existing processes: keep the original baseline untouched.
+        if (inserted)
         {
-            previous = &prevIt->second;
+            state.networkBaseline.netSentBytes = current.netSentBytes;
+            state.networkBaseline.netReceivedBytes = current.netReceivedBytes;
+            state.networkBaseline.firstSeenTime = currentSampleTime;
         }
 
-        // Track network baseline for this process (see ProcessModel.h for rationale)
-        // The baseline approach computes average rate since first seen, avoiding
-        // wild spikes from TCP connection churn in Windows EStats.
-        NetworkBaseline baseline;
-        auto baselineIt = m_NetworkBaselines.find(key);
-        if (baselineIt != m_NetworkBaselines.end())
-        {
-            // Existing process - keep the original baseline so we compute
-            // rate = (current - original_baseline) / time_since_first_seen
-            baseline = baselineIt->second;
-        }
-        else
-        {
-            // New process - record current counters as baseline
-            // This absorbs any pre-existing cumulative values from TCP connections
-            // that were open before we started monitoring this process
-            baseline.netSentBytes = current.netSentBytes;
-            baseline.netReceivedBytes = current.netReceivedBytes;
-            baseline.firstSeenTime = currentSampleTime;
-        }
-        newNetworkBaselines[key] = baseline;
-
-        std::uint64_t peakRss = current.rssBytes;
+        // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            peakRss = current.peakRssBytes;
+            state.peakRss = current.peakRssBytes;
         }
         else
         {
-            auto peakIt = m_PeakRss.find(key);
-            if (peakIt != m_PeakRss.end())
-            {
-                peakRss = std::max(peakIt->second, current.rssBytes);
-            }
+            state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
         }
-        m_PeakRss[key] = peakRss;
 
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
-        snapshot.peakMemoryBytes = peakRss;
+        snapshot.peakMemoryBytes = state.peakRss;
 
         // =======================================================================
         // Network Rate Calculation (Baseline Approach)
@@ -192,20 +175,20 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         // =======================================================================
         constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
         constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
-        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - baseline.firstSeenTime).count();
+        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - state.networkBaseline.firstSeenTime).count();
         if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
         {
             // Only compute rate if current >= baseline (counter should never decrease
             // for the same process, but handle it gracefully if it does)
-            if (current.netSentBytes >= baseline.netSentBytes)
+            if (current.netSentBytes >= state.networkBaseline.netSentBytes)
             {
-                const std::uint64_t sentDelta = current.netSentBytes - baseline.netSentBytes;
+                const std::uint64_t sentDelta = current.netSentBytes - state.networkBaseline.netSentBytes;
                 const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
                 snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
-            if (current.netReceivedBytes >= baseline.netReceivedBytes)
+            if (current.netReceivedBytes >= state.networkBaseline.netReceivedBytes)
             {
-                const std::uint64_t recvDelta = current.netReceivedBytes - baseline.netReceivedBytes;
+                const std::uint64_t recvDelta = current.netReceivedBytes - state.networkBaseline.netReceivedBytes;
                 const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
                 snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
@@ -221,12 +204,12 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         aggHandles += static_cast<double>(snapRef.handleCount);
         aggPower += snapRef.powerWatts;
 
-        m_PrevCounters[key] = current;
+        // Store current counters so next refresh can compute deltas.
+        state.counters = current;
     }
 
     m_Snapshots = std::move(newSnapshots);
     ++m_SnapshotVersion;
-    m_NetworkBaselines = std::move(newNetworkBaselines);
 
     // Merge per-process GPU data if GPUModel is available
     if (m_GPUModel != nullptr)
@@ -234,9 +217,10 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         mergeGPUData();
     }
 
-    // Prune stale entries from tracking maps (dead processes) using modern C++23 idiom
-    std::erase_if(m_PrevCounters, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
-    std::erase_if(m_PeakRss, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
+    // Prune dead processes: a single erase_if on one map instead of the previous
+    // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
+    // rebuild of m_NetworkBaselines.
+    std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
 
     m_PrevTotalCpuTime = totalCpuTime;
 
