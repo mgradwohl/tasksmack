@@ -188,8 +188,12 @@ void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::str
 #ifndef _WIN32
 [[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
 {
+    // Require that group/other bits are entirely clear (no world/group access)
+    // and that the owner has at least read, write, and execute so that the
+    // directory is actually usable as an XDG runtime dir.
     constexpr auto forbidden = std::filesystem::perms::group_all | std::filesystem::perms::others_all;
-    return (perms & forbidden) == std::filesystem::perms::none;
+    constexpr auto required = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec;
+    return ((perms & forbidden) == std::filesystem::perms::none) && ((perms & required) == required);
 }
 
 [[nodiscard]] bool isUsableRuntimeDir(const std::filesystem::path& path)
