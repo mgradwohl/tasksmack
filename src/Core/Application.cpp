@@ -9,12 +9,18 @@
 
 #include <algorithm>
 #include <cassert>
+#include <filesystem>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace Core
 {
@@ -47,6 +53,52 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
+
+#ifndef _WIN32
+// Ensure XDG_RUNTIME_DIR is set before SDL initializes. When tasksmack is run
+// as root (e.g. via sudo) the session manager never sets this variable, causing
+// libwayland-client to emit "XDG_RUNTIME_DIR is invalid or not set" and SDL to
+// fall back from Wayland to X11. We prefer X11 anyway in that case, but the
+// warning is noisy and confusing. Setting a valid directory silences it.
+// The standard location /run/user/<uid> is used if it exists; otherwise a
+// per-user directory under /tmp is created with mode 0700 (required by the XDG
+// spec so that only the owner can read/write the runtime files).
+void ensureXdgRuntimeDir() noexcept
+{
+    if (SDL_getenv("XDG_RUNTIME_DIR") != nullptr)
+    {
+        return; // already set by the session manager
+    }
+
+    const uid_t uid = getuid();
+    const std::string systemdPath = std::format("/run/user/{}", uid);
+    const std::string fallbackPath = std::format("/tmp/runtime-{}", uid);
+
+    const std::string& chosen = std::filesystem::exists(systemdPath) ? systemdPath : fallbackPath;
+
+    if (chosen == fallbackPath)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(fallbackPath, ec);
+        if (ec)
+        {
+            spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
+            return;
+        }
+        std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+        if (ec)
+        {
+            spdlog::warn("Could not set permissions on '{}': {}", fallbackPath, ec.message());
+        }
+    }
+
+    // setenv is POSIX; SDL_setenv would also work but setenv keeps it in the
+    // real process environment so child processes inherit it correctly.
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start
+    ::setenv("XDG_RUNTIME_DIR", chosen.c_str(), 0);
+    spdlog::info("XDG_RUNTIME_DIR was not set; using '{}'", chosen);
+}
+#endif
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -77,6 +129,9 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         }
 
         // Initialize SDL video subsystem
+#ifndef _WIN32
+        ensureXdgRuntimeDir();
+#endif
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
