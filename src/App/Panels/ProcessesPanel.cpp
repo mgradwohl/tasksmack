@@ -680,8 +680,10 @@ void ProcessesPanel::renderContent()
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
-            // Build tree immediately when enabling tree view (use stale flag to decide if needed)
-            if (m_TreeNeedsRebuild)
+            // Build tree immediately when enabling tree view. Rebuild if the tree is stale
+            // (new data arrived while in list mode) or if it has never been built yet
+            // (m_CachedTree is empty on first toggle after startup).
+            if (m_TreeNeedsRebuild || m_CachedTree.empty())
             {
                 m_CachedTree = buildProcessTree(currentSnapshots);
                 m_TreeNeedsRebuild = false;

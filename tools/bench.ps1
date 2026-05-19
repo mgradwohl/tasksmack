@@ -33,7 +33,15 @@ if (-not (Test-Path -LiteralPath $benchBin)) {
 
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-# Allow callers to pass an optional -- separator for parity with bench.sh.
+# If the user ran `bench.ps1 -- [extra args]`, PowerShell binds "--" to $Preset
+# (the first positional parameter). Treat this as "use default preset" so the
+# script behaves like the bash equivalent where -- is purely a separator.
+if ($Preset -eq "--") {
+    $Preset = "win-benchmark"
+}
+
+# Allow callers to pass an optional -- separator when an explicit preset is given,
+# e.g. `bench.ps1 win-benchmark -- --benchmark_filter=Foo`, for parity with bench.sh.
 if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
     $ExtraArgs = if ($ExtraArgs.Count -gt 1) { $ExtraArgs[1..($ExtraArgs.Count - 1)] } else { @() }
 }

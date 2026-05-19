@@ -11,6 +11,7 @@
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
@@ -52,13 +53,14 @@ chooseAdaptiveSystemInterval(const std::chrono::milliseconds baseInterval, const
     const auto baseMs = baseInterval.count();
     if (interactionRedrawActive)
     {
-        // 3x multiplier during active resize/move: defer expensive model refreshes
-        return std::chrono::milliseconds(baseMs * 3LL);
+        // 3x multiplier during active resize/move: defer expensive model refreshes.
+        // Clamp to REFRESH_INTERVAL_MAX_MS so the scaled value never exceeds the guardrail.
+        return std::chrono::milliseconds(std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
     }
     if (!isActiveTab)
     {
         // 2x multiplier when tab is not visible
-        return std::chrono::milliseconds(baseMs * 2LL);
+        return std::chrono::milliseconds(std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
     }
     return baseInterval;
 }
