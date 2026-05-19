@@ -53,11 +53,6 @@ namespace Platform
 namespace
 {
 
-[[nodiscard]] std::uint64_t makeDetailCacheKey(const std::uint32_t pid, const std::uint64_t startTimeTicks)
-{
-    return (static_cast<std::uint64_t>(pid) << 32U) ^ startTimeTicks;
-}
-
 /// Convert FILETIME to 100-nanosecond intervals (ticks)
 [[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
 {
@@ -709,7 +704,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     constexpr auto HEAVY_DETAIL_TTL = std::chrono::milliseconds(5000);
     const auto now = std::chrono::steady_clock::now();
 
-    const std::uint64_t detailKey = makeDetailCacheKey(pid, counters.startTimeTicks);
+    const WindowsProcessProbe::DetailCacheKey detailKey{pid, counters.startTimeTicks};
     auto [cacheIt, inserted] = m_DetailCache.try_emplace(detailKey);
     DetailCacheEntry& cache = cacheIt->second;
     cache.generation = m_DetailCacheGeneration;

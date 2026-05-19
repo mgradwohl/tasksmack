@@ -71,6 +71,24 @@ class WindowsProcessProbe : public IProcessProbe
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
     SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
 
+    struct DetailCacheKey
+    {
+        std::uint32_t pid = 0;
+        std::uint64_t startTimeTicks = 0;
+
+        [[nodiscard]] bool operator==(const DetailCacheKey& other) const noexcept = default;
+    };
+
+    struct DetailCacheKeyHash
+    {
+        [[nodiscard]] std::size_t operator()(const DetailCacheKey& key) const noexcept
+        {
+            const std::size_t pidHash = std::hash<std::uint32_t>{}(key.pid);
+            const std::size_t startHash = std::hash<std::uint64_t>{}(key.startTimeTicks);
+            return pidHash ^ (startHash + 0x9e3779b9U + (pidHash << 6U) + (pidHash >> 2U));
+        }
+    };
+
     struct DetailCacheEntry
     {
         std::string user;
@@ -108,7 +126,7 @@ class WindowsProcessProbe : public IProcessProbe
     void collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const;
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
-    std::unordered_map<std::uint64_t, DetailCacheEntry> m_DetailCache;
+    std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;
 };
 

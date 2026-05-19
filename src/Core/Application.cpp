@@ -141,7 +141,7 @@ constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 // The standard location /run/user/<uid> is used if it exists; otherwise a
 // per-user directory under /tmp is created with mode 0700 (required by the XDG
 // spec so that only the owner can read/write the runtime files).
-void ensureXdgRuntimeDir() noexcept
+void ensureXdgRuntimeDir()
 {
     if (const char* existing = SDL_getenv("XDG_RUNTIME_DIR"); existing != nullptr)
     {
