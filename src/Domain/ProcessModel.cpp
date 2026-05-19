@@ -286,6 +286,14 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::vector<ProcessSnapshot>& outSnapshots,
                                            std::uint64_t& outVersion) const
 {
+    // Fast path: avoid the shared lock on the common case where no new snapshot exists.
+    // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
+    // under the mutex), so this atomic load is sufficient to short-circuit without locking.
+    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    {
+        return false;
+    }
+
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     if (m_SnapshotVersion == lastSeenVersion)
     {
