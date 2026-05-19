@@ -6,6 +6,7 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
@@ -42,6 +43,25 @@ namespace App
 
 namespace
 {
+
+// Returns an effective refresh interval scaled by interaction/activity state,
+// matching the adaptive cadence strategy used by ProcessesPanel.
+[[nodiscard]] std::chrono::milliseconds
+chooseAdaptiveSystemInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
+{
+    const auto baseMs = baseInterval.count();
+    if (interactionRedrawActive)
+    {
+        // 3x multiplier during active resize/move: defer expensive model refreshes
+        return std::chrono::milliseconds(baseMs * 3LL);
+    }
+    if (!isActiveTab)
+    {
+        // 2x multiplier when tab is not visible
+        return std::chrono::milliseconds(baseMs * 2LL);
+    }
+    return baseInterval;
+}
 
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
@@ -235,7 +255,9 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     m_RefreshAccumulatorSec += deltaTime;
     using SecondsF = std::chrono::duration<float>;
-    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
+    const auto effectiveInterval =
+        chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
 
     if (m_ForceRefresh || intervalElapsed)
