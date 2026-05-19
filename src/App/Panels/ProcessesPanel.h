@@ -125,7 +125,8 @@ class ProcessesPanel : public Panel
 
     // Cached tree structure (rebuilt on refresh timer in onUpdate)
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
-    bool m_TreeRebuildDeferred = false;
+    bool m_TreeRebuildDeferred = false; // Rebuild deferred due to active interaction
+    bool m_TreeNeedsRebuild = false;    // Tree is stale (data changed while in list mode)
 
     // Snapshot copy cache: only re-copy from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps — this avoids 59/60 redundant copies of 50-100 ProcessSnapshot objects)

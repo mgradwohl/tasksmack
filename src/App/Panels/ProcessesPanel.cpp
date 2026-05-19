@@ -47,13 +47,25 @@ constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycle
 chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
 {
     const auto baseMs = std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
-    if (isActiveTab || interactionRedrawActive)
+
+    // During active resize/move interactions, dramatically reduce update frequency to preserve UI responsiveness.
+    // ProcessModel refresh includes expensive probe work; batching updates prevents stalls during interaction.
+    if (interactionRedrawActive)
     {
-        return std::chrono::milliseconds(baseMs);
+        // 3x multiplier during interaction: defer model updates while user is actively resizing/dragging
+        const auto throttledMs = std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+        return std::chrono::milliseconds(throttledMs);
     }
 
-    const auto relaxedMs = std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
-    return std::chrono::milliseconds(relaxedMs);
+    if (!isActiveTab)
+    {
+        // 2x multiplier for inactive tabs (already optimized but far less critical than interaction)
+        const auto relaxedMs = std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+        return std::chrono::milliseconds(relaxedMs);
+    }
+
+    // Active tab, no interaction: use base interval
+    return std::chrono::milliseconds(baseMs);
 }
 
 // Column-specific unit widths (based on longest unit that can appear)
@@ -431,27 +443,37 @@ void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
         m_LastSnapshotVersion = newVersion;
         m_CachedSnapshotVersion = newVersion;
 
-        // Rebuild tree structure when new data arrives and tree view is active.
-        // During active move/resize interactions, defer this heavier rebuild to
-        // preserve UI responsiveness in the interaction hot path.
+        // Only rebuild tree if tree view is currently active (avoid CPU waste when showing list).
+        // If in list mode, mark tree as stale; will rebuild on-demand when switching to tree view.
         if (m_TreeViewEnabled)
         {
             if (Core::Application::get().isInteractionRedrawActive())
             {
+                // Defer rebuild during active resize/move interactions for UI responsiveness
                 m_TreeRebuildDeferred = true;
             }
             else
             {
+                // Rebuild immediately when not in interaction
                 m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
                 m_TreeRebuildDeferred = false;
+                m_TreeNeedsRebuild = false;
             }
+        }
+        else
+        {
+            // In list mode: mark tree as needing rebuild, don't do expensive work now
+            m_TreeNeedsRebuild = true;
+            m_TreeRebuildDeferred = false;
         }
     }
 
+    // Process deferred tree rebuild when interaction ends and tree view is still active
     if (m_TreeViewEnabled && m_TreeRebuildDeferred && !Core::Application::get().isInteractionRedrawActive())
     {
         m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
         m_TreeRebuildDeferred = false;
+        m_TreeNeedsRebuild = false;
     }
 }
 
@@ -658,12 +680,19 @@ void ProcessesPanel::renderContent()
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
-            // Build tree immediately when enabling tree view
-            m_CachedTree = buildProcessTree(currentSnapshots);
+            // Build tree immediately when enabling tree view (use stale flag to decide if needed)
+            if (m_TreeNeedsRebuild)
+            {
+                m_CachedTree = buildProcessTree(currentSnapshots);
+                m_TreeNeedsRebuild = false;
+            }
+            m_TreeRebuildDeferred = false; // Clear any pending deferred rebuild
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
+            // Switching to list view: clear rebuild flags (tree updates skipped while in list mode)
+            m_TreeRebuildDeferred = false;
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
