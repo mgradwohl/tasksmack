@@ -58,7 +58,7 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
 }
 
 ProcessModel::ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory)
-    : m_Capabilities(std::move(caps)), m_SystemTotalMemory(systemTotalMemory), m_TicksPerSecond(ticksPerSec)
+    : m_Capabilities(caps), m_SystemTotalMemory(systemTotalMemory), m_TicksPerSecond(ticksPerSec)
 {
     // Reserve capacity upfront to avoid rehashing as processes are discovered on the
     // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
@@ -241,6 +241,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     m_Snapshots = std::move(newSnapshots);
     ++m_SnapshotVersion;
+    m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
 
     // Merge per-process GPU data if GPUModel is available
     if (m_GPUModel != nullptr)
@@ -278,8 +279,22 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 
 std::uint64_t ProcessModel::snapshotVersion() const
 {
+    return m_PublishedSnapshotVersion.load(std::memory_order_acquire);
+}
+
+bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
+                                           std::vector<ProcessSnapshot>& outSnapshots,
+                                           std::uint64_t& outVersion) const
+{
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_SnapshotVersion;
+    if (m_SnapshotVersion == lastSeenVersion)
+    {
+        return false;
+    }
+
+    outSnapshots = m_Snapshots;
+    outVersion = m_SnapshotVersion;
+    return true;
 }
 
 std::vector<double> ProcessModel::systemNetSentHistory() const

@@ -423,20 +423,30 @@ cmake --build --preset win-benchmark
 .\build\win-benchmark\bin\TaskSmackBenchmarks.exe
 ```
 
+For repeatable benchmarking runs (recommended), use the helper scripts:
+
+```bash
+# Linux
+./tools/bench.sh benchmark
+
+# Windows
+pwsh tools/bench.ps1 win-benchmark
+```
+
 ### Benchmark Output
 
 By default, benchmarks output to console. You can also:
 
 ```bash
-# JSON output for comparison
-./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > baseline.json
+# Keep baselines platform-specific for apples-to-apples comparisons
+# Linux baseline:    perf-data/linux-baseline.json
+# Windows baseline:  perf-data/win-baseline.json
 
-# Compare against baseline
-./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > current.json
-# Use compare.py from google/benchmark tools:
-# pip install google-benchmark
-# python -m google_benchmark.compare baseline.json current.json
-# Or download: https://github.com/google/benchmark/blob/main/tools/compare.py
+# Compare Windows runs
+python -m google_benchmark.compare perf-data/win-baseline.json perf-data/win-benchmark-<timestamp>.json
+
+# Compare Linux runs
+python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/benchmark-<timestamp>.json
 ```
 
 ### Available Benchmarks

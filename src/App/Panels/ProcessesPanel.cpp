@@ -396,20 +396,34 @@ void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
         m_ForceRefresh = false;
     }
 
-    // Detect new data from the background sampler by comparing snapshot versions.
-    // snapshotVersion() is incremented inside ProcessModel::computeSnapshots() (under lock)
-    // each time new data arrives, so this fires at most once per sampler tick (~1Hz).
-    const std::uint64_t currentVersion = m_ProcessModel->snapshotVersion();
-    if (currentVersion != m_LastSnapshotVersion)
+    // Detect and copy new data in a single lock acquisition.
+    std::uint64_t newVersion = m_LastSnapshotVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_LastSnapshotVersion, m_CachedRenderSnapshots, newVersion))
     {
-        m_LastSnapshotVersion = currentVersion;
+        m_LastSnapshotVersion = newVersion;
+        m_CachedSnapshotVersion = newVersion;
 
         // Rebuild tree structure when new data arrives and tree view is active.
+        // During active move/resize interactions, defer this heavier rebuild to
+        // preserve UI responsiveness in the interaction hot path.
         if (m_TreeViewEnabled)
         {
-            auto currentSnapshots = m_ProcessModel->snapshots();
-            m_CachedTree = buildProcessTree(currentSnapshots);
+            if (Core::Application::get().isInteractionRedrawActive())
+            {
+                m_TreeRebuildDeferred = true;
+            }
+            else
+            {
+                m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
+                m_TreeRebuildDeferred = false;
+            }
         }
+    }
+
+    if (m_TreeViewEnabled && m_TreeRebuildDeferred && !Core::Application::get().isInteractionRedrawActive())
+    {
+        m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
+        m_TreeRebuildDeferred = false;
     }
 }
 
@@ -462,8 +476,11 @@ void ProcessesPanel::renderContent()
     const auto currentVersion = m_ProcessModel->snapshotVersion();
     if (currentVersion != m_CachedSnapshotVersion)
     {
-        m_CachedRenderSnapshots = m_ProcessModel->snapshots();
-        m_CachedSnapshotVersion = currentVersion;
+        std::uint64_t copiedVersion = m_CachedSnapshotVersion;
+        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion))
+        {
+            m_CachedSnapshotVersion = copiedVersion;
+        }
     }
     const auto& currentSnapshots = m_CachedRenderSnapshots;
 

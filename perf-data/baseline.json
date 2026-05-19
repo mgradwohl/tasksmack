@@ -1,8 +1,8 @@
 {
   "context": {
     "date": "2026-05-18T16:46:18-07:00",
-    "host_name": "mattgrdell",
-    "executable": "./build/benchmark/bin/TaskSmackBenchmarks",
+    "host_name": "redacted",
+    "executable": "TaskSmackBenchmarks",
     "num_cpus": 10,
     "mhz_per_cpu": 3686,
     "cpu_scaling_enabled": false,

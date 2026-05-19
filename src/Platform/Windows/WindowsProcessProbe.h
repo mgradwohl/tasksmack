@@ -17,6 +17,10 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
 // Windows headers must be in correct order:
@@ -67,8 +71,21 @@ class WindowsProcessProbe : public IProcessProbe
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
     SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
 
+    struct DetailCacheEntry
+    {
+        std::string user;
+        std::string command;
+        std::string status;
+        std::string publisher;
+        std::string processType;
+        std::optional<std::int32_t> gdiObjectCount;
+        std::chrono::steady_clock::time_point nextLightRefresh;
+        std::chrono::steady_clock::time_point nextHeavyRefresh;
+        std::uint64_t generation = 0;
+    };
+
     /// Get detailed info for a single process
-    [[nodiscard]] static bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
+    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
@@ -91,6 +108,8 @@ class WindowsProcessProbe : public IProcessProbe
     void collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const;
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
+    std::unordered_map<std::uint64_t, DetailCacheEntry> m_DetailCache;
+    std::uint64_t m_DetailCacheGeneration = 0;
 };
 
 } // namespace Platform

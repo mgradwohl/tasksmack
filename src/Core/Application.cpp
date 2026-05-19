@@ -55,6 +55,76 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 
 #ifndef _WIN32
+[[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
+{
+    constexpr auto forbidden = std::filesystem::perms::group_all | std::filesystem::perms::others_all;
+    return (perms & forbidden) == std::filesystem::perms::none;
+}
+
+[[nodiscard]] bool isUsableRuntimeDir(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const auto symlink = std::filesystem::symlink_status(path, ec);
+    if (ec)
+    {
+        return false;
+    }
+    if (std::filesystem::is_symlink(symlink) || !std::filesystem::is_directory(symlink))
+    {
+        return false;
+    }
+
+    const auto status = std::filesystem::status(path, ec);
+    if (ec)
+    {
+        return false;
+    }
+    return hasSafeOwnerOnlyPermissions(status.permissions());
+}
+
+[[nodiscard]] std::optional<std::string> chooseRuntimeDir(const std::string& systemdPath, const std::string& fallbackPath)
+{
+    std::error_code ec;
+
+    if (std::filesystem::exists(systemdPath, ec) && !ec && isUsableRuntimeDir(systemdPath))
+    {
+        return systemdPath;
+    }
+
+    // Guard against symlink and non-directory attacks on predictable /tmp path.
+    const auto fallbackSymlink = std::filesystem::symlink_status(fallbackPath, ec);
+    if (!ec && std::filesystem::exists(fallbackPath, ec))
+    {
+        if (std::filesystem::is_symlink(fallbackSymlink) || !std::filesystem::is_directory(fallbackSymlink))
+        {
+            spdlog::warn("Refusing unsafe XDG fallback path '{}': expected a real directory, not symlink/non-directory", fallbackPath);
+            return std::nullopt;
+        }
+    }
+
+    std::filesystem::create_directories(fallbackPath, ec);
+    if (ec)
+    {
+        spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
+        return std::nullopt;
+    }
+
+    std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+    if (ec)
+    {
+        spdlog::warn("Could not set permissions on '{}': {}", fallbackPath, ec.message());
+        return std::nullopt;
+    }
+
+    if (!isUsableRuntimeDir(fallbackPath))
+    {
+        spdlog::warn("XDG fallback path '{}' is not usable after creation", fallbackPath);
+        return std::nullopt;
+    }
+
+    return fallbackPath;
+}
+
 // Ensure XDG_RUNTIME_DIR is set before SDL initializes. When tasksmack is run
 // as root (e.g. via sudo) the session manager never sets this variable, causing
 // libwayland-client to emit "XDG_RUNTIME_DIR is invalid or not set" and SDL to
@@ -65,38 +135,32 @@ constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 // spec so that only the owner can read/write the runtime files).
 void ensureXdgRuntimeDir() noexcept
 {
-    if (SDL_getenv("XDG_RUNTIME_DIR") != nullptr)
+    if (const char* existing = SDL_getenv("XDG_RUNTIME_DIR"); existing != nullptr)
     {
-        return; // already set by the session manager
+        const std::string existingPath(existing);
+        if (!existingPath.empty() && isUsableRuntimeDir(existingPath))
+        {
+            return; // valid path already provided by session manager
+        }
+
+        spdlog::warn("Ignoring invalid XDG_RUNTIME_DIR='{}'; using a safe fallback", existingPath);
     }
 
     const uid_t uid = getuid();
     const std::string systemdPath = std::format("/run/user/{}", uid);
     const std::string fallbackPath = std::format("/tmp/runtime-{}", uid);
 
-    const std::string& chosen = std::filesystem::exists(systemdPath) ? systemdPath : fallbackPath;
-
-    if (chosen == fallbackPath)
+    const auto chosen = chooseRuntimeDir(systemdPath, fallbackPath);
+    if (!chosen.has_value())
     {
-        std::error_code ec;
-        std::filesystem::create_directories(fallbackPath, ec);
-        if (ec)
-        {
-            spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
-            return;
-        }
-        std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
-        if (ec)
-        {
-            spdlog::warn("Could not set permissions on '{}': {}", fallbackPath, ec.message());
-        }
+        return;
     }
 
     // setenv is POSIX; SDL_setenv would also work but setenv keeps it in the
     // real process environment so child processes inherit it correctly.
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start
-    ::setenv("XDG_RUNTIME_DIR", chosen.c_str(), 0);
-    spdlog::info("XDG_RUNTIME_DIR was not set; using '{}'", chosen);
+    ::setenv("XDG_RUNTIME_DIR", chosen->c_str(), 1);
+    spdlog::info("Using XDG_RUNTIME_DIR='{}'", *chosen);
 }
 #endif
 } // namespace
@@ -223,7 +287,7 @@ void Application::run()
         return deltaTime;
     };
 
-    float forceInteractionRedrawUntil = 0.0F;
+    m_InteractionRedrawUntil = 0.0F;
 
     spdlog::info("Entering main loop");
 
@@ -262,7 +326,7 @@ void Application::run()
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
-                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
             {
@@ -272,12 +336,12 @@ void Application::run()
                     WindowResizedEvent resizeEvent(pixelW, pixelH);
                     raiseEvent(resizeEvent);
                     needsResizeRedraw = true;
-                    forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                    m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 }
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
             {
-                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
         }
 
@@ -291,7 +355,7 @@ void Application::run()
         // without reintroducing per-event rendering stalls: render at most once
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
-        const bool forceInteractionRedraw = getTime() < forceInteractionRedrawUntil;
+        const bool forceInteractionRedraw = getTime() < m_InteractionRedrawUntil;
         if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
             renderFrame(computeDeltaTime());
@@ -306,7 +370,7 @@ void Application::run()
         //   sleep immediately, keeping interactive frame rate unaffected.
         if (!hadEvents)
         {
-            const bool keepInteractionRedrawActive = getTime() < forceInteractionRedrawUntil;
+            const bool keepInteractionRedrawActive = getTime() < m_InteractionRedrawUntil;
             if (!keepInteractionRedrawActive)
             {
                 const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;

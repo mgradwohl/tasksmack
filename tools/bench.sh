@@ -66,4 +66,4 @@ echo
 echo
 echo "Results written to: ${OUT_FILE}"
 echo "Compare two runs with Google Benchmark's compare.py:"
-echo "  python3 ./build/${PRESET}/_deps/benchmark-src/tools/compare.py benchmarks <baseline.json> <${PRESET}-${TIMESTAMP}.json>"
+echo "  python -m google_benchmark.compare perf-data/linux-baseline.json ${OUT_FILE}"

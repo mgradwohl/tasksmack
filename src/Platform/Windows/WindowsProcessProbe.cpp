@@ -53,6 +53,11 @@ namespace Platform
 namespace
 {
 
+[[nodiscard]] std::uint64_t makeDetailCacheKey(const std::uint32_t pid, const std::uint64_t startTimeTicks)
+{
+    return (static_cast<std::uint64_t>(pid) << 32U) ^ startTimeTicks;
+}
+
 /// Convert FILETIME to 100-nanosecond intervals (ticks)
 [[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
 {
@@ -433,9 +438,9 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         {
             const WORD langId = LOWORD(entries[i]);
             const WORD codePage = HIWORD(entries[i]);
-            WCHAR pathBuf[64] = {};
-            swprintf_s(pathBuf, std::size(pathBuf), L"\\StringFileInfo\\%04X%04X\\CompanyName", langId, codePage);
-            result = queryCompanyName(pathBuf);
+            std::array<WCHAR, 64> pathBuf{};
+            swprintf_s(pathBuf.data(), std::size(pathBuf), L"\\StringFileInfo\\%04X%04X\\CompanyName", langId, codePage);
+            result = queryCompanyName(pathBuf.data());
         }
     }
 
@@ -589,6 +594,7 @@ WindowsProcessProbe::~WindowsProcessProbe()
 std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> results;
+    ++m_DetailCacheGeneration;
 
     // Create snapshot of all processes
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -626,6 +632,9 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
     CloseHandle(hSnapshot);
 
+    std::erase_if(m_DetailCache,
+                  [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
+
     // Attribute energy to processes if power monitoring is available
     if (m_HasPowerMonitoring)
     {
@@ -653,19 +662,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     // Get process state
     counters.state = getProcessState(hProcess);
-
-    // Get process status (Suspended, Efficiency Mode)
-    counters.status = getProcessStatus(hProcess);
-
-    // Get process owner (username)
-    counters.user = getProcessOwner(hProcess);
-
-    // Get full command line (image path)
-    counters.command = getProcessCommandLine(hProcess);
-    if (counters.command.empty())
-    {
-        counters.command = "[" + counters.name + "]";
-    }
 
     // Get process priority class and map to nice-like value
     const DWORD priorityClass = GetPriorityClass(hProcess);
@@ -707,6 +703,46 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.systemTime = filetimeToTicks(ftKernel);
         counters.startTimeTicks = filetimeToTicks(ftCreation);
         counters.startTimeEpoch = filetimeToUnixEpoch(ftCreation);
+    }
+
+    constexpr auto LIGHT_DETAIL_TTL = std::chrono::milliseconds(1000);
+    constexpr auto HEAVY_DETAIL_TTL = std::chrono::milliseconds(5000);
+    const auto now = std::chrono::steady_clock::now();
+
+    const std::uint64_t detailKey = makeDetailCacheKey(pid, counters.startTimeTicks);
+    auto [cacheIt, inserted] = m_DetailCache.try_emplace(detailKey);
+    DetailCacheEntry& cache = cacheIt->second;
+    cache.generation = m_DetailCacheGeneration;
+
+    if (!inserted)
+    {
+        counters.user = cache.user;
+        counters.command = cache.command;
+        counters.status = cache.status;
+        counters.publisher = cache.publisher;
+        counters.processType = cache.processType;
+        counters.gdiObjectCount = cache.gdiObjectCount;
+    }
+
+    const bool refreshLightDetails = inserted || (now >= cache.nextLightRefresh);
+    const bool refreshHeavyDetails = inserted || (now >= cache.nextHeavyRefresh);
+
+    if (refreshHeavyDetails)
+    {
+        // Expensive data: owner + image path + publisher are refreshed at a lower cadence.
+        counters.user = getProcessOwner(hProcess);
+        counters.command = getProcessCommandLine(hProcess);
+        if (counters.command.empty())
+        {
+            counters.command = "[" + counters.name + "]";
+        }
+
+        // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
+        counters.publisher = getProcessPublisher(hProcess);
+    }
+    else if (counters.command.empty())
+    {
+        counters.command = "[" + counters.name + "]";
     }
 
     // Get memory info
@@ -774,21 +810,40 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.cpuAffinityMask = 0;
     }
 
-    // Get GDI object count (best-effort; zero for protected/system processes).
-    // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
-    // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
-    HANDLE hQueryInfo = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
-    counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
-
-    // Get publisher/vendor from PE file version info (best-effort; cached by exe path)
-    counters.publisher = getProcessPublisher(hProcess);
-
-    // Classify process type (App / Background Process / Windows Process)
-    counters.processType = classifyProcessType(hQueryInfo, static_cast<DWORD>(pid), counters.command);
-
-    if (hQueryInfo != nullptr)
+    if (refreshLightDetails || refreshHeavyDetails)
     {
-        CloseHandle(hQueryInfo);
+        // Medium-cost data refreshed more frequently than heavy details.
+        counters.status = getProcessStatus(hProcess);
+
+        // Get GDI object count (best-effort; zero for protected/system processes).
+        // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
+        // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
+        HANDLE hQueryInfo = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
+
+        // Classify process type (App / Background Process / Windows Process)
+        counters.processType = classifyProcessType(hQueryInfo, static_cast<DWORD>(pid), counters.command);
+
+        if (hQueryInfo != nullptr)
+        {
+            CloseHandle(hQueryInfo);
+        }
+    }
+
+    if (refreshHeavyDetails)
+    {
+        cache.user = counters.user;
+        cache.command = counters.command;
+        cache.publisher = counters.publisher;
+        cache.nextHeavyRefresh = now + HEAVY_DETAIL_TTL;
+    }
+
+    if (refreshLightDetails || refreshHeavyDetails)
+    {
+        cache.status = counters.status;
+        cache.processType = counters.processType;
+        cache.gdiObjectCount = counters.gdiObjectCount;
+        cache.nextLightRefresh = now + LIGHT_DETAIL_TTL;
     }
 
     CloseHandle(hProcess);

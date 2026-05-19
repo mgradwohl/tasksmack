@@ -172,9 +172,6 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
         }
 
-        // Clear refresh request
-        m_RefreshRequested.store(false);
-
         // Get current interval
         std::chrono::milliseconds currentInterval;
         {
@@ -186,13 +183,17 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         auto elapsed = std::chrono::steady_clock::now() - startTime;
         auto sleepTime = currentInterval - std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
 
-        // Sleep in small increments to check for stop/refresh requests
+        // Sleep in small increments to check for stop/refresh requests.
+        // Consume a pending request with exchange(false) so a request issued while
+        // sampling is not lost before we enter the sleep phase.
         constexpr auto checkInterval = std::chrono::milliseconds(50);
-        while (sleepTime > std::chrono::milliseconds(0) && !stopToken.stop_requested() && !m_RefreshRequested.load())
+        bool refreshRequested = m_RefreshRequested.exchange(false);
+        while (sleepTime > std::chrono::milliseconds(0) && !stopToken.stop_requested() && !refreshRequested)
         {
             auto sleepChunk = std::min(sleepTime, checkInterval);
             std::this_thread::sleep_for(sleepChunk);
             sleepTime -= sleepChunk;
+            refreshRequested = m_RefreshRequested.exchange(false);
         }
     }
 

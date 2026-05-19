@@ -69,6 +69,11 @@ class Application
         return m_Paths;
     }
 
+    [[nodiscard]] bool isInteractionRedrawActive() const noexcept
+    {
+        return getTime() < m_InteractionRedrawUntil;
+    }
+
     [[nodiscard]] static Application& get();
     [[nodiscard]] static float getTime();
     static void setInstance(std::unique_ptr<Application> app);
@@ -79,6 +84,7 @@ class Application
     std::unique_ptr<Window> m_Window;
     std::vector<std::unique_ptr<Layer>> m_LayerStack;
     bool m_Running = false;
+    float m_InteractionRedrawUntil = 0.0F;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic.

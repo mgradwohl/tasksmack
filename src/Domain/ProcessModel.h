@@ -3,6 +3,7 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,11 @@ class ProcessModel
 
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
+
+    /// Copy snapshots only when a newer version exists.
+    /// Returns true and copies data when an update is available; otherwise returns false.
+    [[nodiscard]] bool
+    tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion, std::vector<ProcessSnapshot>& outSnapshots, std::uint64_t& outVersion) const;
 
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
@@ -158,6 +164,7 @@ class ProcessModel
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
     std::uint64_t m_SnapshotVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

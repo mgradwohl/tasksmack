@@ -152,6 +152,9 @@ class TitleBarLayer : public Core::Layer
     int m_LastCursorWindowHeight = 0;
     bool m_LastCursorWindowMaximized = false;
     bool m_HasCursorSample = false;
+    int m_LastImmediateResizePixelW = 0;
+    int m_LastImmediateResizePixelH = 0;
+    float m_LastImmediateResizeEventTime = 0.0F;
 
     SDL_Cursor* m_DefaultCursor = nullptr;
     SDL_Cursor* m_NsResizeCursor = nullptr;
