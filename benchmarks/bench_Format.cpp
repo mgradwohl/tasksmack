@@ -148,8 +148,10 @@ static void BM_Format_FormatOrDash_WithZero(benchmark::State& state)
 }
 BENCHMARK(BM_Format_FormatOrDash_WithZero);
 
-// Simulate formatting a full process table row
-// This represents real-world usage where multiple formats are called per row
+// Simulate formatting a full process table row using std::string-returning functions.
+// NOTE: ProcessesPanel uses zero-allocation fast paths (splitPercentForAlignment,
+// splitBytesForAlignmentFast) for the heavy numeric columns; this benchmark does not
+// reflect the actual render hot path.  See BM_Format_FullProcessRow_FastPath below.
 static void BM_Format_FullProcessRow(benchmark::State& state)
 {
     // Simulate typical process values
@@ -195,7 +197,12 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
 }
 BENCHMARK(BM_Format_FullProcessRow);
 
-// Benchmark with different numbers of processes to simulate table rendering
+// Benchmark with different numbers of processes to simulate table rendering.
+// NOTE: This benchmark uses the std::string-returning functions (percentCompact,
+// formatBytes).  ProcessesPanel does NOT use these for the CPU%/bytes columns at
+// render time — it uses the zero-allocation splitPercentForAlignment /
+// splitBytesForAlignmentFast fast paths instead.  See BM_Format_ProcessTable_FastPath
+// below for a benchmark that reflects what the panel actually calls.
 static void BM_Format_ProcessTable(benchmark::State& state)
 {
     const auto processCount = static_cast<size_t>(state.range(0));
@@ -229,5 +236,92 @@ static void BM_Format_ProcessTable(benchmark::State& state)
 }
 // Typical visible row counts: 20, 50, 100, 500, 1000 processes
 BENCHMARK(BM_Format_ProcessTable)->Arg(20)->Arg(50)->Arg(100)->Arg(500)->Arg(1000);
+
+// Benchmark the ACTUAL hot path used by ProcessesPanel for CPU%/bytes columns.
+// Uses the zero-allocation splitPercentForAlignment / splitBytesForAlignmentFast
+// functions, matching what renderProcessColumns() calls every frame per visible row.
+static void BM_Format_ProcessTable_FastPath(benchmark::State& state)
+{
+    const auto processCount = static_cast<size_t>(state.range(0));
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> cpuDist(0.0, 100.0);
+    std::uniform_int_distribution<uint64_t> memDist((1024 * 1024), (((1024ULL * 1024) * 1024) * 16));
+
+    std::vector<double> cpuValues(processCount);
+    std::vector<uint64_t> memValues(processCount);
+
+    for (size_t i = 0; i < processCount; ++i)
+    {
+        cpuValues[i] = cpuDist(rng);
+        memValues[i] = memDist(rng);
+    }
+
+    for (auto _ : state)
+    {
+        for (size_t i = 0; i < processCount; ++i)
+        {
+            // Mirrors ProcessesPanel::renderProcessColumns() exactly:
+            const auto cpuParts = UI::Format::splitPercentForAlignment(cpuValues[i]);
+            const auto memUnit = UI::Format::unitForTotalBytes(memValues[i]);
+            const auto memParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(memValues[i]), memUnit);
+
+            benchmark::DoNotOptimize(cpuParts.wholePart.data());
+            benchmark::DoNotOptimize(cpuParts.decimalDigit);
+            benchmark::DoNotOptimize(memParts.wholePart().data());
+            benchmark::DoNotOptimize(memParts.decimalDigit);
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(processCount));
+}
+BENCHMARK(BM_Format_ProcessTable_FastPath)->Arg(20)->Arg(50)->Arg(100)->Arg(500)->Arg(1000);
+
+// Benchmark the ACTUAL hot path used by ProcessesPanel for a full row with all
+// numeric columns (CPU%, Mem%, Virtual, RSS, Shared, IO Read, IO Write).
+// This is the fast-path counterpart to BM_Format_FullProcessRow.
+static void BM_Format_FullProcessRow_FastPath(benchmark::State& state)
+{
+    const double cpuPercent = 25.3;
+    const double memPercent = 12.7;
+    const uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512 MB
+    const uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2 GB
+    const uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128 MB
+    const double ioReadRate = ((1024.0 * 1024) * 50);      // 50 MB/s
+    const double ioWriteRate = ((1024.0 * 1024) * 10);     // 10 MB/s
+
+    for (auto _ : state)
+    {
+        // Mirrors the fast-path branches in renderProcessColumns():
+        const auto cpuParts = UI::Format::splitPercentForAlignment(cpuPercent);
+        const auto memParts = UI::Format::splitPercentForAlignment(memPercent);
+
+        const auto virtUnit = UI::Format::unitForTotalBytes(virtBytes);
+        const auto virtParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(virtBytes), virtUnit);
+
+        const auto rssUnit = UI::Format::unitForTotalBytes(rssBytes);
+        const auto rssParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(rssBytes), rssUnit);
+
+        const auto shrUnit = UI::Format::unitForTotalBytes(sharedBytes);
+        const auto shrParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(sharedBytes), shrUnit);
+
+        const auto ioRUnit = UI::Format::unitForBytesPerSecond(ioReadRate);
+        const auto ioRParts = UI::Format::splitBytesPerSecForAlignmentFast(ioReadRate, ioRUnit);
+
+        const auto ioWUnit = UI::Format::unitForBytesPerSecond(ioWriteRate);
+        const auto ioWParts = UI::Format::splitBytesPerSecForAlignmentFast(ioWriteRate, ioWUnit);
+
+        benchmark::DoNotOptimize(cpuParts.wholePart.data());
+        benchmark::DoNotOptimize(memParts.wholePart.data());
+        benchmark::DoNotOptimize(virtParts.wholePart().data());
+        benchmark::DoNotOptimize(rssParts.wholePart().data());
+        benchmark::DoNotOptimize(shrParts.wholePart().data());
+        benchmark::DoNotOptimize(ioRParts.wholePart().data());
+        benchmark::DoNotOptimize(ioWParts.wholePart().data());
+    }
+
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_FullProcessRow_FastPath);
 
 } // namespace
