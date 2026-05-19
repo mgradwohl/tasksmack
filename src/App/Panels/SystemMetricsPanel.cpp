@@ -6,10 +6,12 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
@@ -42,6 +44,26 @@ namespace App
 
 namespace
 {
+
+// Returns an effective refresh interval scaled by interaction/activity state,
+// matching the adaptive cadence strategy used by ProcessesPanel.
+[[nodiscard]] std::chrono::milliseconds
+chooseAdaptiveSystemInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
+{
+    const auto baseMs = baseInterval.count();
+    if (interactionRedrawActive)
+    {
+        // 3x multiplier during active resize/move: defer expensive model refreshes.
+        // Clamp to REFRESH_INTERVAL_MAX_MS so the scaled value never exceeds the guardrail.
+        return std::chrono::milliseconds(std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
+    }
+    if (!isActiveTab)
+    {
+        // 2x multiplier when tab is not visible
+        return std::chrono::milliseconds(std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
+    }
+    return baseInterval;
+}
 
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
@@ -235,7 +257,9 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     m_RefreshAccumulatorSec += deltaTime;
     using SecondsF = std::chrono::duration<float>;
-    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
+    const auto effectiveInterval =
+        chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
 
     if (m_ForceRefresh || intervalElapsed)

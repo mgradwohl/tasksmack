@@ -697,15 +697,24 @@ void TitleBarLayer::updateWindowInteraction()
             SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
             m_LastAppliedWindowWidth = newWidth;
             m_LastAppliedWindowHeight = newHeight;
-            // Immediately raise a resize event so UILayer updates the GL viewport
-            // for this frame. Without this, the viewport lags one frame behind
-            // the window until SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED is processed
-            // in the next event-poll iteration.
+            // Coalesce immediate resize events to avoid flooding the event bus
+            // during edge/corner drags. SDL will still emit pixel-size events,
+            // so this path only provides low-latency updates for interactive drag.
             int pixelW = 0;
             int pixelH = 0;
             SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-            Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-            Core::Application::get().raiseEvent(resizeEvent);
+            constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
+            const float now = Core::Application::getTime();
+            const bool pixelSizeChanged = (pixelW != m_LastImmediateResizePixelW) || (pixelH != m_LastImmediateResizePixelH);
+            const bool intervalElapsed = (now - m_LastImmediateResizeEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
+            if (pixelSizeChanged && intervalElapsed)
+            {
+                m_LastImmediateResizePixelW = pixelW;
+                m_LastImmediateResizePixelH = pixelH;
+                m_LastImmediateResizeEventTime = now;
+                Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
+                Core::Application::get().raiseEvent(resizeEvent);
+            }
         }
     }
 }

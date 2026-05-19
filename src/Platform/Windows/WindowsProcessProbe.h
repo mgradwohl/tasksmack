@@ -17,6 +17,12 @@
 #endif
 
 #include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
 // Windows headers must be in correct order:
@@ -57,7 +63,9 @@ class WindowsProcessProbe : public IProcessProbe
     bool m_HasNetworkCounters = false;
     bool m_NetworkCountersAccessDenied = false; // True when EStats failed specifically due to access denied (privilege issue)
     mutable std::atomic<uint64_t> m_SyntheticEnergy{0};
-    HMODULE m_IphlpModule = nullptr; // Non-null only when loaded by this class (must be freed in destructor)
+    std::chrono::milliseconds m_LightDetailTTL{1000}; // Default; tuned by total physical RAM in constructor
+    std::chrono::milliseconds m_HeavyDetailTTL{5000}; // Default; tuned by total physical RAM in constructor
+    HMODULE m_IphlpModule = nullptr;                  // Non-null only when loaded by this class (must be freed in destructor)
 
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =
@@ -67,14 +75,48 @@ class WindowsProcessProbe : public IProcessProbe
     GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
     SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
 
+    struct DetailCacheKey
+    {
+        std::uint32_t pid = 0;
+        std::uint64_t startTimeTicks = 0;
+
+        [[nodiscard]] bool operator==(const DetailCacheKey& other) const noexcept = default;
+    };
+
+    struct DetailCacheKeyHash
+    {
+        [[nodiscard]] std::size_t operator()(const DetailCacheKey& key) const noexcept
+        {
+            const std::size_t pidHash = std::hash<std::uint32_t>{}(key.pid);
+            const std::size_t startHash = std::hash<std::uint64_t>{}(key.startTimeTicks);
+            return pidHash ^ (startHash + 0x9e3779b9U + (pidHash << 6U) + (pidHash >> 2U));
+        }
+    };
+
+    struct DetailCacheEntry
+    {
+        std::string user;
+        std::string command;
+        std::string status;
+        std::string publisher;
+        std::string processType;
+        std::optional<std::int32_t> gdiObjectCount;
+        std::chrono::steady_clock::time_point nextLightRefresh;
+        std::chrono::steady_clock::time_point nextHeavyRefresh;
+        std::uint64_t generation = 0;
+    };
+
     /// Get detailed info for a single process
-    [[nodiscard]] static bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
+    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
 
     /// Detect if power monitoring is available
     [[nodiscard]] static bool detectPowerMonitoring();
+
+    /// Calculate detail cache TTLs based on total physical RAM
+    static void calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;
 
     /// Read system-wide energy (microjoules) if available
     [[nodiscard]] uint64_t readSystemEnergy() const;
@@ -91,6 +133,8 @@ class WindowsProcessProbe : public IProcessProbe
     void collectTcp4ByteCounts(std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>& perPid) const;
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
+    std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
+    std::uint64_t m_DetailCacheGeneration = 0;
 };
 
 } // namespace Platform

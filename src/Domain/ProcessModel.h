@@ -3,6 +3,7 @@
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,7 +11,6 @@
 #include <memory>
 #include <shared_mutex>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace Domain
@@ -26,6 +26,10 @@ class ProcessModel
 {
   public:
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe);
+
+    /// Background-sampler mode: probe is owned by BackgroundSampler; capabilities are
+    /// injected here so ProcessModel never needs to call the probe directly.
+    ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory);
     ~ProcessModel() = default;
 
     ProcessModel(const ProcessModel&) = delete;
@@ -43,6 +47,11 @@ class ProcessModel
 
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
+
+    /// Copy snapshots only when a newer version exists.
+    /// Returns true and copies data when an update is available; otherwise returns false.
+    [[nodiscard]] bool
+    tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion, std::vector<ProcessSnapshot>& outSnapshots, std::uint64_t& outVersion) const;
 
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
@@ -67,22 +76,12 @@ class ProcessModel
 
     /// Set GPU model for per-process GPU data.
     /// When set, refresh() automatically queries GPU counters and merges them.
-    void setGPUModel(std::shared_ptr<GPUModel> gpuModel)
-    {
-        m_GPUModel = std::move(gpuModel);
-    }
+    void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
 
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
     Platform::ProcessCapabilities m_Capabilities;
-
-    // Previous counters for delta calculation (keyed by uniqueKey)
-    std::unordered_map<std::uint64_t, Platform::ProcessCounters> m_PrevCounters;
-    // Peak RSS tracking (keyed by uniqueKey)
-    std::unordered_map<std::uint64_t, std::uint64_t> m_PeakRss;
-    // Active keys tracking (reused to avoid allocations during pruning)
-    std::unordered_set<std::uint64_t> m_ActiveKeys;
 
     // ==========================================================================
     // Network Rate Baseline Tracking
@@ -122,7 +121,24 @@ class ProcessModel
         std::uint64_t netReceivedBytes = 0;
         std::chrono::steady_clock::time_point firstSeenTime;
     };
-    std::unordered_map<std::uint64_t, NetworkBaseline> m_NetworkBaselines;
+
+    // Per-process tracking state.  Consolidating previous counters, network
+    // baseline, and peak-RSS into one struct reduces per-process map lookups
+    // in computeSnapshots() from 3-4 separate finds/inserts to a single
+    // try_emplace, improving cache locality and reducing map overhead.
+    struct PerProcessState
+    {
+        Platform::ProcessCounters counters{}; // counters from last refresh (for delta)
+        NetworkBaseline networkBaseline{};    // network rate baseline (see above)
+        std::uint64_t peakRss = 0;            // tracked peak RSS
+        std::uint64_t generation = 0;         // refresh generation when last seen
+    };
+
+    // Single map replaces m_PrevCounters + m_NetworkBaselines + m_PeakRss + m_ActiveKeys.
+    std::unordered_map<std::uint64_t, PerProcessState> m_PerProcessState;
+    // Monotonically increasing counter; bumped each computeSnapshots() call.
+    // Entries with generation != m_CurrentGeneration belong to dead processes.
+    std::uint64_t m_CurrentGeneration = 0;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0;                  // For memoryPercent calculation
@@ -145,6 +161,7 @@ class ProcessModel
     // Latest computed snapshots
     std::vector<ProcessSnapshot> m_Snapshots;
     std::uint64_t m_SnapshotVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

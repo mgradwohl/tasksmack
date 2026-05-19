@@ -6,6 +6,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessSnapshot.h"
+#include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
@@ -19,7 +20,6 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -28,6 +28,10 @@ namespace Domain
 
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_Probe(std::move(probe))
 {
+    // Reserve capacity upfront to avoid rehashing as processes are discovered on the
+    // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
+    m_PerProcessState.reserve(512);
+
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
@@ -52,6 +56,33 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
     }
+}
+
+ProcessModel::ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory)
+    : m_Capabilities(caps), m_SystemTotalMemory(systemTotalMemory), m_TicksPerSecond(ticksPerSec)
+{
+    // Reserve capacity upfront to avoid rehashing as processes are discovered on the
+    // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
+    m_PerProcessState.reserve(512);
+
+    spdlog::info("ProcessModel initialized (background-sampler mode): hasIoCounters={}, hasThreadCount={}, "
+                 "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
+                 "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
+                 m_Capabilities.hasIoCounters,
+                 m_Capabilities.hasThreadCount,
+                 m_Capabilities.hasUserSystemTime,
+                 m_Capabilities.hasStartTime,
+                 m_Capabilities.hasUser,
+                 m_Capabilities.hasCommand,
+                 m_Capabilities.hasNice,
+                 m_Capabilities.hasPageFaults,
+                 m_Capabilities.hasPeakRss,
+                 m_Capabilities.hasCpuAffinity,
+                 m_Capabilities.hasNetworkCounters,
+                 m_Capabilities.hasPowerUsage);
+    spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
+                  m_TicksPerSecond,
+                  Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
 }
 
 void ProcessModel::refresh()
@@ -89,7 +120,24 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         const auto delta = currentSampleTime - m_PrevSampleTime;
         elapsedSeconds = std::chrono::duration<double>(delta).count();
         timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(delta).count());
+
+        // Suppress delta-based rates for implausibly short intervals. The seed call
+        // in onAttach() fires just before the BackgroundSampler thread starts; the
+        // thread's first callback may arrive only a few ms later (thread-startup
+        // latency), making elapsedSeconds tiny and producing enormous byte/sec and
+        // pageFaults/sec spikes. Any elapsed time below half the minimum configurable
+        // refresh interval is treated as "no previous data" for rate purposes.
+        // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
+        // rates; we do NOT prevent the history push below (handle counts etc. don't
+        // depend on elapsed time and must still be recorded every cycle).
+        constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0; // half of 100ms = 0.05s
+        if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
+        {
+            elapsedSeconds = 0.0;
+            timeDeltaUs = 0;
+        }
     }
+    const bool hasElapsedForHistory = m_HasPrevSampleTime;
     m_PrevSampleTime = currentSampleTime;
     m_HasPrevSampleTime = true;
 
@@ -106,13 +154,10 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     newSnapshots.clear();                 // drop elements, keep capacity
     newSnapshots.reserve(counters.size());
 
-    // Track active keys to prune stale entries (reuse existing set)
-    m_ActiveKeys.clear();
-    m_ActiveKeys.reserve(counters.size());
-
-    // Carry forward network baselines for existing processes, add new ones
-    std::unordered_map<std::uint64_t, NetworkBaseline> newNetworkBaselines;
-    newNetworkBaselines.reserve(counters.size());
+    // Bump the generation counter once per refresh.  At the end of the loop we
+    // prune any PerProcessState entry that was NOT touched this refresh (i.e.
+    // its generation is still the previous value) in a single erase_if pass.
+    ++m_CurrentGeneration;
 
     double aggNetSent = 0.0;
     double aggNetRecv = 0.0;
@@ -124,55 +169,42 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     for (const auto& current : counters)
     {
         const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
-        m_ActiveKeys.insert(key);
 
-        const Platform::ProcessCounters* previous = nullptr;
-        auto prevIt = m_PrevCounters.find(key);
-        if (prevIt != m_PrevCounters.end())
+        // Single map operation replaces three separate find/insert calls for
+        // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.
+        // try_emplace returns {iterator, inserted}: inserted==true means a brand-new
+        // process; inserted==false means we have state from the previous refresh.
+        auto [it, inserted] = m_PerProcessState.try_emplace(key);
+        PerProcessState& state = it->second;
+        state.generation = m_CurrentGeneration;
+
+        // --- previous CPU counters (for delta calculation) ---
+        const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
+
+        // --- network baseline ---
+        // For new processes: initialise to current counters so the very first rate
+        // is 0 rather than a spike from pre-existing cumulative TCP counters.
+        // For existing processes: keep the original baseline untouched.
+        if (inserted)
         {
-            previous = &prevIt->second;
+            state.networkBaseline.netSentBytes = current.netSentBytes;
+            state.networkBaseline.netReceivedBytes = current.netReceivedBytes;
+            state.networkBaseline.firstSeenTime = currentSampleTime;
         }
 
-        // Track network baseline for this process (see ProcessModel.h for rationale)
-        // The baseline approach computes average rate since first seen, avoiding
-        // wild spikes from TCP connection churn in Windows EStats.
-        NetworkBaseline baseline;
-        auto baselineIt = m_NetworkBaselines.find(key);
-        if (baselineIt != m_NetworkBaselines.end())
-        {
-            // Existing process - keep the original baseline so we compute
-            // rate = (current - original_baseline) / time_since_first_seen
-            baseline = baselineIt->second;
-        }
-        else
-        {
-            // New process - record current counters as baseline
-            // This absorbs any pre-existing cumulative values from TCP connections
-            // that were open before we started monitoring this process
-            baseline.netSentBytes = current.netSentBytes;
-            baseline.netReceivedBytes = current.netReceivedBytes;
-            baseline.firstSeenTime = currentSampleTime;
-        }
-        newNetworkBaselines[key] = baseline;
-
-        std::uint64_t peakRss = current.rssBytes;
+        // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            peakRss = current.peakRssBytes;
+            state.peakRss = current.peakRssBytes;
         }
         else
         {
-            auto peakIt = m_PeakRss.find(key);
-            if (peakIt != m_PeakRss.end())
-            {
-                peakRss = std::max(peakIt->second, current.rssBytes);
-            }
+            state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
         }
-        m_PeakRss[key] = peakRss;
 
         auto snapshot =
             computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
-        snapshot.peakMemoryBytes = peakRss;
+        snapshot.peakMemoryBytes = state.peakRss;
 
         // =======================================================================
         // Network Rate Calculation (Baseline Approach)
@@ -192,20 +224,20 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         // =======================================================================
         constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
         constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
-        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - baseline.firstSeenTime).count();
+        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - state.networkBaseline.firstSeenTime).count();
         if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
         {
             // Only compute rate if current >= baseline (counter should never decrease
             // for the same process, but handle it gracefully if it does)
-            if (current.netSentBytes >= baseline.netSentBytes)
+            if (current.netSentBytes >= state.networkBaseline.netSentBytes)
             {
-                const std::uint64_t sentDelta = current.netSentBytes - baseline.netSentBytes;
+                const std::uint64_t sentDelta = current.netSentBytes - state.networkBaseline.netSentBytes;
                 const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
                 snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
-            if (current.netReceivedBytes >= baseline.netReceivedBytes)
+            if (current.netReceivedBytes >= state.networkBaseline.netReceivedBytes)
             {
-                const std::uint64_t recvDelta = current.netReceivedBytes - baseline.netReceivedBytes;
+                const std::uint64_t recvDelta = current.netReceivedBytes - state.networkBaseline.netReceivedBytes;
                 const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
                 snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
@@ -221,26 +253,32 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         aggHandles += static_cast<double>(snapRef.handleCount);
         aggPower += snapRef.powerWatts;
 
-        m_PrevCounters[key] = current;
+        // Store current counters so next refresh can compute deltas.
+        state.counters = current;
     }
 
     m_Snapshots = std::move(newSnapshots);
     ++m_SnapshotVersion;
-    m_NetworkBaselines = std::move(newNetworkBaselines);
 
-    // Merge per-process GPU data if GPUModel is available
+    // Merge per-process GPU data if GPUModel is available. Must happen before
+    // publishing the new version so that the UI never observes a version whose
+    // snapshots are still missing GPU fields.
     if (m_GPUModel != nullptr)
     {
         mergeGPUData();
     }
 
-    // Prune stale entries from tracking maps (dead processes) using modern C++23 idiom
-    std::erase_if(m_PrevCounters, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
-    std::erase_if(m_PeakRss, [this](const auto& entry) { return !m_ActiveKeys.contains(entry.first); });
+    // Publish only after all snapshot mutations (including GPU merge) are done.
+    m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
+
+    // Prune dead processes: a single erase_if on one map instead of the previous
+    // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
+    // rebuild of m_NetworkBaselines.
+    std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
 
     m_PrevTotalCpuTime = totalCpuTime;
 
-    if (m_HasPrevSampleTime && elapsedSeconds > 0.0)
+    if (hasElapsedForHistory)
     {
         // Use absolute time (since epoch) to match SystemModel's timestamp format
         const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
@@ -263,8 +301,30 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 
 std::uint64_t ProcessModel::snapshotVersion() const
 {
+    return m_PublishedSnapshotVersion.load(std::memory_order_acquire);
+}
+
+bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
+                                           std::vector<ProcessSnapshot>& outSnapshots,
+                                           std::uint64_t& outVersion) const
+{
+    // Fast path: avoid the shared lock on the common case where no new snapshot exists.
+    // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
+    // under the mutex), so this atomic load is sufficient to short-circuit without locking.
+    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    {
+        return false;
+    }
+
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_SnapshotVersion;
+    if (m_SnapshotVersion == lastSeenVersion)
+    {
+        return false;
+    }
+
+    outSnapshots = m_Snapshots;
+    outVersion = m_SnapshotVersion;
+    return true;
 }
 
 std::vector<double> ProcessModel::systemNetSentHistory() const
@@ -325,6 +385,12 @@ std::size_t ProcessModel::processCount() const
 const Platform::ProcessCapabilities& ProcessModel::capabilities() const
 {
     return m_Capabilities;
+}
+
+void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    m_GPUModel = std::move(gpuModel);
 }
 
 void ProcessModel::mergeGPUData()

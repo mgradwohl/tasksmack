@@ -9,12 +9,25 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace Core
 {
@@ -47,6 +60,275 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // window after each relevant window event so the framebuffer stays responsive
 // without forcing continuous high-rate rendering when idle.
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
+constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
+constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+
+[[nodiscard]] bool isEnvFlagEnabled(const char* value) noexcept
+{
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    const std::string_view text(value);
+    if (text.empty())
+    {
+        return false;
+    }
+
+    // Case-insensitive check: "0", "false", "off", "no" (any casing) are treated as disabled.
+    const auto ciEqual = [](const std::string_view a, const std::string_view b) noexcept
+    {
+        if (a.size() != b.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < a.size(); ++i)
+        {
+            if (std::tolower(static_cast<unsigned char>(a[i])) != b[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // b must already be lowercase
+    return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
+}
+
+struct ResizePerfTraceStats
+{
+    std::uint32_t eventBatches = 0;
+    std::uint32_t frames = 0;
+    std::uint32_t resizeFrames = 0;
+    std::uint32_t drainedEvents = 0;
+    std::uint32_t resizeEvents = 0;
+    std::uint32_t maxEventsPerBatch = 0;
+    double drainMs = 0.0;
+    double updateMs = 0.0;
+    double renderMs = 0.0;
+    double postRenderMs = 0.0;
+    double swapMs = 0.0;
+    double maxDrainMs = 0.0;
+    double maxUpdateMs = 0.0;
+    double maxRenderMs = 0.0;
+    double maxPostRenderMs = 0.0;
+    double maxSwapMs = 0.0;
+
+    void recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs) noexcept
+    {
+        ++eventBatches;
+        drainedEvents += eventCount;
+        resizeEvents += resizeEventCount;
+        maxEventsPerBatch = std::max(maxEventsPerBatch, eventCount);
+        drainMs += durationMs;
+        maxDrainMs = std::max(maxDrainMs, durationMs);
+    }
+
+    void recordFrame(
+        bool wasResizeFrame, double updateDurationMs, double renderDurationMs, double postRenderDurationMs, double swapDurationMs) noexcept
+    {
+        ++frames;
+        if (wasResizeFrame)
+        {
+            ++resizeFrames;
+        }
+
+        updateMs += updateDurationMs;
+        renderMs += renderDurationMs;
+        postRenderMs += postRenderDurationMs;
+        swapMs += swapDurationMs;
+        maxUpdateMs = std::max(maxUpdateMs, updateDurationMs);
+        maxRenderMs = std::max(maxRenderMs, renderDurationMs);
+        maxPostRenderMs = std::max(maxPostRenderMs, postRenderDurationMs);
+        maxSwapMs = std::max(maxSwapMs, swapDurationMs);
+    }
+
+    [[nodiscard]] bool hasSamples() const noexcept
+    {
+        return (eventBatches > 0) || (frames > 0);
+    }
+};
+
+void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::string_view reason)
+{
+    if (!stats.hasSamples())
+    {
+        return;
+    }
+
+    const auto avg = [](const double total, const std::uint32_t count) noexcept -> double
+    {
+        return (count == 0) ? 0.0 : (total / static_cast<double>(count));
+    };
+
+    spdlog::info(
+        "ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} frames={} resizeFrames={} drain avg/max={:.3f}/{:.3f} ms "
+        "update avg/max={:.3f}/{:.3f} ms render avg/max={:.3f}/{:.3f} ms post avg/max={:.3f}/{:.3f} ms swap avg/max={:.3f}/{:.3f} ms",
+        reason,
+        stats.eventBatches,
+        stats.drainedEvents,
+        stats.resizeEvents,
+        stats.maxEventsPerBatch,
+        stats.frames,
+        stats.resizeFrames,
+        avg(stats.drainMs, stats.eventBatches),
+        stats.maxDrainMs,
+        avg(stats.updateMs, stats.frames),
+        stats.maxUpdateMs,
+        avg(stats.renderMs, stats.frames),
+        stats.maxRenderMs,
+        avg(stats.postRenderMs, stats.frames),
+        stats.maxPostRenderMs,
+        avg(stats.swapMs, stats.frames),
+        stats.maxSwapMs);
+}
+
+#ifndef _WIN32
+[[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
+{
+    // Require that group/other bits are entirely clear (no world/group access)
+    // and that the owner has at least read, write, and execute so that the
+    // directory is actually usable as an XDG runtime dir.
+    constexpr auto forbidden = std::filesystem::perms::group_all | std::filesystem::perms::others_all;
+    constexpr auto required = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec;
+    return ((perms & forbidden) == std::filesystem::perms::none) && ((perms & required) == required);
+}
+
+[[nodiscard]] bool isUsableRuntimeDir(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const auto symlink = std::filesystem::symlink_status(path, ec);
+    if (ec)
+    {
+        return false;
+    }
+    if (std::filesystem::is_symlink(symlink) || !std::filesystem::is_directory(symlink))
+    {
+        return false;
+    }
+
+    const auto status = std::filesystem::status(path, ec);
+    if (ec)
+    {
+        return false;
+    }
+
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0)
+    {
+        return false;
+    }
+
+    return (st.st_uid == getuid()) && hasSafeOwnerOnlyPermissions(status.permissions());
+}
+
+[[nodiscard]] std::optional<std::string> chooseRuntimeDir(const std::string& systemdPath, const std::string& fallbackPath)
+{
+    std::error_code ec;
+
+    if (std::filesystem::exists(systemdPath, ec) && !ec && isUsableRuntimeDir(systemdPath))
+    {
+        return systemdPath;
+    }
+
+    // Guard against symlink and non-directory attacks on predictable /tmp path.
+    const auto fallbackSymlink = std::filesystem::symlink_status(fallbackPath, ec);
+    if (!ec && std::filesystem::exists(fallbackPath, ec))
+    {
+        if (std::filesystem::is_symlink(fallbackSymlink) || !std::filesystem::is_directory(fallbackSymlink))
+        {
+            spdlog::warn("Refusing unsafe XDG fallback path '{}': expected a real directory, not symlink/non-directory", fallbackPath);
+            return std::nullopt;
+        }
+    }
+
+    std::filesystem::create_directories(fallbackPath, ec);
+    if (ec)
+    {
+        spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
+        return std::nullopt;
+    }
+
+    // Guard against applying permissions to a directory we don't own (e.g. on
+    // multi-user systems the predictable /tmp path may have been created by a
+    // different UID). Chmod on an unowned directory is a side-effect we avoid.
+    struct stat stFallback{};
+    if (::stat(fallbackPath.c_str(), &stFallback) != 0 || stFallback.st_uid != getuid())
+    {
+        spdlog::warn("XDG fallback path '{}' is not owned by current user; cannot use it", fallbackPath);
+        return std::nullopt;
+    }
+
+    // Re-validate with lstat (symlink_status) immediately before chmod to close
+    // the TOCTOU window between the ownership check and the permission change.
+    // An attacker could swap the directory for a symlink in that window.
+    const auto preChmodStatus = std::filesystem::symlink_status(fallbackPath, ec);
+    if (ec || std::filesystem::is_symlink(preChmodStatus) || !std::filesystem::is_directory(preChmodStatus))
+    {
+        spdlog::warn("XDG fallback path '{}' changed to a symlink or non-directory before chmod; aborting", fallbackPath);
+        return std::nullopt;
+    }
+
+    std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+    if (ec)
+    {
+        spdlog::warn("Could not set permissions on '{}': {}", fallbackPath, ec.message());
+        return std::nullopt;
+    }
+
+    if (!isUsableRuntimeDir(fallbackPath))
+    {
+        spdlog::warn("XDG fallback path '{}' is not usable after creation", fallbackPath);
+        return std::nullopt;
+    }
+
+    return fallbackPath;
+}
+
+// Ensure XDG_RUNTIME_DIR is set before SDL initializes. When tasksmack is run
+// as root (e.g. via sudo) the session manager never sets this variable, causing
+// libwayland-client to emit "XDG_RUNTIME_DIR is invalid or not set" and SDL to
+// fall back from Wayland to X11. We prefer X11 anyway in that case, but the
+// warning is noisy and confusing. Setting a valid directory silences it.
+// The standard location /run/user/<uid> is used if it exists; otherwise a
+// per-user directory under /tmp is created with mode 0700 (required by the XDG
+// spec so that only the owner can read/write the runtime files).
+void ensureXdgRuntimeDir()
+{
+    if (const char* existing = SDL_getenv("XDG_RUNTIME_DIR"); existing != nullptr)
+    {
+        const std::string existingPath(existing);
+        if (!existingPath.empty() && isUsableRuntimeDir(existingPath))
+        {
+            return; // valid path already provided by session manager
+        }
+
+        spdlog::warn("Ignoring invalid XDG_RUNTIME_DIR='{}'; using a safe fallback", existingPath);
+    }
+
+    const uid_t uid = getuid();
+    const std::string systemdPath = std::format("/run/user/{}", uid);
+    const std::string fallbackPath = std::format("/tmp/runtime-{}", uid);
+
+    const auto chosen = chooseRuntimeDir(systemdPath, fallbackPath);
+    if (!chosen.has_value())
+    {
+        return;
+    }
+
+    // setenv is POSIX; SDL_setenv would also work but setenv keeps it in the
+    // real process environment so child processes inherit it correctly.
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start
+    if (::setenv("XDG_RUNTIME_DIR", chosen->c_str(), 1) != 0)
+    {
+        spdlog::warn("Failed to set XDG_RUNTIME_DIR='{}': {}", *chosen, std::strerror(errno));
+        return;
+    }
+    spdlog::info("Using XDG_RUNTIME_DIR='{}'", *chosen);
+}
+#endif
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -62,7 +344,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     bool sdlInitialized = false;
     try
     {
+        m_ResizePerfTraceEnabled = isEnvFlagEnabled(SDL_getenv(RESIZE_PERF_TRACE_ENV));
         spdlog::info("Initializing {} application", m_Spec.Name);
+        if (m_ResizePerfTraceEnabled)
+        {
+            spdlog::info("Resize performance tracing enabled via {}", RESIZE_PERF_TRACE_ENV);
+        }
 
         // Validate window dimensions; fall back to a sensible default rather than
         // passing zero to the windowing system, which would produce undefined behavior.
@@ -77,6 +364,9 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         }
 
         // Initialize SDL video subsystem
+#ifndef _WIN32
+        ensureXdgRuntimeDir();
+#endif
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());
@@ -168,7 +458,11 @@ void Application::run()
         return deltaTime;
     };
 
-    float forceInteractionRedrawUntil = 0.0F;
+    m_InteractionRedrawUntil = 0.0F;
+
+    ResizePerfTraceStats resizeTraceStats;
+    bool wasTracingInteraction = false;
+    float lastResizeTraceLogTime = getTime();
 
     spdlog::info("Entering main loop");
 
@@ -177,10 +471,15 @@ void Application::run()
         // Process SDL events
         bool hadEvents = false;
         bool needsResizeRedraw = false;
+        std::uint32_t drainedEventCount = 0;
+        std::uint32_t resizeEventCount = 0;
         SDL_Event sdlEvent;
+        const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
+        const auto eventDrainStart = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         while (SDL_PollEvent(&sdlEvent))
         {
             hadEvents = true;
+            ++drainedEventCount;
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
@@ -204,26 +503,35 @@ void Application::run()
             // variants and use physical pixel size when explicit dimensions are unavailable.
             if (sdlEvent.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
             {
+                ++resizeEventCount;
                 WindowResizedEvent resizeEvent(sdlEvent.window.data1, sdlEvent.window.data2);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
-                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_RESIZED || sdlEvent.type == SDL_EVENT_WINDOW_EXPOSED)
             {
+                ++resizeEventCount;
                 const auto [pixelW, pixelH] = m_Window->getSizeInPixels();
                 if (pixelW > 0 && pixelH > 0)
                 {
                     WindowResizedEvent resizeEvent(pixelW, pixelH);
                     raiseEvent(resizeEvent);
                     needsResizeRedraw = true;
-                    forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                    m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
                 }
             }
             else if (sdlEvent.type == SDL_EVENT_WINDOW_MOVED)
             {
-                forceInteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
+                ++resizeEventCount;
+                m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
+        }
+        const auto eventDrainEnd = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        if (traceResizePerfThisFrame)
+        {
+            resizeTraceStats.recordEventBatch(
+                drainedEventCount, resizeEventCount, std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count());
         }
 
         if (m_Window->shouldClose())
@@ -236,10 +544,35 @@ void Application::run()
         // without reintroducing per-event rendering stalls: render at most once
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
-        const bool forceInteractionRedraw = getTime() < forceInteractionRedrawUntil;
+        const bool forceInteractionRedraw = getTime() < m_InteractionRedrawUntil;
+        const bool tracingInteraction = m_ResizePerfTraceEnabled && (needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0));
+        if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
+        {
+            logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
+            resizeTraceStats = {};
+        }
+        // Reset stats at interaction start so idle-frame event batches accumulated before
+        // the interaction do not skew the first interaction-progress log averages.
+        if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
+        {
+            resizeTraceStats = {};
+            lastResizeTraceLogTime = getTime();
+        }
         if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
-            renderFrame(computeDeltaTime());
+            double updateMs = 0.0;
+            double renderMs = 0.0;
+            double postRenderMs = 0.0;
+            double swapMs = 0.0;
+            renderFrame(computeDeltaTime(),
+                        tracingInteraction ? &updateMs : nullptr,
+                        tracingInteraction ? &renderMs : nullptr,
+                        tracingInteraction ? &postRenderMs : nullptr,
+                        tracingInteraction ? &swapMs : nullptr);
+            if (tracingInteraction)
+            {
+                resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
+            }
             didImmediateResizeRedraw = true;
         }
 
@@ -251,7 +584,7 @@ void Application::run()
         //   sleep immediately, keeping interactive frame rate unaffected.
         if (!hadEvents)
         {
-            const bool keepInteractionRedrawActive = getTime() < forceInteractionRedrawUntil;
+            const bool keepInteractionRedrawActive = getTime() < m_InteractionRedrawUntil;
             if (!keepInteractionRedrawActive)
             {
                 const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
@@ -261,34 +594,83 @@ void Application::run()
 
         if (!didImmediateResizeRedraw)
         {
-            renderFrame(computeDeltaTime());
+            double updateMs = 0.0;
+            double renderMs = 0.0;
+            double postRenderMs = 0.0;
+            double swapMs = 0.0;
+            renderFrame(computeDeltaTime(),
+                        tracingInteraction ? &updateMs : nullptr,
+                        tracingInteraction ? &renderMs : nullptr,
+                        tracingInteraction ? &postRenderMs : nullptr,
+                        tracingInteraction ? &swapMs : nullptr);
+            if (tracingInteraction)
+            {
+                resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
+            }
         }
+
+        if (tracingInteraction && ((getTime() - lastResizeTraceLogTime) >= RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS))
+        {
+            logResizePerfTraceSummary(resizeTraceStats, "interaction-progress");
+            resizeTraceStats = {};
+            lastResizeTraceLogTime = getTime();
+        }
+
+        wasTracingInteraction = tracingInteraction;
+    }
+
+    if (m_ResizePerfTraceEnabled)
+    {
+        logResizePerfTraceSummary(resizeTraceStats, "shutdown");
     }
 
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(float deltaTime)
+void Application::renderFrame(float deltaTime, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
+    const bool tracing = (updateMs != nullptr);
+    const auto updateStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onUpdate(deltaTime);
     }
+    const auto updateEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     // Render all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onRender();
     }
+    const auto renderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
         layer->onPostRender();
     }
+    const auto postRenderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     m_Window->swapBuffers();
+    const auto swapEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
+    if (updateMs != nullptr)
+    {
+        *updateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
+    }
+    if (renderMs != nullptr)
+    {
+        *renderMs = std::chrono::duration<double, std::milli>(renderEnd - updateEnd).count();
+    }
+    if (postRenderMs != nullptr)
+    {
+        *postRenderMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();
+    }
+    if (swapMs != nullptr)
+    {
+        *swapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
+    }
 }
 
 void Application::stop()

@@ -41,8 +41,32 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
 
-constexpr int MAX_TREE_DEPTH = 1000; // Maximum tree depth to detect cycles or malformed data
+[[nodiscard]] std::chrono::milliseconds
+chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
+{
+    const auto baseMs = std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
+
+    // During active resize/move interactions, dramatically reduce update frequency to preserve UI responsiveness.
+    // ProcessModel refresh includes expensive probe work; batching updates prevents stalls during interaction.
+    if (interactionRedrawActive)
+    {
+        // 3x multiplier during interaction: defer model updates while user is actively resizing/dragging
+        const auto throttledMs = std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+        return std::chrono::milliseconds(throttledMs);
+    }
+
+    if (!isActiveTab)
+    {
+        // 2x multiplier for inactive tabs (already optimized but far less critical than interaction)
+        const auto relaxedMs = std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+        return std::chrono::milliseconds(relaxedMs);
+    }
+
+    // Active tab, no interaction: use base interval
+    return std::chrono::milliseconds(baseMs);
+}
 
 // Column-specific unit widths (based on longest unit that can appear)
 // Unit widths measured by longest unit string that column can display
@@ -275,6 +299,13 @@ ProcessesPanel::ProcessesPanel() : Panel("Processes")
 
 ProcessesPanel::~ProcessesPanel()
 {
+    // Stop the background sampler before releasing the model: the sampler callback holds a
+    // raw pointer to the model, so the thread must be joined before the model is destroyed.
+    if (m_Sampler)
+    {
+        m_Sampler->stop();
+        m_Sampler.reset();
+    }
     m_ProcessModel.reset();
 }
 
@@ -285,31 +316,51 @@ void ProcessesPanel::onAttach()
 
     const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
     m_RefreshInterval = std::chrono::milliseconds(intervalMs);
-    m_RefreshAccumulatorSec = 0.0F;
-    m_ForceRefresh = true;
+    m_AppliedSamplerInterval = m_RefreshInterval;
+    m_ForceRefresh = false;
 
-    // Create process model with platform probe; refresh is driven by onUpdate().
+    // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
+    // to BackgroundSampler so enumeration runs off the main thread.
     auto processProbe = Platform::makeProcessProbe();
 
-    // Configure socket stats cache TTL (Linux only; no-op on Windows)
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
+    const Platform::ProcessCapabilities caps = processProbe->capabilities();
+    const long ticks = processProbe->ticksPerSecond();
+    const std::uint64_t systemMem = processProbe->systemTotalMemory();
 
-    // Initial population - call refresh twice to seed history
-    // First call sets up m_HasPrevSampleTime, second call populates history
-    m_ProcessModel->refresh();
-    m_ProcessModel->refresh();
-    m_ForceRefresh = false;
+    // Build ProcessModel in background-sampler mode: no probe, data arrives via callback.
+    m_ProcessModel = std::make_unique<Domain::ProcessModel>(caps, ticks, systemMem);
 
-    spdlog::info("ProcessesPanel: initialized with main-loop-driven refresh");
+    // Seed with one synchronous read so the first background callback produces valid CPU
+    // deltas instead of all-zero percentages (first call establishes the prev-sample
+    // baseline; second call — coming from the background thread — computes the delta).
+    const auto seedCounters = processProbe->enumerate();
+    const std::uint64_t seedCpuTime = processProbe->totalCpuTime();
+    m_ProcessModel->updateFromCounters(seedCounters, seedCpuTime);
+
+    // Wire sampler: owns the probe, fires callback on each interval tick.
+    Domain::SamplerConfig samplerCfg{m_AppliedSamplerInterval};
+    m_Sampler = std::make_unique<Domain::BackgroundSampler>(std::move(processProbe), samplerCfg);
+    m_Sampler->setCallback(
+        [model = m_ProcessModel.get()](const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+        { model->updateFromCounters(counters, totalCpuTime); });
+    m_Sampler->start();
+
+    m_LastSnapshotVersion = m_ProcessModel->snapshotVersion();
+
+    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", intervalMs);
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
     m_RefreshInterval = interval;
-    m_RefreshAccumulatorSec = 0.0F;
+    m_AppliedSamplerInterval = interval;
+    if (m_Sampler)
+    {
+        m_Sampler->setInterval(m_AppliedSamplerInterval);
+    }
     m_ForceRefresh = true;
 }
 
@@ -322,6 +373,12 @@ void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
+    // Stop sampler thread before releasing the model (callback holds a raw pointer to it).
+    if (m_Sampler)
+    {
+        m_Sampler->stop();
+        m_Sampler.reset();
+    }
     m_ProcessModel.reset();
 }
 
@@ -331,7 +388,13 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
+            const bool wasActive = m_IsActiveTab;
             m_IsActiveTab = (e.tabName() == "Processes");
+            if (!wasActive && m_IsActiveTab)
+            {
+                // Catch up quickly when tab becomes visible again.
+                m_ForceRefresh = true;
+            }
             return false;
         });
     dispatcher.dispatch<Core::ThemeChangedEvent>(
@@ -351,42 +414,66 @@ void ProcessesPanel::onEvent(Core::Event& event)
         });
 }
 
-void ProcessesPanel::onUpdate(float deltaTime)
+void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
 {
-    if (!m_ProcessModel)
+    if (!m_ProcessModel || !m_Sampler)
     {
         return;
     }
 
-    m_RefreshAccumulatorSec += deltaTime;
-
-    using SecondsF = std::chrono::duration<float>;
-    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
-    const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
-
-    if (m_ForceRefresh || intervalElapsed)
+    const auto desiredInterval =
+        chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    if (desiredInterval != m_AppliedSamplerInterval)
     {
-        m_ProcessModel->refresh();
+        m_AppliedSamplerInterval = desiredInterval;
+        m_Sampler->setInterval(m_AppliedSamplerInterval);
+    }
+
+    // Force-refresh: ask the background sampler to run an extra enumeration immediately.
+    if (m_ForceRefresh)
+    {
+        m_Sampler->requestRefresh();
         m_ForceRefresh = false;
-        if (intervalSec > 0.0F)
+    }
+
+    // Detect and copy new data in a single lock acquisition.
+    std::uint64_t newVersion = m_LastSnapshotVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_LastSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    {
+        m_LastSnapshotVersion = newVersion;
+        m_CachedSnapshotVersion = newVersion;
+
+        // Only rebuild tree if tree view is currently active (avoid CPU waste when showing list).
+        // If in list mode, mark tree as stale; will rebuild on-demand when switching to tree view.
+        if (m_TreeViewEnabled)
         {
-            // Keep remainder to avoid drift on low FPS.
-            while (m_RefreshAccumulatorSec >= intervalSec)
+            if (Core::Application::get().isInteractionRedrawActive())
             {
-                m_RefreshAccumulatorSec -= intervalSec;
+                // Defer rebuild during active resize/move interactions for UI responsiveness
+                m_TreeRebuildDeferred = true;
+            }
+            else
+            {
+                // Rebuild immediately when not in interaction
+                m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
+                m_TreeRebuildDeferred = false;
+                m_TreeNeedsRebuild = false;
             }
         }
         else
         {
-            m_RefreshAccumulatorSec = 0.0F;
+            // In list mode: mark tree as needing rebuild, don't do expensive work now
+            m_TreeNeedsRebuild = true;
+            m_TreeRebuildDeferred = false;
         }
+    }
 
-        // Rebuild tree structure on refresh timer if tree view is enabled
-        if (m_TreeViewEnabled)
-        {
-            auto currentSnapshots = m_ProcessModel->snapshots();
-            m_CachedTree = buildProcessTree(currentSnapshots);
-        }
+    // Process deferred tree rebuild when interaction ends and tree view is still active
+    if (m_TreeViewEnabled && m_TreeRebuildDeferred && !Core::Application::get().isInteractionRedrawActive())
+    {
+        m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
+        m_TreeRebuildDeferred = false;
+        m_TreeNeedsRebuild = false;
     }
 }
 
@@ -439,8 +526,11 @@ void ProcessesPanel::renderContent()
     const auto currentVersion = m_ProcessModel->snapshotVersion();
     if (currentVersion != m_CachedSnapshotVersion)
     {
-        m_CachedRenderSnapshots = m_ProcessModel->snapshots();
-        m_CachedSnapshotVersion = currentVersion;
+        std::uint64_t copiedVersion = m_CachedSnapshotVersion;
+        if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, copiedVersion))
+        {
+            m_CachedSnapshotVersion = copiedVersion;
+        }
     }
     const auto& currentSnapshots = m_CachedRenderSnapshots;
 
@@ -590,12 +680,25 @@ void ProcessesPanel::renderContent()
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
-            // Build tree immediately when enabling tree view
-            m_CachedTree = buildProcessTree(currentSnapshots);
+            // Build tree immediately when enabling tree view. Rebuild if the tree is stale
+            // (new data arrived while in list mode) or if it has never been built yet
+            // (m_CachedTree is empty on first toggle after startup).
+            if (m_TreeNeedsRebuild || m_CachedTree.empty())
+            {
+                m_CachedTree = buildProcessTree(currentSnapshots);
+                m_TreeNeedsRebuild = false;
+            }
+            m_TreeRebuildDeferred = false; // Clear any pending deferred rebuild
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
+            // Switching to list view: if a deferred rebuild was pending (new data arrived
+            // but tree was not rebuilt yet), carry the staleness forward so that switching
+            // back to tree view forces a rebuild even if no new snapshot arrives in the
+            // interim. Always mark stale here — the rebuild is cheap and ensures correctness.
+            m_TreeNeedsRebuild = m_TreeNeedsRebuild || m_TreeRebuildDeferred;
+            m_TreeRebuildDeferred = false;
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
@@ -670,7 +773,8 @@ void ProcessesPanel::renderContent()
             const float paddingX = headerStyle.CellPadding.x;
             const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
             ImGui::SetCursorPosX(targetX);
-            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literal is null-terminated
+            // info.name is a constexpr string literal in ProcessColumnConfig.h.
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - literals are null-terminated
             ImGui::TableHeader(info.name.data());
 
             // Show tooltip with full column name and description on hover

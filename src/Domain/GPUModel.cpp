@@ -64,7 +64,11 @@ void GPUModel::refresh()
     try
     {
         // Read current counters
-        auto currentCounters = m_Probe->readGPUCounters();
+        std::vector<Platform::GPUCounters> currentCounters;
+        {
+            const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
+            currentCounters = m_Probe->readGPUCounters();
+        }
         auto currentTime = std::chrono::steady_clock::now();
 
         // Calculate time delta
@@ -184,6 +188,7 @@ Platform::GPUCapabilities GPUModel::capabilities() const
     {
         return Platform::GPUCapabilities{};
     }
+    const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
     return m_Probe->capabilities();
 }
 
@@ -193,6 +198,7 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     {
         return {};
     }
+    const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
     return m_Probe->readProcessGPUCounters();
 }
 
@@ -346,6 +352,7 @@ void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)
 {
     if (m_Probe)
     {
+        const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
         m_Probe->setInstanceRefreshInterval(interval);
     }
 }
