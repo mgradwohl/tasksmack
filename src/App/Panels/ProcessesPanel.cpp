@@ -691,7 +691,11 @@ void ProcessesPanel::renderContent()
         }
         else
         {
-            // Switching to list view: clear rebuild flags (tree updates skipped while in list mode)
+            // Switching to list view: if a deferred rebuild was pending (new data arrived
+            // but tree was not rebuilt yet), carry the staleness forward so that switching
+            // back to tree view forces a rebuild even if no new snapshot arrives in the
+            // interim. Always mark stale here — the rebuild is cheap and ensures correctness.
+            m_TreeNeedsRebuild = m_TreeNeedsRebuild || m_TreeRebuildDeferred;
             m_TreeRebuildDeferred = false;
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }

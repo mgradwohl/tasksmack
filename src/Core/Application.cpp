@@ -10,8 +10,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -305,7 +307,11 @@ void ensureXdgRuntimeDir()
     // setenv is POSIX; SDL_setenv would also work but setenv keeps it in the
     // real process environment so child processes inherit it correctly.
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start
-    ::setenv("XDG_RUNTIME_DIR", chosen->c_str(), 1);
+    if (::setenv("XDG_RUNTIME_DIR", chosen->c_str(), 1) != 0)
+    {
+        spdlog::warn("Failed to set XDG_RUNTIME_DIR='{}': {}", *chosen, std::strerror(errno));
+        return;
+    }
     spdlog::info("Using XDG_RUNTIME_DIR='{}'", *chosen);
 }
 #endif
