@@ -123,7 +123,9 @@ class ProcessesPanel : public Panel
     bool m_TreeViewEnabled = false;
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
-    // Cached tree structure (rebuilt on refresh timer in onUpdate)
+    // Cached tree structure. Rebuilt when the snapshot version changes (indicating new data
+    // from BackgroundSampler) or when m_CachedTree is empty (first switch into tree view).
+    // Rebuilds are deferred while user interaction is active (m_TreeRebuildDeferred).
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
     bool m_TreeRebuildDeferred = false; // Rebuild deferred due to active interaction
     bool m_TreeNeedsRebuild = false;    // Tree is stale (data changed while in list mode)

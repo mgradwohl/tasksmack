@@ -6,6 +6,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessSnapshot.h"
+#include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
@@ -119,7 +120,24 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         const auto delta = currentSampleTime - m_PrevSampleTime;
         elapsedSeconds = std::chrono::duration<double>(delta).count();
         timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(delta).count());
+
+        // Suppress delta-based rates for implausibly short intervals. The seed call
+        // in onAttach() fires just before the BackgroundSampler thread starts; the
+        // thread's first callback may arrive only a few ms later (thread-startup
+        // latency), making elapsedSeconds tiny and producing enormous byte/sec and
+        // pageFaults/sec spikes. Any elapsed time below half the minimum configurable
+        // refresh interval is treated as "no previous data" for rate purposes.
+        // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
+        // rates; we do NOT prevent the history push below (handle counts etc. don't
+        // depend on elapsed time and must still be recorded every cycle).
+        constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0; // half of 100ms = 0.05s
+        if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
+        {
+            elapsedSeconds = 0.0;
+            timeDeltaUs = 0;
+        }
     }
+    const bool hasElapsedForHistory = m_HasPrevSampleTime;
     m_PrevSampleTime = currentSampleTime;
     m_HasPrevSampleTime = true;
 
@@ -260,7 +278,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     m_PrevTotalCpuTime = totalCpuTime;
 
-    if (m_HasPrevSampleTime && elapsedSeconds > 0.0)
+    if (hasElapsedForHistory)
     {
         // Use absolute time (since epoch) to match SystemModel's timestamp format
         const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
