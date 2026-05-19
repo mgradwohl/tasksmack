@@ -357,6 +357,12 @@ const Platform::ProcessCapabilities& ProcessModel::capabilities() const
     return m_Capabilities;
 }
 
+void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    m_GPUModel = std::move(gpuModel);
+}
+
 void ProcessModel::mergeGPUData()
 {
     // Query per-process GPU counters from GPUModel

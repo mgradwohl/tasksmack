@@ -19,6 +19,7 @@
 #include <utility>
 
 #ifndef _WIN32
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -79,7 +80,14 @@ constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
     {
         return false;
     }
-    return hasSafeOwnerOnlyPermissions(status.permissions());
+
+    struct stat st{};
+    if (::stat(path.c_str(), &st) != 0)
+    {
+        return false;
+    }
+
+    return (st.st_uid == getuid()) && hasSafeOwnerOnlyPermissions(status.permissions());
 }
 
 [[nodiscard]] std::optional<std::string> chooseRuntimeDir(const std::string& systemdPath, const std::string& fallbackPath)

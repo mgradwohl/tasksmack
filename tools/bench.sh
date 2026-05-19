@@ -4,14 +4,14 @@
 # Usage:
 #   ./tools/bench.sh [preset] [-- <extra args>]
 #
-# preset defaults to 'optimized' (best for perf measurements).
+# preset defaults to 'benchmark'.
 # Produces JSON output at perf-data/<preset>-<timestamp>.json.
 #
 # Examples:
-#   ./tools/bench.sh                          # optimized preset, default flags
+#   ./tools/bench.sh                          # benchmark preset, default flags
 #   ./tools/bench.sh debug                    # debug preset (slower, useful for profiling)
 #   ./tools/bench.sh -- --benchmark_filter=ProcessModel
-#   ./tools/bench.sh optimized -- --benchmark_filter=ProcessModel
+#   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 
 set -euo pipefail
 
@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------- defaults ---------------------------------------------------------
-PRESET="${1:-optimized}"
+PRESET="${1:-benchmark}"
 if [[ "${PRESET}" == "--" ]]; then
-    PRESET="optimized"
+    PRESET="benchmark"
     shift
 elif [[ $# -gt 0 && "${1}" != "--" ]]; then
     shift

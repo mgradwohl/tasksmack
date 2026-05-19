@@ -76,10 +76,7 @@ class ProcessModel
 
     /// Set GPU model for per-process GPU data.
     /// When set, refresh() automatically queries GPU counters and merges them.
-    void setGPUModel(std::shared_ptr<GPUModel> gpuModel)
-    {
-        m_GPUModel = std::move(gpuModel);
-    }
+    void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
 
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;

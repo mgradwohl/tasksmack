@@ -8,6 +8,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string_view>
@@ -98,6 +99,7 @@ class GPUModel
 
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
+    mutable std::mutex m_ProbeMutex;
     std::vector<Platform::GPUInfo> m_GPUInfo;
 
     // Current snapshots per GPU
