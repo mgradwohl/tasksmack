@@ -241,13 +241,17 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     m_Snapshots = std::move(newSnapshots);
     ++m_SnapshotVersion;
-    m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
 
-    // Merge per-process GPU data if GPUModel is available
+    // Merge per-process GPU data if GPUModel is available. Must happen before
+    // publishing the new version so that the UI never observes a version whose
+    // snapshots are still missing GPU fields.
     if (m_GPUModel != nullptr)
     {
         mergeGPUData();
     }
+
+    // Publish only after all snapshot mutations (including GPU merge) are done.
+    m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
 
     // Prune dead processes: a single erase_if on one map instead of the previous
     // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
