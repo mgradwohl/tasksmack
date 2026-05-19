@@ -537,6 +537,13 @@ void Application::run()
             logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
             resizeTraceStats = {};
         }
+        // Reset stats at interaction start so idle-frame event batches accumulated before
+        // the interaction do not skew the first interaction-progress log averages.
+        if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
+        {
+            resizeTraceStats = {};
+            lastResizeTraceLogTime = getTime();
+        }
         if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
         {
             double updateMs = 0.0;
