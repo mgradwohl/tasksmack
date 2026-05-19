@@ -257,6 +257,16 @@ void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::str
         return std::nullopt;
     }
 
+    // Re-validate with lstat (symlink_status) immediately before chmod to close
+    // the TOCTOU window between the ownership check and the permission change.
+    // An attacker could swap the directory for a symlink in that window.
+    const auto preChmodStatus = std::filesystem::symlink_status(fallbackPath, ec);
+    if (ec || std::filesystem::is_symlink(preChmodStatus) || !std::filesystem::is_directory(preChmodStatus))
+    {
+        spdlog::warn("XDG fallback path '{}' changed to a symlink or non-directory before chmod; aborting", fallbackPath);
+        return std::nullopt;
+    }
+
     std::filesystem::permissions(fallbackPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
     if (ec)
     {

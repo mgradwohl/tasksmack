@@ -1,8 +1,8 @@
 {
   "context": {
     "date": "2026-05-18T20:24:37-07:00",
-    "host_name": "MATTGRDELL",
-    "executable": "C:\\src\\tasksmack\\build\\win-benchmark\\bin\\TaskSmackBenchmarks.exe",
+    "host_name": "redacted",
+    "executable": "TaskSmackBenchmarks.exe",
     "num_cpus": 16,
     "mhz_per_cpu": 3686,
     "caches": [

@@ -22,6 +22,19 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 
+# Normalize $Preset and $ExtraArgs BEFORE computing any paths so that the
+# invocation `bench.ps1 -- --benchmark_filter=Foo` (where PowerShell binds
+# "--" to the first positional parameter) correctly uses the default preset.
+if ($Preset -eq "--") {
+    $Preset = "win-benchmark"
+}
+
+# Allow callers to pass an explicit -- separator, e.g.:
+#   bench.ps1 win-benchmark -- --benchmark_filter=Foo
+if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
+    $ExtraArgs = if ($ExtraArgs.Count -gt 1) { $ExtraArgs[1..($ExtraArgs.Count - 1)] } else { @() }
+}
+
 $outDir = Join-Path $repoRoot "perf-data"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outFile = Join-Path $outDir "$Preset-$timestamp.json"
@@ -32,19 +45,6 @@ if (-not (Test-Path -LiteralPath $benchBin)) {
 }
 
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-
-# If the user ran `bench.ps1 -- [extra args]`, PowerShell binds "--" to $Preset
-# (the first positional parameter). Treat this as "use default preset" so the
-# script behaves like the bash equivalent where -- is purely a separator.
-if ($Preset -eq "--") {
-    $Preset = "win-benchmark"
-}
-
-# Allow callers to pass an optional -- separator when an explicit preset is given,
-# e.g. `bench.ps1 win-benchmark -- --benchmark_filter=Foo`, for parity with bench.sh.
-if ($ExtraArgs.Count -gt 0 -and $ExtraArgs[0] -eq "--") {
-    $ExtraArgs = if ($ExtraArgs.Count -gt 1) { $ExtraArgs[1..($ExtraArgs.Count - 1)] } else { @() }
-}
 
 $benchArgs = @(
     "--benchmark_repetitions=10",
