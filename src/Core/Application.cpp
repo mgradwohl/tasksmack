@@ -68,7 +68,30 @@ constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
     }
 
     const std::string_view text(value);
-    return !text.empty() && (text != "0") && (text != "false") && (text != "FALSE") && (text != "off") && (text != "OFF");
+    if (text.empty())
+    {
+        return false;
+    }
+
+    // Case-insensitive check: "0", "false", "off", "no" (any casing) are treated as disabled.
+    const auto ciEqual = [](const std::string_view a, const std::string_view b) noexcept
+    {
+        if (a.size() != b.size())
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < a.size(); ++i)
+        {
+            if (std::tolower(static_cast<unsigned char>(a[i])) != b[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // b must already be lowercase
+    return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
 }
 
 struct ResizePerfTraceStats
@@ -218,6 +241,16 @@ void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::str
     if (ec)
     {
         spdlog::warn("XDG_RUNTIME_DIR not set and could not create fallback '{}': {}", fallbackPath, ec.message());
+        return std::nullopt;
+    }
+
+    // Guard against applying permissions to a directory we don't own (e.g. on
+    // multi-user systems the predictable /tmp path may have been created by a
+    // different UID). Chmod on an unowned directory is a side-effect we avoid.
+    struct stat stFallback{};
+    if (::stat(fallbackPath.c_str(), &stFallback) != 0 || stFallback.st_uid != getuid())
+    {
+        spdlog::warn("XDG fallback path '{}' is not owned by current user; cannot use it", fallbackPath);
         return std::nullopt;
     }
 

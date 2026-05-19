@@ -576,9 +576,10 @@ WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMon
         spdlog::debug("Per-process network counters not available (EStats unsupported or access denied)");
     }
 
-    // Tune detail cache TTLs based on available system RAM
+    // Tune detail cache TTLs based on total physical RAM
     calculateDetailTTLsFromTotalRAM(m_LightDetailTTL, m_HeavyDetailTTL);
-    spdlog::debug("Detail cache TTLs tuned for available RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
+    spdlog::debug(
+        "Detail cache TTLs tuned for total physical RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
 }
 
 WindowsProcessProbe::~WindowsProcessProbe()
