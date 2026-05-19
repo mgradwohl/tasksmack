@@ -33,7 +33,7 @@ OUT_DIR="${REPO_ROOT}/perf-data"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_FILE="${OUT_DIR}/${PRESET}-${TIMESTAMP}.json"
 
-BENCH_BIN="${REPO_ROOT}/build/${PRESET}/benchmarks/tasksmack_benchmarks"
+BENCH_BIN="${REPO_ROOT}/build/${PRESET}/bin/TaskSmackBenchmarks"
 
 # ---------- sanity checks ----------------------------------------------------
 if [[ ! -f "${BENCH_BIN}" ]]; then
