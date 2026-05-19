@@ -275,6 +275,13 @@ ProcessesPanel::ProcessesPanel() : Panel("Processes")
 
 ProcessesPanel::~ProcessesPanel()
 {
+    // Stop the background sampler before releasing the model: the sampler callback holds a
+    // raw pointer to the model, so the thread must be joined before the model is destroyed.
+    if (m_Sampler)
+    {
+        m_Sampler->stop();
+        m_Sampler.reset();
+    }
     m_ProcessModel.reset();
 }
 
@@ -285,31 +292,49 @@ void ProcessesPanel::onAttach()
 
     const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
     m_RefreshInterval = std::chrono::milliseconds(intervalMs);
-    m_RefreshAccumulatorSec = 0.0F;
-    m_ForceRefresh = true;
+    m_ForceRefresh = false;
 
-    // Create process model with platform probe; refresh is driven by onUpdate().
+    // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
+    // to BackgroundSampler so enumeration runs off the main thread.
     auto processProbe = Platform::makeProcessProbe();
 
-    // Configure socket stats cache TTL (Linux only; no-op on Windows)
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
+    const Platform::ProcessCapabilities caps = processProbe->capabilities();
+    const long ticks = processProbe->ticksPerSecond();
+    const std::uint64_t systemMem = processProbe->systemTotalMemory();
 
-    // Initial population - call refresh twice to seed history
-    // First call sets up m_HasPrevSampleTime, second call populates history
-    m_ProcessModel->refresh();
-    m_ProcessModel->refresh();
-    m_ForceRefresh = false;
+    // Build ProcessModel in background-sampler mode: no probe, data arrives via callback.
+    m_ProcessModel = std::make_unique<Domain::ProcessModel>(caps, ticks, systemMem);
 
-    spdlog::info("ProcessesPanel: initialized with main-loop-driven refresh");
+    // Seed with one synchronous read so the first background callback produces valid CPU
+    // deltas instead of all-zero percentages (first call establishes the prev-sample
+    // baseline; second call — coming from the background thread — computes the delta).
+    const auto seedCounters = processProbe->enumerate();
+    const std::uint64_t seedCpuTime = processProbe->totalCpuTime();
+    m_ProcessModel->updateFromCounters(seedCounters, seedCpuTime);
+
+    // Wire sampler: owns the probe, fires callback on each interval tick.
+    Domain::SamplerConfig samplerCfg{m_RefreshInterval};
+    m_Sampler = std::make_unique<Domain::BackgroundSampler>(std::move(processProbe), samplerCfg);
+    m_Sampler->setCallback(
+        [model = m_ProcessModel.get()](const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+        { model->updateFromCounters(counters, totalCpuTime); });
+    m_Sampler->start();
+
+    m_LastSnapshotVersion = m_ProcessModel->snapshotVersion();
+
+    spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", intervalMs);
 }
 
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
     m_RefreshInterval = interval;
-    m_RefreshAccumulatorSec = 0.0F;
+    if (m_Sampler)
+    {
+        m_Sampler->setInterval(interval);
+    }
     m_ForceRefresh = true;
 }
 
@@ -322,6 +347,12 @@ void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
+    // Stop sampler thread before releasing the model (callback holds a raw pointer to it).
+    if (m_Sampler)
+    {
+        m_Sampler->stop();
+        m_Sampler.reset();
+    }
     m_ProcessModel.reset();
 }
 
@@ -351,37 +382,29 @@ void ProcessesPanel::onEvent(Core::Event& event)
         });
 }
 
-void ProcessesPanel::onUpdate(float deltaTime)
+void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
 {
-    if (!m_ProcessModel)
+    if (!m_ProcessModel || !m_Sampler)
     {
         return;
     }
 
-    m_RefreshAccumulatorSec += deltaTime;
-
-    using SecondsF = std::chrono::duration<float>;
-    const float intervalSec = std::chrono::duration_cast<SecondsF>(m_RefreshInterval).count();
-    const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
-
-    if (m_ForceRefresh || intervalElapsed)
+    // Force-refresh: ask the background sampler to run an extra enumeration immediately.
+    if (m_ForceRefresh)
     {
-        m_ProcessModel->refresh();
+        m_Sampler->requestRefresh();
         m_ForceRefresh = false;
-        if (intervalSec > 0.0F)
-        {
-            // Keep remainder to avoid drift on low FPS.
-            while (m_RefreshAccumulatorSec >= intervalSec)
-            {
-                m_RefreshAccumulatorSec -= intervalSec;
-            }
-        }
-        else
-        {
-            m_RefreshAccumulatorSec = 0.0F;
-        }
+    }
 
-        // Rebuild tree structure on refresh timer if tree view is enabled
+    // Detect new data from the background sampler by comparing snapshot versions.
+    // snapshotVersion() is incremented inside ProcessModel::computeSnapshots() (under lock)
+    // each time new data arrives, so this fires at most once per sampler tick (~1Hz).
+    const std::uint64_t currentVersion = m_ProcessModel->snapshotVersion();
+    if (currentVersion != m_LastSnapshotVersion)
+    {
+        m_LastSnapshotVersion = currentVersion;
+
+        // Rebuild tree structure when new data arrives and tree view is active.
         if (m_TreeViewEnabled)
         {
             auto currentSnapshots = m_ProcessModel->snapshots();

@@ -27,6 +27,10 @@ namespace Domain
 
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_Probe(std::move(probe))
 {
+    // Reserve capacity upfront to avoid rehashing as processes are discovered on the
+    // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
+    m_PerProcessState.reserve(512);
+
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
@@ -51,6 +55,33 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
                       m_TicksPerSecond,
                       Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
     }
+}
+
+ProcessModel::ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory)
+    : m_Capabilities(std::move(caps)), m_SystemTotalMemory(systemTotalMemory), m_TicksPerSecond(ticksPerSec)
+{
+    // Reserve capacity upfront to avoid rehashing as processes are discovered on the
+    // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
+    m_PerProcessState.reserve(512);
+
+    spdlog::info("ProcessModel initialized (background-sampler mode): hasIoCounters={}, hasThreadCount={}, "
+                 "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
+                 "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
+                 m_Capabilities.hasIoCounters,
+                 m_Capabilities.hasThreadCount,
+                 m_Capabilities.hasUserSystemTime,
+                 m_Capabilities.hasStartTime,
+                 m_Capabilities.hasUser,
+                 m_Capabilities.hasCommand,
+                 m_Capabilities.hasNice,
+                 m_Capabilities.hasPageFaults,
+                 m_Capabilities.hasPeakRss,
+                 m_Capabilities.hasCpuAffinity,
+                 m_Capabilities.hasNetworkCounters,
+                 m_Capabilities.hasPowerUsage);
+    spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
+                  m_TicksPerSecond,
+                  Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
 }
 
 void ProcessModel::refresh()

@@ -25,6 +25,10 @@ class ProcessModel
 {
   public:
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe);
+
+    /// Background-sampler mode: probe is owned by BackgroundSampler; capabilities are
+    /// injected here so ProcessModel never needs to call the probe directly.
+    ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory);
     ~ProcessModel() = default;
 
     ProcessModel(const ProcessModel&) = delete;

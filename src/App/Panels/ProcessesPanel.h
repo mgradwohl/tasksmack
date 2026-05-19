@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
+#include "Domain/BackgroundSampler.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -101,12 +102,15 @@ class ProcessesPanel : public Panel
 
   private:
     std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
+    std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     std::int32_t m_SelectedPid = -1;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
+
+    // Snapshot version at last tree rebuild — used to detect new data from background sampler.
+    std::uint64_t m_LastSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
