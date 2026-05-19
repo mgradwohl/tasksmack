@@ -41,8 +41,20 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
 
-constexpr int MAX_TREE_DEPTH = 1000; // Maximum tree depth to detect cycles or malformed data
+[[nodiscard]] std::chrono::milliseconds
+chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
+{
+    const auto baseMs = std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
+    if (isActiveTab || interactionRedrawActive)
+    {
+        return std::chrono::milliseconds(baseMs);
+    }
+
+    const auto relaxedMs = std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
+    return std::chrono::milliseconds(relaxedMs);
+}
 
 // Column-specific unit widths (based on longest unit that can appear)
 // Unit widths measured by longest unit string that column can display
@@ -292,6 +304,7 @@ void ProcessesPanel::onAttach()
 
     const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
     m_RefreshInterval = std::chrono::milliseconds(intervalMs);
+    m_AppliedSamplerInterval = m_RefreshInterval;
     m_ForceRefresh = false;
 
     // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
@@ -316,7 +329,7 @@ void ProcessesPanel::onAttach()
     m_ProcessModel->updateFromCounters(seedCounters, seedCpuTime);
 
     // Wire sampler: owns the probe, fires callback on each interval tick.
-    Domain::SamplerConfig samplerCfg{m_RefreshInterval};
+    Domain::SamplerConfig samplerCfg{m_AppliedSamplerInterval};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(std::move(processProbe), samplerCfg);
     m_Sampler->setCallback(
         [model = m_ProcessModel.get()](const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
@@ -331,9 +344,10 @@ void ProcessesPanel::onAttach()
 void ProcessesPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
     m_RefreshInterval = interval;
+    m_AppliedSamplerInterval = interval;
     if (m_Sampler)
     {
-        m_Sampler->setInterval(interval);
+        m_Sampler->setInterval(m_AppliedSamplerInterval);
     }
     m_ForceRefresh = true;
 }
@@ -362,7 +376,13 @@ void ProcessesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
+            const bool wasActive = m_IsActiveTab;
             m_IsActiveTab = (e.tabName() == "Processes");
+            if (!wasActive && m_IsActiveTab)
+            {
+                // Catch up quickly when tab becomes visible again.
+                m_ForceRefresh = true;
+            }
             return false;
         });
     dispatcher.dispatch<Core::ThemeChangedEvent>(
@@ -387,6 +407,14 @@ void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
     if (!m_ProcessModel || !m_Sampler)
     {
         return;
+    }
+
+    const auto desiredInterval =
+        chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    if (desiredInterval != m_AppliedSamplerInterval)
+    {
+        m_AppliedSamplerInterval = desiredInterval;
+        m_Sampler->setInterval(m_AppliedSamplerInterval);
     }
 
     // Force-refresh: ask the background sampler to run an extra enumeration immediately.
@@ -710,8 +738,8 @@ void ProcessesPanel::renderContent()
             const float paddingX = headerStyle.CellPadding.x;
             const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
             ImGui::SetCursorPosX(targetX);
-            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr string literal is null-terminated
-            ImGui::TableHeader(info.name.data());
+            const std::string headerName(info.name);
+            ImGui::TableHeader(headerName.c_str());
 
             // Show tooltip with full column name and description on hover
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))

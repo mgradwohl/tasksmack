@@ -106,6 +106,7 @@ class ProcessesPanel : public Panel
     std::int32_t m_SelectedPid = -1;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
+    std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
 
