@@ -61,7 +61,9 @@ class WindowsProcessProbe : public IProcessProbe
     bool m_HasNetworkCounters = false;
     bool m_NetworkCountersAccessDenied = false; // True when EStats failed specifically due to access denied (privilege issue)
     mutable std::atomic<uint64_t> m_SyntheticEnergy{0};
-    HMODULE m_IphlpModule = nullptr; // Non-null only when loaded by this class (must be freed in destructor)
+    std::chrono::milliseconds m_LightDetailTTL{1000}; // Default; tuned by available system RAM in constructor
+    std::chrono::milliseconds m_HeavyDetailTTL{5000}; // Default; tuned by available system RAM in constructor
+    HMODULE m_IphlpModule = nullptr;                  // Non-null only when loaded by this class (must be freed in destructor)
 
     // EStats function signatures
     using GetPerTcpConnectionEStatsFn =
@@ -110,6 +112,9 @@ class WindowsProcessProbe : public IProcessProbe
 
     /// Detect if power monitoring is available
     [[nodiscard]] static bool detectPowerMonitoring();
+
+    /// Calculate detail cache TTLs based on available system RAM
+    static void calculateDetailTTLsFromAvailableRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;
 
     /// Read system-wide energy (microjoules) if available
     [[nodiscard]] uint64_t readSystemEnergy() const;
