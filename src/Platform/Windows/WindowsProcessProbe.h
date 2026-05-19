@@ -114,7 +114,7 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] static bool detectPowerMonitoring();
 
     /// Calculate detail cache TTLs based on available system RAM
-    static void calculateDetailTTLsFromAvailableRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;
+    static void calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept;
 
     /// Read system-wide energy (microjoules) if available
     [[nodiscard]] uint64_t readSystemEnergy() const;

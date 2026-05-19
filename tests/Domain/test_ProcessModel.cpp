@@ -358,6 +358,32 @@ TEST(ProcessModelTest, UniqueKeyDiffersForPidReuse)
     EXPECT_NE(snaps1[0].uniqueKey, snaps2[0].uniqueKey);
 }
 
+TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto initialVersion = model.snapshotVersion();
+    std::vector<Domain::ProcessSnapshot> copiedSnapshots;
+    std::uint64_t copiedVersion = 0;
+
+    EXPECT_FALSE(model.tryCopySnapshotsIfNewer(initialVersion, copiedSnapshots, copiedVersion));
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    EXPECT_TRUE(model.tryCopySnapshotsIfNewer(initialVersion, copiedSnapshots, copiedVersion));
+    EXPECT_EQ(copiedVersion, model.snapshotVersion());
+    ASSERT_EQ(copiedSnapshots.size(), 1);
+}
+
 // =============================================================================
 // State Translation Tests
 // =============================================================================

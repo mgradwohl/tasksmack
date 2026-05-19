@@ -420,7 +420,8 @@ void Application::run()
         std::uint32_t drainedEventCount = 0;
         std::uint32_t resizeEventCount = 0;
         SDL_Event sdlEvent;
-        const auto eventDrainStart = std::chrono::steady_clock::now();
+        const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
+        const auto eventDrainStart = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         while (SDL_PollEvent(&sdlEvent))
         {
             hadEvents = true;
@@ -472,8 +473,8 @@ void Application::run()
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
         }
-        const auto eventDrainEnd = std::chrono::steady_clock::now();
-        if (m_ResizePerfTraceEnabled)
+        const auto eventDrainEnd = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        if (traceResizePerfThisFrame)
         {
             resizeTraceStats.recordEventBatch(
                 drainedEventCount, resizeEventCount, std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count());
@@ -502,7 +503,11 @@ void Application::run()
             double renderMs = 0.0;
             double postRenderMs = 0.0;
             double swapMs = 0.0;
-            renderFrame(computeDeltaTime(), &updateMs, &renderMs, &postRenderMs, &swapMs);
+            renderFrame(computeDeltaTime(),
+                        tracingInteraction ? &updateMs : nullptr,
+                        tracingInteraction ? &renderMs : nullptr,
+                        tracingInteraction ? &postRenderMs : nullptr,
+                        tracingInteraction ? &swapMs : nullptr);
             if (tracingInteraction)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
@@ -532,7 +537,11 @@ void Application::run()
             double renderMs = 0.0;
             double postRenderMs = 0.0;
             double swapMs = 0.0;
-            renderFrame(computeDeltaTime(), &updateMs, &renderMs, &postRenderMs, &swapMs);
+            renderFrame(computeDeltaTime(),
+                        tracingInteraction ? &updateMs : nullptr,
+                        tracingInteraction ? &renderMs : nullptr,
+                        tracingInteraction ? &postRenderMs : nullptr,
+                        tracingInteraction ? &swapMs : nullptr);
             if (tracingInteraction)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
@@ -559,33 +568,31 @@ void Application::run()
 
 void Application::renderFrame(float deltaTime, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
-    const auto updateStart = std::chrono::steady_clock::now();
+    const bool tracing = (updateMs != nullptr);
+    const auto updateStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onUpdate(deltaTime);
     }
-    const auto updateEnd = std::chrono::steady_clock::now();
+    const auto updateEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
-    const auto renderStart = updateEnd;
     // Render all layers
     for (const auto& layer : m_LayerStack)
     {
         layer->onRender();
     }
-    const auto renderEnd = std::chrono::steady_clock::now();
+    const auto renderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
-    const auto postRenderStart = renderEnd;
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
         layer->onPostRender();
     }
-    const auto postRenderEnd = std::chrono::steady_clock::now();
+    const auto postRenderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
-    const auto swapStart = postRenderEnd;
     m_Window->swapBuffers();
-    const auto swapEnd = std::chrono::steady_clock::now();
+    const auto swapEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     if (updateMs != nullptr)
     {
@@ -593,15 +600,15 @@ void Application::renderFrame(float deltaTime, double* updateMs, double* renderM
     }
     if (renderMs != nullptr)
     {
-        *renderMs = std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+        *renderMs = std::chrono::duration<double, std::milli>(renderEnd - updateEnd).count();
     }
     if (postRenderMs != nullptr)
     {
-        *postRenderMs = std::chrono::duration<double, std::milli>(postRenderEnd - postRenderStart).count();
+        *postRenderMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();
     }
     if (swapMs != nullptr)
     {
-        *swapMs = std::chrono::duration<double, std::milli>(swapEnd - swapStart).count();
+        *swapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
     }
 }
 

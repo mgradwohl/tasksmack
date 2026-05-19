@@ -767,8 +767,9 @@ void ProcessesPanel::renderContent()
             const float paddingX = headerStyle.CellPadding.x;
             const float targetX = startX + std::max(0.0F, ((colWidth - textWidth) * 0.5F) - paddingX);
             ImGui::SetCursorPosX(targetX);
-            const std::string headerName(info.name);
-            ImGui::TableHeader(headerName.c_str());
+            // info.name is a constexpr string literal in ProcessColumnConfig.h.
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - literals are null-terminated
+            ImGui::TableHeader(info.name.data());
 
             // Show tooltip with full column name and description on hover
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))

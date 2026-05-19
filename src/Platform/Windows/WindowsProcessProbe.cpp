@@ -577,7 +577,7 @@ WindowsProcessProbe::WindowsProcessProbe() : m_HasPowerMonitoring(detectPowerMon
     }
 
     // Tune detail cache TTLs based on available system RAM
-    calculateDetailTTLsFromAvailableRAM(m_LightDetailTTL, m_HeavyDetailTTL);
+    calculateDetailTTLsFromTotalRAM(m_LightDetailTTL, m_HeavyDetailTTL);
     spdlog::debug("Detail cache TTLs tuned for available RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
 }
 
@@ -706,10 +706,19 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     const auto now = std::chrono::steady_clock::now();
 
+    // When startTimeTicks is 0, GetProcessTimes failed. Treat as always-miss:
+    // skip caching to prevent {pid, 0} from collapsing multiple processes onto
+    // the same cache entry, which could serve stale details after PID recycling.
+    const bool canCache = (counters.startTimeTicks != 0);
+
+    DetailCacheEntry dummyCache{};
     const WindowsProcessProbe::DetailCacheKey detailKey{pid, counters.startTimeTicks};
-    auto [cacheIt, inserted] = m_DetailCache.try_emplace(detailKey);
-    DetailCacheEntry& cache = cacheIt->second;
-    cache.generation = m_DetailCacheGeneration;
+    auto [cacheIt, inserted] = canCache ? m_DetailCache.try_emplace(detailKey) : std::make_pair(m_DetailCache.end(), true);
+    DetailCacheEntry& cache = canCache ? cacheIt->second : dummyCache;
+    if (canCache)
+    {
+        cache.generation = m_DetailCacheGeneration;
+    }
 
     if (!inserted)
     {
@@ -832,7 +841,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.user = counters.user;
         cache.command = counters.command;
         cache.publisher = counters.publisher;
-        cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
+        if (canCache)
+        {
+            cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
+        }
     }
 
     if (refreshLightDetails || refreshHeavyDetails)
@@ -840,7 +852,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.status = counters.status;
         cache.processType = counters.processType;
         cache.gdiObjectCount = counters.gdiObjectCount;
-        cache.nextLightRefresh = now + m_LightDetailTTL;
+        if (canCache)
+        {
+            cache.nextLightRefresh = now + m_LightDetailTTL;
+        }
     }
 
     CloseHandle(hProcess);
@@ -993,10 +1008,9 @@ bool WindowsProcessProbe::detectPowerMonitoring()
     return powerStatus.ACLineStatus != 255;
 }
 
-void WindowsProcessProbe::calculateDetailTTLsFromAvailableRAM(std::chrono::milliseconds& lightTTL,
-                                                              std::chrono::milliseconds& heavyTTL) noexcept
+void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept
 {
-    // Query available physical RAM and tune cache refresh intervals based on memory pressure
+    // Query total physical RAM and tune cache refresh intervals based on system size.
     // Heuristic: Systems with abundant RAM can afford frequent detail refreshes (lower latency),
     // while memory-constrained systems should cache longer to reduce enumeration overhead.
 
