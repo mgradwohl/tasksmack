@@ -42,6 +42,8 @@ namespace
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
 constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+// Tracks per-panel interaction hold state keyed by panel instance.
 std::unordered_map<const ProcessesPanel*, float> INTERACTION_INTERVAL_HOLD_BY_PANEL;
 
 [[nodiscard]] std::chrono::milliseconds

@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <cctype>
 #include <chrono>
 #include <string_view>
 
