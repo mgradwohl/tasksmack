@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -62,6 +63,8 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+constexpr double RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS = 250.0;
+constexpr int RESIZE_PERF_TRACE_TOP_LAYER_COUNT = 3;
 
 [[nodiscard]] bool isEnvFlagEnabled(const char* value) noexcept
 {
@@ -565,6 +568,8 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
+                        tracingInteraction,
+                        true,
                         tracingInteraction ? &updateMs : nullptr,
                         tracingInteraction ? &renderMs : nullptr,
                         tracingInteraction ? &postRenderMs : nullptr,
@@ -599,6 +604,8 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
+                        tracingInteraction,
+                        false,
                         tracingInteraction ? &updateMs : nullptr,
                         tracingInteraction ? &renderMs : nullptr,
                         tracingInteraction ? &postRenderMs : nullptr,
@@ -627,14 +634,42 @@ void Application::run()
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(float deltaTime, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
+void Application::renderFrame(float deltaTime,
+                              bool tracingInteractionFrame,
+                              bool resizeTriggeredFrame,
+                              double* updateMs,
+                              double* renderMs,
+                              double* postRenderMs,
+                              double* swapMs)
 {
     const bool tracing = (updateMs != nullptr);
+
+    struct LayerPhaseDuration
+    {
+        std::string name;
+        double durationMs = 0.0;
+    };
+
+    std::vector<LayerPhaseDuration> updateLayerDurations;
+    std::vector<LayerPhaseDuration> postLayerDurations;
+    if (tracingInteractionFrame)
+    {
+        updateLayerDurations.reserve(m_LayerStack.size());
+        postLayerDurations.reserve(m_LayerStack.size());
+    }
+
     const auto updateStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
+        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         layer->onUpdate(deltaTime);
+        if (tracingInteractionFrame)
+        {
+            const auto layerEnd = std::chrono::steady_clock::now();
+            updateLayerDurations.emplace_back(LayerPhaseDuration{
+                .name = layer->getName(), .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count()});
+        }
     }
     const auto updateEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
@@ -648,7 +683,14 @@ void Application::renderFrame(float deltaTime, double* updateMs, double* renderM
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
+        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         layer->onPostRender();
+        if (tracingInteractionFrame)
+        {
+            const auto layerEnd = std::chrono::steady_clock::now();
+            postLayerDurations.emplace_back(LayerPhaseDuration{
+                .name = layer->getName(), .durationMs = std::chrono::duration<double, std::milli>(layerEnd - layerStart).count()});
+        }
     }
     const auto postRenderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
@@ -670,6 +712,55 @@ void Application::renderFrame(float deltaTime, double* updateMs, double* renderM
     if (swapMs != nullptr)
     {
         *swapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
+    }
+
+    if (tracingInteractionFrame)
+    {
+        const double measuredUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
+        const double measuredPostMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();
+        const bool slowUpdate = measuredUpdateMs >= RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS;
+        const bool slowPost = measuredPostMs >= RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS;
+
+        if (slowUpdate || slowPost)
+        {
+            const auto logTopLayers = [](const std::vector<LayerPhaseDuration>& durations, const std::string_view phase)
+            {
+                if (durations.empty())
+                {
+                    return;
+                }
+
+                std::vector<LayerPhaseDuration> sorted = durations;
+                std::ranges::sort(sorted,
+                                  [](const LayerPhaseDuration& a, const LayerPhaseDuration& b) { return a.durationMs > b.durationMs; });
+
+                const auto count = std::min<std::size_t>(static_cast<std::size_t>(RESIZE_PERF_TRACE_TOP_LAYER_COUNT), sorted.size());
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    spdlog::info("ResizePerfSlowLayer[{}]: rank={} layer='{}' duration={:.3f} ms",
+                                 phase,
+                                 i + 1,
+                                 sorted[i].name,
+                                 sorted[i].durationMs);
+                }
+            };
+
+            spdlog::info("ResizePerfSlowFrame: resizeFrame={} update={:.3f} ms render={:.3f} ms post={:.3f} ms swap={:.3f} ms",
+                         resizeTriggeredFrame,
+                         measuredUpdateMs,
+                         std::chrono::duration<double, std::milli>(renderEnd - updateEnd).count(),
+                         measuredPostMs,
+                         std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count());
+
+            if (slowUpdate)
+            {
+                logTopLayers(updateLayerDurations, "update");
+            }
+            if (slowPost)
+            {
+                logTopLayers(postLayerDurations, "post");
+            }
+        }
     }
 }
 

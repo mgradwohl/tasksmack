@@ -11,8 +11,10 @@
 
 #include <implot.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 
 namespace App
@@ -77,6 +79,9 @@ class SystemMetricsPanel : public Panel
     }
 
   private:
+    void startGpuRefreshSampler();
+    void stopGpuRefreshSampler();
+
     void renderOverview();
     void renderCpuSection();
 
@@ -101,6 +106,8 @@ class SystemMetricsPanel : public Panel
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
+    std::atomic<int> m_GpuRefreshIntervalMs{1000};
+    std::jthread m_GpuRefreshThread;
 
     struct SmoothedCpu
     {

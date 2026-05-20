@@ -89,8 +89,13 @@ class Application
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic.
-    void renderFrame(
-        float deltaTime, double* updateMs = nullptr, double* renderMs = nullptr, double* postRenderMs = nullptr, double* swapMs = nullptr);
+    void renderFrame(float deltaTime,
+                     bool tracingInteractionFrame,
+                     bool resizeTriggeredFrame,
+                     double* updateMs = nullptr,
+                     double* renderMs = nullptr,
+                     double* postRenderMs = nullptr,
+                     double* swapMs = nullptr);
 
     // Global application instance (managed via setInstance)
     // Note: Using std::unique_ptr allows main() to control initialization order

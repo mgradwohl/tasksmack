@@ -151,13 +151,55 @@ SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 
 SystemMetricsPanel::~SystemMetricsPanel()
 {
+    stopGpuRefreshSampler();
     m_Model.reset();
+}
+
+void SystemMetricsPanel::startGpuRefreshSampler()
+{
+    stopGpuRefreshSampler();
+    if (!m_GPUModel)
+    {
+        return;
+    }
+
+    auto gpuModel = m_GPUModel;
+    m_GpuRefreshThread = std::jthread(
+        [this, gpuModel](const std::stop_token& stopToken)
+        {
+            while (!stopToken.stop_requested())
+            {
+                const auto start = std::chrono::steady_clock::now();
+                gpuModel->refresh();
+
+                const int intervalMs = std::max(m_GpuRefreshIntervalMs.load(std::memory_order_acquire), 1);
+                auto sleepRemaining = std::chrono::milliseconds(intervalMs) -
+                                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+                while ((sleepRemaining > std::chrono::milliseconds::zero()) && !stopToken.stop_requested())
+                {
+                    constexpr auto sleepChunk = std::chrono::milliseconds(50);
+                    const auto nap = std::min(sleepChunk, sleepRemaining);
+                    std::this_thread::sleep_for(nap);
+                    sleepRemaining -= nap;
+                }
+            }
+        });
+}
+
+void SystemMetricsPanel::stopGpuRefreshSampler()
+{
+    if (m_GpuRefreshThread.joinable())
+    {
+        m_GpuRefreshThread.request_stop();
+        m_GpuRefreshThread.join();
+    }
 }
 
 void SystemMetricsPanel::onAttach()
 {
     auto& settings = UserConfig::get().settings();
     m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
+    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(m_RefreshInterval.count(), 1000), std::memory_order_release);
     m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
     m_HistoryScrollSeconds = 0.0;
     m_RefreshAccumulatorSec = 0.0F;
@@ -178,6 +220,7 @@ void SystemMetricsPanel::onAttach()
     if (m_GPUModel)
     {
         m_GPUModel->refresh();
+        startGpuRefreshSampler();
     }
 
     m_TimestampsCache = m_Model->timestamps();
@@ -199,6 +242,7 @@ void SystemMetricsPanel::onAttach()
 
 void SystemMetricsPanel::onDetach()
 {
+    stopGpuRefreshSampler();
     m_GPUModel.reset();
     m_StorageModel.reset();
     m_Model.reset();
@@ -207,6 +251,7 @@ void SystemMetricsPanel::onDetach()
 void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
     m_RefreshInterval = interval;
+    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(interval.count(), 1LL), 1000), std::memory_order_release);
     m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
 }
@@ -259,6 +304,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     using SecondsF = std::chrono::duration<float>;
     const auto effectiveInterval =
         chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(effectiveInterval.count(), 1LL), 1000), std::memory_order_release);
     const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
 
@@ -271,11 +317,6 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         {
             m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
             m_StorageModel->sample();
-        }
-
-        if (m_GPUModel)
-        {
-            m_GPUModel->refresh();
         }
 
         m_TimestampsCache = m_Model->timestamps();

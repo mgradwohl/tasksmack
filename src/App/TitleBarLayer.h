@@ -138,6 +138,11 @@ class TitleBarLayer : public Core::Layer
     int m_LastAppliedWindowY = 0;
     int m_LastAppliedWindowWidth = 0;
     int m_LastAppliedWindowHeight = 0;
+    bool m_HasPendingResizeCommit = false;
+    int m_PendingResizeWidth = 0;
+    int m_PendingResizeHeight = 0;
+    float m_LastResizeSizeCommitTime = 0.0F;
+    float m_LastResizeDesiredChangeTime = 0.0F;
 
     bool m_PendingDragRestore = false;
     int m_MaximizedWindowX = 0;

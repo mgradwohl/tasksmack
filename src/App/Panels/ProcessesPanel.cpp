@@ -42,6 +42,7 @@ namespace
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
 constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
+std::unordered_map<const ProcessesPanel*, float> INTERACTION_INTERVAL_HOLD_BY_PANEL;
 
 [[nodiscard]] std::chrono::milliseconds
 chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
@@ -67,6 +68,8 @@ chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, cons
     // Active tab, no interaction: use base interval
     return std::chrono::milliseconds(baseMs);
 }
+
+constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
 // Column-specific unit widths (based on longest unit that can appear)
 // Unit widths measured by longest unit string that column can display
@@ -306,6 +309,11 @@ ProcessesPanel::~ProcessesPanel()
         m_Sampler->stop();
         m_Sampler.reset();
     }
+    if (m_ProcessModel)
+    {
+        m_ProcessModel->setInteractionActive(false);
+    }
+    INTERACTION_INTERVAL_HOLD_BY_PANEL.erase(this);
     m_ProcessModel.reset();
 }
 
@@ -317,6 +325,7 @@ void ProcessesPanel::onAttach()
     const int intervalMs = UserConfig::get().settings().refreshIntervalMs;
     m_RefreshInterval = std::chrono::milliseconds(intervalMs);
     m_AppliedSamplerInterval = m_RefreshInterval;
+    INTERACTION_INTERVAL_HOLD_BY_PANEL[this] = 0.0F;
     m_ForceRefresh = false;
 
     // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
@@ -379,6 +388,7 @@ void ProcessesPanel::onDetach()
         m_Sampler->stop();
         m_Sampler.reset();
     }
+    INTERACTION_INTERVAL_HOLD_BY_PANEL.erase(this);
     m_ProcessModel.reset();
 }
 
@@ -414,15 +424,28 @@ void ProcessesPanel::onEvent(Core::Event& event)
         });
 }
 
-void ProcessesPanel::onUpdate([[maybe_unused]] float deltaTime)
+void ProcessesPanel::onUpdate(float deltaTime)
 {
     if (!m_ProcessModel || !m_Sampler)
     {
         return;
     }
 
-    const auto desiredInterval =
-        chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    float& interactionIntervalHoldSecondsRemaining = INTERACTION_INTERVAL_HOLD_BY_PANEL[this];
+    const bool interactionRedrawActive = Core::Application::get().isInteractionRedrawActive();
+    if (interactionRedrawActive)
+    {
+        interactionIntervalHoldSecondsRemaining = INTERACTION_INTERVAL_HOLD_SECONDS;
+    }
+    else if (interactionIntervalHoldSecondsRemaining > 0.0F)
+    {
+        const float clampedDeltaTime = std::max(0.0F, deltaTime);
+        interactionIntervalHoldSecondsRemaining = std::max(0.0F, interactionIntervalHoldSecondsRemaining - clampedDeltaTime);
+    }
+
+    const bool throttleForInteraction = interactionRedrawActive || (interactionIntervalHoldSecondsRemaining > 0.0F);
+    m_ProcessModel->setInteractionActive(throttleForInteraction);
+    const auto desiredInterval = chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, throttleForInteraction);
     if (desiredInterval != m_AppliedSamplerInterval)
     {
         m_AppliedSamplerInterval = desiredInterval;
