@@ -119,7 +119,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     constexpr auto INTERACTION_GPU_MERGE_MIN_INTERVAL = std::chrono::milliseconds(1500);
 
     std::vector<ProcessSnapshot> newSnapshots;
-    std::unordered_map<std::int32_t, CachedGpuSnapshotFields> cachedGpuByPid;
+    std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
     std::shared_ptr<GPUModel> gpuModel;
     bool shouldMergeGpuData = false;
 
@@ -167,13 +167,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
         }
 
-        // Steal capacity from the previous snapshot vector to avoid a malloc each refresh.
-        // m_Snapshots is already under the write lock so this is safe.
-        std::swap(newSnapshots, m_Snapshots); // steal old allocation
+        // Keep m_Snapshots published and readable until the replacement snapshot vector
+        // is fully prepared and ready to publish.
+        newSnapshots.reserve(std::max(counters.size(), m_Snapshots.size()));
         if (interactionActive)
         {
-            cachedGpuByPid.reserve(newSnapshots.size());
-            for (const auto& previousSnapshot : newSnapshots)
+            cachedGpuByUniqueKey.reserve(m_Snapshots.size());
+            for (const auto& previousSnapshot : m_Snapshots)
             {
                 if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
                     previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
@@ -181,18 +181,17 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
                     continue;
                 }
 
-                cachedGpuByPid.emplace(previousSnapshot.pid,
-                                       CachedGpuSnapshotFields{previousSnapshot.gpuUtilPercent,
-                                                               previousSnapshot.gpuMemoryBytes,
-                                                               previousSnapshot.gpuEncoderUtil,
-                                                               previousSnapshot.gpuDecoderUtil,
-                                                               previousSnapshot.gpuEngines,
-                                                               previousSnapshot.perGpuUsage,
-                                                               previousSnapshot.gpuDevices});
+                cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
+                                             CachedGpuSnapshotFields{previousSnapshot.gpuUtilPercent,
+                                                                     previousSnapshot.gpuMemoryBytes,
+                                                                     previousSnapshot.gpuEncoderUtil,
+                                                                     previousSnapshot.gpuDecoderUtil,
+                                                                     previousSnapshot.gpuEngines,
+                                                                     previousSnapshot.perGpuUsage,
+                                                                     previousSnapshot.gpuDevices});
             }
         }
-        newSnapshots.clear(); // drop elements, keep capacity
-        newSnapshots.reserve(counters.size());
+        newSnapshots.clear();
 
         // Bump the generation counter once per refresh.  At the end of the loop we
         // prune any PerProcessState entry that was NOT touched this refresh (i.e.
@@ -338,12 +337,12 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     {
         mergeGPUData(newSnapshots, gpuModel);
     }
-    else if (!cachedGpuByPid.empty())
+    else if (!cachedGpuByUniqueKey.empty())
     {
         for (auto& snapshot : newSnapshots)
         {
-            const auto it = cachedGpuByPid.find(snapshot.pid);
-            if (it == cachedGpuByPid.end())
+            const auto it = cachedGpuByUniqueKey.find(snapshot.uniqueKey);
+            if (it == cachedGpuByUniqueKey.end())
             {
                 continue;
             }
