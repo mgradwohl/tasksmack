@@ -78,6 +78,10 @@ class ProcessModel
     /// When set, refresh() automatically queries GPU counters and merges them.
     void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
 
+    /// Hint whether interactive resize/move redraw is currently active.
+    /// Allows throttling expensive GPU merge work during interactions.
+    void setInteractionActive(bool active) noexcept;
+
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
@@ -162,6 +166,9 @@ class ProcessModel
     std::vector<ProcessSnapshot> m_Snapshots;
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
+    std::atomic<bool> m_InteractionActive{false};
+    std::chrono::steady_clock::time_point m_LastGpuMergeTime{};
+    bool m_HasLastGpuMergeTime = false;
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
@@ -169,7 +176,7 @@ class ProcessModel
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    void mergeGPUData(); // Merge GPU counters from m_GPUModel into m_Snapshots
+    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 
     [[nodiscard]] static ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
                                                          const Platform::ProcessCounters* previous,

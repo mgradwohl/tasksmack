@@ -109,6 +109,7 @@ class ProcessesPanel : public Panel
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     bool m_IsActiveTab = false;
+    float m_InteractionHoldSeconds = 0.0F;
 
     // Snapshot version at last tree rebuild — used to detect new data from background sampler.
     std::uint64_t m_LastSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
