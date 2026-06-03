@@ -570,6 +570,11 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     }
 }
 
+// Called every frame while a custom drag or resize is in progress. Reads the
+// current global mouse state, computes the desired window position/size delta
+// from the recorded start positions, applies rate-limited SDL calls, and
+// fires a WindowResizedEvent when a size commit is issued. Ends the interaction
+// (via endWindowInteraction) if the left mouse button is no longer held.
 void TitleBarLayer::updateWindowInteraction()
 {
     if (!m_CustomDragActive && !m_CustomResizeActive)
@@ -643,6 +648,7 @@ void TitleBarLayer::updateWindowInteraction()
         .updateStart = updateStart,
     };
 
+    // Query the OS for the current pointer position and button mask.
     float globalMouseXF = 0.0F;
     float globalMouseYF = 0.0F;
     SDL_MouseButtonFlags mouseButtons = 0U;
@@ -667,6 +673,11 @@ void TitleBarLayer::updateWindowInteraction()
     const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
+    // -----------------------------------------------------------------------
+    // Drag handling: move window by the delta since drag start. On the first
+    // frame after a maximized window begins dragging, defer the restore until
+    // the pointer has moved past DRAG_THRESHOLD pixels.
+    // -----------------------------------------------------------------------
     if (m_CustomDragActive)
     {
         const int dx = globalMouseX - m_DragStartMouseGlobalX;
@@ -737,6 +748,11 @@ void TitleBarLayer::updateWindowInteraction()
         return;
     }
 
+    // -----------------------------------------------------------------------
+    // Resize handling: compute new geometry from the active edge/corner delta,
+    // clamp to min/max dimensions, apply position changes immediately, and
+    // throttle SDL_SetWindowSize calls via a commit interval + idle flush.
+    // -----------------------------------------------------------------------
     if (m_CustomResizeActive)
     {
         constexpr int MIN_WINDOW_WIDTH = Core::WINDOW_MIN_DIMENSION;
@@ -792,6 +808,8 @@ void TitleBarLayer::updateWindowInteraction()
             break;
         }
 
+        // Clamp to min/max and pin the stationary edge when the resize origin is
+        // on the left or top so the opposite edge stays anchored.
         if (newWidth < MIN_WINDOW_WIDTH)
         {
             if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
