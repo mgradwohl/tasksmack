@@ -105,6 +105,24 @@ template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
     accumMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// Lightweight RAII scope guard — runs a callable on scope exit.
+template<typename Fn> struct ScopeExit
+{
+    explicit ScopeExit(Fn&& fn) : m_fn(std::forward<Fn>(fn))
+    {}
+    ~ScopeExit()
+    {
+        m_fn();
+    }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ScopeExit(ScopeExit&&) = delete;
+    ScopeExit& operator=(ScopeExit&&) = delete;
+
+  private:
+    Fn m_fn;
+};
+
 // Hit-test callback behavior is platform dependent:
 // - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
 // - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
@@ -703,58 +721,30 @@ void TitleBarLayer::updateWindowInteraction()
     double raiseResizeEventMs = 0.0;
 
     const auto updateStart = traceEnabled ? Clock::now() : Clock::time_point{};
-    struct SlowUpdateTraceGuard
-    {
-        bool traceEnabled = false;
-        bool startedDrag = false;
-        bool startedResize = false;
-        const TitleBarLayer* self = nullptr;
-        double* mouseStateMs = nullptr;
-        double* restoreMs = nullptr;
-        double* setPositionMs = nullptr;
-        double* setSizeMs = nullptr;
-        double* raiseResizeEventMs = nullptr;
-        Clock::time_point updateStart{};
-
-        ~SlowUpdateTraceGuard()
+    const ScopeExit traceScope{
+        [&]
         {
             if (!traceEnabled)
             {
                 return;
             }
-
             const double totalMs = std::chrono::duration<double, std::milli>(Clock::now() - updateStart).count();
             if (totalMs < SLOW_TITLEBAR_UPDATE_MS)
             {
                 return;
             }
-
             const char* mode = startedDrag ? "drag" : (startedResize ? "resize" : "none");
             spdlog::info("ResizePerfTitleBarSlowUpdate: mode={} edge={} total={:.3f} ms mouse={:.3f} ms restore={:.3f} ms setPos={:.3f} ms "
                          "setSize={:.3f} ms raiseResizeEvent={:.3f} ms",
                          mode,
-                         static_cast<int>(self->m_ActiveResizeEdge),
+                         static_cast<int>(m_ActiveResizeEdge),
                          totalMs,
-                         *mouseStateMs,
-                         *restoreMs,
-                         *setPositionMs,
-                         *setSizeMs,
-                         *raiseResizeEventMs);
-        }
-    };
-
-    const SlowUpdateTraceGuard traceScope{
-        .traceEnabled = traceEnabled,
-        .startedDrag = startedDrag,
-        .startedResize = startedResize,
-        .self = this,
-        .mouseStateMs = &mouseStateMs,
-        .restoreMs = &restoreMs,
-        .setPositionMs = &setPositionMs,
-        .setSizeMs = &setSizeMs,
-        .raiseResizeEventMs = &raiseResizeEventMs,
-        .updateStart = updateStart,
-    };
+                         mouseStateMs,
+                         restoreMs,
+                         setPositionMs,
+                         setSizeMs,
+                         raiseResizeEventMs);
+        }};
 
     // Query the OS for the current pointer position and button mask.
     float globalMouseXF = 0.0F;
