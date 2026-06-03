@@ -640,22 +640,22 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     {
         const auto [startX, startY] = window.getPosition();
         m_InteractionMode = InteractionMode::Resize;
-        m_ActiveResizeEdge = edge;
-        m_ResizeStartMouseGlobalX = globalMouseX;
-        m_ResizeStartMouseGlobalY = globalMouseY;
-        m_ResizeStartWindowX = startX;
-        m_ResizeStartWindowY = startY;
-        m_ResizeStartWindowWidth = windowWidth;
-        m_ResizeStartWindowHeight = windowHeight;
-        m_LastAppliedWindowX = startX;
-        m_LastAppliedWindowY = startY;
-        m_LastAppliedWindowWidth = windowWidth;
-        m_LastAppliedWindowHeight = windowHeight;
-        m_HasPendingResizeCommit = false;
-        m_PendingResizeWidth = windowWidth;
-        m_PendingResizeHeight = windowHeight;
-        m_LastResizeSizeCommitTime = Core::Application::getTime();
-        m_LastResizeDesiredChangeTime = m_LastResizeSizeCommitTime;
+        m_Resize.edge = edge;
+        m_Resize.startMouseGlobalX = globalMouseX;
+        m_Resize.startMouseGlobalY = globalMouseY;
+        m_Resize.startWindowX = startX;
+        m_Resize.startWindowY = startY;
+        m_Resize.startWindowWidth = windowWidth;
+        m_Resize.startWindowHeight = windowHeight;
+        m_Resize.lastAppliedX = startX;
+        m_Resize.lastAppliedY = startY;
+        m_Resize.lastAppliedWidth = windowWidth;
+        m_Resize.lastAppliedHeight = windowHeight;
+        m_Resize.hasPendingCommit = false;
+        m_Resize.pendingWidth = windowWidth;
+        m_Resize.pendingHeight = windowHeight;
+        m_Resize.lastSizeCommitTime = Core::Application::getTime();
+        m_Resize.lastDesiredChangeTime = m_Resize.lastSizeCommitTime;
         return;
     }
 
@@ -666,31 +666,31 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
             // Don't restore yet — defer restore until the pointer has actually moved
             // past the drag threshold so a bare click doesn't unmaximize the window.
             const auto [maxX, maxY] = window.getPosition();
-            m_PendingDragRestore = true;
-            m_MaximizedWindowX = maxX;
-            m_MaximizedWindowWidth = windowWidth;
+            m_Drag.pendingRestore = true;
+            m_Drag.maximizedWindowX = maxX;
+            m_Drag.maximizedWindowWidth = windowWidth;
             m_InteractionMode = InteractionMode::Drag;
-            m_DragStartMouseGlobalX = globalMouseX;
-            m_DragStartMouseGlobalY = globalMouseY;
+            m_Drag.startMouseGlobalX = globalMouseX;
+            m_Drag.startMouseGlobalY = globalMouseY;
             // Placeholder positions replaced once restore actually happens.
-            m_DragStartWindowX = maxX;
-            m_DragStartWindowY = maxY;
-            m_LastAppliedWindowX = maxX;
-            m_LastAppliedWindowY = maxY;
-            m_ActiveResizeEdge = ResizeEdge::None;
+            m_Drag.startWindowX = maxX;
+            m_Drag.startWindowY = maxY;
+            m_Drag.lastAppliedX = maxX;
+            m_Drag.lastAppliedY = maxY;
+            m_Resize.edge = ResizeEdge::None;
             (void) maxY;
         }
         else
         {
             const auto [startX, startY] = window.getPosition();
             m_InteractionMode = InteractionMode::Drag;
-            m_DragStartMouseGlobalX = globalMouseX;
-            m_DragStartMouseGlobalY = globalMouseY;
-            m_DragStartWindowX = startX;
-            m_DragStartWindowY = startY;
-            m_LastAppliedWindowX = startX;
-            m_LastAppliedWindowY = startY;
-            m_ActiveResizeEdge = ResizeEdge::None;
+            m_Drag.startMouseGlobalX = globalMouseX;
+            m_Drag.startMouseGlobalY = globalMouseY;
+            m_Drag.startWindowX = startX;
+            m_Drag.startWindowY = startY;
+            m_Drag.lastAppliedX = startX;
+            m_Drag.lastAppliedY = startY;
+            m_Resize.edge = ResizeEdge::None;
         }
     }
 }
@@ -735,7 +735,7 @@ void TitleBarLayer::updateWindowInteraction()
             spdlog::info("ResizePerfTitleBarSlowUpdate: mode={} edge={} total={:.3f} ms mouse={:.3f} ms restore={:.3f} ms setPos={:.3f} ms "
                          "setSize={:.3f} ms raiseResizeEvent={:.3f} ms",
                          mode,
-                         static_cast<int>(m_ActiveResizeEdge),
+                         static_cast<int>(m_Resize.edge),
                          totalMs,
                          mouseStateMs,
                          restoreMs,
@@ -772,10 +772,10 @@ void TitleBarLayer::updateWindowInteraction()
 
 void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
 {
-    const int dx = mx - m_DragStartMouseGlobalX;
-    const int dy = my - m_DragStartMouseGlobalY;
+    const int dx = mx - m_Drag.startMouseGlobalX;
+    const int dy = my - m_Drag.startMouseGlobalY;
 
-    if (m_PendingDragRestore)
+    if (m_Drag.pendingRestore)
     {
         // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
         // any direction so a bare click on the title bar does not unmaximize.
@@ -786,93 +786,94 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
         }
         // Threshold crossed — restore and rebase the drag origin.
         const float xProportion =
-            static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
+            static_cast<float>(m_Drag.startMouseGlobalX - m_Drag.maximizedWindowX) / static_cast<float>(m_Drag.maximizedWindowWidth);
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
         const auto [restoredX, restoredY] = window.getPosition();
         const auto [restoredWidth, restoredHeight] = window.getSize();
-        const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+        const int adjustedX = m_Drag.startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
-        m_DragStartWindowX = adjustedX;
-        m_DragStartWindowY = restoredY;
-        m_LastAppliedWindowX = adjustedX;
-        m_LastAppliedWindowY = restoredY;
-        m_PendingDragRestore = false;
+        m_Drag.startWindowX = adjustedX;
+        m_Drag.startWindowY = restoredY;
+        m_Drag.lastAppliedX = adjustedX;
+        m_Drag.lastAppliedY = restoredY;
+        m_Drag.pendingRestore = false;
         (void) restoredX;
         (void) restoredHeight;
         return;
     }
 
-    const int targetX = m_DragStartWindowX + dx;
-    const int targetY = m_DragStartWindowY + dy;
-    if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
+    const int targetX = m_Drag.startWindowX + dx;
+    const int targetY = m_Drag.startWindowY + dy;
+    if (targetX != m_Drag.lastAppliedX || targetY != m_Drag.lastAppliedY)
     {
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
-        m_LastAppliedWindowX = targetX;
-        m_LastAppliedWindowY = targetY;
+        m_Drag.lastAppliedX = targetX;
+        m_Drag.lastAppliedY = targetY;
     }
 }
 
 void TitleBarLayer::updateResize(
     const int mx, const int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs)
 {
-    const int dx = mx - m_ResizeStartMouseGlobalX;
-    const int dy = my - m_ResizeStartMouseGlobalY;
+    const int dx = mx - m_Resize.startMouseGlobalX;
+    const int dy = my - m_Resize.startMouseGlobalY;
 
     const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
-        m_ActiveResizeEdge, m_ResizeStartWindowX, m_ResizeStartWindowY, m_ResizeStartWindowWidth, m_ResizeStartWindowHeight, dx, dy);
+        m_Resize.edge, m_Resize.startWindowX, m_Resize.startWindowY, m_Resize.startWindowWidth, m_Resize.startWindowHeight, dx, dy);
 
-    const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
-    const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);
+    const bool positionChanged = (newX != m_Resize.lastAppliedX) || (newY != m_Resize.lastAppliedY);
+    const bool sizeChanged = (newWidth != m_Resize.lastAppliedWidth) || (newHeight != m_Resize.lastAppliedHeight);
     const float now = Core::Application::getTime();
     bool sizeCommitApplied = false;
 
     if (positionChanged)
     {
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
-        m_LastAppliedWindowX = newX;
-        m_LastAppliedWindowY = newY;
+        m_Resize.lastAppliedX = newX;
+        m_Resize.lastAppliedY = newY;
     }
     if (sizeChanged)
     {
-        const bool commitIntervalElapsed = (now - m_LastResizeSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
-        const bool skipDuplicateSize = (newWidth == m_LastAppliedWindowWidth) && (newHeight == m_LastAppliedWindowHeight);
+        const bool commitIntervalElapsed = (now - m_Resize.lastSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
+        const bool skipDuplicateSize = (newWidth == m_Resize.lastAppliedWidth) && (newHeight == m_Resize.lastAppliedHeight);
         if (commitIntervalElapsed)
         {
             if (!skipDuplicateSize)
             {
                 timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
             }
-            m_LastAppliedWindowWidth = newWidth;
-            m_LastAppliedWindowHeight = newHeight;
-            m_LastResizeSizeCommitTime = now;
-            m_LastResizeDesiredChangeTime = now;
-            m_HasPendingResizeCommit = false;
+            m_Resize.lastAppliedWidth = newWidth;
+            m_Resize.lastAppliedHeight = newHeight;
+            m_Resize.lastSizeCommitTime = now;
+            m_Resize.lastDesiredChangeTime = now;
+            m_Resize.hasPendingCommit = false;
             sizeCommitApplied = true;
         }
         else
         {
-            m_HasPendingResizeCommit = true;
-            m_PendingResizeWidth = newWidth;
-            m_PendingResizeHeight = newHeight;
-            m_LastResizeDesiredChangeTime = now;
+            m_Resize.hasPendingCommit = true;
+            m_Resize.pendingWidth = newWidth;
+            m_Resize.pendingHeight = newHeight;
+            m_Resize.lastDesiredChangeTime = now;
         }
     }
-    else if (m_HasPendingResizeCommit)
+    else if (m_Resize.hasPendingCommit)
     {
-        const bool idleElapsed = (now - m_LastResizeDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
+        const bool idleElapsed = (now - m_Resize.lastDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
         if (idleElapsed)
         {
             const bool skipDuplicatePending =
-                (m_PendingResizeWidth == m_LastAppliedWindowWidth) && (m_PendingResizeHeight == m_LastAppliedWindowHeight);
+                (m_Resize.pendingWidth == m_Resize.lastAppliedWidth) && (m_Resize.pendingHeight == m_Resize.lastAppliedHeight);
             if (!skipDuplicatePending)
             {
-                timedOp(
-                    m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
-                m_LastAppliedWindowWidth = m_PendingResizeWidth;
-                m_LastAppliedWindowHeight = m_PendingResizeHeight;
+                timedOp(m_TraceEnabled,
+                        setSizeMs,
+                        [&] { SDL_SetWindowSize(window.getHandle(), m_Resize.pendingWidth, m_Resize.pendingHeight); });
+                m_Resize.lastAppliedWidth = m_Resize.pendingWidth;
+                m_Resize.lastAppliedHeight = m_Resize.pendingHeight;
             }
-            m_LastResizeSizeCommitTime = now;
-            m_HasPendingResizeCommit = false;
+            m_Resize.lastSizeCommitTime = now;
+            m_Resize.hasPendingCommit = false;
             sizeCommitApplied = true;
         }
         else
@@ -891,13 +892,13 @@ void TitleBarLayer::updateResize(
         SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
         constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
         const float resizeEventNow = Core::Application::getTime();
-        const bool pixelSizeChanged = (pixelW != m_LastImmediateResizePixelW) || (pixelH != m_LastImmediateResizePixelH);
-        const bool intervalElapsed = (resizeEventNow - m_LastImmediateResizeEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
+        const bool pixelSizeChanged = (pixelW != m_Resize.lastImmediatePixelW) || (pixelH != m_Resize.lastImmediatePixelH);
+        const bool intervalElapsed = (resizeEventNow - m_Resize.lastImmediateEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
         if (pixelSizeChanged && intervalElapsed)
         {
-            m_LastImmediateResizePixelW = pixelW;
-            m_LastImmediateResizePixelH = pixelH;
-            m_LastImmediateResizeEventTime = resizeEventNow;
+            m_Resize.lastImmediatePixelW = pixelW;
+            m_Resize.lastImmediatePixelH = pixelH;
+            m_Resize.lastImmediateEventTime = resizeEventNow;
             Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
             timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
         }
@@ -906,23 +907,20 @@ void TitleBarLayer::updateResize(
 
 void TitleBarLayer::endWindowInteraction()
 {
-    if (m_InteractionMode == InteractionMode::Resize && m_HasPendingResizeCommit)
+    if (m_InteractionMode == InteractionMode::Resize && m_Resize.hasPendingCommit)
     {
         auto& window = Core::Application::get().getWindow();
         SDL_Window* sdlWindow = window.getHandle();
         if (sdlWindow != nullptr)
         {
-            SDL_SetWindowSize(sdlWindow, m_PendingResizeWidth, m_PendingResizeHeight);
-            m_LastAppliedWindowWidth = m_PendingResizeWidth;
-            m_LastAppliedWindowHeight = m_PendingResizeHeight;
-            m_LastResizeSizeCommitTime = Core::Application::getTime();
+            SDL_SetWindowSize(sdlWindow, m_Resize.pendingWidth, m_Resize.pendingHeight);
         }
-        m_HasPendingResizeCommit = false;
+        // m_Resize will be zeroed below
     }
 
+    m_Drag = {};
+    m_Resize = {};
     m_InteractionMode = InteractionMode::None;
-    m_ActiveResizeEdge = ResizeEdge::None;
-    m_PendingDragRestore = false;
     m_HasCursorSample = false;
 }
 
@@ -1017,7 +1015,7 @@ void TitleBarLayer::updateResizeCursor()
 
     if (m_InteractionMode == InteractionMode::Resize)
     {
-        edge = m_ActiveResizeEdge;
+        edge = m_Resize.edge;
     }
     else
     {

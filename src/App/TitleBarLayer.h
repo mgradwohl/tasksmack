@@ -106,6 +106,44 @@ class TitleBarLayer : public Core::Layer
         int height = 0;
     };
 
+    // Per-drag session state — zeroed by endWindowInteraction via m_Drag = {}.
+    struct DragState
+    {
+        int startMouseGlobalX = 0;
+        int startMouseGlobalY = 0;
+        int startWindowX = 0;
+        int startWindowY = 0;
+        int lastAppliedX = 0;
+        int lastAppliedY = 0;
+        bool pendingRestore = false;
+        int maximizedWindowX = 0;
+        int maximizedWindowWidth = 0;
+    };
+
+    // Per-resize session state — zeroed by endWindowInteraction via m_Resize = {}.
+    struct ResizeState
+    {
+        ResizeEdge edge = ResizeEdge::None;
+        int startMouseGlobalX = 0;
+        int startMouseGlobalY = 0;
+        int startWindowX = 0;
+        int startWindowY = 0;
+        int startWindowWidth = 0;
+        int startWindowHeight = 0;
+        int lastAppliedX = 0;
+        int lastAppliedY = 0;
+        int lastAppliedWidth = 0;
+        int lastAppliedHeight = 0;
+        bool hasPendingCommit = false;
+        int pendingWidth = 0;
+        int pendingHeight = 0;
+        float lastSizeCommitTime = 0.0F;
+        float lastDesiredChangeTime = 0.0F;
+        int lastImmediatePixelW = 0;
+        int lastImmediatePixelH = 0;
+        float lastImmediateEventTime = 0.0F;
+    };
+
     void beginWindowInteraction(const SDL_Event& event);
     void handleTitleBarDoubleClick(const SDL_Event& event);
     void updateWindowInteraction();
@@ -144,33 +182,8 @@ class TitleBarLayer : public Core::Layer
     ButtonBounds m_IconBounds{};
 
     InteractionMode m_InteractionMode = InteractionMode::None;
-    ResizeEdge m_ActiveResizeEdge = ResizeEdge::None;
-
-    int m_DragStartMouseGlobalX = 0;
-    int m_DragStartMouseGlobalY = 0;
-    int m_DragStartWindowX = 0;
-    int m_DragStartWindowY = 0;
-
-    int m_ResizeStartMouseGlobalX = 0;
-    int m_ResizeStartMouseGlobalY = 0;
-    int m_ResizeStartWindowX = 0;
-    int m_ResizeStartWindowY = 0;
-    int m_ResizeStartWindowWidth = 0;
-    int m_ResizeStartWindowHeight = 0;
-
-    int m_LastAppliedWindowX = 0;
-    int m_LastAppliedWindowY = 0;
-    int m_LastAppliedWindowWidth = 0;
-    int m_LastAppliedWindowHeight = 0;
-    bool m_HasPendingResizeCommit = false;
-    int m_PendingResizeWidth = 0;
-    int m_PendingResizeHeight = 0;
-    float m_LastResizeSizeCommitTime = 0.0F;
-    float m_LastResizeDesiredChangeTime = 0.0F;
-
-    bool m_PendingDragRestore = false;
-    int m_MaximizedWindowX = 0;
-    int m_MaximizedWindowWidth = 0;
+    DragState m_Drag{};
+    ResizeState m_Resize{};
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseGlobalX = 0;
@@ -181,9 +194,6 @@ class TitleBarLayer : public Core::Layer
     int m_LastCursorWindowHeight = 0;
     bool m_LastCursorWindowMaximized = false;
     bool m_HasCursorSample = false;
-    int m_LastImmediateResizePixelW = 0;
-    int m_LastImmediateResizePixelH = 0;
-    float m_LastImmediateResizeEventTime = 0.0F;
 
     bool m_TraceEnabled = false;
 
