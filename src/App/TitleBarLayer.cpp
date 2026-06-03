@@ -445,6 +445,100 @@ auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int wind
     return ResizeEdge::None;
 }
 
+// Pure geometry function: given the active edge and the mouse delta from drag start,
+// compute the clamped window rect. No member state; safe to unit test independently.
+auto TitleBarLayer::computeResizeGeometry(
+    const ResizeEdge edge, const int startX, const int startY, const int startWidth, const int startHeight, const int dx, const int dy)
+    -> WindowRect
+{
+    int newX = startX;
+    int newY = startY;
+    int newWidth = startWidth;
+    int newHeight = startHeight;
+
+    switch (edge)
+    {
+    case ResizeEdge::Left:
+        newX = startX + dx;
+        newWidth = startWidth - dx;
+        break;
+    case ResizeEdge::Right:
+        newWidth = startWidth + dx;
+        break;
+    case ResizeEdge::Top:
+        newY = startY + dy;
+        newHeight = startHeight - dy;
+        break;
+    case ResizeEdge::Bottom:
+        newHeight = startHeight + dy;
+        break;
+    case ResizeEdge::TopLeft:
+        newX = startX + dx;
+        newWidth = startWidth - dx;
+        newY = startY + dy;
+        newHeight = startHeight - dy;
+        break;
+    case ResizeEdge::TopRight:
+        newWidth = startWidth + dx;
+        newY = startY + dy;
+        newHeight = startHeight - dy;
+        break;
+    case ResizeEdge::BottomLeft:
+        newX = startX + dx;
+        newWidth = startWidth - dx;
+        newHeight = startHeight + dy;
+        break;
+    case ResizeEdge::BottomRight:
+        newWidth = startWidth + dx;
+        newHeight = startHeight + dy;
+        break;
+    case ResizeEdge::None:
+        break;
+    }
+
+    // Clamp to min/max and pin the stationary edge when the resize origin is on
+    // the left or top so the opposite edge stays anchored.
+    constexpr int MIN_W = Core::WINDOW_MIN_DIMENSION;
+    constexpr int MAX_W = Core::WINDOW_MAX_DIMENSION;
+    constexpr int MIN_H = Core::WINDOW_MIN_DIMENSION;
+    constexpr int MAX_H = Core::WINDOW_MAX_DIMENSION;
+
+    if (newWidth < MIN_W)
+    {
+        if (edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft)
+        {
+            newX = startX + (startWidth - MIN_W);
+        }
+        newWidth = MIN_W;
+    }
+    if (newWidth > MAX_W)
+    {
+        if (edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft)
+        {
+            newX = startX + (startWidth - MAX_W);
+        }
+        newWidth = MAX_W;
+    }
+    if (newHeight < MIN_H)
+    {
+        if (edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight)
+        {
+            newY = startY + (startHeight - MIN_H);
+        }
+        newHeight = MIN_H;
+    }
+    if (newHeight > MAX_H)
+    {
+        if (edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight)
+        {
+            newY = startY + (startHeight - MAX_H);
+        }
+        newHeight = MAX_H;
+    }
+
+    return {newX, newY, newWidth, newHeight};
+}
+
 void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event)
 {
     auto& window = Core::Application::get().getWindow();
@@ -733,100 +827,11 @@ void TitleBarLayer::updateWindowInteraction()
     // -----------------------------------------------------------------------
     if (m_CustomResizeActive)
     {
-        constexpr int MIN_WINDOW_WIDTH = Core::WINDOW_MIN_DIMENSION;
-        constexpr int MIN_WINDOW_HEIGHT = Core::WINDOW_MIN_DIMENSION;
-        constexpr int MAX_WINDOW_WIDTH = Core::WINDOW_MAX_DIMENSION;
-        constexpr int MAX_WINDOW_HEIGHT = Core::WINDOW_MAX_DIMENSION;
-
         const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
         const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
 
-        int newX = m_ResizeStartWindowX;
-        int newY = m_ResizeStartWindowY;
-        int newWidth = m_ResizeStartWindowWidth;
-        int newHeight = m_ResizeStartWindowHeight;
-
-        switch (m_ActiveResizeEdge)
-        {
-        case ResizeEdge::Left:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            break;
-        case ResizeEdge::Right:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            break;
-        case ResizeEdge::Top:
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::Bottom:
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::TopLeft:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::TopRight:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::BottomLeft:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::BottomRight:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::None:
-            break;
-        }
-
-        // Clamp to min/max and pin the stationary edge when the resize origin is
-        // on the left or top so the opposite edge stays anchored.
-        if (newWidth < MIN_WINDOW_WIDTH)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
-            {
-                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MIN_WINDOW_WIDTH);
-            }
-            newWidth = MIN_WINDOW_WIDTH;
-        }
-
-        if (newWidth > MAX_WINDOW_WIDTH)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
-            {
-                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MAX_WINDOW_WIDTH);
-            }
-            newWidth = MAX_WINDOW_WIDTH;
-        }
-
-        if (newHeight < MIN_WINDOW_HEIGHT)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::TopRight)
-            {
-                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MIN_WINDOW_HEIGHT);
-            }
-            newHeight = MIN_WINDOW_HEIGHT;
-        }
-
-        if (newHeight > MAX_WINDOW_HEIGHT)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::TopRight)
-            {
-                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MAX_WINDOW_HEIGHT);
-            }
-            newHeight = MAX_WINDOW_HEIGHT;
-        }
+        const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
+            m_ActiveResizeEdge, m_ResizeStartWindowX, m_ResizeStartWindowY, m_ResizeStartWindowWidth, m_ResizeStartWindowHeight, dx, dy);
 
         const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
         const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);

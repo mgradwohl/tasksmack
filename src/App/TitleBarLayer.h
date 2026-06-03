@@ -85,6 +85,15 @@ class TitleBarLayer : public Core::Layer
         BottomRight,
     };
 
+    // Geometry returned by computeResizeGeometry - clamped new window rect.
+    struct WindowRect
+    {
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+    };
+
     void beginWindowInteraction(const SDL_Event& event);
     void handleTitleBarDoubleClick(const SDL_Event& event);
     void updateWindowInteraction();
@@ -96,6 +105,8 @@ class TitleBarLayer : public Core::Layer
     void applyCursorForEdge(ResizeEdge edge);
 
     [[nodiscard]] static auto detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge;
+    [[nodiscard]] static auto
+    computeResizeGeometry(ResizeEdge edge, int startX, int startY, int startWidth, int startHeight, int dx, int dy) -> WindowRect;
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
     void renderTitleBar();
