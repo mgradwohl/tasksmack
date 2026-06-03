@@ -47,11 +47,16 @@ jobs:
 
       - name: Normalize docs-only output
         id: set_output
+        # github.head_ref is attacker-controlled (the PR branch name); passing it
+        # directly into an inline shell expression enables script injection. Bind it
+        # to an env var first so the shell treats it as data, not as code.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
             if [[ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" && \
                   "${{ github.event.pull_request.user.login }}" = 'github-actions[bot]' && \
-                  "${{ github.head_ref }}" == chore/changelog-* ]]; then
+                  "${HEAD_REF}" == chore/changelog-* ]]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
             else
               echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
