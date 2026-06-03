@@ -65,55 +65,8 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-  validate-environment:
-    needs: [detect-docs-only]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-clang-format: 'true'
-          install-clang-tidy: 'true'
-          install-clangd: 'true'
-          install-coverage-tools: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Validate prerequisites
-        run: ./tools/check-prereqs.sh
-
-  validate-environment-windows:
-    needs: [detect-docs-only]
-    if: github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true'
-    runs-on: windows-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Setup Windows LLVM
-        uses: ./.github/actions/setup-windows-llvm
-        with:
-          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Validate prerequisites
-        shell: pwsh
-        run: ./tools/check-prereqs.ps1
-
   build-linux-debug:
-    needs: [detect-docs-only, validate-environment]
+    needs: [detect-docs-only]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
@@ -123,7 +76,7 @@ jobs:
       build_type: debug
 
   build-linux-release:
-    needs: [detect-docs-only, validate-environment]
+    needs: [detect-docs-only]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
@@ -133,7 +86,7 @@ jobs:
       build_type: release
 
   build-windows-debug:
-    needs: [detect-docs-only, validate-environment-windows]
+    needs: [detect-docs-only]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
     permissions:
       contents: read
@@ -143,7 +96,7 @@ jobs:
       build_type: debug
 
   build-windows-release:
-    needs: [detect-docs-only, validate-environment-windows]
+    needs: [detect-docs-only]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
@@ -164,7 +117,7 @@ jobs:
         run: ./tools/md-link-audit.sh
 
   static-analysis:
-    needs: [detect-docs-only, validate-environment]
+    needs: [detect-docs-only]
     if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -216,7 +169,7 @@ jobs:
           retention-days: 14
 
   include-analysis:
-    needs: [detect-docs-only, validate-environment, build-linux-debug]
+    needs: [detect-docs-only, build-linux-debug]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
