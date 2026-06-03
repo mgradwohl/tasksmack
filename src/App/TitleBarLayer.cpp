@@ -301,6 +301,8 @@ void TitleBarLayer::onAttach()
         spdlog::warn("Failed to load title bar icon from {}", iconPath);
     }
 
+    m_TraceEnabled = isResizePerfTracingEnabled();
+
     // Set up hit test for window dragging
     setupHitTest();
     createSystemCursors();
@@ -710,7 +712,6 @@ void TitleBarLayer::updateWindowInteraction()
 
     using Clock = std::chrono::steady_clock;
     constexpr double SLOW_TITLEBAR_UPDATE_MS = 250.0;
-    const bool traceEnabled = isResizePerfTracingEnabled();
     const bool startedDrag = m_CustomDragActive;
     const bool startedResize = m_CustomResizeActive;
 
@@ -720,11 +721,11 @@ void TitleBarLayer::updateWindowInteraction()
     double setSizeMs = 0.0;
     double raiseResizeEventMs = 0.0;
 
-    const auto updateStart = traceEnabled ? Clock::now() : Clock::time_point{};
+    const auto updateStart = m_TraceEnabled ? Clock::now() : Clock::time_point{};
     const ScopeExit traceScope{
         [&]
         {
-            if (!traceEnabled)
+            if (!m_TraceEnabled)
             {
                 return;
             }
@@ -750,7 +751,7 @@ void TitleBarLayer::updateWindowInteraction()
     float globalMouseXF = 0.0F;
     float globalMouseYF = 0.0F;
     SDL_MouseButtonFlags mouseButtons = 0U;
-    timedOp(traceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
+    timedOp(m_TraceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -764,16 +765,15 @@ void TitleBarLayer::updateWindowInteraction()
 
     if (m_CustomDragActive)
     {
-        updateDrag(globalMouseX, globalMouseY, window, traceEnabled, restoreMs, setPositionMs);
+        updateDrag(globalMouseX, globalMouseY, window, restoreMs, setPositionMs);
     }
     else
     {
-        updateResize(globalMouseX, globalMouseY, window, traceEnabled, setPositionMs, setSizeMs, raiseResizeEventMs);
+        updateResize(globalMouseX, globalMouseY, window, setPositionMs, setSizeMs, raiseResizeEventMs);
     }
 }
 
-void TitleBarLayer::updateDrag(
-    const int mx, const int my, Core::Window& window, const bool traceEnabled, double& restoreMs, double& setPositionMs)
+void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
 {
     const int dx = mx - m_DragStartMouseGlobalX;
     const int dy = my - m_DragStartMouseGlobalY;
@@ -790,11 +790,11 @@ void TitleBarLayer::updateDrag(
         // Threshold crossed — restore and rebase the drag origin.
         const float xProportion =
             static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
-        timedOp(traceEnabled, restoreMs, [&] { window.restore(); });
+        timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
         const auto [restoredX, restoredY] = window.getPosition();
         const auto [restoredWidth, restoredHeight] = window.getSize();
         const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
-        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
         m_DragStartWindowX = adjustedX;
         m_DragStartWindowY = restoredY;
         m_LastAppliedWindowX = adjustedX;
@@ -809,19 +809,14 @@ void TitleBarLayer::updateDrag(
     const int targetY = m_DragStartWindowY + dy;
     if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
     {
-        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
         m_LastAppliedWindowX = targetX;
         m_LastAppliedWindowY = targetY;
     }
 }
 
-void TitleBarLayer::updateResize(const int mx,
-                                 const int my,
-                                 Core::Window& window,
-                                 const bool traceEnabled,
-                                 double& setPositionMs,
-                                 double& setSizeMs,
-                                 double& raiseResizeEventMs)
+void TitleBarLayer::updateResize(
+    const int mx, const int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs)
 {
     const int dx = mx - m_ResizeStartMouseGlobalX;
     const int dy = my - m_ResizeStartMouseGlobalY;
@@ -836,7 +831,7 @@ void TitleBarLayer::updateResize(const int mx,
 
     if (positionChanged)
     {
-        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
         m_LastAppliedWindowX = newX;
         m_LastAppliedWindowY = newY;
     }
@@ -848,7 +843,7 @@ void TitleBarLayer::updateResize(const int mx,
         {
             if (!skipDuplicateSize)
             {
-                timedOp(traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+                timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
             }
             m_LastAppliedWindowWidth = newWidth;
             m_LastAppliedWindowHeight = newHeight;
@@ -875,7 +870,7 @@ void TitleBarLayer::updateResize(const int mx,
             if (!skipDuplicatePending)
             {
                 timedOp(
-                    traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
+                    m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
                 m_LastAppliedWindowWidth = m_PendingResizeWidth;
                 m_LastAppliedWindowHeight = m_PendingResizeHeight;
             }
@@ -907,7 +902,7 @@ void TitleBarLayer::updateResize(const int mx,
             m_LastImmediateResizePixelH = pixelH;
             m_LastImmediateResizeEventTime = resizeEventNow;
             Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-            timedOp(traceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
+            timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
         }
     }
 }

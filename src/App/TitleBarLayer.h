@@ -102,9 +102,8 @@ class TitleBarLayer : public Core::Layer
     void beginWindowInteraction(const SDL_Event& event);
     void handleTitleBarDoubleClick(const SDL_Event& event);
     void updateWindowInteraction();
-    void updateDrag(int mx, int my, Core::Window& window, bool traceEnabled, double& restoreMs, double& setPositionMs);
-    void updateResize(
-        int mx, int my, Core::Window& window, bool traceEnabled, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
+    void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
+    void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
 
     void createSystemCursors();
@@ -179,6 +178,8 @@ class TitleBarLayer : public Core::Layer
     int m_LastImmediateResizePixelW = 0;
     int m_LastImmediateResizePixelH = 0;
     float m_LastImmediateResizeEventTime = 0.0F;
+
+    bool m_TraceEnabled = false;
 
     SDL_Cursor* m_DefaultCursor = nullptr;
     SDL_Cursor* m_NsResizeCursor = nullptr;
