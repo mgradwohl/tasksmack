@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/TitleBarGeometry.h"
 #include "Core/Layer.h"
 
 #include <cstdint>
@@ -77,33 +78,11 @@ class TitleBarLayer : public Core::Layer
     }
 
   private:
-    enum class ResizeEdge : std::uint8_t
-    {
-        None,
-        Left,
-        Right,
-        Top,
-        Bottom,
-        TopLeft,
-        TopRight,
-        BottomLeft,
-        BottomRight,
-    };
-
     enum class InteractionMode : std::uint8_t
     {
         None,
         Drag,
         Resize,
-    };
-
-    // Geometry returned by computeResizeGeometry - clamped new window rect.
-    struct WindowRect
-    {
-        int x = 0;
-        int y = 0;
-        int width = 0;
-        int height = 0;
     };
 
     // Per-drag session state — zeroed by endWindowInteraction via m_Drag = {}.
@@ -157,8 +136,6 @@ class TitleBarLayer : public Core::Layer
     void applyCursorForEdge(ResizeEdge edge);
 
     [[nodiscard]] static auto detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge;
-    [[nodiscard]] static auto
-    computeResizeGeometry(ResizeEdge edge, int startX, int startY, int startWidth, int startHeight, int dx, int dy) -> WindowRect;
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
     void renderTitleBar();
