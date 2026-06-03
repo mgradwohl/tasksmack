@@ -90,6 +90,13 @@ class TitleBarLayer : public Core::Layer
         BottomRight,
     };
 
+    enum class InteractionMode : std::uint8_t
+    {
+        None,
+        Drag,
+        Resize,
+    };
+
     // Geometry returned by computeResizeGeometry - clamped new window rect.
     struct WindowRect
     {
@@ -136,8 +143,7 @@ class TitleBarLayer : public Core::Layer
     ButtonBounds m_CloseBounds{};
     ButtonBounds m_IconBounds{};
 
-    bool m_CustomDragActive = false;
-    bool m_CustomResizeActive = false;
+    InteractionMode m_InteractionMode = InteractionMode::None;
     ResizeEdge m_ActiveResizeEdge = ResizeEdge::None;
 
     int m_DragStartMouseGlobalX = 0;

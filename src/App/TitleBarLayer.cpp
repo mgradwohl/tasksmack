@@ -639,7 +639,7 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     if (edge != ResizeEdge::None)
     {
         const auto [startX, startY] = window.getPosition();
-        m_CustomResizeActive = true;
+        m_InteractionMode = InteractionMode::Resize;
         m_ActiveResizeEdge = edge;
         m_ResizeStartMouseGlobalX = globalMouseX;
         m_ResizeStartMouseGlobalY = globalMouseY;
@@ -656,7 +656,6 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
         m_PendingResizeHeight = windowHeight;
         m_LastResizeSizeCommitTime = Core::Application::getTime();
         m_LastResizeDesiredChangeTime = m_LastResizeSizeCommitTime;
-        m_CustomDragActive = false;
         return;
     }
 
@@ -670,7 +669,7 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
             m_PendingDragRestore = true;
             m_MaximizedWindowX = maxX;
             m_MaximizedWindowWidth = windowWidth;
-            m_CustomDragActive = true;
+            m_InteractionMode = InteractionMode::Drag;
             m_DragStartMouseGlobalX = globalMouseX;
             m_DragStartMouseGlobalY = globalMouseY;
             // Placeholder positions replaced once restore actually happens.
@@ -678,21 +677,19 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
             m_DragStartWindowY = maxY;
             m_LastAppliedWindowX = maxX;
             m_LastAppliedWindowY = maxY;
-            m_CustomResizeActive = false;
             m_ActiveResizeEdge = ResizeEdge::None;
             (void) maxY;
         }
         else
         {
             const auto [startX, startY] = window.getPosition();
-            m_CustomDragActive = true;
+            m_InteractionMode = InteractionMode::Drag;
             m_DragStartMouseGlobalX = globalMouseX;
             m_DragStartMouseGlobalY = globalMouseY;
             m_DragStartWindowX = startX;
             m_DragStartWindowY = startY;
             m_LastAppliedWindowX = startX;
             m_LastAppliedWindowY = startY;
-            m_CustomResizeActive = false;
             m_ActiveResizeEdge = ResizeEdge::None;
         }
     }
@@ -705,15 +702,15 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
 // (via endWindowInteraction) if the left mouse button is no longer held.
 void TitleBarLayer::updateWindowInteraction()
 {
-    if (!m_CustomDragActive && !m_CustomResizeActive)
+    if (m_InteractionMode == InteractionMode::None)
     {
         return;
     }
 
     using Clock = std::chrono::steady_clock;
     constexpr double SLOW_TITLEBAR_UPDATE_MS = 250.0;
-    const bool startedDrag = m_CustomDragActive;
-    const bool startedResize = m_CustomResizeActive;
+    const bool startedDrag = (m_InteractionMode == InteractionMode::Drag);
+    const bool startedResize = (m_InteractionMode == InteractionMode::Resize);
 
     double mouseStateMs = 0.0;
     double restoreMs = 0.0;
@@ -763,7 +760,7 @@ void TitleBarLayer::updateWindowInteraction()
     const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
-    if (m_CustomDragActive)
+    if (m_InteractionMode == InteractionMode::Drag)
     {
         updateDrag(globalMouseX, globalMouseY, window, restoreMs, setPositionMs);
     }
@@ -909,7 +906,7 @@ void TitleBarLayer::updateResize(
 
 void TitleBarLayer::endWindowInteraction()
 {
-    if (m_CustomResizeActive && m_HasPendingResizeCommit)
+    if (m_InteractionMode == InteractionMode::Resize && m_HasPendingResizeCommit)
     {
         auto& window = Core::Application::get().getWindow();
         SDL_Window* sdlWindow = window.getHandle();
@@ -923,8 +920,7 @@ void TitleBarLayer::endWindowInteraction()
         m_HasPendingResizeCommit = false;
     }
 
-    m_CustomDragActive = false;
-    m_CustomResizeActive = false;
+    m_InteractionMode = InteractionMode::None;
     m_ActiveResizeEdge = ResizeEdge::None;
     m_PendingDragRestore = false;
     m_HasCursorSample = false;
@@ -1019,7 +1015,7 @@ void TitleBarLayer::updateResizeCursor()
     const ResizeEdge prevEdge = m_CachedHoverEdge;
     ResizeEdge edge = m_CachedHoverEdge;
 
-    if (m_CustomResizeActive)
+    if (m_InteractionMode == InteractionMode::Resize)
     {
         edge = m_ActiveResizeEdge;
     }
