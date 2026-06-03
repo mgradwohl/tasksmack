@@ -91,6 +91,20 @@ constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
 constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 30.0F;
 constexpr float RESIZE_PENDING_IDLE_FLUSH_SECONDS = 1.0F / 60.0F;
 
+// Conditionally time an operation and accumulate the duration into accumMs.
+// When traceEnabled is false the call is a transparent passthrough with zero overhead.
+template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
+{
+    if (!traceEnabled)
+    {
+        fn();
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    fn();
+    accumMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
 // Hit-test callback behavior is platform dependent:
 // - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
 // - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
@@ -652,16 +666,7 @@ void TitleBarLayer::updateWindowInteraction()
     float globalMouseXF = 0.0F;
     float globalMouseYF = 0.0F;
     SDL_MouseButtonFlags mouseButtons = 0U;
-    if (traceEnabled)
-    {
-        const auto opStart = Clock::now();
-        mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-        mouseStateMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-    }
-    else
-    {
-        mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-    }
+    timedOp(traceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -695,29 +700,11 @@ void TitleBarLayer::updateWindowInteraction()
             // Threshold crossed — restore and rebase the drag origin.
             const float xProportion =
                 static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.restore();
-                restoreMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.restore();
-            }
+            timedOp(traceEnabled, restoreMs, [&] { window.restore(); });
             const auto [restoredX, restoredY] = window.getPosition();
             const auto [restoredWidth, restoredHeight] = window.getSize();
             const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(adjustedX, restoredY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(adjustedX, restoredY);
-            }
+            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
             m_DragStartWindowX = adjustedX;
             m_DragStartWindowY = restoredY;
             m_LastAppliedWindowX = adjustedX;
@@ -732,16 +719,7 @@ void TitleBarLayer::updateWindowInteraction()
         const int targetY = m_DragStartWindowY + dy;
         if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
         {
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(targetX, targetY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(targetX, targetY);
-            }
+            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
             m_LastAppliedWindowX = targetX;
             m_LastAppliedWindowY = targetY;
         }
@@ -857,16 +835,7 @@ void TitleBarLayer::updateWindowInteraction()
 
         if (positionChanged)
         {
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(newX, newY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(newX, newY);
-            }
+            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
             m_LastAppliedWindowX = newX;
             m_LastAppliedWindowY = newY;
         }
@@ -878,16 +847,7 @@ void TitleBarLayer::updateWindowInteraction()
             {
                 if (!skipDuplicateSize)
                 {
-                    if (traceEnabled)
-                    {
-                        const auto opStart = Clock::now();
-                        SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
-                        setSizeMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                    }
-                    else
-                    {
-                        SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
-                    }
+                    timedOp(traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
                 }
                 m_LastAppliedWindowWidth = newWidth;
                 m_LastAppliedWindowHeight = newHeight;
@@ -913,16 +873,9 @@ void TitleBarLayer::updateWindowInteraction()
                     (m_PendingResizeWidth == m_LastAppliedWindowWidth) && (m_PendingResizeHeight == m_LastAppliedWindowHeight);
                 if (!skipDuplicatePending)
                 {
-                    if (traceEnabled)
-                    {
-                        const auto opStart = Clock::now();
-                        SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight);
-                        setSizeMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                    }
-                    else
-                    {
-                        SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight);
-                    }
+                    timedOp(traceEnabled,
+                            setSizeMs,
+                            [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
                     m_LastAppliedWindowWidth = m_PendingResizeWidth;
                     m_LastAppliedWindowHeight = m_PendingResizeHeight;
                 }
@@ -954,16 +907,7 @@ void TitleBarLayer::updateWindowInteraction()
                 m_LastImmediateResizePixelH = pixelH;
                 m_LastImmediateResizeEventTime = resizeEventNow;
                 Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-                if (traceEnabled)
-                {
-                    const auto opStart = Clock::now();
-                    Core::Application::get().raiseEvent(resizeEvent);
-                    raiseResizeEventMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                }
-                else
-                {
-                    Core::Application::get().raiseEvent(resizeEvent);
-                }
+                timedOp(traceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
             }
         }
     }
