@@ -6,6 +6,11 @@
 
 struct SDL_Cursor;
 
+namespace Core
+{
+class Window;
+} // namespace Core
+
 namespace App
 {
 
@@ -97,6 +102,9 @@ class TitleBarLayer : public Core::Layer
     void beginWindowInteraction(const SDL_Event& event);
     void handleTitleBarDoubleClick(const SDL_Event& event);
     void updateWindowInteraction();
+    void updateDrag(int mx, int my, Core::Window& window, bool traceEnabled, double& restoreMs, double& setPositionMs);
+    void updateResize(
+        int mx, int my, Core::Window& window, bool traceEnabled, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
 
     void createSystemCursors();

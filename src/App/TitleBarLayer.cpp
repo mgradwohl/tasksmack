@@ -772,148 +772,152 @@ void TitleBarLayer::updateWindowInteraction()
     const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
-    // -----------------------------------------------------------------------
-    // Drag handling: move window by the delta since drag start. On the first
-    // frame after a maximized window begins dragging, defer the restore until
-    // the pointer has moved past DRAG_THRESHOLD pixels.
-    // -----------------------------------------------------------------------
     if (m_CustomDragActive)
     {
-        const int dx = globalMouseX - m_DragStartMouseGlobalX;
-        const int dy = globalMouseY - m_DragStartMouseGlobalY;
+        updateDrag(globalMouseX, globalMouseY, window, traceEnabled, restoreMs, setPositionMs);
+    }
+    else
+    {
+        updateResize(globalMouseX, globalMouseY, window, traceEnabled, setPositionMs, setSizeMs, raiseResizeEventMs);
+    }
+}
 
-        if (m_PendingDragRestore)
+void TitleBarLayer::updateDrag(
+    const int mx, const int my, Core::Window& window, const bool traceEnabled, double& restoreMs, double& setPositionMs)
+{
+    const int dx = mx - m_DragStartMouseGlobalX;
+    const int dy = my - m_DragStartMouseGlobalY;
+
+    if (m_PendingDragRestore)
+    {
+        // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
+        // any direction so a bare click on the title bar does not unmaximize.
+        constexpr int DRAG_THRESHOLD = 5;
+        if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
         {
-            // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
-            // any direction so a bare click on the title bar does not unmaximize.
-            constexpr int DRAG_THRESHOLD = 5;
-            if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
-            {
-                return;
-            }
-            // Threshold crossed — restore and rebase the drag origin.
-            const float xProportion =
-                static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
-            timedOp(traceEnabled, restoreMs, [&] { window.restore(); });
-            const auto [restoredX, restoredY] = window.getPosition();
-            const auto [restoredWidth, restoredHeight] = window.getSize();
-            const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
-            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
-            m_DragStartWindowX = adjustedX;
-            m_DragStartWindowY = restoredY;
-            m_LastAppliedWindowX = adjustedX;
-            m_LastAppliedWindowY = restoredY;
-            m_PendingDragRestore = false;
-            (void) restoredX;
-            (void) restoredHeight;
             return;
         }
-
-        const int targetX = m_DragStartWindowX + dx;
-        const int targetY = m_DragStartWindowY + dy;
-        if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
-        {
-            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
-            m_LastAppliedWindowX = targetX;
-            m_LastAppliedWindowY = targetY;
-        }
+        // Threshold crossed — restore and rebase the drag origin.
+        const float xProportion =
+            static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
+        timedOp(traceEnabled, restoreMs, [&] { window.restore(); });
+        const auto [restoredX, restoredY] = window.getPosition();
+        const auto [restoredWidth, restoredHeight] = window.getSize();
+        const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
+        m_DragStartWindowX = adjustedX;
+        m_DragStartWindowY = restoredY;
+        m_LastAppliedWindowX = adjustedX;
+        m_LastAppliedWindowY = restoredY;
+        m_PendingDragRestore = false;
+        (void) restoredX;
+        (void) restoredHeight;
         return;
     }
 
-    // -----------------------------------------------------------------------
-    // Resize handling: compute new geometry from the active edge/corner delta,
-    // clamp to min/max dimensions, apply position changes immediately, and
-    // throttle SDL_SetWindowSize calls via a commit interval + idle flush.
-    // -----------------------------------------------------------------------
-    if (m_CustomResizeActive)
+    const int targetX = m_DragStartWindowX + dx;
+    const int targetY = m_DragStartWindowY + dy;
+    if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
     {
-        const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
-        const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
+        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
+        m_LastAppliedWindowX = targetX;
+        m_LastAppliedWindowY = targetY;
+    }
+}
 
-        const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
-            m_ActiveResizeEdge, m_ResizeStartWindowX, m_ResizeStartWindowY, m_ResizeStartWindowWidth, m_ResizeStartWindowHeight, dx, dy);
+void TitleBarLayer::updateResize(const int mx,
+                                 const int my,
+                                 Core::Window& window,
+                                 const bool traceEnabled,
+                                 double& setPositionMs,
+                                 double& setSizeMs,
+                                 double& raiseResizeEventMs)
+{
+    const int dx = mx - m_ResizeStartMouseGlobalX;
+    const int dy = my - m_ResizeStartMouseGlobalY;
 
-        const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
-        const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);
-        const float now = Core::Application::getTime();
-        bool sizeCommitApplied = false;
+    const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
+        m_ActiveResizeEdge, m_ResizeStartWindowX, m_ResizeStartWindowY, m_ResizeStartWindowWidth, m_ResizeStartWindowHeight, dx, dy);
 
-        if (positionChanged)
+    const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
+    const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);
+    const float now = Core::Application::getTime();
+    bool sizeCommitApplied = false;
+
+    if (positionChanged)
+    {
+        timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
+        m_LastAppliedWindowX = newX;
+        m_LastAppliedWindowY = newY;
+    }
+    if (sizeChanged)
+    {
+        const bool commitIntervalElapsed = (now - m_LastResizeSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
+        const bool skipDuplicateSize = (newWidth == m_LastAppliedWindowWidth) && (newHeight == m_LastAppliedWindowHeight);
+        if (commitIntervalElapsed)
         {
-            timedOp(traceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
-            m_LastAppliedWindowX = newX;
-            m_LastAppliedWindowY = newY;
+            if (!skipDuplicateSize)
+            {
+                timedOp(traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+            }
+            m_LastAppliedWindowWidth = newWidth;
+            m_LastAppliedWindowHeight = newHeight;
+            m_LastResizeSizeCommitTime = now;
+            m_LastResizeDesiredChangeTime = now;
+            m_HasPendingResizeCommit = false;
+            sizeCommitApplied = true;
         }
-        if (sizeChanged)
+        else
         {
-            const bool commitIntervalElapsed = (now - m_LastResizeSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
-            const bool skipDuplicateSize = (newWidth == m_LastAppliedWindowWidth) && (newHeight == m_LastAppliedWindowHeight);
-            if (commitIntervalElapsed)
-            {
-                if (!skipDuplicateSize)
-                {
-                    timedOp(traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
-                }
-                m_LastAppliedWindowWidth = newWidth;
-                m_LastAppliedWindowHeight = newHeight;
-                m_LastResizeSizeCommitTime = now;
-                m_LastResizeDesiredChangeTime = now;
-                m_HasPendingResizeCommit = false;
-                sizeCommitApplied = true;
-            }
-            else
-            {
-                m_HasPendingResizeCommit = true;
-                m_PendingResizeWidth = newWidth;
-                m_PendingResizeHeight = newHeight;
-                m_LastResizeDesiredChangeTime = now;
-            }
+            m_HasPendingResizeCommit = true;
+            m_PendingResizeWidth = newWidth;
+            m_PendingResizeHeight = newHeight;
+            m_LastResizeDesiredChangeTime = now;
         }
-        else if (m_HasPendingResizeCommit)
+    }
+    else if (m_HasPendingResizeCommit)
+    {
+        const bool idleElapsed = (now - m_LastResizeDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
+        if (idleElapsed)
         {
-            const bool idleElapsed = (now - m_LastResizeDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
-            if (idleElapsed)
+            const bool skipDuplicatePending =
+                (m_PendingResizeWidth == m_LastAppliedWindowWidth) && (m_PendingResizeHeight == m_LastAppliedWindowHeight);
+            if (!skipDuplicatePending)
             {
-                const bool skipDuplicatePending =
-                    (m_PendingResizeWidth == m_LastAppliedWindowWidth) && (m_PendingResizeHeight == m_LastAppliedWindowHeight);
-                if (!skipDuplicatePending)
-                {
-                    timedOp(traceEnabled,
-                            setSizeMs,
-                            [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
-                    m_LastAppliedWindowWidth = m_PendingResizeWidth;
-                    m_LastAppliedWindowHeight = m_PendingResizeHeight;
-                }
-                m_LastResizeSizeCommitTime = now;
-                m_HasPendingResizeCommit = false;
-                sizeCommitApplied = true;
+                timedOp(
+                    traceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight); });
+                m_LastAppliedWindowWidth = m_PendingResizeWidth;
+                m_LastAppliedWindowHeight = m_PendingResizeHeight;
             }
-            else
-            {
-                return;
-            }
+            m_LastResizeSizeCommitTime = now;
+            m_HasPendingResizeCommit = false;
+            sizeCommitApplied = true;
         }
+        else
+        {
+            return;
+        }
+    }
 
-        if (sizeCommitApplied)
+    if (sizeCommitApplied)
+    {
+        // Coalesce immediate resize events to avoid flooding the event bus
+        // during edge/corner drags. SDL will still emit pixel-size events,
+        // so this path only provides low-latency updates for interactive drag.
+        int pixelW = 0;
+        int pixelH = 0;
+        SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
+        constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
+        const float resizeEventNow = Core::Application::getTime();
+        const bool pixelSizeChanged = (pixelW != m_LastImmediateResizePixelW) || (pixelH != m_LastImmediateResizePixelH);
+        const bool intervalElapsed = (resizeEventNow - m_LastImmediateResizeEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
+        if (pixelSizeChanged && intervalElapsed)
         {
-            // Coalesce immediate resize events to avoid flooding the event bus
-            // during edge/corner drags. SDL will still emit pixel-size events,
-            // so this path only provides low-latency updates for interactive drag.
-            int pixelW = 0;
-            int pixelH = 0;
-            SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-            constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
-            const float resizeEventNow = Core::Application::getTime();
-            const bool pixelSizeChanged = (pixelW != m_LastImmediateResizePixelW) || (pixelH != m_LastImmediateResizePixelH);
-            const bool intervalElapsed = (resizeEventNow - m_LastImmediateResizeEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
-            if (pixelSizeChanged && intervalElapsed)
-            {
-                m_LastImmediateResizePixelW = pixelW;
-                m_LastImmediateResizePixelH = pixelH;
-                m_LastImmediateResizeEventTime = resizeEventNow;
-                Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-                timedOp(traceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
-            }
+            m_LastImmediateResizePixelW = pixelW;
+            m_LastImmediateResizePixelH = pixelH;
+            m_LastImmediateResizeEventTime = resizeEventNow;
+            Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
+            timedOp(traceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
         }
     }
 }
