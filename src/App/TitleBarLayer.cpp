@@ -97,11 +97,11 @@ template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
 {
     if (!traceEnabled)
     {
-        fn();
+        std::forward<Fn>(fn)();
         return;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    fn();
+    std::forward<Fn>(fn)();
     accumMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
@@ -569,7 +569,6 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
         m_Resize.pendingWidth = windowWidth;
         m_Resize.pendingHeight = windowHeight;
         m_Resize.lastSizeCommitTime = Core::Application::getTime();
-        m_Resize.lastDesiredChangeTime = m_Resize.lastSizeCommitTime;
         return;
     }
 
@@ -755,7 +754,6 @@ void TitleBarLayer::updateResize(
             m_Resize.lastAppliedWidth = newWidth;
             m_Resize.lastAppliedHeight = newHeight;
             m_Resize.lastSizeCommitTime = now;
-            m_Resize.lastDesiredChangeTime = now;
             m_Resize.hasPendingCommit = false;
             sizeCommitApplied = true;
         }
@@ -764,7 +762,6 @@ void TitleBarLayer::updateResize(
             m_Resize.hasPendingCommit = true;
             m_Resize.pendingWidth = newWidth;
             m_Resize.pendingHeight = newHeight;
-            m_Resize.lastDesiredChangeTime = now;
         }
     }
     else if (m_Resize.hasPendingCommit)

@@ -117,7 +117,6 @@ class TitleBarLayer : public Core::Layer
         int pendingWidth = 0;
         int pendingHeight = 0;
         float lastSizeCommitTime = 0.0F;
-        float lastDesiredChangeTime = 0.0F;
         int lastImmediatePixelW = 0;
         int lastImmediatePixelH = 0;
         float lastImmediateEventTime = 0.0F;
