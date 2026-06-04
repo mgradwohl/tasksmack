@@ -144,6 +144,7 @@ add_executable(TaskSmackTests
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
+    App/test_TitleBarGeometry.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp

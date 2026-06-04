@@ -302,11 +302,28 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     m_RefreshAccumulatorSec += deltaTime;
     using SecondsF = std::chrono::duration<float>;
-    const auto effectiveInterval =
-        chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    const bool interactionActive = Core::Application::get().isInteractionRedrawActive();
+
+    // On the frame the interaction ends, queue an immediate refresh so the
+    // display shows fresh data as soon as the user releases the mouse/resize handle.
+    if (m_WasInteractionActive && !interactionActive)
+    {
+        m_ForceRefresh = true;
+    }
+    m_WasInteractionActive = interactionActive;
+
+    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, interactionActive);
     m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(effectiveInterval.count(), 1LL), 1000), std::memory_order_release);
     const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
+
+    // Hard-suppress synchronous probe reads during active interaction.
+    // The accumulator keeps advancing so the next refresh fires on schedule after
+    // release (or immediately via the force-refresh queued above).
+    if (interactionActive && !m_ForceRefresh)
+    {
+        return;
+    }
 
     if (m_ForceRefresh || intervalElapsed)
     {

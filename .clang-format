@@ -89,8 +89,8 @@ IncludeCategories:
   - Regex: '^<(spdlog|fmt|boost|gtest|gmock|benchmark|imgui|implot|glad|SDL3)/.*>'
     Priority: 3
 
-  # 4. Third-party single-header libs (imgui.h, implot.h without path)
-  - Regex: '^<(imgui|implot|glad).*\.h>'
+  # 4. Third-party single-header libs (imgui.h, implot.h, stb_image.h without path)
+  - Regex: '^<(imgui|implot|glad|stb_image).*\.h>'
     Priority: 3
 
   # 5. C++ standard library headers (no extension)
