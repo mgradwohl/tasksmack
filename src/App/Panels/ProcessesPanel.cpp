@@ -123,8 +123,8 @@ void renderRightAlignedText(std::string_view text)
 {
     const auto parts = UI::Format::splitPercentForAlignment(percent);
 
-    constexpr std::size_t MAX_WHOLE_DIGITS = 3; // "100"
-    const std::size_t wholeDigits = parts.wholePart.size();
+    constexpr std::size_t MAX_WHOLE_DIGITS = 3;                                                 // "100"
+    const std::size_t wholeDigits = parts.wholePart.empty() ? 0 : (parts.wholePart.size() - 1); // Exclude trailing '.'
     const std::size_t leftPad = (wholeDigits < MAX_WHOLE_DIGITS) ? (MAX_WHOLE_DIGITS - wholeDigits) : 0;
 
     std::string out;
