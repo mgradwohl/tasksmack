@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <string_view>
+#include <utility>
 
 #include <stb_image.h>
 
@@ -89,7 +90,6 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
 constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 30.0F;
-constexpr float RESIZE_PENDING_IDLE_FLUSH_SECONDS = 1.0F / 60.0F;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
 // When traceEnabled is false the call reduces to a branch and a direct callable invocation.
@@ -773,27 +773,11 @@ void TitleBarLayer::updateResize(
     }
     else if (m_Resize.hasPendingCommit)
     {
-        const bool idleElapsed = (now - m_Resize.lastDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
-        if (idleElapsed)
-        {
-            const bool skipDuplicatePending =
-                (m_Resize.pendingWidth == m_Resize.lastAppliedWidth) && (m_Resize.pendingHeight == m_Resize.lastAppliedHeight);
-            if (!skipDuplicatePending)
-            {
-                timedOp(m_TraceEnabled,
-                        setSizeMs,
-                        [&] { SDL_SetWindowSize(window.getHandle(), m_Resize.pendingWidth, m_Resize.pendingHeight); });
-                m_Resize.lastAppliedWidth = m_Resize.pendingWidth;
-                m_Resize.lastAppliedHeight = m_Resize.pendingHeight;
-            }
-            m_Resize.lastSizeCommitTime = now;
-            m_Resize.hasPendingCommit = false;
-            sizeCommitApplied = true;
-        }
-        else
-        {
-            return;
-        }
+        // sizeChanged is false here: the current desired size already matches the last
+        // committed size, meaning the user dragged back to the committed geometry.
+        // The pending commit is now stale — applying it would jump the window to an
+        // intermediate size the user no longer wants — so cancel it immediately.
+        m_Resize.hasPendingCommit = false;
     }
 
     if (sizeCommitApplied)
