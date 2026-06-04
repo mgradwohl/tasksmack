@@ -12,13 +12,12 @@
 #include <glad/gl.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
+#include <stb_image.h>
 
 #include <cctype>
 #include <chrono>
 #include <string_view>
 #include <utility>
-
-#include <stb_image.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
