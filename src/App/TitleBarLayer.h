@@ -15,8 +15,8 @@ class Window;
 namespace App
 {
 
-/// Custom title bar layer - renders window chrome with icon, title, and
-/// controls This layer handles:
+/// Custom title bar layer - renders window chrome with icon, title, and controls.
+/// This layer handles:
 /// - App icon display
 /// - "TaskSmack" title in Sixtyfour pixel font
 /// - Help and Settings buttons (emit events)
