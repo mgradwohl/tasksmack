@@ -749,13 +749,9 @@ void TitleBarLayer::updateResize(
     if (sizeChanged)
     {
         const bool commitIntervalElapsed = (now - m_Resize.lastSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
-        const bool skipDuplicateSize = (newWidth == m_Resize.lastAppliedWidth) && (newHeight == m_Resize.lastAppliedHeight);
         if (commitIntervalElapsed)
         {
-            if (!skipDuplicateSize)
-            {
-                timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
-            }
+            timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
             m_Resize.lastAppliedWidth = newWidth;
             m_Resize.lastAppliedHeight = newHeight;
             m_Resize.lastSizeCommitTime = now;
