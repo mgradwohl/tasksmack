@@ -557,6 +557,61 @@ cmake --build --preset debug
 # Open in Chrome's chrome://tracing or Perfetto
 ```
 
+### Resize Performance Instrumentation
+
+TaskSmack has built-in resize/interaction frame-timing instrumentation that works in any build.
+Enable it by setting `TASKSMACK_TRACE_RESIZE_PERF=1` before launching:
+
+```bash
+# Linux — optimized build (recommended for realistic numbers)
+cmake --preset optimized
+cmake --build --preset optimized
+TASKSMACK_TRACE_RESIZE_PERF=1 ./build/optimized/bin/TaskSmack 2>&1 | tee /tmp/resize-trace.log
+
+# Linux — profile build (frame pointers preserved for follow-up perf/flamegraph)
+cmake --preset profile
+cmake --build --preset profile
+TASKSMACK_TRACE_RESIZE_PERF=1 ./build/profile/bin/TaskSmack 2>&1 | tee /tmp/resize-trace.log
+```
+
+```powershell
+# Windows — profile build
+cmake --preset win-profile
+cmake --build --preset win-profile
+$env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object /tmp/resize-trace.log
+```
+
+Resize the window (edges and corners) for 20–30 seconds, then close the app.
+The log contains `ResizePerf[interaction-progress|interaction-end|shutdown]` lines with
+per-phase timing for every 0.5 s window:
+
+```
+ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
+  frames=109 resizeFrames=109
+  drain avg/max=0.140/2.278 ms    ← SDL event drain
+  update avg/max=0.018/1.453 ms   ← domain model refresh (all layers)
+  render avg/max=0.572/8.798 ms   ← ImGui layout + draw call generation
+  post avg/max=0.558/0.784 ms     ← post-render (all layers)
+  swap avg/max=3.299/12.408 ms    ← GL buffer swap (includes vsync stall)
+```
+
+Frames or layers that exceed 250 ms emit additional `ResizePerfSlowFrame` /
+`ResizePerfSlowLayer` / `ResizePerfTitleBarSlowUpdate` lines for pinpoint attribution.
+
+You can also control the spdlog runtime level directly (useful for CI or scripted runs):
+
+```bash
+# Show only info+ in a release build (same effect as TASKSMACK_TRACE_RESIZE_PERF=1)
+TASKSMACK_LOG_LEVEL=info ./build/optimized/bin/TaskSmack
+
+# Full debug verbosity in an optimized build
+TASKSMACK_LOG_LEVEL=debug ./build/optimized/bin/TaskSmack
+```
+
+`TASKSMACK_LOG_LEVEL` accepts any spdlog level name: `trace`, `debug`, `info`, `warn`,
+`error`, `critical`, `off`. When both env vars are set, `TASKSMACK_LOG_LEVEL` takes
+precedence.
+
 ## Profile-Guided Optimization (PGO)
 
 PGO uses real runtime behavior to guide the compiler's optimization decisions — inlining, branch prediction hints, layout — resulting in measurable throughput gains (typically 5–15% on hot paths). TaskSmack uses Clang's instrumentation-based PGO.

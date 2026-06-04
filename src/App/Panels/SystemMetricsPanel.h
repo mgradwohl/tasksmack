@@ -106,6 +106,10 @@ class SystemMetricsPanel : public Panel
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
+    /// Tracks whether interaction was active last frame. When the flag transitions
+    /// from true to false, a force-refresh is queued so data updates immediately
+    /// after the user releases the mouse.
+    bool m_WasInteractionActive = false;
     std::atomic<int> m_GpuRefreshIntervalMs{1000};
     std::jthread m_GpuRefreshThread;
 

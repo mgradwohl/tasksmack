@@ -15,8 +15,8 @@ class Window;
 namespace App
 {
 
-/// Custom title bar layer - renders window chrome with icon, title, and controls
-/// This layer handles:
+/// Custom title bar layer - renders window chrome with icon, title, and
+/// controls This layer handles:
 /// - App icon display
 /// - "TaskSmack" title in Sixtyfour pixel font
 /// - Help and Settings buttons (emit events)
@@ -40,7 +40,8 @@ class TitleBarLayer : public Core::Layer
     void onPostRender() override;
     void onSDLEvent(SDL_Event* event) override;
 
-    /// Get the title bar height (for content offset) - matches ImGui tab bar height
+    /// Get the title bar height (for content offset) - matches ImGui tab bar
+    /// height
     [[nodiscard]] static auto height() -> float;
 
     // Cached button bounds for hit testing (public for hit test callback)
@@ -99,7 +100,8 @@ class TitleBarLayer : public Core::Layer
         int maximizedWindowWidth = 0;
     };
 
-    // Per-resize session state — zeroed by endWindowInteraction via m_Resize = {}.
+    // Per-resize session state — zeroed by endWindowInteraction via m_Resize =
+    // {}.
     struct ResizeState
     {
         ResizeEdge edge = ResizeEdge::None;

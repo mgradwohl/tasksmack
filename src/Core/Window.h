@@ -32,16 +32,25 @@ class Window
 
     void swapBuffers() const;
 
+    /// Enable or disable vertical sync at runtime.
+    /// Pass true to restore adaptive vsync (SDL_GL_SetSwapInterval(-1) with
+    /// fallback to 1). Pass false to disable vsync (interval 0), which reduces
+    /// compositor-stall coupling on Wayland during interactive resize.
+    void setVSync(bool enabled);
+
     [[nodiscard]] bool shouldClose() const noexcept;
     void requestClose() noexcept;
-    void clearCloseRequest() noexcept; // Reset close flag after handling WindowCloseEvent
+    void clearCloseRequest() noexcept; // Reset close flag after handling
+                                       // WindowCloseEvent
 
     /// Return the current logical width in screen coordinates.
-    /// Queries SDL directly so the value stays accurate after user-initiated drag-resizes.
+    /// Queries SDL directly so the value stays accurate after user-initiated
+    /// drag-resizes.
     [[nodiscard]] int getWidth() const noexcept;
 
     /// Return the current logical height in screen coordinates.
-    /// Queries SDL directly so the value stays accurate after user-initiated drag-resizes.
+    /// Queries SDL directly so the value stays accurate after user-initiated
+    /// drag-resizes.
     [[nodiscard]] int getHeight() const noexcept;
 
     /// Return the current framebuffer size in physical pixels.

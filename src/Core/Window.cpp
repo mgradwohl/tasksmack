@@ -235,6 +235,23 @@ void Window::swapBuffers() const
     SDL_GL_SwapWindow(m_Handle);
 }
 
+void Window::setVSync(bool enabled)
+{
+    if (enabled)
+    {
+        // Mirror the logic used during initialisation: prefer adaptive vsync
+        // (swap-interval -1) and fall back to regular vsync (1) if unsupported.
+        if (!SDL_GL_SetSwapInterval(-1))
+        {
+            SDL_GL_SetSwapInterval(1);
+        }
+    }
+    else
+    {
+        SDL_GL_SetSwapInterval(0);
+    }
+}
+
 bool Window::shouldClose() const noexcept
 {
     return m_ShouldClose;

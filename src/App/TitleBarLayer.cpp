@@ -88,7 +88,7 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
 
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
-constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 30.0F;
+constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 20.0F;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
 // When traceEnabled is false the call reduces to a branch and a direct callable invocation.
@@ -118,7 +118,7 @@ template<typename Fn> struct ScopeExit
         {
             m_fn();
         }
-        catch (...)
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: keep destructor noexcept
         {}
     }
     ScopeExit(const ScopeExit&) = delete;
@@ -704,6 +704,7 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
         const auto [restoredWidth, restoredHeight] = window.getSize();
         const int adjustedX = m_Drag.startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
+        Core::Application::get().signalWindowGeometryChanged();
         m_Drag.startWindowX = adjustedX;
         m_Drag.startWindowY = restoredY;
         m_Drag.lastAppliedX = adjustedX;
@@ -719,6 +720,7 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
     if (targetX != m_Drag.lastAppliedX || targetY != m_Drag.lastAppliedY)
     {
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
+        Core::Application::get().signalWindowGeometryChanged();
         m_Drag.lastAppliedX = targetX;
         m_Drag.lastAppliedY = targetY;
     }
@@ -741,6 +743,7 @@ void TitleBarLayer::updateResize(
     if (positionChanged)
     {
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
+        Core::Application::get().signalWindowGeometryChanged();
         m_Resize.lastAppliedX = newX;
         m_Resize.lastAppliedY = newY;
     }
@@ -750,6 +753,7 @@ void TitleBarLayer::updateResize(
         if (commitIntervalElapsed)
         {
             timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+            Core::Application::get().signalWindowGeometryChanged();
             m_Resize.lastAppliedWidth = newWidth;
             m_Resize.lastAppliedHeight = newHeight;
             m_Resize.lastSizeCommitTime = now;

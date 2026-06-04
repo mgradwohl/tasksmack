@@ -1,5 +1,6 @@
 #include "Application.h"
 
+#include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
@@ -63,42 +64,23 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
-constexpr double RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS = 250.0;
 constexpr int RESIZE_PERF_TRACE_TOP_LAYER_COUNT = 3;
 
-[[nodiscard]] bool isEnvFlagEnabled(const char* value) noexcept
-{
-    if (value == nullptr)
-    {
-        return false;
-    }
+// P0: Break the event drain loop if wall-clock drain exceeds this threshold.
+// On Wayland, individual SDL_PollEvent calls can stall on compositor protocol
+// (xdg_surface configure handshake). Capping drain limits per-frame stall time.
+constexpr double DRAIN_BUDGET_MS = 8.0;
 
-    const std::string_view text(value);
-    if (text.empty())
-    {
-        return false;
-    }
+// P3: If total drain time exceeds a full 60 fps frame budget, skip rendering
+// this frame. The event queue is fully processed; rendering catches up next frame.
+constexpr double DRAIN_SKIP_RENDER_MS = 16.0;
 
-    // Case-insensitive check: "0", "false", "off", "no" (any casing) are treated as disabled.
-    const auto ciEqual = [](const std::string_view a, const std::string_view b) noexcept
-    {
-        if (a.size() != b.size())
-        {
-            return false;
-        }
-        for (std::size_t i = 0; i < a.size(); ++i)
-        {
-            if (std::tolower(static_cast<unsigned char>(a[i])) != b[i])
-            {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    // b must already be lowercase
-    return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
-}
+// Slow-frame thresholds for per-phase logging during resize tracing.
+// Compute phases (update, render, post) are CPU work we control; threshold is one
+// 60 fps budget slice. Swap includes compositor hold time on Wayland, which routinely
+// reaches 8-15 ms even on smooth frames — only log truly bad stalls there.
+constexpr double RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS = 8.0;
+constexpr double RESIZE_PERF_TRACE_SLOW_SWAP_THRESHOLD_MS = 30.0;
 
 struct ResizePerfTraceStats
 {
@@ -118,8 +100,16 @@ struct ResizePerfTraceStats
     double maxRenderMs = 0.0;
     double maxPostRenderMs = 0.0;
     double maxSwapMs = 0.0;
+    /// Number of times P0 (drain budget cap) fired and broke the poll loop early.
+    std::uint32_t p0BudgetCapHits = 0;
+    /// Number of frames skipped by P3 (drain-overrun skip-render).
+    std::uint32_t skippedRenderFrames = 0;
+    /// Max wall time for any single 4-event budget-check interval inside the drain loop.
+    /// A large value here indicates a single SDL_PollEvent call stalling (Wayland configure hold).
+    double maxSinglePollBatchMs = 0.0;
 
-    void recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs) noexcept
+    void recordEventBatch(
+        std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singlePollBatchMs, bool p0Fired) noexcept
     {
         ++eventBatches;
         drainedEvents += eventCount;
@@ -127,6 +117,11 @@ struct ResizePerfTraceStats
         maxEventsPerBatch = std::max(maxEventsPerBatch, eventCount);
         drainMs += durationMs;
         maxDrainMs = std::max(maxDrainMs, durationMs);
+        maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, singlePollBatchMs);
+        if (p0Fired)
+        {
+            ++p0BudgetCapHits;
+        }
     }
 
     void recordFrame(
@@ -166,26 +161,31 @@ void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::str
         return (count == 0) ? 0.0 : (total / static_cast<double>(count));
     };
 
-    spdlog::info(
-        "ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} frames={} resizeFrames={} drain avg/max={:.3f}/{:.3f} ms "
-        "update avg/max={:.3f}/{:.3f} ms render avg/max={:.3f}/{:.3f} ms post avg/max={:.3f}/{:.3f} ms swap avg/max={:.3f}/{:.3f} ms",
-        reason,
-        stats.eventBatches,
-        stats.drainedEvents,
-        stats.resizeEvents,
-        stats.maxEventsPerBatch,
-        stats.frames,
-        stats.resizeFrames,
-        avg(stats.drainMs, stats.eventBatches),
-        stats.maxDrainMs,
-        avg(stats.updateMs, stats.frames),
-        stats.maxUpdateMs,
-        avg(stats.renderMs, stats.frames),
-        stats.maxRenderMs,
-        avg(stats.postRenderMs, stats.frames),
-        stats.maxPostRenderMs,
-        avg(stats.swapMs, stats.frames),
-        stats.maxSwapMs);
+    spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
+                 "p0Hits={} skippedFrames={} maxPollBatch={:.3f} ms "
+                 "frames={} resizeFrames={} drain avg/max={:.3f}/{:.3f} ms "
+                 "update avg/max={:.3f}/{:.3f} ms render avg/max={:.3f}/{:.3f} ms "
+                 "post avg/max={:.3f}/{:.3f} ms swap avg/max={:.3f}/{:.3f} ms",
+                 reason,
+                 stats.eventBatches,
+                 stats.drainedEvents,
+                 stats.resizeEvents,
+                 stats.maxEventsPerBatch,
+                 stats.p0BudgetCapHits,
+                 stats.skippedRenderFrames,
+                 stats.maxSinglePollBatchMs,
+                 stats.frames,
+                 stats.resizeFrames,
+                 avg(stats.drainMs, stats.eventBatches),
+                 stats.maxDrainMs,
+                 avg(stats.updateMs, stats.frames),
+                 stats.maxUpdateMs,
+                 avg(stats.renderMs, stats.frames),
+                 stats.maxRenderMs,
+                 avg(stats.postRenderMs, stats.frames),
+                 stats.maxPostRenderMs,
+                 avg(stats.swapMs, stats.frames),
+                 stats.maxSwapMs);
 }
 
 #ifndef _WIN32
@@ -465,7 +465,13 @@ void Application::run()
 
     ResizePerfTraceStats resizeTraceStats;
     bool wasTracingInteraction = false;
+    bool wasInteracting = false;
     float lastResizeTraceLogTime = getTime();
+    // Snapshot of whether TitleBarLayer changed window geometry (position/size) during
+    // the PREVIOUS frame's onUpdate. Used to gate grace-period sleep: if no geometry
+    // changed last frame, we allow the idle sleep even inside the interaction grace window,
+    // preventing wasted renders when the window is stationary post-interaction.
+    bool geometryChangedLastFrame = false;
 
     spdlog::info("Entering main loop");
 
@@ -478,7 +484,15 @@ void Application::run()
         std::uint32_t resizeEventCount = 0;
         SDL_Event sdlEvent;
         const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
-        const auto eventDrainStart = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        // Snapshot geometry-changed flag from previous frame, then reset for this frame.
+        geometryChangedLastFrame = m_WindowGeometryChangedThisFrame;
+        m_WindowGeometryChangedThisFrame = false;
+        // Always capture drain start: used by P0 budget check and P3 skip-render decision
+        // regardless of whether tracing is active.
+        const auto eventDrainStart = std::chrono::steady_clock::now();
+        auto lastDrainBatchCheckTime = eventDrainStart;
+        double maxSinglePollBatchMs = 0.0;
+        bool p0FiredThisDrain = false;
         while (SDL_PollEvent(&sdlEvent))
         {
             hadEvents = true;
@@ -529,12 +543,31 @@ void Application::run()
                 ++resizeEventCount;
                 m_InteractionRedrawUntil = getTime() + INTERACTION_REDRAW_GRACE_SECONDS;
             }
+
+            // P0: Drain time budget — break if this batch has spent too long in the drain
+            // loop. Check every 4 events to limit steady_clock::now() call overhead.
+            // On Wayland, individual SDL_PollEvent calls can stall on compositor protocol;
+            // breaking here caps the combined per-frame drain stall.
+            if ((drainedEventCount & 3U) == 0U)
+            {
+                const auto drainNow = std::chrono::steady_clock::now();
+                // Track max time for any single 4-event batch to isolate single-call stalls.
+                const double batchMs = std::chrono::duration<double, std::milli>(drainNow - lastDrainBatchCheckTime).count();
+                maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, batchMs);
+                lastDrainBatchCheckTime = drainNow;
+                if (std::chrono::duration<double, std::milli>(drainNow - eventDrainStart).count() >= DRAIN_BUDGET_MS)
+                {
+                    p0FiredThisDrain = true;
+                    break;
+                }
+            }
         }
-        const auto eventDrainEnd = traceResizePerfThisFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        // Always capture end time; used for both trace recording and P3 skip-render decision.
+        const auto eventDrainEnd = std::chrono::steady_clock::now();
+        const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
         if (traceResizePerfThisFrame)
         {
-            resizeTraceStats.recordEventBatch(
-                drainedEventCount, resizeEventCount, std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count());
+            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
         }
 
         if (m_Window->shouldClose())
@@ -548,7 +581,24 @@ void Application::run()
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
         const bool forceInteractionRedraw = getTime() < m_InteractionRedrawUntil;
-        const bool tracingInteraction = m_ResizePerfTraceEnabled && (needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0));
+        const bool isInteracting = needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0);
+        const bool tracingInteraction = m_ResizePerfTraceEnabled && isInteracting;
+
+        // P1: Adaptive vsync — disable vsync at interaction start to break the
+        // vsync/compositor-stall coupling that causes drain and swap spikes on
+        // Wayland. Restore adaptive vsync when the interaction ends (after the
+        // grace period expires) so idle frames remain tear-free.
+        if (!wasInteracting && isInteracting && m_Spec.VSync)
+        {
+            m_Window->setVSync(false);
+            m_VsyncDisabledForInteraction = true;
+        }
+        else if (wasInteracting && !isInteracting && m_VsyncDisabledForInteraction)
+        {
+            m_Window->setVSync(true);
+            m_VsyncDisabledForInteraction = false;
+        }
+
         if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
         {
             logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
@@ -561,7 +611,17 @@ void Application::run()
             resizeTraceStats = {};
             lastResizeTraceLogTime = getTime();
         }
-        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized())
+
+        // P3: If drain severely exceeded a full-frame budget, skip rendering this
+        // frame to avoid compounding the stall with render+swap time. Events are
+        // fully processed; the display catches up on the next frame.
+        const bool skipRenderThisFrame = (totalDrainMs >= DRAIN_SKIP_RENDER_MS) && !m_Window->isMinimized();
+        if (skipRenderThisFrame && traceResizePerfThisFrame && tracingInteraction)
+        {
+            ++resizeTraceStats.skippedRenderFrames;
+        }
+
+        if ((needsResizeRedraw || forceInteractionRedraw) && !m_Window->isMinimized() && !skipRenderThisFrame)
         {
             double updateMs = 0.0;
             double renderMs = 0.0;
@@ -590,14 +650,19 @@ void Application::run()
         if (!hadEvents)
         {
             const bool keepInteractionRedrawActive = getTime() < m_InteractionRedrawUntil;
-            if (!keepInteractionRedrawActive)
+            // During the grace period, allow sleep if window geometry did not change last frame.
+            // This prevents ~20 wasted renders after the user releases mouse while the window
+            // is stationary. SDL_WaitEventTimeout wakes immediately on any event, so
+            // responsiveness is unaffected. geometryChangedLastFrame reflects the previous
+            // frame's onUpdate result (1-frame lag is intentional and benign).
+            if (!keepInteractionRedrawActive || !geometryChangedLastFrame)
             {
                 const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
                 SDL_WaitEventTimeout(nullptr, sleepMs);
             }
         }
 
-        if (!didImmediateResizeRedraw)
+        if (!didImmediateResizeRedraw && !skipRenderThisFrame)
         {
             double updateMs = 0.0;
             double renderMs = 0.0;
@@ -624,6 +689,7 @@ void Application::run()
         }
 
         wasTracingInteraction = tracingInteraction;
+        wasInteracting = isInteracting;
     }
 
     if (m_ResizePerfTraceEnabled)
@@ -718,10 +784,16 @@ void Application::renderFrame(float deltaTime,
     {
         const double measuredUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
         const double measuredPostMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();
-        const bool slowUpdate = measuredUpdateMs >= RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS;
-        const bool slowPost = measuredPostMs >= RESIZE_PERF_TRACE_SLOW_PHASE_THRESHOLD_MS;
+        const double measuredSwapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
+        const double measuredRenderMs = std::chrono::duration<double, std::milli>(renderEnd - updateEnd).count();
+        const bool slowUpdate = measuredUpdateMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
+        const bool slowRender = measuredRenderMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
+        const bool slowPost = measuredPostMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
+        // Swap threshold is higher: Wayland compositor hold routinely adds 8-15 ms on
+        // smooth frames. Only flag genuine stalls that exceed a full frame budget.
+        const bool slowSwap = measuredSwapMs >= RESIZE_PERF_TRACE_SLOW_SWAP_THRESHOLD_MS;
 
-        if (slowUpdate || slowPost)
+        if (slowUpdate || slowRender || slowPost || slowSwap)
         {
             const auto logTopLayers = [](const std::vector<LayerPhaseDuration>& durations, const std::string_view phase)
             {
@@ -745,20 +817,34 @@ void Application::renderFrame(float deltaTime,
                 }
             };
 
-            spdlog::info("ResizePerfSlowFrame: resizeFrame={} update={:.3f} ms render={:.3f} ms post={:.3f} ms swap={:.3f} ms",
-                         resizeTriggeredFrame,
-                         measuredUpdateMs,
-                         std::chrono::duration<double, std::milli>(renderEnd - updateEnd).count(),
-                         measuredPostMs,
-                         std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count());
+            // Main frame header fires only for slow compute phases (CPU work we control).
+            // Swap has its own higher threshold and its own log line below.
+            if (slowUpdate || slowRender || slowPost)
+            {
+                spdlog::info("ResizePerfSlowFrame: resizeFrame={} update={:.3f} ms render={:.3f} ms post={:.3f} ms swap={:.3f} ms",
+                             resizeTriggeredFrame,
+                             measuredUpdateMs,
+                             measuredRenderMs,
+                             measuredPostMs,
+                             measuredSwapMs);
+            }
 
             if (slowUpdate)
             {
                 logTopLayers(updateLayerDurations, "update");
             }
+            if (slowRender)
+            {
+                spdlog::info("ResizePerfSlowFrame[render]: {:.3f} ms (ImGui draw; consider reducing content complexity at this size)",
+                             measuredRenderMs);
+            }
             if (slowPost)
             {
                 logTopLayers(postLayerDurations, "post");
+            }
+            if (slowSwap)
+            {
+                spdlog::info("ResizePerfSlowFrame[swap]: {:.3f} ms (compositor hold or vsync stall)", measuredSwapMs);
             }
         }
     }

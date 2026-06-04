@@ -29,8 +29,9 @@ struct WindowRect
     int height = 0;
 };
 
-/// Pure geometry function: given the active resize edge and the mouse delta from drag
-/// start, compute the clamped window rect. No member state — pure inputs/outputs.
+/// Pure geometry function: given the active resize edge and the mouse delta
+/// from drag start, compute the clamped window rect. No member state — pure
+/// inputs/outputs.
 [[nodiscard]] inline auto computeResizeGeometry(
     const ResizeEdge edge, const int startX, const int startY, const int startWidth, const int startHeight, const int dx, const int dy)
     -> WindowRect
