@@ -123,17 +123,67 @@ void renderRightAlignedText(std::string_view text)
 {
     const auto parts = UI::Format::splitPercentForAlignment(percent);
 
-    constexpr std::size_t MAX_WHOLE_DIGITS = 3;                                                 // "100"
-    const std::size_t wholeDigits = parts.wholePart.empty() ? 0 : (parts.wholePart.size() - 1); // Exclude trailing '.'
-    const std::size_t leftPad = (wholeDigits < MAX_WHOLE_DIGITS) ? (MAX_WHOLE_DIGITS - wholeDigits) : 0;
-
     std::string out;
-    out.reserve(leftPad + parts.wholePart.size() + 2);
-    out.append(leftPad, ' ');
+    out.reserve(parts.wholePart.size() + 2);
     out.append(parts.wholePart.data(), parts.wholePart.size());
     out.push_back(parts.decimalDigit);
     out.append(UI::Format::AlignedPercentParts::unitPart.data(), UI::Format::AlignedPercentParts::unitPart.size());
     return out;
+}
+
+void renderRightAlignedPercentText(std::string_view text,
+                                   const std::array<float, 101>& wholeWithDotWidths,
+                                   float decimalDigitWidth,
+                                   float unitPercentWidth)
+{
+    if (text.empty() || text == "-")
+    {
+        renderRightAlignedText(text);
+        return;
+    }
+
+    const std::size_t dotPos = text.find('.');
+    if (dotPos == std::string_view::npos || (dotPos + 1) >= text.size())
+    {
+        renderRightAlignedText(text);
+        return;
+    }
+
+    const std::string_view wholePart = text.substr(0, dotPos + 1); // includes trailing '.'
+    const std::string_view decimalPart = text.substr(dotPos + 1, 1);
+    const std::string_view unitPart = (dotPos + 2 < text.size()) ? text.substr(dotPos + 2) : std::string_view{"%"};
+
+    std::int32_t wholeValue = -1;
+    const std::string_view wholeDigits = text.substr(0, dotPos);
+    const auto parseResult = std::from_chars(wholeDigits.data(), wholeDigits.data() + wholeDigits.size(), wholeValue);
+
+    float wholeWidth = 0.0F;
+    if (parseResult.ec == std::errc{} && parseResult.ptr == (wholeDigits.data() + wholeDigits.size()) && wholeValue >= 0 &&
+        wholeValue <= 100)
+    {
+        wholeWidth = wholeWithDotWidths[static_cast<std::size_t>(wholeValue)];
+    }
+    else
+    {
+        wholeWidth = ImGui::CalcTextSize(wholePart.data(), wholePart.data() + wholePart.size()).x;
+    }
+
+    const float cellStartX = ImGui::GetCursorPosX();
+    const float availWidth = ImGui::GetContentRegionAvail().x;
+    const float cellEndX = cellStartX + availWidth;
+
+    const float unitRegionStart = cellEndX - unitPercentWidth;
+    const float decimalRegionStart = unitRegionStart - decimalDigitWidth;
+    const float wholeStartX = decimalRegionStart - wholeWidth;
+
+    ImGui::SetCursorPosX(std::max(cellStartX, wholeStartX));
+    ImGui::TextUnformatted(wholePart.data(), wholePart.data() + wholePart.size());
+
+    ImGui::SetCursorPosX(decimalRegionStart);
+    ImGui::TextUnformatted(decimalPart.data(), decimalPart.data() + decimalPart.size());
+
+    ImGui::SetCursorPosX(unitRegionStart);
+    ImGui::TextUnformatted(unitPart.data(), unitPart.data() + unitPart.size());
 }
 
 [[nodiscard]] auto formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit) -> std::string
@@ -201,6 +251,12 @@ void ProcessesPanel::TextSizeCache::populate()
     unitBytesPerSecWidth = ImGui::CalcTextSize(UNIT_BYTES_PER_SEC.data(), UNIT_BYTES_PER_SEC.data() + UNIT_BYTES_PER_SEC.size()).x;
     unitPowerWidth = ImGui::CalcTextSize(UNIT_POWER.data(), UNIT_POWER.data() + UNIT_POWER.size()).x;
     singleDigitWidth = ImGui::CalcTextSize("0").x;
+    for (std::size_t i = 0; i < percentWholeWithDotWidths.size(); ++i)
+    {
+        std::string wholeWithDot = std::to_string(i);
+        wholeWithDot.push_back('.');
+        percentWholeWithDotWidths[i] = ImGui::CalcTextSize(wholeWithDot.c_str()).x;
+    }
 
     // Cache static label widths
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
@@ -1123,11 +1179,17 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::CpuPercent:
-            renderRightAlignedText(fmt.cpuPercent);
+            renderRightAlignedPercentText(fmt.cpuPercent,
+                                          m_TextSizeCache.percentWholeWithDotWidths,
+                                          m_TextSizeCache.singleDigitWidth,
+                                          m_TextSizeCache.unitPercentWidth);
             break;
 
         case ProcessColumn::MemPercent:
-            renderRightAlignedText(fmt.memPercent);
+            renderRightAlignedPercentText(fmt.memPercent,
+                                          m_TextSizeCache.percentWholeWithDotWidths,
+                                          m_TextSizeCache.singleDigitWidth,
+                                          m_TextSizeCache.unitPercentWidth);
             break;
 
         case ProcessColumn::Virtual:
@@ -1273,7 +1335,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuPercent:
-            renderRightAlignedText(fmt.gpuPercent);
+            renderRightAlignedPercentText(fmt.gpuPercent,
+                                          m_TextSizeCache.percentWholeWithDotWidths,
+                                          m_TextSizeCache.singleDigitWidth,
+                                          m_TextSizeCache.unitPercentWidth);
             break;
 
         case ProcessColumn::GpuMemory:
