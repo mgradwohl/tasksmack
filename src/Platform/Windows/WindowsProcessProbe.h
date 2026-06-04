@@ -101,6 +101,7 @@ class WindowsProcessProbe : public IProcessProbe
         std::string publisher;
         std::string processType;
         std::optional<std::int32_t> gdiObjectCount;
+        std::optional<std::uint64_t> virtualSizeBytes;
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
         // Sentinel: handleCount == -1 means "not yet populated".
         std::int32_t handleCount = -1;     // GetProcessHandleCount (light TTL)

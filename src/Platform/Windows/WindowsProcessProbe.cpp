@@ -705,6 +705,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
+        if (cache.virtualSizeBytes.has_value())
+        {
+            counters.virtualBytes = cache.virtualSizeBytes.value();
+        }
         // Restore slow-changing fields that are now TTL-cached.
         // Sentinel values (-1 / '\0') indicate the cache entry was inserted but not yet populated;
         // in that case the fields remain at their zero-initialised defaults.
@@ -790,6 +794,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     ProcessMemoryCountersEx pmc{};
     pmc.base.cb = sizeof(pmc);
+    bool vmQuerySucceeded = false;
+    std::uint64_t vmVirtualSizeBytes = 0;
 
     if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
     {
@@ -803,6 +809,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
             {
                 counters.virtualBytes = vmInfo->virtualSizeBytes;
                 counters.pageFaultCount = vmInfo->pageFaultCount;
+                vmQuerySucceeded = true;
+                vmVirtualSizeBytes = vmInfo->virtualSizeBytes;
+            }
+            else if (cache.virtualSizeBytes.has_value())
+            {
+                counters.virtualBytes = cache.virtualSizeBytes.value();
             }
             else if (pmc.base.PagefileUsage != 0)
             {
@@ -814,6 +826,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
                 // Last resort: private bytes.
                 counters.virtualBytes = pmc.privateUsage;
             }
+        }
+        else if (cache.virtualSizeBytes.has_value())
+        {
+            counters.virtualBytes = cache.virtualSizeBytes.value();
         }
         else if (pmc.base.PagefileUsage != 0)
         {
@@ -879,6 +895,10 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.publisher = counters.publisher;
         cache.processType = counters.processType;
         cache.gdiObjectCount = counters.gdiObjectCount;
+        if (vmQuerySucceeded)
+        {
+            cache.virtualSizeBytes = vmVirtualSizeBytes;
+        }
         cache.cpuAffinityMask = counters.cpuAffinityMask;
         cache.nice = counters.nice;
         if (canCache)
