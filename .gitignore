@@ -24,6 +24,15 @@
 *.profdata
 /profiles/
 coverage-output.txt
+/perf-data/*.etl
+/perf-data/*.etl.NGENPDB/
+/perf-data/etw-*.log
+/perf-data/etw-*.txt
+/perf-data/etw-*.json
+/perf-data/pgo-hot*.txt
+/perf-data/pgo-hot*.json
+/perf-data/SymCache/
+*.pdb
 
 # Test results and sanitizer outputs
 test-results.xml

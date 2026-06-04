@@ -101,8 +101,20 @@ class WindowsProcessProbe : public IProcessProbe
         std::string publisher;
         std::string processType;
         std::optional<std::int32_t> gdiObjectCount;
+        // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
+        // Sentinel: handleCount == -1 means "not yet populated".
+        std::int32_t handleCount = -1;     // GetProcessHandleCount (light TTL)
+        std::uint64_t cpuAffinityMask = 0; // GetProcessAffinityMask (heavy TTL)
+        std::int32_t nice = 0;             // GetPriorityClass → nice value (heavy TTL)
+        char state = '\0';                 // GetExitCodeProcess → R/Z/? (light TTL); '\0' = not yet populated
         std::chrono::steady_clock::time_point nextLightRefresh;
         std::chrono::steady_clock::time_point nextHeavyRefresh;
+        std::uint64_t generation = 0;
+    };
+
+    struct OpenProcessRetryEntry
+    {
+        std::chrono::steady_clock::time_point nextRetry;
         std::uint64_t generation = 0;
     };
 
@@ -134,7 +146,9 @@ class WindowsProcessProbe : public IProcessProbe
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
+    std::unordered_map<std::uint32_t, OpenProcessRetryEntry> m_OpenProcessRetryCache;
     std::uint64_t m_DetailCacheGeneration = 0;
+    std::size_t m_LastEnumeratedProcessCount = 256;
 };
 
 } // namespace Platform

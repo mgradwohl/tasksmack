@@ -163,7 +163,7 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         },
@@ -279,7 +279,7 @@
             "binaryDir": "${sourceDir}/build/win-profile",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         },
