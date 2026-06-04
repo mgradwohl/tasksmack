@@ -168,22 +168,23 @@ void renderRightAlignedPercentText(std::string_view text,
         wholeWidth = ImGui::CalcTextSize(wholePart.data(), wholePart.data() + wholePart.size()).x;
     }
 
-    const float cellStartX = ImGui::GetCursorPosX();
+    const ImVec2 cursorScreen = ImGui::GetCursorScreenPos();
+    const float cellStartScreenX = cursorScreen.x;
     const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float cellEndX = cellStartX + availWidth;
+    const float cellEndScreenX = cellStartScreenX + availWidth;
 
-    const float unitRegionStart = cellEndX - unitPercentWidth;
+    const float unitRegionStart = cellEndScreenX - unitPercentWidth;
     const float decimalRegionStart = unitRegionStart - decimalDigitWidth;
-    const float wholeStartX = decimalRegionStart - wholeWidth;
+    const float wholeStartX = std::max(cellStartScreenX, decimalRegionStart - wholeWidth);
 
-    ImGui::SetCursorPosX(std::max(cellStartX, wholeStartX));
-    ImGui::TextUnformatted(wholePart.data(), wholePart.data() + wholePart.size());
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_Text);
 
-    ImGui::SetCursorPosX(decimalRegionStart);
-    ImGui::TextUnformatted(decimalPart.data(), decimalPart.data() + decimalPart.size());
+    drawList->AddText(ImVec2(wholeStartX, cursorScreen.y), textColor, wholePart.data(), wholePart.data() + wholePart.size());
+    drawList->AddText(ImVec2(decimalRegionStart, cursorScreen.y), textColor, decimalPart.data(), decimalPart.data() + decimalPart.size());
+    drawList->AddText(ImVec2(unitRegionStart, cursorScreen.y), textColor, unitPart.data(), unitPart.data() + unitPart.size());
 
-    ImGui::SetCursorPosX(unitRegionStart);
-    ImGui::TextUnformatted(unitPart.data(), unitPart.data() + unitPart.size());
+    ImGui::Dummy(ImVec2(0.0F, ImGui::GetTextLineHeight()));
 }
 
 [[nodiscard]] auto formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit) -> std::string
