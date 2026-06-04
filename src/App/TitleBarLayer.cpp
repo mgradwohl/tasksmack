@@ -92,7 +92,7 @@ constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 30.0F;
 constexpr float RESIZE_PENDING_IDLE_FLUSH_SECONDS = 1.0F / 60.0F;
 
 // Conditionally time an operation and accumulate the duration into accumMs.
-// When traceEnabled is false the call is a transparent passthrough with zero overhead.
+// When traceEnabled is false the call reduces to a branch and a direct callable invocation.
 template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
 {
     if (!traceEnabled)
@@ -108,7 +108,7 @@ template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
 // Lightweight RAII scope guard — runs a callable on scope exit.
 template<typename Fn> struct ScopeExit
 {
-    explicit ScopeExit(Fn&& fn) : m_fn(std::forward<Fn>(fn))
+    explicit ScopeExit(Fn fn) : m_fn(std::move(fn))
     {}
     ~ScopeExit()
     {
