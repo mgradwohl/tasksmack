@@ -122,8 +122,14 @@ void renderRightAlignedText(std::string_view text)
 [[nodiscard]] auto formatAlignedPercentString(double percent) -> std::string
 {
     const auto parts = UI::Format::splitPercentForAlignment(percent);
+
+    constexpr std::size_t MAX_WHOLE_DIGITS = 3; // "100"
+    const std::size_t wholeDigits = parts.wholePart.size();
+    const std::size_t leftPad = (wholeDigits < MAX_WHOLE_DIGITS) ? (MAX_WHOLE_DIGITS - wholeDigits) : 0;
+
     std::string out;
-    out.reserve(parts.wholePart.size() + 2);
+    out.reserve(leftPad + parts.wholePart.size() + 2);
+    out.append(leftPad, ' ');
     out.append(parts.wholePart.data(), parts.wholePart.size());
     out.push_back(parts.decimalDigit);
     out.append(UI::Format::AlignedPercentParts::unitPart.data(), UI::Format::AlignedPercentParts::unitPart.size());
