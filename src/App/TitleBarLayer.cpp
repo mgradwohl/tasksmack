@@ -110,9 +110,17 @@ template<typename Fn> struct ScopeExit
 {
     explicit ScopeExit(Fn fn) : m_fn(std::move(fn))
     {}
-    ~ScopeExit()
+    // noexcept: exceptions must not escape destructors. The callables used here
+    // (trace logging accumulations) are non-throwing; the try/catch is a safety
+    // net that prevents std::terminate if that assumption is ever violated.
+    ~ScopeExit() noexcept
     {
-        m_fn();
+        try
+        {
+            m_fn();
+        }
+        catch (...)
+        {}
     }
     ScopeExit(const ScopeExit&) = delete;
     ScopeExit& operator=(const ScopeExit&) = delete;
