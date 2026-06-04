@@ -640,8 +640,6 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
     std::erase_if(m_DetailCache,
                   [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
-    std::erase_if(m_OpenProcessRetryCache,
-                  [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
 
     // Attribute energy to processes if power monitoring is available
     if (m_HasPowerMonitoring)
@@ -658,30 +656,17 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
 bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters)
 {
-    const auto now = std::chrono::steady_clock::now();
-    constexpr auto OPEN_PROCESS_RETRY_TTL = std::chrono::milliseconds{2000};
-
-    if (const auto retryIt = m_OpenProcessRetryCache.find(pid); retryIt != m_OpenProcessRetryCache.end())
-    {
-        retryIt->second.generation = m_DetailCacheGeneration;
-        if (now < retryIt->second.nextRetry)
-        {
-            counters.state = '?';
-            return false;
-        }
-    }
-
     // Open process with limited access - some system processes won't allow full access
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
 
     if (hProcess == nullptr)
     {
-        m_OpenProcessRetryCache[pid] = OpenProcessRetryEntry{now + OPEN_PROCESS_RETRY_TTL, m_DetailCacheGeneration};
         // Can't access this process - leave defaults
         counters.state = '?';
         return false;
     }
-    m_OpenProcessRetryCache.erase(pid);
+
+    const auto now = std::chrono::steady_clock::now();
 
     // Get CPU times (always read — required for CPU accounting every refresh)
     FILETIME ftCreation{};

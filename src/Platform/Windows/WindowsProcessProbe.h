@@ -112,12 +112,6 @@ class WindowsProcessProbe : public IProcessProbe
         std::uint64_t generation = 0;
     };
 
-    struct OpenProcessRetryEntry
-    {
-        std::chrono::steady_clock::time_point nextRetry;
-        std::uint64_t generation = 0;
-    };
-
     /// Get detailed info for a single process
     [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
 
@@ -146,7 +140,6 @@ class WindowsProcessProbe : public IProcessProbe
 
     void applyNetworkCounters(std::vector<ProcessCounters>& processes) const;
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
-    std::unordered_map<std::uint32_t, OpenProcessRetryEntry> m_OpenProcessRetryCache;
     std::uint64_t m_DetailCacheGeneration = 0;
     std::size_t m_LastEnumeratedProcessCount = 256;
 };
