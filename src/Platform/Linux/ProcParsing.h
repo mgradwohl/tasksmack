@@ -19,6 +19,7 @@ namespace Platform::ProcParsing
 
 /// Read a /proc or /sys virtual file using low-level POSIX I/O.
 /// Avoids std::ifstream overhead (locale machinery, sentry, streambuf allocations).
+/// Loops to guard against short reads (POSIX allows ::read to return less than requested).
 /// Returns bytes read, or 0 on failure. Buffer is NOT null-terminated.
 [[nodiscard]] inline std::size_t readProcFile(const char* path, char* buf, std::size_t bufSize) noexcept
 {
@@ -28,9 +29,18 @@ namespace Platform::ProcParsing
     {
         return 0;
     }
-    const auto n = ::read(fd, buf, bufSize);
+    std::size_t total = 0;
+    while (total < bufSize)
+    {
+        const auto n = ::read(fd, buf + total, bufSize - total);
+        if (n <= 0)
+        {
+            break;
+        }
+        total += static_cast<std::size_t>(n);
+    }
     ::close(fd);
-    return (n > 0) ? static_cast<std::size_t>(n) : 0;
+    return total;
 }
 
 /// Read an entire /proc or /sys virtual file into a heap buffer, growing until EOF.
@@ -84,10 +94,12 @@ namespace Platform::ProcParsing
 /// Advances p past the parsed digits on success; leaves p unchanged and returns false on failure.
 template<std::integral T> bool parseNum(const char*& p, const char* end, T& out) noexcept
 {
+    const char* const saved = p;
     p = skipSpaces(p, end);
     const auto [ptr, ec] = std::from_chars(p, end, out);
     if (ec != std::errc{})
     {
+        p = saved;
         return false;
     }
     p = ptr;
@@ -95,13 +107,15 @@ template<std::integral T> bool parseNum(const char*& p, const char* end, T& out)
 }
 
 /// Parse one double from [p, end), skipping leading spaces.
-/// Advances p past the parsed number on success; returns false on failure.
+/// Advances p past the parsed number on success; leaves p unchanged and returns false on failure.
 inline bool parseDouble(const char*& p, const char* end, double& out) noexcept
 {
+    const char* const saved = p;
     p = skipSpaces(p, end);
     const auto [ptr, ec] = std::from_chars(p, end, out);
     if (ec != std::errc{})
     {
+        p = saved;
         return false;
     }
     p = ptr;
