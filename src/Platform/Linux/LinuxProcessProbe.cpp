@@ -543,6 +543,17 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         return;
     }
 
+    // RAII guard — ensures fd is closed on all paths, including exception paths
+    // (buf.reserve / buf.insert can throw on OOM).
+    struct FdGuard
+    {
+        int m_fd;
+        ~FdGuard() noexcept
+        {
+            ::close(m_fd);
+        }
+    } guard{fd};
+
     // Read until EOF so long command lines are not truncated.
     std::vector<char> buf;
     buf.reserve(4096);
@@ -556,7 +567,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
-    ::close(fd);
 
     if (buf.empty())
     {
