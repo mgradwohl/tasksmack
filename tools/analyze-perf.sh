@@ -46,10 +46,10 @@ STACKCOLLAPSE_PL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --top)              TOP="$2";              shift 2 ;;
+        --top)              [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; TOP="$2";              shift 2 ;;
         --skip-flamegraph)  SKIP_FLAMEGRAPH=1;     shift   ;;
-        --flamegraph-pl)    FLAMEGRAPH_PL="$2";    shift 2 ;;
-        --stackcollapse-pl) STACKCOLLAPSE_PL="$2"; shift 2 ;;
+        --flamegraph-pl)    [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; FLAMEGRAPH_PL="$2";    shift 2 ;;
+        --stackcollapse-pl) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; STACKCOLLAPSE_PL="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done

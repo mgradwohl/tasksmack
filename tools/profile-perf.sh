@@ -54,11 +54,11 @@ BENCH_MIN_TIME="0.5s"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --preset)       PRESET="$2";        shift 2 ;;
+        --preset)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; PRESET="$2";        shift 2 ;;
         --skip-build)   SKIP_BUILD=1;        shift   ;;
-        --bench-filter) BENCH_FILTER="$2";  shift 2 ;;
-        --bench-reps)   BENCH_REPS="$2";    shift 2 ;;
-        --bench-min-time) BENCH_MIN_TIME="$2"; shift 2 ;;
+        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  shift 2 ;;
+        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    shift 2 ;;
+        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; shift 2 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
