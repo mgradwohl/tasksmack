@@ -122,7 +122,7 @@ if (-not (Test-IsAdministrator)) {
     }
 
     # Child run always uses -SkipBuild: if needed, parent already built before elevation.
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-SkipBuild')
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-SkipBuild')
 
     $launchCommand = "$hostExe $($argList -join ' ')"
     "LAUNCH=$launchCommand" | Set-Content -Path $launcherLogPath -Encoding utf8
@@ -203,6 +203,7 @@ try {
     }
 }
 finally {
+    cmd /c "wpr -cancel >nul 2>&1" | Out-Null
     Stop-Transcript | Out-Null
 }
 
