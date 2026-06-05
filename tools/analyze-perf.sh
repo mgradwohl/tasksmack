@@ -147,7 +147,7 @@ if [[ "${SKIP_FLAMEGRAPH}" -eq 0 ]]; then
         info "flamegraph.pl:       ${FLAMEGRAPH_BIN}"
         info "stackcollapse-perf:  ${STACKCOLLAPSE_BIN}"
 
-        perf script -i "${DATA_FILE}" 2>/dev/null \
+        perf script -i "${DATA_FILE}" \
             | "${STACKCOLLAPSE_BIN}" \
             | "${FLAMEGRAPH_BIN}" \
             > "${FLAMEGRAPH_SVG}"
