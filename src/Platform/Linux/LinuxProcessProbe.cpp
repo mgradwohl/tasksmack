@@ -593,30 +593,41 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
 
-    // Read until EOF so long command lines are not truncated.
-    std::vector<char> buf = readProcFileFull(cmdlinePath.c_str());
-    const std::size_t len = buf.size();
-
-    if (len == 0)
+    // Open once: distinguishes "unreadable" (permission denied, hidepid) from
+    // "readable but empty" (kernel threads), avoiding a second open() call.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
     {
-        // Distinguish "file unreadable" (e.g. hidepid, permission denied) from
-        // "file readable but empty" (kernel threads have an empty cmdline).
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-        const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd == -1)
+        // Cannot read the file — leave command unchanged rather than
+        // incorrectly labelling a non-kernel process as a kernel thread.
+        return;
+    }
+
+    // Read until EOF so long command lines are not truncated.
+    std::vector<char> buf;
+    buf.reserve(4096);
+    std::array<char, 4096> chunk{};
+    for (;;)
+    {
+        const auto n = ::read(fd, chunk.data(), chunk.size());
+        if (n <= 0)
         {
-            // Cannot read the file — leave command unchanged rather than
-            // incorrectly labelling a non-kernel process as a kernel thread.
-            return;
+            break;
         }
-        ::close(fd);
+        buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+
+    if (buf.empty())
+    {
         // File opened but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
         return;
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
-    std::string cmdline(buf.data(), len);
+    std::string cmdline(buf.data(), buf.size());
     for (auto& c : cmdline)
     {
         if (c == '\0')

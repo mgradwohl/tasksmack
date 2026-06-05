@@ -72,6 +72,33 @@ template<std::integral T> [[nodiscard]] constexpr auto checkedPositiveToSizeT(T 
     return (n > 0) ? static_cast<std::size_t>(n) : 0;
 }
 
+/// Read an entire /proc or /sys virtual file into a heap buffer, growing until EOF.
+/// Avoids the fixed-size truncation of readProcFile for files without a known upper bound.
+/// Returns the bytes read, or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileFull(const char* path)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+    {
+        return {};
+    }
+    std::vector<char> buf;
+    buf.reserve(4096);
+    std::array<char, 4096> chunk{};
+    for (;;)
+    {
+        const auto n = ::read(fd, chunk.data(), chunk.size());
+        if (n <= 0)
+        {
+            break;
+        }
+        buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+    return buf;
+}
+
 /// Skip ASCII space/tab characters, returning the updated pointer.
 [[nodiscard]] constexpr const char* skipSpaces(const char* p, const char* end) noexcept
 {
@@ -213,10 +240,9 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
     const auto statPath = procRoot / "stat";
     const std::string pathStr = statPath.string();
 
-    // 16 KiB is sufficient for up to ~512 cores (each cpu line is ~80 bytes).
-    constexpr std::size_t BUF_SIZE = 16384;
-    std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), BUF_SIZE);
+    // Read until EOF so per-core CPU lines are never truncated on high-core-count machines.
+    const std::vector<char> buf = readProcFileFull(pathStr.c_str());
+    const std::size_t len = buf.size();
     if (len == 0)
     {
         spdlog::warn("Failed to open {}", pathStr);
@@ -453,9 +479,9 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     const auto netDevPath = m_ProcRoot / "net" / "dev";
     const std::string pathStr = netDevPath.string();
 
-    constexpr std::size_t BUF_SIZE = 8192;
-    std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), BUF_SIZE);
+    // Read until EOF so interfaces are not silently dropped on hosts with many veth devices.
+    const std::vector<char> buf = readProcFileFull(pathStr.c_str());
+    const std::size_t len = buf.size();
     if (len == 0)
     {
         spdlog::warn("Failed to open {}", pathStr);
