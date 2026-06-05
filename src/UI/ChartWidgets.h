@@ -9,9 +9,11 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <format>
 #include <functional>
 #include <limits>
@@ -32,6 +34,7 @@ inline constexpr float BAR_WIDTH = 24.0F;
 inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
 inline constexpr double TAU_MS_MIN = 20.0;
 inline constexpr double TAU_MS_MAX = 400.0;
+inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard to push smaller font for chart axis labels and legends
 /// RAII guard that pushes smaller font for chart rendering.
@@ -106,19 +109,58 @@ inline void plotLineWithFill(const char* label,
                              int count,
                              const ImVec4& lineColor,
                              std::optional<ImVec4> fillColor = std::nullopt,
-                             float lineThickness = 2.0F)
+                             float lineThickness = 2.0F,
+                             bool drawFill = true,
+                             int maxPointCount = 0)
 {
     if (count <= 0)
     {
         return;
     }
 
+    const TX* plotXData = xData;
+    const TY* plotYData = yData;
+    int plotCount = count;
+
+    std::vector<TX> reducedXData;
+    std::vector<TY> reducedYData;
+    if ((maxPointCount > 1) && (count > maxPointCount))
+    {
+        const int stride = std::max((count + maxPointCount - 1) / maxPointCount, 1);
+        const int reducedCount = ((count - 1) / stride) + 1;
+        reducedXData.reserve(static_cast<size_t>(reducedCount));
+        reducedYData.reserve(static_cast<size_t>(reducedCount));
+
+        for (int i = 0; i < count; i += stride)
+        {
+            reducedXData.push_back(xData[i]);
+            reducedYData.push_back(yData[i]);
+        }
+
+        if ((count > 0) && ((count - 1) % stride != 0))
+        {
+            reducedXData.push_back(xData[count - 1]);
+            reducedYData.push_back(yData[count - 1]);
+        }
+
+        plotXData = reducedXData.data();
+        plotYData = reducedYData.data();
+        plotCount = Domain::Numeric::narrowOr<int>(reducedXData.size(), count);
+    }
+
     const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
 
-    const std::string shadedLabel = std::format("##{}Fill", label);
+    if (drawFill)
+    {
+        std::array<char, 128> shadedLabel{};
+        const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
+        const char* shadedLabelPtr =
+            (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##SeriesFill";
 
-    ImPlot::PlotShaded(shadedLabel.c_str(), xData, yData, count, 0.0, {ImPlotProp_FillColor, fill});
-    ImPlot::PlotLine(label, xData, yData, count, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+        ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
+    }
+
+    ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
 }
 
 // ============================================================================

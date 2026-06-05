@@ -1022,18 +1022,49 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(
-                "Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+            plotLineWithFill("Threads",
+                             timeData.data(),
+                             threadData.data(),
+                             plotCount,
+                             theme.scheme().chartCpu,
+                             theme.scheme().chartCpuFill,
+                             2.0F,
+                             false,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
-            plotLineWithFill(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
+            plotLineWithFill(handleLabel,
+                             timeData.data(),
+                             handleData.data(),
+                             plotCount,
+                             theme.scheme().chartMemory,
+                             std::nullopt,
+                             2.0F,
+                             false,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
-            plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
+            plotLineWithFill("Page Faults/s",
+                             timeData.data(),
+                             faultData.data(),
+                             plotCount,
+                             theme.accentColor(3),
+                             std::nullopt,
+                             2.0F,
+                             false,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
 #ifdef _WIN32
             if (!gdiData.empty())
             {
                 const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiAlignedCount, timeData.size()));
-                plotLineWithFill("GDI Objects", timeData.data(), gdiData.data(), gdiPlotCount, theme.accentColor(4));
+                plotLineWithFill("GDI Objects",
+                                 timeData.data(),
+                                 gdiData.data(),
+                                 gdiPlotCount,
+                                 theme.accentColor(4),
+                                 std::nullopt,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 #endif
 

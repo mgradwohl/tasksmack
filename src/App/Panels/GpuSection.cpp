@@ -224,13 +224,24 @@ void renderGpuSection(RenderContext& ctx)
                                      timeData.data(),
                                      utilHist.data(),
                                      UI::Format::checkedCount(utilHist.size()),
-                                     theme.scheme().gpuUtilization);
+                                     theme.scheme().gpuUtilization,
+                                     std::nullopt,
+                                     2.0F,
+                                     false,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
                 if (!memHist.empty())
                 {
-                    plotLineWithFill(
-                        "Memory", timeData.data(), memHist.data(), UI::Format::checkedCount(memHist.size()), theme.scheme().gpuMemory);
+                    plotLineWithFill("Memory",
+                                     timeData.data(),
+                                     memHist.data(),
+                                     UI::Format::checkedCount(memHist.size()),
+                                     theme.scheme().gpuMemory,
+                                     std::nullopt,
+                                     2.0F,
+                                     false,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
                 // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
@@ -241,7 +252,11 @@ void renderGpuSection(RenderContext& ctx)
                                      timeData.data(),
                                      clockPercentBuf.data(),
                                      UI::Format::checkedCount(clockPercentBuf.size()),
-                                     theme.scheme().gpuClockFill);
+                                     theme.scheme().gpuClockFill,
+                                     std::nullopt,
+                                     2.0F,
+                                     false,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
                 // Encoder utilization
@@ -251,7 +266,11 @@ void renderGpuSection(RenderContext& ctx)
                                      timeData.data(),
                                      encoderHist.data(),
                                      UI::Format::checkedCount(encoderHist.size()),
-                                     theme.scheme().gpuEncoder);
+                                     theme.scheme().gpuEncoder,
+                                     std::nullopt,
+                                     2.0F,
+                                     false,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
                 // Decoder utilization
@@ -261,7 +280,11 @@ void renderGpuSection(RenderContext& ctx)
                                      timeData.data(),
                                      decoderHist.data(),
                                      UI::Format::checkedCount(decoderHist.size()),
-                                     theme.scheme().gpuDecoder);
+                                     theme.scheme().gpuDecoder,
+                                     std::nullopt,
+                                     2.0F,
+                                     false,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 }
 
                 // Tooltip on hover
@@ -462,7 +485,11 @@ void renderGpuSection(RenderContext& ctx)
                                          timeData.data(),
                                          tempPercentBuf.data(),
                                          UI::Format::checkedCount(tempPercentBuf.size()),
-                                         theme.scheme().gpuTemperature);
+                                         theme.scheme().gpuTemperature,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Power (normalized to power limit percentage)
@@ -473,14 +500,25 @@ void renderGpuSection(RenderContext& ctx)
                                          timeData.data(),
                                          powerPercentBuf.data(),
                                          UI::Format::checkedCount(powerPercentBuf.size()),
-                                         theme.scheme().gpuPower);
+                                         theme.scheme().gpuPower,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Fan speed (already a percentage)
                     if (caps.hasFanSpeed && !fanHist.empty())
                     {
-                        plotLineWithFill(
-                            "Fan", timeData.data(), fanHist.data(), UI::Format::checkedCount(fanHist.size()), theme.scheme().gpuFan);
+                        plotLineWithFill("Fan",
+                                         timeData.data(),
+                                         fanHist.data(),
+                                         UI::Format::checkedCount(fanHist.size()),
+                                         theme.scheme().gpuFan,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Tooltip on hover

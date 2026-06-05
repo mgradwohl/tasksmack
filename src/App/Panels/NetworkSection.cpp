@@ -321,8 +321,24 @@ void renderNetworkSection(RenderContext& ctx)
                 // Total lines (muted, in background) — scale fill alpha to match the muted line alpha
                 const auto ifaceSentFill = UI::withAlpha(theme.scheme().chartNetTxFill, theme.scheme().chartNetTxFill.w * 0.7F);
                 const auto ifaceRecvFill = UI::withAlpha(theme.scheme().chartNetRxFill, theme.scheme().chartNetRxFill.w * 0.7F);
-                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor, ifaceSentFill);
-                plotLineWithFill("Received (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
+                plotLineWithFill("Sent (Total)",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 ifaceSentColor,
+                                 ifaceSentFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received (Total)",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 ifaceRecvColor,
+                                 ifaceRecvFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
@@ -332,20 +348,41 @@ void renderNetworkSection(RenderContext& ctx)
                                  ifaceSentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill);
+                                 theme.scheme().chartNetTxFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 plotLineWithFill(ifaceRecvLabel.c_str(),
                                  netTimes.data(),
                                  ifaceRecvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill);
+                                 theme.scheme().chartNetRxFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
             else
             {
                 // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
-                plotLineWithFill(
-                    "Received", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+                plotLineWithFill("Sent",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 theme.scheme().chartNetTxFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 theme.scheme().chartNetRxFill,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
             if (ImPlot::IsPlotHovered())

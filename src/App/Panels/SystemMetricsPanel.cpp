@@ -871,7 +871,11 @@ void SystemMetricsPanel::renderOverview()
                                          timeData.data() + static_cast<std::ptrdiff_t>(powerOffset),
                                          powerHist.data(),
                                          UI::Format::checkedCount(powerHist.size()),
-                                         theme.scheme().chartCpu);
+                                         theme.scheme().chartCpu,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Plot battery charge on secondary Y-axis
@@ -882,7 +886,11 @@ void SystemMetricsPanel::renderOverview()
                                          timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
                                          batteryHist.data(),
                                          UI::Format::checkedCount(batteryHist.size()),
-                                         theme.scheme().chartMemory);
+                                         theme.scheme().chartMemory,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
 
@@ -1090,9 +1098,33 @@ void SystemMetricsPanel::renderOverview()
                 ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
                 const int count = UI::Format::checkedCount(alignedCount);
-                plotLineWithFill("Threads", timeData.data(), threadData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), count, theme.accentColor(3));
-                plotLineWithFill(handleLabel, timeData.data(), handleData.data(), count, theme.scheme().chartMemory);
+                plotLineWithFill("Threads",
+                                 timeData.data(),
+                                 threadData.data(),
+                                 count,
+                                 theme.scheme().chartCpu,
+                                 std::nullopt,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Page Faults/s",
+                                 timeData.data(),
+                                 faultData.data(),
+                                 count,
+                                 theme.accentColor(3),
+                                 std::nullopt,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill(handleLabel,
+                                 timeData.data(),
+                                 handleData.data(),
+                                 count,
+                                 theme.scheme().chartMemory,
+                                 std::nullopt,
+                                 2.0F,
+                                 false,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 if (ImPlot::IsPlotHovered())
                 {
