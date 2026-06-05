@@ -76,7 +76,6 @@ find_flamegraph_pl() {
         "$(command -v flamegraph.pl 2>/dev/null || true)" \
         "${HOME}/opt/FlameGraph/flamegraph.pl" \
         "/opt/FlameGraph/flamegraph.pl" \
-        "/usr/share/perl5/Flamegraph.pm" \
         "$(command -v flamegraph 2>/dev/null || true)"; do
         if [[ -n "${candidate}" && -x "${candidate}" ]]; then
             echo "${candidate}"
