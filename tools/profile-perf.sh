@@ -154,13 +154,18 @@ info "Binary: ${BINARY}"
 #   -o            — output file
 PERF_RECORD_FLAGS=(-F 997 -g --call-graph dwarf -o "${DATA_FILE}")
 
+PERF_EXIT_CODE=0
 if [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under perf. Exercise the application, then close it."
     echo ""
+    set +e
     perf record "${PERF_RECORD_FLAGS[@]}" -- "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
-    echo "EXIT_CODE=$?" >> "${LOG_FILE}"
+    PERF_EXIT_CODE=$?
+    set -e
+    echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
 else
+    set +e
     perf record "${PERF_RECORD_FLAGS[@]}" -- \
         "${BINARY}" \
         "--benchmark_filter=${BENCH_FILTER}" \
@@ -168,7 +173,9 @@ else
         "--benchmark_min_time=${BENCH_MIN_TIME}" \
         --benchmark_report_aggregates_only=true \
         --benchmark_display_aggregates_only=true 2> >(tee -a "${LOG_FILE}" >&2)
-    echo "EXIT_CODE=$?" >> "${LOG_FILE}"
+    PERF_EXIT_CODE=$?
+    set -e
+    echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────
@@ -183,3 +190,5 @@ if command -v hotspot &>/dev/null; then
 fi
 echo "  ./tools/analyze-perf.sh ${DATA_FILE}        # CLI top functions + flamegraph SVG"
 echo "  perf report -i ${DATA_FILE}                 # interactive TUI"
+
+exit "${PERF_EXIT_CODE}"

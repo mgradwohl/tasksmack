@@ -130,18 +130,25 @@ info "Binary:      ${BINARY}"
     echo "TIMESTAMP=${TIMESTAMP}"
 } > "${LOG_FILE}"
 
+HEAP_EXIT_CODE=0
 if [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under heaptrack. Exercise the application, then close it."
     echo ""
+    set +e
     heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
+    HEAP_EXIT_CODE=$?
+    set -e
 else
+    set +e
     heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" \
         "--benchmark_filter=${BENCH_FILTER}" \
         "--benchmark_repetitions=${BENCH_REPS}" \
         "--benchmark_min_time=${BENCH_MIN_TIME}" \
         --benchmark_report_aggregates_only=true \
         --benchmark_display_aggregates_only=true 2> >(tee -a "${LOG_FILE}" >&2)
+    HEAP_EXIT_CODE=$?
+    set -e
 fi
 
 # heaptrack writes <base>.heaptrack.gz or <base>.<pid>.gz — find it
@@ -186,3 +193,5 @@ if command -v heaptrack_print &>/dev/null; then
     echo "  heaptrack_print ${HEAPTRACK_DATA}  # detailed text report"
 fi
 echo "  # Install GUI: sudo apt install heaptrack"
+
+exit "${HEAP_EXIT_CODE}"

@@ -101,6 +101,33 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return (n > 0) ? static_cast<std::size_t>(n) : 0;
 }
 
+/// Read an entire /proc or /sys virtual file into a heap buffer, growing until EOF.
+/// Avoids the fixed-size truncation of readProcFile for files without a known upper bound.
+/// Returns the bytes read, or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileFull(const char* path)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+    {
+        return {};
+    }
+    std::vector<char> buf;
+    buf.reserve(4096);
+    std::array<char, 4096> chunk{};
+    for (;;)
+    {
+        const auto n = ::read(fd, chunk.data(), chunk.size());
+        if (n <= 0)
+        {
+            break;
+        }
+        buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+    return buf;
+}
+
 /// Skip ASCII space/tab characters, returning the updated pointer.
 [[nodiscard]] constexpr const char* skipSpaces(const char* p, const char* end) noexcept
 {
@@ -566,10 +593,9 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
 
-    // 4 KiB covers virtually all real-world command lines; longer ones are truncated.
-    constexpr std::size_t MAX_CMDLINE = 4096;
-    std::array<char, MAX_CMDLINE> buf{};
-    const std::size_t len = readProcFile(cmdlinePath.c_str(), buf.data(), MAX_CMDLINE);
+    // Read until EOF so long command lines are not truncated.
+    std::vector<char> buf = readProcFileFull(cmdlinePath.c_str());
+    const std::size_t len = buf.size();
 
     if (len == 0)
     {
@@ -883,29 +909,19 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
 {
     // Format: /proc/stat contains a line: btime <epoch_seconds>
     // btime is the time the system booted in seconds since Unix epoch
-    // The btime line appears after all cpu lines so the file can be several KiB;
-    // use a heap buffer to avoid stack pressure.
+    // The btime line appears after all cpu lines; on systems with very large core
+    // counts /proc/stat can exceed 64 KiB, so read until EOF.
 
     const std::string statPath = (procRoot / "stat").string();
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-    const int fd = ::open(statPath.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd == -1)
+    const std::vector<char> buf = readProcFileFull(statPath.c_str());
+    if (buf.empty())
     {
         spdlog::warn("Failed to open {} for boot time", statPath);
         return 0;
     }
 
-    // 65536 bytes handles up to ~1000 cores (cpu lines + intr/ctxt/btime).
-    std::vector<char> buf(65536);
-    const auto n = ::read(fd, buf.data(), buf.size());
-    ::close(fd);
-    if (n <= 0)
-    {
-        return 0;
-    }
-
     const char* p = buf.data();
-    const char* const end = buf.data() + static_cast<std::size_t>(n);
+    const char* const end = buf.data() + buf.size();
     while (p < end)
     {
         const char* lineEnd = p;
