@@ -778,7 +778,7 @@ void SystemMetricsPanel::renderOverview()
         // Align to timestamps - use process timestamps as primary if available, else system timestamps
         const auto& alignTimestamps = !procTimestamps.empty() ? procTimestamps : timestamps;
         const size_t powerCount = std::min(powerHistDouble.size(), alignTimestamps.size());
-        const size_t batteryCount = std::min(batteryHistFloat.size(), timestamps.size());
+        const size_t batteryCount = std::min(batteryHistFloat.size(), alignTimestamps.size());
         const size_t alignedCount = std::max(powerCount, batteryCount);
 
         if (alignedCount > 0)
@@ -809,6 +809,8 @@ void SystemMetricsPanel::renderOverview()
 
             std::vector<float> timeData = buildTimeAxis(alignTimestamps, alignedCount, nowSeconds);
             const auto axis = makeTimeAxisConfig(alignTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+            const size_t powerOffset = alignedCount - powerHist.size();
+            const size_t batteryOffset = alignedCount - batteryHist.size();
             // Update smoothed values
             const float targetPower = powerHist.empty() ? 0.0F : powerHist.back();
             const float targetBattery = batteryHist.empty() ? 0.0F : batteryHist.back();
@@ -866,7 +868,7 @@ void SystemMetricsPanel::renderOverview()
                     if (!powerHist.empty())
                     {
                         plotLineWithFill("Power",
-                                         timeData.data(),
+                                         timeData.data() + static_cast<std::ptrdiff_t>(powerOffset),
                                          powerHist.data(),
                                          UI::Format::checkedCount(powerHist.size()),
                                          theme.scheme().chartCpu);
@@ -877,7 +879,7 @@ void SystemMetricsPanel::renderOverview()
                     {
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                         plotLineWithFill("Battery",
-                                         timeData.data(),
+                                         timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
                                          batteryHist.data(),
                                          UI::Format::checkedCount(batteryHist.size()),
                                          theme.scheme().chartMemory);
@@ -895,14 +897,16 @@ void SystemMetricsPanel::renderOverview()
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
 
-                            if (*idxVal < powerHist.size())
+                            if (*idxVal >= powerOffset)
                             {
-                                const double powerVal = Domain::Numeric::toDouble(powerHist[*idxVal]);
+                                const size_t powerIdx = *idxVal - powerOffset;
+                                const double powerVal = Domain::Numeric::toDouble(powerHist[powerIdx]);
                                 ImGui::TextColored(theme.scheme().chartCpu, "Power: %s", UI::Format::formatPowerOrZero(powerVal).c_str());
                             }
-                            if (*idxVal < batteryHist.size() && snap.power.hasBattery)
+                            if ((*idxVal >= batteryOffset) && snap.power.hasBattery)
                             {
-                                const double batteryVal = Domain::Numeric::toDouble(batteryHist[*idxVal]);
+                                const size_t batteryIdx = *idxVal - batteryOffset;
+                                const double batteryVal = Domain::Numeric::toDouble(batteryHist[batteryIdx]);
                                 ImGui::TextColored(
                                     theme.scheme().chartMemory, "Battery: %s", UI::Format::percentCompact(batteryVal).c_str());
                             }
