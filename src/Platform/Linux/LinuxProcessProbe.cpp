@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <concepts>
@@ -568,6 +569,10 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         }
         if (n < 0)
         {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by signal — retry
+            }
             readError = true;
             break; // I/O error
         }
