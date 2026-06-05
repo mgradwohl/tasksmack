@@ -175,7 +175,7 @@ fi
     fi
     echo ""
     echo "Top ${TOP} functions (self CPU):"
-    grep -E "^\s+[0-9]+\.[0-9]+%" "${REPORT_FILE}" \
+    grep -E "^[[:space:]]+[0-9]+\.[0-9]+%" "${REPORT_FILE}" \
         | grep -v "\[k\]" \
         | head -n "${TOP}" \
         || echo "(No symbols found)"

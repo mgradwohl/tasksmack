@@ -5,6 +5,7 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <concepts>
 #include <cstddef>
@@ -40,6 +41,10 @@ namespace Platform::ProcParsing
         }
         if (n < 0)
         {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by signal — retry
+            }
             readError = true;
             break; // I/O error — discard partial data
         }
@@ -83,6 +88,10 @@ namespace Platform::ProcParsing
         }
         if (n < 0)
         {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by signal — retry
+            }
             return {}; // I/O error — discard partial data
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
