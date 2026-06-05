@@ -184,6 +184,37 @@ class ProcessesPanel : public Panel
 
     TextSizeCache m_TextSizeCache;
 
+    /// Cache of pre-formatted strings per process row, keyed by uniqueKey.
+    /// Rebuilt once when snapshot data changes (~1Hz), not per frame (60fps).
+    /// Eliminates heap allocations for slow-changing formatted columns in renderProcessRow.
+    struct RowFormatCache
+    {
+        std::string ppid;       // formatId(parentPid)          — immutable
+        std::string startTime;  // formatEpochDateTimeShort      — immutable
+        std::string cpuTime;    // formatCpuTimeCompact          — changes at 1Hz
+        std::string cpuPercent; // pre-formatted to avoid per-frame decimal alignment work
+        std::string memPercent; // pre-formatted to avoid per-frame decimal alignment work
+        std::string virtualMem; // pre-formatted to avoid per-frame decimal alignment work
+        std::string resident;   // pre-formatted to avoid per-frame decimal alignment work
+        std::string peakRss;    // pre-formatted to avoid per-frame decimal alignment work
+        std::string shared;     // pre-formatted to avoid per-frame decimal alignment work
+        std::string ioRead;     // pre-formatted to avoid per-frame decimal alignment work
+        std::string ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
+        std::string netSent;    // pre-formatted to avoid per-frame decimal alignment work
+        std::string netRecv;    // pre-formatted to avoid per-frame decimal alignment work
+        std::string power;      // pre-formatted to avoid per-frame decimal alignment work
+        std::string gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
+        std::string gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
+        std::string threads;    // formatOrDash/formatIntLocalized(threadCount)
+        std::string handles;    // formatOrDash/formatIntLocalized(handleCount)
+        std::string pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
+        std::string affinity;   // formatCpuAffinityMask         — rarely changes
+        std::string gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
+    };
+
+    std::unordered_map<std::uint64_t, RowFormatCache> m_RowFormatCache;
+    std::uint64_t m_RowFormatCacheVersion = std::numeric_limits<std::uint64_t>::max();
+
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();
 

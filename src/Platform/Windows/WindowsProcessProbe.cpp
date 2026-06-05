@@ -196,6 +196,21 @@ namespace
 
 using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
 
+[[nodiscard]] NtQueryInformationProcessFn getNtQueryInformationProcessFn() noexcept
+{
+    static NtQueryInformationProcessFn cachedFn = []() -> NtQueryInformationProcessFn
+    {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll == nullptr)
+        {
+            return nullptr;
+        }
+        return Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
+    }();
+
+    return cachedFn;
+}
+
 // Some Windows SDK versions omit VM_COUNTERS and/or the ProcessVmCounters enum value from public headers.
 // Define what we need locally for compatibility.
 struct TaskSmackVmCounters
@@ -228,13 +243,7 @@ struct ProcessVmInfo
         return std::nullopt;
     }
 
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll == nullptr)
-    {
-        return std::nullopt;
-    }
-
-    auto* fn = Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
+    auto* fn = getNtQueryInformationProcessFn();
     if (fn == nullptr)
     {
         return std::nullopt;
@@ -285,13 +294,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         return {};
     }
 
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (ntdll == nullptr)
-    {
-        return {};
-    }
-
-    auto* fn = Windows::getProcAddress<NtQueryInformationProcessFn>(ntdll, "NtQueryInformationProcess");
+    auto* fn = getNtQueryInformationProcessFn();
     if (fn == nullptr)
     {
         return {};
@@ -594,6 +597,7 @@ WindowsProcessProbe::~WindowsProcessProbe()
 std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 {
     std::vector<ProcessCounters> results;
+    results.reserve(m_LastEnumeratedProcessCount);
     ++m_DetailCacheGeneration;
 
     // Create snapshot of all processes
@@ -632,6 +636,8 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
     CloseHandle(hSnapshot);
 
+    m_LastEnumeratedProcessCount = std::max<std::size_t>(results.size(), std::size_t{64});
+
     std::erase_if(m_DetailCache,
                   [generation = m_DetailCacheGeneration](const auto& entry) { return entry.second.generation != generation; });
 
@@ -660,37 +666,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         return false;
     }
 
-    // Get process state
-    counters.state = getProcessState(hProcess);
+    const auto now = std::chrono::steady_clock::now();
 
-    // Get process priority class and map to nice-like value
-    const DWORD priorityClass = GetPriorityClass(hProcess);
-    switch (priorityClass)
-    {
-    case IDLE_PRIORITY_CLASS:
-        counters.nice = 19;
-        break;
-    case BELOW_NORMAL_PRIORITY_CLASS:
-        counters.nice = 10;
-        break;
-    case NORMAL_PRIORITY_CLASS:
-        counters.nice = 0;
-        break;
-    case ABOVE_NORMAL_PRIORITY_CLASS:
-        counters.nice = -5;
-        break;
-    case HIGH_PRIORITY_CLASS:
-        counters.nice = -10;
-        break;
-    case REALTIME_PRIORITY_CLASS:
-        counters.nice = -20;
-        break;
-    default:
-        counters.nice = 0;
-        break;
-    }
-
-    // Get CPU times
+    // Get CPU times (always read — required for CPU accounting every refresh)
     FILETIME ftCreation{};
     FILETIME ftExit{};
     FILETIME ftKernel{};
@@ -704,8 +682,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.startTimeTicks = filetimeToTicks(ftCreation);
         counters.startTimeEpoch = filetimeToUnixEpoch(ftCreation);
     }
-
-    const auto now = std::chrono::steady_clock::now();
 
     // When startTimeTicks is 0, GetProcessTimes failed. Treat as always-miss:
     // skip caching to prevent {pid, 0} from collapsing multiple processes onto
@@ -729,6 +705,23 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
+        if (cache.virtualSizeBytes.has_value())
+        {
+            counters.virtualBytes = cache.virtualSizeBytes.value();
+        }
+        // Restore slow-changing fields that are now TTL-cached.
+        // Sentinel values (-1 / '\0') indicate the cache entry was inserted but not yet populated;
+        // in that case the fields remain at their zero-initialised defaults.
+        if (cache.handleCount >= 0)
+        {
+            counters.handleCount = cache.handleCount;
+        }
+        counters.cpuAffinityMask = cache.cpuAffinityMask;
+        if (cache.state != '\0')
+        {
+            counters.state = cache.state;
+        }
+        counters.nice = cache.nice;
     }
 
     const bool refreshLightDetails = inserted || (now >= cache.nextLightRefresh);
@@ -746,6 +739,46 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
         // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
         counters.publisher = getProcessPublisher(hProcess);
+
+        // CPU affinity rarely changes — refresh alongside heavy details.
+        DWORD_PTR processAffinityMask = 0;
+        DWORD_PTR systemAffinityMask = 0;
+        if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
+        {
+            // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
+            counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
+        }
+        else
+        {
+            counters.cpuAffinityMask = 0;
+        }
+
+        // Priority class rarely changes — refresh alongside heavy details.
+        const DWORD priorityClass = GetPriorityClass(hProcess);
+        switch (priorityClass)
+        {
+        case IDLE_PRIORITY_CLASS:
+            counters.nice = 19;
+            break;
+        case BELOW_NORMAL_PRIORITY_CLASS:
+            counters.nice = 10;
+            break;
+        case NORMAL_PRIORITY_CLASS:
+            counters.nice = 0;
+            break;
+        case ABOVE_NORMAL_PRIORITY_CLASS:
+            counters.nice = -5;
+            break;
+        case HIGH_PRIORITY_CLASS:
+            counters.nice = -10;
+            break;
+        case REALTIME_PRIORITY_CLASS:
+            counters.nice = -20;
+            break;
+        default:
+            counters.nice = 0;
+            break;
+        }
     }
     else if (counters.command.empty())
     {
@@ -761,16 +794,42 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     ProcessMemoryCountersEx pmc{};
     pmc.base.cb = sizeof(pmc);
+    bool vmQuerySucceeded = false;
+    std::uint64_t vmVirtualSizeBytes = 0;
 
     if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
     {
         counters.rssBytes = pmc.base.WorkingSetSize;
         counters.peakRssBytes = pmc.base.PeakWorkingSetSize;
+        counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(pmc.base.PageFaultCount, std::uint64_t{0});
 
-        if (auto vmInfo = queryProcessVmInfo(hProcess))
+        if (refreshHeavyDetails)
         {
-            counters.virtualBytes = vmInfo->virtualSizeBytes;
-            counters.pageFaultCount = vmInfo->pageFaultCount;
+            if (auto vmInfo = queryProcessVmInfo(hProcess))
+            {
+                counters.virtualBytes = vmInfo->virtualSizeBytes;
+                counters.pageFaultCount = vmInfo->pageFaultCount;
+                vmQuerySucceeded = true;
+                vmVirtualSizeBytes = vmInfo->virtualSizeBytes;
+            }
+            else if (cache.virtualSizeBytes.has_value())
+            {
+                counters.virtualBytes = cache.virtualSizeBytes.value();
+            }
+            else if (pmc.base.PagefileUsage != 0)
+            {
+                // Fallback: commit charge (not virtual address space size, but avoids reporting RSS/Private bytes as VIRT).
+                counters.virtualBytes = pmc.base.PagefileUsage;
+            }
+            else
+            {
+                // Last resort: private bytes.
+                counters.virtualBytes = pmc.privateUsage;
+            }
+        }
+        else if (cache.virtualSizeBytes.has_value())
+        {
+            counters.virtualBytes = cache.virtualSizeBytes.value();
         }
         else if (pmc.base.PagefileUsage != 0)
         {
@@ -792,37 +851,29 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.writeBytes = ioCounters.WriteTransferCount;
     }
 
-    // Get handle count
-    DWORD handleCount = 0;
-    if (GetProcessHandleCount(hProcess, &handleCount) != 0)
-    {
-        counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(handleCount, std::int32_t{0});
-    }
-    else
-    {
-        const auto errorCode = ::GetLastError();
-        spdlog::debug("WindowsProcessProbe: GetProcessHandleCount failed (error code: {})", errorCode);
-    }
-
-    // Get CPU affinity mask
-    DWORD_PTR processAffinityMask = 0;
-    DWORD_PTR systemAffinityMask = 0;
-    if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
-    {
-        // Convert DWORD_PTR to uint64_t (may truncate on 32-bit, but we support 64-bit only)
-        counters.cpuAffinityMask = static_cast<std::uint64_t>(processAffinityMask);
-    }
-    else
-    {
-        counters.cpuAffinityMask = 0;
-    }
-
     if (refreshLightDetails || refreshHeavyDetails)
     {
         // Medium-cost data refreshed more frequently than heavy details.
         counters.status = getProcessStatus(hProcess);
 
-        // Get GDI object count (best-effort; zero for protected/system processes).
+        // Process state (R/Z/?) changes infrequently; refresh at light TTL cadence.
+        counters.state = getProcessState(hProcess);
+
+        // Handle count changes occasionally; refresh at light TTL cadence.
+        DWORD handleCount = 0;
+        if (GetProcessHandleCount(hProcess, &handleCount) != 0)
+        {
+            counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(handleCount, std::int32_t{0});
+        }
+        else
+        {
+            spdlog::debug("WindowsProcessProbe: GetProcessHandleCount failed (error code: {})", ::GetLastError());
+        }
+    }
+
+    if (refreshHeavyDetails)
+    {
+        // Expensive classification metadata changes rarely; refresh only on heavy cadence.
         // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
         // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
         HANDLE hQueryInfo = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
@@ -842,6 +893,14 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.user = counters.user;
         cache.command = counters.command;
         cache.publisher = counters.publisher;
+        cache.processType = counters.processType;
+        cache.gdiObjectCount = counters.gdiObjectCount;
+        if (vmQuerySucceeded)
+        {
+            cache.virtualSizeBytes = vmVirtualSizeBytes;
+        }
+        cache.cpuAffinityMask = counters.cpuAffinityMask;
+        cache.nice = counters.nice;
         if (canCache)
         {
             cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
@@ -851,8 +910,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     if (refreshLightDetails || refreshHeavyDetails)
     {
         cache.status = counters.status;
-        cache.processType = counters.processType;
-        cache.gdiObjectCount = counters.gdiObjectCount;
+        cache.state = counters.state;
+        cache.handleCount = counters.handleCount;
         if (canCache)
         {
             cache.nextLightRefresh = now + m_LightDetailTTL;
@@ -1029,41 +1088,41 @@ void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseco
     const uint64_t totalBytes = memStatus.ullTotalPhys;
 
     // Tier thresholds and corresponding TTLs (based on total physical RAM):
-    // - < 2 GB total: Aggressive caching (preserve memory on low-end systems)
-    // - 2-4 GB: Conservative refresh (typical older laptops)
-    // - 4-8 GB: Normal refresh (typical workstations)
-    // - 8-16 GB: Frequent refresh (modern workstations)
-    // - > 16 GB: Very frequent refresh (high-performance systems)
+    // - < 2 GB total: Aggressive caching (preserve CPU/memory on low-end systems)
+    // - 2-4 GB: Conservative refresh
+    // - 4-8 GB: Balanced refresh
+    // - 8-16 GB: Slightly more frequent, but still avoids per-frame thrash
+    // - >= 16 GB: Keep responsive while preventing expensive detail recompute every sample
 
     if (totalBytes < (2ULL * 1024 * 1024 * 1024))
     {
         // < 2 GB: Cache longer to reduce CPU load on memory-constrained systems
         lightTTL = std::chrono::milliseconds(4000);
-        heavyTTL = std::chrono::milliseconds(10000);
+        heavyTTL = std::chrono::milliseconds(15000);
     }
     else if (totalBytes < (4ULL * 1024 * 1024 * 1024))
     {
         // 2-4 GB: Conservative but not aggressive
-        lightTTL = std::chrono::milliseconds(2000);
-        heavyTTL = std::chrono::milliseconds(5000);
+        lightTTL = std::chrono::milliseconds(3000);
+        heavyTTL = std::chrono::milliseconds(10000);
     }
     else if (totalBytes < (8ULL * 1024 * 1024 * 1024))
     {
-        // 4-8 GB: Normal refresh (baseline)
-        lightTTL = std::chrono::milliseconds(1000);
-        heavyTTL = std::chrono::milliseconds(3000);
+        // 4-8 GB: Balanced refresh
+        lightTTL = std::chrono::milliseconds(2000);
+        heavyTTL = std::chrono::milliseconds(8000);
     }
     else if (totalBytes < (16ULL * 1024 * 1024 * 1024))
     {
-        // 8-16 GB: Frequent refresh
-        lightTTL = std::chrono::milliseconds(500);
-        heavyTTL = std::chrono::milliseconds(2000);
+        // 8-16 GB: Moderate refresh
+        lightTTL = std::chrono::milliseconds(1500);
+        heavyTTL = std::chrono::milliseconds(6000);
     }
     else
     {
-        // >= 16 GB: Very frequent refresh for near-real-time accuracy
-        lightTTL = std::chrono::milliseconds(300);
-        heavyTTL = std::chrono::milliseconds(1000);
+        // >= 16 GB: Responsive, but avoid 1Hz+ heavy metadata refresh churn
+        lightTTL = std::chrono::milliseconds(1000);
+        heavyTTL = std::chrono::milliseconds(4000);
     }
 }
 

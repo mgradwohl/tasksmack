@@ -535,14 +535,35 @@ xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/
 ### Windows (ETW/VTune)
 
 ```powershell
-# Build with profiling preset
-cmake --preset win-profile
-cmake --build --preset win-profile
+# Default ETW capture uses the optimized build for production-like timings
+cmake --preset win-optimized
+cmake --build --preset win-optimized
 
-# Use Windows Performance Analyzer (WPA) or Intel VTune
-# For VTune:
+# Capture a real app trace (self-elevates for WPR, defaults to win-optimized)
+pwsh tools/profile-etw.ps1 app
+
+# Capture a targeted benchmark trace (defaults to win-benchmark)
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+
+# Use win-profile explicitly when you want a frame-pointer/symbol-rich follow-up build
+pwsh tools/profile-etw.ps1 app -Preset win-profile
+
+# Analyze an ETW trace and print top TaskSmack modules/functions
+pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
+
+# Optional VTune workflow if installed
 vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
+
+`tools/profile-etw.ps1` writes traces and logs under `perf-data/` and stops the trace
+automatically when the app exits. `tools/analyze-etw.ps1` exports both module-level and
+function-level `xperf` reports, then prints the top TaskSmack-specific hotspots.
+
+Notes:
+- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit. If they are not on `PATH`, install the Windows Performance Toolkit.
+- ETW capture requires elevation; the helper script relaunches itself as Administrator by default and fails clearly if the elevated child does not produce the expected artifacts.
+- `wpr -cancel` returns a non-zero exit code when no trace is active; the helper scripts treat that as non-fatal.
+- Prefer `win-optimized` for real app scenario capture and `win-benchmark` for benchmark capture. Use `win-profile` only when you specifically want a symbol-rich build for deeper attribution.
 
 ### Compile-Time Profiling (-ftime-trace)
 
