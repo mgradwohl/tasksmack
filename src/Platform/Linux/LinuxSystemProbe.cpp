@@ -15,6 +15,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -170,6 +171,10 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot)
 SystemCounters LinuxSystemProbe::read()
 {
     SystemCounters counters;
+    // Pre-reserve the per-core CPU vector to avoid reallocation on every refresh.
+    // Core count is fixed at construction; reserving here eliminates ~log2(numCores)
+    // vector growth reallocations per read() call.
+    counters.cpuPerCore.reserve(m_NumCores);
     readCpuCounters(counters, m_ProcRoot);
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
@@ -635,9 +640,11 @@ uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& if
 {
     // Read link speed from /sys/class/net/<iface>/speed (in Mbps).
     // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces).
-    const std::string speedPath = "/sys/class/net/" + ifaceName + "/speed";
+    // Build path in a char array to avoid string concatenation heap allocations.
+    std::array<char, 128> pathBuf{};
+    std::snprintf(pathBuf.data(), pathBuf.size(), "/sys/class/net/%s/speed", ifaceName.c_str());
     std::array<char, 32> buf{};
-    const std::size_t len = readProcFile(speedPath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFile(pathBuf.data(), buf.data(), buf.size());
     if (len == 0)
     {
         return 0;
@@ -659,9 +666,11 @@ bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
 {
     // Read operational state from /sys/class/net/<iface>/operstate.
     // Returns true only when the content is "up" (with or without trailing newline).
-    const std::string operstatePath = "/sys/class/net/" + ifaceName + "/operstate";
+    // Build path in a char array to avoid string concatenation heap allocations.
+    std::array<char, 128> pathBuf{};
+    std::snprintf(pathBuf.data(), pathBuf.size(), "/sys/class/net/%s/operstate", ifaceName.c_str());
     std::array<char, 16> buf{};
-    const std::size_t len = readProcFile(operstatePath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFile(pathBuf.data(), buf.data(), buf.size());
     // "up\n" is 3 bytes; "up" is 2 — anything shorter cannot be "up".
     return (len >= 2 && buf[0] == 'u' && buf[1] == 'p');
 }
