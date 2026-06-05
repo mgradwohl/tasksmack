@@ -95,7 +95,9 @@ print_step "Checking prerequisites"
 check_command heaptrack "apt install heaptrack" || \
     die "heaptrack is required. Install: sudo apt install heaptrack"
 
-validate_build_prereqs || die "Build prerequisites not met."
+if [[ "${SKIP_BUILD}" -eq 0 ]]; then
+    validate_build_prereqs || die "Build prerequisites not met."
+fi
 
 mkdir -p "${PERF_DIR}"
 
@@ -132,14 +134,14 @@ if [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under heaptrack. Exercise the application, then close it."
     echo ""
-    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}"
+    heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
 else
     heaptrack -o "${HEAPTRACK_BASE}" "${BINARY}" \
         "--benchmark_filter=${BENCH_FILTER}" \
         "--benchmark_repetitions=${BENCH_REPS}" \
         "--benchmark_min_time=${BENCH_MIN_TIME}" \
         --benchmark_report_aggregates_only=true \
-        --benchmark_display_aggregates_only=true
+        --benchmark_display_aggregates_only=true 2> >(tee -a "${LOG_FILE}" >&2)
 fi
 
 # heaptrack writes <base>.heaptrack.gz or <base>.<pid>.gz — find it

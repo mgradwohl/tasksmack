@@ -166,19 +166,6 @@ if [[ "${SKIP_FLAMEGRAPH}" -eq 0 ]]; then
     fi
 fi
 
-# ── print top functions ───────────────────────────────────────────────────────
-print_step "Top ${TOP} functions"
-
-# Extract the symbol table section from the perf report
-# perf report --stdio emits lines like:  "  4.12%  TaskSmack  TaskSmack  [.] functionName"
-# Filter to TaskSmack binary entries and print the top N
-{
-    grep -E "^\s+[0-9]+\.[0-9]+%" "${REPORT_FILE}" \
-        | grep -v "\[k\]" \
-        | head -n "${TOP}" \
-        || echo "(No symbols found — the binary may lack debug info or DWARF unwinding failed.)"
-} | tee /dev/stderr > /tmp/tasksmack_top_functions_$$.txt 2>&1 || true
-
 # ── summary ───────────────────────────────────────────────────────────────────
 {
     echo "Trace:  ${DATA_FILE}"
@@ -195,8 +182,6 @@ print_step "Top ${TOP} functions"
 } > "${SUMMARY_FILE}"
 
 cat "${SUMMARY_FILE}"
-
-rm -f /tmp/tasksmack_top_functions_$$.txt
 
 # ── next steps ────────────────────────────────────────────────────────────────
 echo ""

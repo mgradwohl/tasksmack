@@ -805,9 +805,9 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
                     {
                         const std::filesystem::path freezePathV1 =
                             std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
+                        const std::string freezePathStr = freezePathV1.string();
                         std::array<char, 16> freezeStateBuf{};
-                        const std::size_t freezeLen =
-                            readProcFile(freezePathV1.string().c_str(), freezeStateBuf.data(), freezeStateBuf.size());
+                        const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
                         if (freezeLen > 0)
                         {
                             const std::string_view state(freezeStateBuf.data(), freezeLen);

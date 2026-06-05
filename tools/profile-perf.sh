@@ -110,7 +110,9 @@ check_command perf "apt install linux-tools-generic linux-tools-$(uname -r 2>/de
 
 check_perf_version
 
-validate_build_prereqs || die "Build prerequisites not met."
+if [[ "${SKIP_BUILD}" -eq 0 ]]; then
+    validate_build_prereqs || die "Build prerequisites not met."
+fi
 
 mkdir -p "${PERF_DIR}"
 
@@ -156,7 +158,7 @@ if [[ "${MODE}" = "app" ]]; then
     echo ""
     echo "Launching TaskSmack under perf. Exercise the application, then close it."
     echo ""
-    perf record "${PERF_RECORD_FLAGS[@]}" -- "${BINARY}"
+    perf record "${PERF_RECORD_FLAGS[@]}" -- "${BINARY}" 2> >(tee -a "${LOG_FILE}" >&2)
     echo "EXIT_CODE=$?" >> "${LOG_FILE}"
 else
     perf record "${PERF_RECORD_FLAGS[@]}" -- \
@@ -165,7 +167,7 @@ else
         "--benchmark_repetitions=${BENCH_REPS}" \
         "--benchmark_min_time=${BENCH_MIN_TIME}" \
         --benchmark_report_aggregates_only=true \
-        --benchmark_display_aggregates_only=true
+        --benchmark_display_aggregates_only=true 2> >(tee -a "${LOG_FILE}" >&2)
     echo "EXIT_CODE=$?" >> "${LOG_FILE}"
 fi
 
