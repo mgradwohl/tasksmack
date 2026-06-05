@@ -61,7 +61,6 @@ using ProcParsing::parseDouble;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
-using ProcParsing::skipSpaces;
 
 } // namespace
 
