@@ -30,17 +30,23 @@ namespace Platform::ProcParsing
         return 0;
     }
     std::size_t total = 0;
+    bool readError = false;
     while (total < bufSize)
     {
         const auto n = ::read(fd, buf + total, bufSize - total);
-        if (n <= 0)
+        if (n == 0)
         {
-            break;
+            break; // EOF
+        }
+        if (n < 0)
+        {
+            readError = true;
+            break; // I/O error — discard partial data
         }
         total += static_cast<std::size_t>(n);
     }
     ::close(fd);
-    return total;
+    return readError ? 0 : total;
 }
 
 /// Read an entire /proc or /sys virtual file into a heap buffer, growing until EOF.
@@ -71,9 +77,13 @@ namespace Platform::ProcParsing
     for (;;)
     {
         const auto n = ::read(fd, chunk.data(), chunk.size());
-        if (n <= 0)
+        if (n == 0)
         {
-            break;
+            break; // EOF
+        }
+        if (n < 0)
+        {
+            return {}; // I/O error — discard partial data
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }

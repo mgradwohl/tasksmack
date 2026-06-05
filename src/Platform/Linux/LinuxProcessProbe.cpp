@@ -558,19 +558,32 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     std::vector<char> buf;
     buf.reserve(4096);
     std::array<char, 4096> chunk{};
+    bool readError = false;
     for (;;)
     {
         const auto n = ::read(fd, chunk.data(), chunk.size());
-        if (n <= 0)
+        if (n == 0)
         {
-            break;
+            break; // EOF
+        }
+        if (n < 0)
+        {
+            readError = true;
+            break; // I/O error
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
 
+    if (readError)
+    {
+        // Treat a read error the same as open() failure: leave command unchanged
+        // rather than incorrectly labelling the process as a kernel thread.
+        return;
+    }
+
     if (buf.empty())
     {
-        // File opened but is empty: genuine kernel thread — use bracketed name.
+        // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
         return;
     }
