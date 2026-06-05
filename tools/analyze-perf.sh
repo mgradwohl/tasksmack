@@ -130,7 +130,6 @@ perf report \
     --no-children \
     -g \
     --sort comm,dso,symbol \
-    2>/dev/null \
     | head -n $(( TOP * 10 + 50 )) \
     > "${REPORT_FILE}"
 
