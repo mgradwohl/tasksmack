@@ -181,7 +181,7 @@ try {
     Write-Host "Trace: $tracePath"
     Write-Host "Preset: $Preset"
 
-    cmd /c "wpr -cancel >nul 2>&1" | Out-Null
+    & wpr -cancel 2>&1 | Out-Null
 
     Invoke-Native wpr '-start' 'CPU' '-filemode'
 
@@ -189,7 +189,9 @@ try {
         $proc = Start-Process -FilePath $binaryPath -PassThru
         Write-Host "Launched app PID: $($proc.Id)"
         Write-Host 'Exercise the application, then close it to finish the trace.'
-        Wait-Process -Id $proc.Id
+        # Wait up to 4 hours; if the app crashes without exiting, this unblocks
+        # so the finally block can still run wpr -cancel and stop the transcript.
+        Wait-Process -Id $proc.Id -Timeout 14400 -ErrorAction SilentlyContinue
     }
     else {
         Invoke-Native $binaryPath "--benchmark_filter=$BenchmarkFilter" "--benchmark_repetitions=$BenchmarkRepetitions" "--benchmark_min_time=$BenchmarkMinTime" '--benchmark_report_aggregates_only=true' '--benchmark_display_aggregates_only=true' "--benchmark_out=$benchJsonPath" '--benchmark_out_format=json'
@@ -203,7 +205,7 @@ try {
     }
 }
 finally {
-    cmd /c "wpr -cancel >nul 2>&1" | Out-Null
+    & wpr -cancel 2>&1 | Out-Null
     Stop-Transcript | Out-Null
 }
 

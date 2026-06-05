@@ -32,6 +32,12 @@ coverage-output.txt
 /perf-data/pgo-hot*.txt
 /perf-data/pgo-hot*.json
 /perf-data/SymCache/
+/perf-data/*.data
+/perf-data/*.log
+/perf-data/*-report.txt
+/perf-data/*-summary.txt
+/perf-data/*-flamegraph.svg
+heaptrack.*.gz
 *.pdb
 
 # Test results and sanitizer outputs
