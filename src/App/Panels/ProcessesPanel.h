@@ -156,12 +156,11 @@ class ProcessesPanel : public Panel
 
         // Unit string widths for decimal-aligned rendering
         // (measured from actual rendered unit strings for accurate alignment)
-        float unitPercentWidth = 0.0F;                      // "%"
-        float unitBytesWidth = 0.0F;                        // " MB", " GB", etc.
-        float unitBytesPerSecWidth = 0.0F;                  // " MB/s", " GB/s", etc.
-        float unitPowerWidth = 0.0F;                        // " W", " mW", etc.
-        float singleDigitWidth = 0.0F;                      // "0" for decimal part
-        std::array<float, 101> percentWholeWithDotWidths{}; // "0." .. "100."
+        float unitPercentWidth = 0.0F;     // "%"
+        float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
+        float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.
+        float unitPowerWidth = 0.0F;       // " W", " mW", etc.
+        float singleDigitWidth = 0.0F;     // "0" for decimal part
 
         // Static label widths
         float treeViewLabelWidth = 0.0F;

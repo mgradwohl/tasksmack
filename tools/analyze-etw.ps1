@@ -116,10 +116,12 @@ $moduleReport = Join-Path $perfDir "$baseName-profile-modules.txt"
 $functionReport = Join-Path $perfDir "$baseName-profile-functions.txt"
 $summaryPath = Join-Path $perfDir "$baseName-summary.txt"
 
-$symbolDir = if ($SymbolPath) { $SymbolPath } else { Join-Path $repoRoot 'build\win-profile\bin' }
-$resolvedSymbolDir = Resolve-Path $symbolDir -ErrorAction Stop
-$env:_NT_SYMBOL_PATH = $resolvedSymbolDir.Path
 $env:_NT_SYMCACHE_PATH = Join-Path $perfDir 'SymCache'
+if (-not $SkipFunctions) {
+    $symbolDir = if ($SymbolPath) { $SymbolPath } else { Join-Path $repoRoot 'build\win-profile\bin' }
+    $resolvedSymbolDir = Resolve-Path $symbolDir -ErrorAction Stop
+    $env:_NT_SYMBOL_PATH = $resolvedSymbolDir.Path
+}
 New-Item -ItemType Directory -Path $env:_NT_SYMCACHE_PATH -Force | Out-Null
 
 & xperf -i $traceFile -quiet -tle -a profile -detail 2>&1 | Set-Content -Path $moduleReport

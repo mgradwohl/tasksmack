@@ -131,62 +131,6 @@ void renderRightAlignedText(std::string_view text)
     return out;
 }
 
-void renderRightAlignedPercentText(std::string_view text,
-                                   const std::array<float, 101>& wholeWithDotWidths,
-                                   float decimalDigitWidth,
-                                   float unitPercentWidth)
-{
-    if (text.empty() || text == "-")
-    {
-        renderRightAlignedText(text);
-        return;
-    }
-
-    const std::size_t dotPos = text.find('.');
-    if (dotPos == std::string_view::npos || (dotPos + 1) >= text.size())
-    {
-        renderRightAlignedText(text);
-        return;
-    }
-
-    const std::string_view wholePart = text.substr(0, dotPos + 1); // includes trailing '.'
-    const std::string_view decimalPart = text.substr(dotPos + 1, 1);
-    const std::string_view unitPart = (dotPos + 2 < text.size()) ? text.substr(dotPos + 2) : std::string_view{"%"};
-
-    std::int32_t wholeValue = -1;
-    const std::string_view wholeDigits = text.substr(0, dotPos);
-    const auto parseResult = std::from_chars(wholeDigits.data(), wholeDigits.data() + wholeDigits.size(), wholeValue);
-
-    float wholeWidth = 0.0F;
-    if (parseResult.ec == std::errc{} && parseResult.ptr == (wholeDigits.data() + wholeDigits.size()) && wholeValue >= 0 &&
-        wholeValue <= 100)
-    {
-        wholeWidth = wholeWithDotWidths[static_cast<std::size_t>(wholeValue)];
-    }
-    else
-    {
-        wholeWidth = ImGui::CalcTextSize(wholePart.data(), wholePart.data() + wholePart.size()).x;
-    }
-
-    const ImVec2 cursorScreen = ImGui::GetCursorScreenPos();
-    const float cellStartScreenX = cursorScreen.x;
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float cellEndScreenX = cellStartScreenX + availWidth;
-
-    const float unitRegionStart = cellEndScreenX - unitPercentWidth;
-    const float decimalRegionStart = unitRegionStart - decimalDigitWidth;
-    const float wholeStartX = std::max(cellStartScreenX, decimalRegionStart - wholeWidth);
-
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_Text);
-
-    drawList->AddText(ImVec2(wholeStartX, cursorScreen.y), textColor, wholePart.data(), wholePart.data() + wholePart.size());
-    drawList->AddText(ImVec2(decimalRegionStart, cursorScreen.y), textColor, decimalPart.data(), decimalPart.data() + decimalPart.size());
-    drawList->AddText(ImVec2(unitRegionStart, cursorScreen.y), textColor, unitPart.data(), unitPart.data() + unitPart.size());
-
-    ImGui::Dummy(ImVec2(0.0F, ImGui::GetTextLineHeight()));
-}
-
 [[nodiscard]] auto formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit) -> std::string
 {
     const auto parts = UI::Format::splitBytesForAlignmentFast(bytes, unit);
@@ -252,12 +196,6 @@ void ProcessesPanel::TextSizeCache::populate()
     unitBytesPerSecWidth = ImGui::CalcTextSize(UNIT_BYTES_PER_SEC.data(), UNIT_BYTES_PER_SEC.data() + UNIT_BYTES_PER_SEC.size()).x;
     unitPowerWidth = ImGui::CalcTextSize(UNIT_POWER.data(), UNIT_POWER.data() + UNIT_POWER.size()).x;
     singleDigitWidth = ImGui::CalcTextSize("0").x;
-    for (std::size_t i = 0; i < percentWholeWithDotWidths.size(); ++i)
-    {
-        std::string wholeWithDot = std::to_string(i);
-        wholeWithDot.push_back('.');
-        percentWholeWithDotWidths[i] = ImGui::CalcTextSize(wholeWithDot.c_str()).x;
-    }
 
     // Cache static label widths
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
@@ -763,7 +701,7 @@ void ProcessesPanel::renderContent()
                           totalColumns,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
+                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -1180,17 +1118,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::CpuPercent:
-            renderRightAlignedPercentText(fmt.cpuPercent,
-                                          m_TextSizeCache.percentWholeWithDotWidths,
-                                          m_TextSizeCache.singleDigitWidth,
-                                          m_TextSizeCache.unitPercentWidth);
+            renderRightAlignedText(fmt.cpuPercent);
             break;
 
         case ProcessColumn::MemPercent:
-            renderRightAlignedPercentText(fmt.memPercent,
-                                          m_TextSizeCache.percentWholeWithDotWidths,
-                                          m_TextSizeCache.singleDigitWidth,
-                                          m_TextSizeCache.unitPercentWidth);
+            renderRightAlignedText(fmt.memPercent);
             break;
 
         case ProcessColumn::Virtual:
@@ -1336,10 +1268,7 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuPercent:
-            renderRightAlignedPercentText(fmt.gpuPercent,
-                                          m_TextSizeCache.percentWholeWithDotWidths,
-                                          m_TextSizeCache.singleDigitWidth,
-                                          m_TextSizeCache.unitPercentWidth);
+            renderRightAlignedText(fmt.gpuPercent);
             break;
 
         case ProcessColumn::GpuMemory:
