@@ -124,9 +124,11 @@ inline void plotLineWithFill(const char* label,
 
     std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
     std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
-    if ((maxPointCount > 1) && (count > maxPointCount))
+    // Clamp effective max so stride math and buffer capacity stay in sync.
+    const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
+    if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        const int stride = std::max((count + maxPointCount - 1) / maxPointCount, 1);
+        const int stride = std::max((count + effectiveMax - 1) / effectiveMax, 1);
 
         int resultIdx = 0;
         for (int i = 0; i < count; i += stride)
@@ -171,13 +173,12 @@ inline void plotLineWithFill(const char* label,
     ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
 }
 
-// Helper for dense-line mode: line only, no fill, with stride downsampling to 720 points
-// Commonly used across overview/resource charts for performance
+// Helper for dense-line mode: line only, no fill, with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
+// Fills are intentionally disabled; pass only the line color.
 template<typename TX, typename TY>
-inline void plotDenseLine(
-    const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor, std::optional<ImVec4> fillColor = std::nullopt)
+inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
 {
-    plotLineWithFill(label, xData, yData, count, lineColor, fillColor, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
+    plotLineWithFill(label, xData, yData, count, lineColor, std::nullopt, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
 }
 
 // ============================================================================

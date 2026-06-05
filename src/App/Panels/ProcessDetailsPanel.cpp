@@ -1023,7 +1023,7 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotDenseLine("Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
+            plotDenseLine("Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu);
             plotDenseLine(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
             plotDenseLine("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
 
