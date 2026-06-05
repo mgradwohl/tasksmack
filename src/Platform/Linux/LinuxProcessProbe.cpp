@@ -599,7 +599,18 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
 
     if (len == 0)
     {
-        // Some processes (like kernel threads) have empty cmdline - use name instead
+        // Distinguish "file unreadable" (e.g. hidepid, permission denied) from
+        // "file readable but empty" (kernel threads have an empty cmdline).
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+        const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd == -1)
+        {
+            // Cannot read the file — leave command unchanged rather than
+            // incorrectly labelling a non-kernel process as a kernel thread.
+            return;
+        }
+        ::close(fd);
+        // File opened but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
         return;
     }
