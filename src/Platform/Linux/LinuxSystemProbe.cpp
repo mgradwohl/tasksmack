@@ -227,7 +227,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
     const char* const end = buf.data() + len;
     bool foundTotal = false;
 
-    while (p + 3 <= end && p[0] == 'c' && p[1] == 'p' && p[2] == 'u')
+    while ((end - p) >= 3 && p[0] == 'c' && p[1] == 'p' && p[2] == 'u')
     {
         // Find end of this line
         const char* lineEnd = p;
@@ -270,7 +270,7 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
             counters.cpuPerCore.push_back(cpu);
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     if (!foundTotal)
@@ -322,7 +322,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         }
         if (colon >= lineEnd)
         {
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
             continue;
         }
 
@@ -331,7 +331,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         uint64_t value = 0;
         if (!parseNum(valPtr, lineEnd, value))
         {
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
             continue;
         }
 
@@ -364,7 +364,7 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
             counters.memory.swapFreeBytes = value * KB;
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
@@ -497,7 +497,7 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         }
         if (colon >= lineEnd)
         {
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
             continue;
         }
 
@@ -514,14 +514,14 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         }
         if (nameStart >= nameEnd)
         {
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
             continue;
         }
 
         const std::string_view ifaceView(nameStart, static_cast<std::size_t>(nameEnd - nameStart));
         if (ifaceView == "lo")
         {
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
             continue;
         }
 
@@ -554,7 +554,7 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     counters.netRxBytes = totalRxBytes;

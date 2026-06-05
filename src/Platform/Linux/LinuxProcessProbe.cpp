@@ -555,7 +555,7 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
             break;
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
@@ -696,7 +696,7 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
             }
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
@@ -820,7 +820,7 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
                 }
             }
 
-            p = lineEnd + 1;
+            p = (lineEnd < end) ? lineEnd + 1 : end;
         }
     }
 
@@ -926,7 +926,7 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
             break;
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     return 0;
@@ -972,7 +972,7 @@ uint64_t LinuxProcessProbe::systemTotalMemory() const
             }
         }
 
-        p = lineEnd + 1;
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     spdlog::warn("MemTotal not found in /proc/meminfo");
