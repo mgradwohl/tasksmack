@@ -122,45 +122,62 @@ inline void plotLineWithFill(const char* label,
     const TY* plotYData = yData;
     int plotCount = count;
 
-    std::vector<TX> reducedXData;
-    std::vector<TY> reducedYData;
+    std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
+    std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
     if ((maxPointCount > 1) && (count > maxPointCount))
     {
         const int stride = std::max((count + maxPointCount - 1) / maxPointCount, 1);
-        const int reducedCount = ((count - 1) / stride) + 1;
-        reducedXData.reserve(static_cast<size_t>(reducedCount));
-        reducedYData.reserve(static_cast<size_t>(reducedCount));
 
+        int resultIdx = 0;
         for (int i = 0; i < count; i += stride)
         {
-            reducedXData.push_back(xData[i]);
-            reducedYData.push_back(yData[i]);
+            if (resultIdx < static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE))
+            {
+                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[i];
+                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[i];
+                ++resultIdx;
+            }
         }
 
         if ((count > 0) && ((count - 1) % stride != 0))
         {
-            reducedXData.push_back(xData[count - 1]);
-            reducedYData.push_back(yData[count - 1]);
+            if (resultIdx < static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE))
+            {
+                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[count - 1];
+                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[count - 1];
+                ++resultIdx;
+            }
         }
 
         plotXData = reducedXData.data();
         plotYData = reducedYData.data();
-        plotCount = Domain::Numeric::narrowOr<int>(reducedXData.size(), count);
+        plotCount = resultIdx;
     }
-
-    const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
 
     if (drawFill)
     {
+        const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+        // Use PushID to ensure unique ImPlot item ID even if label is long or truncates.
+        ImGui::PushID(label);
         std::array<char, 128> shadedLabel{};
         const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
         const char* shadedLabelPtr =
-            (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##SeriesFill";
+            (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##Fill";
 
         ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
+        ImGui::PopID();
     }
 
     ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+}
+
+// Helper for dense-line mode: line only, no fill, with stride downsampling to 720 points
+// Commonly used across overview/resource charts for performance
+template<typename TX, typename TY>
+inline void plotDenseLine(
+    const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor, std::optional<ImVec4> fillColor = std::nullopt)
+{
+    plotLineWithFill(label, xData, yData, count, lineColor, fillColor, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
 }
 
 // ============================================================================

@@ -160,7 +160,11 @@ void renderCpuCoresSection(RenderContext& ctx)
                                                  timeData.data(),
                                                  sampleData.data(),
                                                  UI::Format::checkedCount(timeData.size()),
-                                                 themeRef.scheme().chartCpu);
+                                                 themeRef.scheme().chartCpu,
+                                                 std::nullopt,
+                                                 2.0F,
+                                                 true,
+                                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                                 if (ImPlot::IsPlotHovered() && !timeData.empty())
                                 {

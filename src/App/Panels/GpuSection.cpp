@@ -34,6 +34,7 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
+using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
@@ -220,71 +221,48 @@ void renderGpuSection(RenderContext& ctx)
 
                 if (!utilHist.empty())
                 {
-                    plotLineWithFill("Utilization",
-                                     timeData.data(),
-                                     utilHist.data(),
-                                     UI::Format::checkedCount(utilHist.size()),
-                                     theme.scheme().gpuUtilization,
-                                     std::nullopt,
-                                     2.0F,
-                                     false,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotDenseLine("Utilization",
+                                  timeData.data(),
+                                  utilHist.data(),
+                                  UI::Format::checkedCount(utilHist.size()),
+                                  theme.scheme().gpuUtilization);
                 }
 
                 if (!memHist.empty())
                 {
-                    plotLineWithFill("Memory",
-                                     timeData.data(),
-                                     memHist.data(),
-                                     UI::Format::checkedCount(memHist.size()),
-                                     theme.scheme().gpuMemory,
-                                     std::nullopt,
-                                     2.0F,
-                                     false,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotDenseLine(
+                        "Memory", timeData.data(), memHist.data(), UI::Format::checkedCount(memHist.size()), theme.scheme().gpuMemory);
                 }
 
                 // Plot clock as normalized percentage (0-maxClockMHz mapped to 0-100)
                 if (caps.hasClockSpeeds && !clockHist.empty())
                 {
                     normalizeToPercent(clockHist, maxClockMHz, clockPercentBuf);
-                    plotLineWithFill("Clock",
-                                     timeData.data(),
-                                     clockPercentBuf.data(),
-                                     UI::Format::checkedCount(clockPercentBuf.size()),
-                                     theme.scheme().gpuClockFill,
-                                     std::nullopt,
-                                     2.0F,
-                                     false,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotDenseLine("Clock",
+                                  timeData.data(),
+                                  clockPercentBuf.data(),
+                                  UI::Format::checkedCount(clockPercentBuf.size()),
+                                  theme.scheme().gpuClockFill);
                 }
 
                 // Encoder utilization
                 if (caps.hasEncoderDecoder && !encoderHist.empty())
                 {
-                    plotLineWithFill("Encoder",
-                                     timeData.data(),
-                                     encoderHist.data(),
-                                     UI::Format::checkedCount(encoderHist.size()),
-                                     theme.scheme().gpuEncoder,
-                                     std::nullopt,
-                                     2.0F,
-                                     false,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotDenseLine("Encoder",
+                                  timeData.data(),
+                                  encoderHist.data(),
+                                  UI::Format::checkedCount(encoderHist.size()),
+                                  theme.scheme().gpuEncoder);
                 }
 
                 // Decoder utilization
                 if (caps.hasEncoderDecoder && !decoderHist.empty())
                 {
-                    plotLineWithFill("Decoder",
-                                     timeData.data(),
-                                     decoderHist.data(),
-                                     UI::Format::checkedCount(decoderHist.size()),
-                                     theme.scheme().gpuDecoder,
-                                     std::nullopt,
-                                     2.0F,
-                                     false,
-                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                    plotDenseLine("Decoder",
+                                  timeData.data(),
+                                  decoderHist.data(),
+                                  UI::Format::checkedCount(decoderHist.size()),
+                                  theme.scheme().gpuDecoder);
                 }
 
                 // Tooltip on hover

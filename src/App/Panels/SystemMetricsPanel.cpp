@@ -71,7 +71,7 @@ using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotDenseLine;
 using UI::Widgets::smoothTowards;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
@@ -867,30 +867,22 @@ void SystemMetricsPanel::renderOverview()
                     // Plot power on primary Y-axis
                     if (!powerHist.empty())
                     {
-                        plotLineWithFill("Power",
-                                         timeData.data() + static_cast<std::ptrdiff_t>(powerOffset),
-                                         powerHist.data(),
-                                         UI::Format::checkedCount(powerHist.size()),
-                                         theme.scheme().chartCpu,
-                                         std::nullopt,
-                                         2.0F,
-                                         false,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotDenseLine("Power",
+                                      timeData.data() + static_cast<std::ptrdiff_t>(powerOffset),
+                                      powerHist.data(),
+                                      UI::Format::checkedCount(powerHist.size()),
+                                      theme.scheme().chartCpu);
                     }
 
                     // Plot battery charge on secondary Y-axis
                     if (snap.power.hasBattery && !batteryHist.empty())
                     {
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-                        plotLineWithFill("Battery",
-                                         timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
-                                         batteryHist.data(),
-                                         UI::Format::checkedCount(batteryHist.size()),
-                                         theme.scheme().chartMemory,
-                                         std::nullopt,
-                                         2.0F,
-                                         false,
-                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                        plotDenseLine("Battery",
+                                      timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
+                                      batteryHist.data(),
+                                      UI::Format::checkedCount(batteryHist.size()),
+                                      theme.scheme().chartMemory);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
 
@@ -1098,33 +1090,9 @@ void SystemMetricsPanel::renderOverview()
                 ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
                 const int count = UI::Format::checkedCount(alignedCount);
-                plotLineWithFill("Threads",
-                                 timeData.data(),
-                                 threadData.data(),
-                                 count,
-                                 theme.scheme().chartCpu,
-                                 std::nullopt,
-                                 2.0F,
-                                 false,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill("Page Faults/s",
-                                 timeData.data(),
-                                 faultData.data(),
-                                 count,
-                                 theme.accentColor(3),
-                                 std::nullopt,
-                                 2.0F,
-                                 false,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(handleLabel,
-                                 timeData.data(),
-                                 handleData.data(),
-                                 count,
-                                 theme.scheme().chartMemory,
-                                 std::nullopt,
-                                 2.0F,
-                                 false,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotDenseLine("Threads", timeData.data(), threadData.data(), count, theme.scheme().chartCpu);
+                plotDenseLine("Page Faults/s", timeData.data(), faultData.data(), count, theme.accentColor(3));
+                plotDenseLine(handleLabel, timeData.data(), handleData.data(), count, theme.scheme().chartMemory);
 
                 if (ImPlot::IsPlotHovered())
                 {

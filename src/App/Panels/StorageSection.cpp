@@ -81,9 +81,24 @@ void renderDiskCell(std::string_view deviceName,
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int count = UI::Format::checkedCount(timeData.size());
-            plotLineWithFill("Read", timeData.data(), readData.data(), count, theme.scheme().chartIo, theme.scheme().chartIoFill);
-            plotLineWithFill(
-                "Write", timeData.data(), writeData.data(), count, theme.scheme().chartIoWrite, theme.scheme().chartIoWriteFill);
+            plotLineWithFill("Read",
+                             timeData.data(),
+                             readData.data(),
+                             count,
+                             theme.scheme().chartIo,
+                             theme.scheme().chartIoFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotLineWithFill("Write",
+                             timeData.data(),
+                             writeData.data(),
+                             count,
+                             theme.scheme().chartIoWrite,
+                             theme.scheme().chartIoWriteFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
             if (ImPlot::IsPlotHovered() && !timeData.empty())
             {
@@ -302,9 +317,24 @@ void renderStorageSection(RenderContext& ctx)
                 ImPlot::SetupAxisLimits(ImAxis_X1, diskAxis.xMin, diskAxis.xMax, ImPlotCond_Always);
 
                 const int count = UI::Format::checkedCount(alignedDisk);
-                plotLineWithFill("Read", diskTimes.data(), readData.data(), count, theme.scheme().chartIo, theme.scheme().chartIoFill);
-                plotLineWithFill(
-                    "Write", diskTimes.data(), writeData.data(), count, theme.scheme().chartIoWrite, theme.scheme().chartIoWriteFill);
+                plotLineWithFill("Read",
+                                 diskTimes.data(),
+                                 readData.data(),
+                                 count,
+                                 theme.scheme().chartIo,
+                                 theme.scheme().chartIoFill,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Write",
+                                 diskTimes.data(),
+                                 writeData.data(),
+                                 count,
+                                 theme.scheme().chartIoWrite,
+                                 theme.scheme().chartIoWriteFill,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 if (ImPlot::IsPlotHovered())
                 {
