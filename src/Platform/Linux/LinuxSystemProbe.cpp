@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -17,13 +18,15 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
-#include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace Platform
@@ -50,6 +53,60 @@ template<std::integral T> [[nodiscard]] constexpr auto checkedPositiveToSizeT(T 
     }
 
     return static_cast<std::size_t>(value);
+}
+
+/// Read a /proc or /sys virtual file using low-level POSIX I/O.
+/// Avoids std::ifstream overhead (locale machinery, sentry, streambuf allocations).
+/// Returns bytes read, or 0 on failure. Buffer is NOT null-terminated.
+[[nodiscard]] std::size_t readProcFile(const char* path, char* buf, std::size_t bufSize) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+    {
+        return 0;
+    }
+    const auto n = ::read(fd, buf, bufSize);
+    ::close(fd);
+    return (n > 0) ? static_cast<std::size_t>(n) : 0;
+}
+
+/// Skip ASCII space/tab characters, returning the updated pointer.
+[[nodiscard]] constexpr const char* skipSpaces(const char* p, const char* end) noexcept
+{
+    while (p < end && (*p == ' ' || *p == '\t'))
+    {
+        ++p;
+    }
+    return p;
+}
+
+/// Parse one integer of type T from [p, end), skipping leading spaces.
+/// Advances p past the parsed digits on success; leaves p unchanged and returns false on failure.
+template<std::integral T> bool parseNum(const char*& p, const char* end, T& out) noexcept
+{
+    p = skipSpaces(p, end);
+    const auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{})
+    {
+        return false;
+    }
+    p = ptr;
+    return true;
+}
+
+/// Parse one double from [p, end), skipping leading spaces.
+/// Advances p past the parsed number on success; returns false on failure.
+bool parseDouble(const char*& p, const char* end, double& out) noexcept
+{
+    p = skipSpaces(p, end);
+    const auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{})
+    {
+        return false;
+    }
+    p = ptr;
+    return true;
 }
 
 } // namespace
@@ -149,58 +206,77 @@ void LinuxSystemProbe::readCpuCounters(SystemCounters& counters, const std::file
     // cpu1 ...
 
     const auto statPath = procRoot / "stat";
-    std::ifstream statFile(statPath);
-    if (!statFile.is_open())
+    const std::string pathStr = statPath.string();
+
+    // 16 KiB is sufficient for up to ~512 cores (each cpu line is ~80 bytes).
+    constexpr std::size_t BUF_SIZE = 16384;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
-        spdlog::warn("Failed to open {}", statPath.string());
+        spdlog::warn("Failed to open {}", pathStr);
         return;
     }
 
-    std::string line;
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
     bool foundTotal = false;
 
-    while (std::getline(statFile, line))
+    while (p + 3 <= end && p[0] == 'c' && p[1] == 'p' && p[2] == 'u')
     {
-        if (!line.starts_with("cpu"))
+        // Find end of this line
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
         {
-            // Past CPU lines
-            break;
+            ++lineEnd;
         }
 
-        std::istringstream iss(line);
-        std::string label;
-        iss >> label;
+        const char* q = p + 3; // advance past "cpu"
+        // Aggregate line: "cpu " (or "cpu\t") — per-core line: "cpu0", "cpu1", …
+        const bool isTotal = (q >= lineEnd || *q == ' ' || *q == '\t');
+
+        // Skip past the label token to reach the first numeric field
+        while (q < lineEnd && *q != ' ' && *q != '\t')
+        {
+            ++q;
+        }
 
         CpuCounters cpu{};
-        iss >> cpu.user >> cpu.nice >> cpu.system >> cpu.idle >> cpu.iowait >> cpu.irq >> cpu.softirq >> cpu.steal >> cpu.guest >>
-            cpu.guestNice;
+        // Older kernels may lack trailing guest/guestNice fields;
+        // partial reads are fine — unparsed fields stay zero-initialised.
+        parseNum(q, lineEnd, cpu.user);
+        parseNum(q, lineEnd, cpu.nice);
+        parseNum(q, lineEnd, cpu.system);
+        parseNum(q, lineEnd, cpu.idle);
+        parseNum(q, lineEnd, cpu.iowait);
+        parseNum(q, lineEnd, cpu.irq);
+        parseNum(q, lineEnd, cpu.softirq);
+        parseNum(q, lineEnd, cpu.steal);
+        parseNum(q, lineEnd, cpu.guest);
+        parseNum(q, lineEnd, cpu.guestNice);
 
-        // Older kernels may not have all fields, that's OK
-        // Just reset the stream and try with fewer fields
-        iss.clear(); // Reset error state for older kernels with fewer fields
-
-        if (label == "cpu")
+        if (isTotal)
         {
-            // Aggregate line (no number suffix)
             counters.cpuTotal = cpu;
             foundTotal = true;
         }
-        else if (label.size() > 3)
+        else
         {
-            // Per-core line (cpu0, cpu1, etc.)
             counters.cpuPerCore.push_back(cpu);
         }
+
+        p = lineEnd + 1;
     }
 
     if (!foundTotal)
     {
-        spdlog::warn("Failed to parse aggregate CPU line from {}", statPath.string());
+        spdlog::warn("Failed to parse aggregate CPU line from {}", pathStr);
     }
 }
 
 void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
-    // Format: /proc/meminfo
+    // Format: /proc/meminfo — "Key:   value kB" per line
     // MemTotal:       16384000 kB
     // MemFree:         1234567 kB
     // MemAvailable:    8765432 kB
@@ -208,34 +284,51 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     // Cached:          4567890 kB
     // SwapTotal:       2097152 kB
     // SwapFree:        2097152 kB
-    // ...
 
     const auto meminfoPath = procRoot / "meminfo";
-    std::ifstream memFile(meminfoPath);
-    if (!memFile.is_open())
+    const std::string pathStr = meminfoPath.string();
+
+    constexpr std::size_t BUF_SIZE = 4096;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
-        spdlog::warn("Failed to open {}", meminfoPath.string());
+        spdlog::warn("Failed to open {}", pathStr);
         return;
     }
 
-    std::string line;
-    while (std::getline(memFile, line))
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+    constexpr uint64_t KB = 1024;
+
+    while (p < end)
     {
-        std::istringstream iss(line);
-        std::string key;
-        uint64_t value = 0;
-        std::string unit;
-
-        iss >> key >> value >> unit;
-
-        // Remove trailing colon from key
-        if (!key.empty() && key.back() == ':')
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
         {
-            key.pop_back();
+            ++lineEnd;
         }
 
-        // Convert from kB to bytes
-        constexpr uint64_t KB = 1024;
+        // Find the ':' separating key from value
+        const char* colon = p;
+        while (colon < lineEnd && *colon != ':')
+        {
+            ++colon;
+        }
+        if (colon >= lineEnd)
+        {
+            p = lineEnd + 1;
+            continue;
+        }
+
+        const std::string_view key(p, static_cast<std::size_t>(colon - p));
+        const char* valPtr = colon + 1;
+        uint64_t value = 0;
+        if (!parseNum(valPtr, lineEnd, value))
+        {
+            p = lineEnd + 1;
+            continue;
+        }
 
         if (key == "MemTotal")
         {
@@ -265,26 +358,30 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         {
             counters.memory.swapFreeBytes = value * KB;
         }
+
+        p = lineEnd + 1;
     }
 }
 
 void LinuxSystemProbe::readUptime(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
-    // Format: /proc/uptime
-    // uptime_seconds idle_seconds
+    // Format: /proc/uptime — "uptime_seconds idle_seconds"
+    // We only need the integer part of uptime_seconds.
 
-    std::ifstream uptimeFile(procRoot / "uptime");
-    if (!uptimeFile.is_open())
+    const std::string pathStr = (procRoot / "uptime").string();
+    std::array<char, 64> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return;
     }
 
-    double uptimeSeconds = 0.0;
-    uptimeFile >> uptimeSeconds;
-
-    if (!uptimeFile.fail())
+    const char* p = buf.data();
+    uint64_t uptimeSec = 0;
+    // from_chars on uint64_t stops at the decimal point — gives the integer part directly.
+    if (parseNum(p, buf.data() + len, uptimeSec))
     {
-        counters.uptimeSeconds = static_cast<uint64_t>(uptimeSeconds);
+        counters.uptimeSeconds = uptimeSec;
     }
 }
 
@@ -297,44 +394,45 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)
 {
-    // Format: /proc/loadavg
-    // 0.31 0.65 0.97 1/330 12345
-    // load1 load5 load15 running/total lastpid
+    // Format: /proc/loadavg — "load1 load5 load15 running/total lastpid"
 
-    std::ifstream loadFile(procRoot / "loadavg");
-    if (!loadFile.is_open())
+    const std::string pathStr = (procRoot / "loadavg").string();
+    std::array<char, 64> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return;
     }
 
-    loadFile >> counters.loadAvg1 >> counters.loadAvg5 >> counters.loadAvg15;
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+    parseDouble(p, end, counters.loadAvg1);
+    parseDouble(p, end, counters.loadAvg5);
+    parseDouble(p, end, counters.loadAvg15);
 }
 
 void LinuxSystemProbe::readCpuFreq(SystemCounters& counters)
 {
-    // Try to read current CPU frequency from scaling driver
-    // /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq (in kHz)
-    std::ifstream freqFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
-    if (freqFile.is_open())
+    // Try scaling_cur_freq first; fall back to cpuinfo_cur_freq (both report kHz).
+    static constexpr std::array<const char*, 2> FREQ_PATHS = {
+        "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq",
+    };
+
+    std::array<char, 32> buf{};
+    for (const char* path : FREQ_PATHS)
     {
+        const std::size_t len = readProcFile(path, buf.data(), buf.size());
+        if (len == 0)
+        {
+            continue;
+        }
+        const char* p = buf.data();
         uint64_t freqKHz = 0;
-        freqFile >> freqKHz;
-        if (!freqFile.fail())
+        if (parseNum(p, buf.data() + len, freqKHz))
         {
             counters.cpuFreqMHz = freqKHz / 1000;
             return;
-        }
-    }
-
-    // Fallback: try cpuinfo_cur_freq
-    std::ifstream cpuInfoFreq("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq");
-    if (cpuInfoFreq.is_open())
-    {
-        uint64_t freqKHz = 0;
-        cpuInfoFreq >> freqKHz;
-        if (!cpuInfoFreq.fail())
-        {
-            counters.cpuFreqMHz = freqKHz / 1000;
         }
     }
 }
@@ -348,50 +446,81 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     //   eth0: 9876543   98765    0    0    0     0          0         0  5432109   54321    0    0    0     0       0          0
 
     const auto netDevPath = m_ProcRoot / "net" / "dev";
-    std::ifstream netFile(netDevPath);
-    if (!netFile.is_open())
+    const std::string pathStr = netDevPath.string();
+
+    constexpr std::size_t BUF_SIZE = 8192;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(pathStr.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
-        spdlog::warn("Failed to open {}", netDevPath.string());
+        spdlog::warn("Failed to open {}", pathStr);
         return;
     }
 
     uint64_t totalRxBytes = 0;
     uint64_t totalTxBytes = 0;
 
-    std::string line;
-    // Skip first two header lines
-    std::getline(netFile, line);
-    std::getline(netFile, line);
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
 
-    while (std::getline(netFile, line))
+    // Skip the two header lines
+    for (int skip = 0; skip < 2 && p < end; ++skip)
     {
-        // Find the colon separator between interface name and stats
-        auto colonPos = line.find(':');
-        if (colonPos == std::string::npos)
+        while (p < end && *p != '\n')
         {
+            ++p;
+        }
+        if (p < end)
+        {
+            ++p;
+        }
+    }
+
+    while (p < end)
+    {
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
+        {
+            ++lineEnd;
+        }
+
+        // Find colon separator between interface name and stats
+        const char* colon = p;
+        while (colon < lineEnd && *colon != ':')
+        {
+            ++colon;
+        }
+        if (colon >= lineEnd)
+        {
+            p = lineEnd + 1;
             continue;
         }
 
-        // Extract interface name (trimmed)
-        std::string iface = line.substr(0, colonPos);
-        // Trim leading/trailing whitespace
-        auto start = iface.find_first_not_of(" \t");
-        if (start == std::string::npos)
+        // Trim interface name
+        const char* nameStart = p;
+        while (nameStart < colon && (*nameStart == ' ' || *nameStart == '\t'))
         {
-            // Interface name is all whitespace; skip this line
+            ++nameStart;
+        }
+        const char* nameEnd = colon;
+        while (nameEnd > nameStart && (*(nameEnd - 1) == ' ' || *(nameEnd - 1) == '\t'))
+        {
+            --nameEnd;
+        }
+        if (nameStart >= nameEnd)
+        {
+            p = lineEnd + 1;
             continue;
         }
-        auto end = iface.find_last_not_of(" \t");
-        iface = iface.substr(start, (end - start) + 1);
 
-        // Skip loopback interface - it's internal traffic
-        if (iface == "lo")
+        const std::string_view ifaceView(nameStart, static_cast<std::size_t>(nameEnd - nameStart));
+        if (ifaceView == "lo")
         {
+            p = lineEnd + 1;
             continue;
         }
 
-        // Parse the stats after the colon
-        std::istringstream iss(line.substr(colonPos + 1));
+        const char* q = colon + 1;
         uint64_t rxBytes = 0;
         uint64_t rxPackets = 0;
         uint64_t rxErrs = 0;
@@ -402,23 +531,25 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
         uint64_t rxMulticast = 0;
         uint64_t txBytes = 0;
 
-        iss >> rxBytes >> rxPackets >> rxErrs >> rxDrop >> rxFifo >> rxFrame >> rxCompressed >> rxMulticast >> txBytes;
-
-        if (!iss.fail())
+        if (parseNum(q, lineEnd, rxBytes) && parseNum(q, lineEnd, rxPackets) && parseNum(q, lineEnd, rxErrs) &&
+            parseNum(q, lineEnd, rxDrop) && parseNum(q, lineEnd, rxFifo) && parseNum(q, lineEnd, rxFrame) &&
+            parseNum(q, lineEnd, rxCompressed) && parseNum(q, lineEnd, rxMulticast) && parseNum(q, lineEnd, txBytes))
         {
             totalRxBytes += rxBytes;
             totalTxBytes += txBytes;
 
-            // Store per-interface data
+            const std::string ifaceName(ifaceView);
             SystemCounters::InterfaceCounters ifaceCounters;
-            ifaceCounters.name = iface;
-            ifaceCounters.displayName = iface; // Linux: use system name as display name
+            ifaceCounters.name = ifaceName;
+            ifaceCounters.displayName = ifaceName; // Linux: use system name as display name
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
-            ifaceCounters.isUp = readInterfaceOperState(iface);
-            ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(iface, ifaceCounters.isUp);
+            ifaceCounters.isUp = readInterfaceOperState(ifaceName);
+            ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(ifaceName, ifaceCounters.isUp);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
+
+        p = lineEnd + 1;
     }
 
     counters.netRxBytes = totalRxBytes;
@@ -502,44 +633,37 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
 
 uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName)
 {
-    // Read link speed from /sys/class/net/<iface>/speed (in Mbps)
-    // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces)
+    // Read link speed from /sys/class/net/<iface>/speed (in Mbps).
+    // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces).
     const std::string speedPath = "/sys/class/net/" + ifaceName + "/speed";
-    std::ifstream speedFile(speedPath);
-    if (!speedFile.is_open())
+    std::array<char, 32> buf{};
+    const std::size_t len = readProcFile(speedPath.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return 0;
     }
 
+    const char* p = buf.data();
     int64_t speedMbps = 0;
-    speedFile >> speedMbps;
-
     // -1 means speed is unknown/unavailable
-    if (speedFile.fail() || speedMbps < 0)
+    if (!parseNum(p, buf.data() + len, speedMbps) || speedMbps < 0)
     {
         return 0;
     }
 
+    // Explicit cast is safe: range check above ensures speedMbps >= 0.
     return static_cast<uint64_t>(speedMbps);
 }
 
 bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
 {
-    // Read operational state from /sys/class/net/<iface>/operstate
-    // Returns true if "up", false otherwise (down, unknown, etc.)
+    // Read operational state from /sys/class/net/<iface>/operstate.
+    // Returns true only when the content is "up" (with or without trailing newline).
     const std::string operstatePath = "/sys/class/net/" + ifaceName + "/operstate";
-    std::ifstream operstateFile(operstatePath);
-    if (!operstateFile.is_open())
-    {
-        return false;
-    }
-
-    std::string state;
-    operstateFile >> state;
-
-    // "up" means interface is operational
-    // Other values: "down", "unknown", "lowerlayerdown", "notpresent", "dormant", "testing"
-    return (state == "up");
+    std::array<char, 16> buf{};
+    const std::size_t len = readProcFile(operstatePath.c_str(), buf.data(), buf.size());
+    // "up\n" is 3 bytes; "up" is 2 — anything shorter cannot be "up".
+    return (len >= 2 && buf[0] == 'u' && buf[1] == 'p');
 }
 
 } // namespace Platform
