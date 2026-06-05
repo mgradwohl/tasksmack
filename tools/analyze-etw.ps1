@@ -46,21 +46,6 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 
-function Invoke-Native {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Exe,
-
-        [Parameter(ValueFromRemainingArguments = $true)]
-        [string[]]$Arguments
-    )
-
-    & $Exe @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Exe $($Arguments -join ' ')"
-    }
-}
-
 function Parse-XperfRows {
     param(
         [Parameter(Mandatory = $true)]
@@ -116,6 +101,9 @@ $moduleReport = Join-Path $perfDir "$baseName-profile-modules.txt"
 $functionReport = Join-Path $perfDir "$baseName-profile-functions.txt"
 $summaryPath = Join-Path $perfDir "$baseName-summary.txt"
 
+$prevSymCachePath = $env:_NT_SYMCACHE_PATH
+$prevSymbolPath   = $env:_NT_SYMBOL_PATH
+try {
 $env:_NT_SYMCACHE_PATH = Join-Path $perfDir 'SymCache'
 if (-not $SkipFunctions) {
     $symbolDir = if ($SymbolPath) { $SymbolPath } else { Join-Path $repoRoot 'build\win-profile\bin' }
@@ -177,12 +165,18 @@ $summaryLines += 'Top Modules'
 $summaryLines += ($topModules | Format-Table -AutoSize | Out-String -Width 240).TrimEnd()
 
 if ($functionRows.Count -gt 0) {
-    $appFunctions = $functionRows | Where-Object { $_.Symbol -like "$ProcessName!*" }
+    $appFunctions = @($functionRows | Where-Object { $_.Symbol -like "$ProcessName!*" })
     $functionTotal = ($appFunctions | Measure-Object -Property Weight -Sum).Sum
-    $topFunctions = $appFunctions | Sort-Object Weight -Descending | Select-Object -First $Top @{n='CodeSharePct';e={[math]::Round(($_.Weight / $functionTotal) * 100, 2)}}, Weight, Usage, @{n='Function';e={$_.Symbol}}
-    $summaryLines += ''
-    $summaryLines += 'Top Functions'
-    $summaryLines += ($topFunctions | Format-Table -AutoSize | Out-String -Width 240).TrimEnd()
+    if ($appFunctions.Count -gt 0 -and $functionTotal -gt 0) {
+        $topFunctions = $appFunctions | Sort-Object Weight -Descending | Select-Object -First $Top @{n='CodeSharePct';e={[math]::Round(($_.Weight / $functionTotal) * 100, 2)}}, Weight, Usage, @{n='Function';e={$_.Symbol}}
+        $summaryLines += ''
+        $summaryLines += 'Top Functions'
+        $summaryLines += ($topFunctions | Format-Table -AutoSize | Out-String -Width 240).TrimEnd()
+    }
+    else {
+        $summaryLines += ''
+        $summaryLines += "Top Functions: none found for $ProcessName (symbols may not have resolved; try -SymbolPath or use win-profile build)"
+    }
 }
 
 $summaryText = $summaryLines -join [Environment]::NewLine
@@ -190,3 +184,10 @@ $summaryText | Set-Content -Path $summaryPath
 Write-Host $summaryText
 Write-Host ''
 Write-Host "SUMMARY=$summaryPath"
+}
+finally {
+    if ($null -eq $prevSymCachePath) { Remove-Item Env:_NT_SYMCACHE_PATH -ErrorAction SilentlyContinue }
+    else { $env:_NT_SYMCACHE_PATH = $prevSymCachePath }
+    if ($null -eq $prevSymbolPath) { Remove-Item Env:_NT_SYMBOL_PATH -ErrorAction SilentlyContinue }
+    else { $env:_NT_SYMBOL_PATH = $prevSymbolPath }
+}

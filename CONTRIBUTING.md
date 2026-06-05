@@ -492,30 +492,66 @@ On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement
 
 ## Performance Profiling
 
-The `profile` and `win-profile` presets are optimized for profiling with frame pointers preserved.
+The `profile` and `win-profile` presets build at `-O2 -g -DNDEBUG` with frame pointers
+preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). All profiling scripts
+write artifacts under `perf-data/` and emit `KEY=value` lines at exit for scripting.
 
-### Linux (perf)
+### Linux — CPU profiling (perf)
+
+Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
+Default preset is `profile` for app mode and `benchmark` for bench mode.
 
 ```bash
-# Build with profiling preset
-cmake --preset profile
-cmake --build --preset profile
+# App trace — exercise the app, then close it
+./tools/profile-perf.sh app
 
-# Run with perf record
-perf record -g ./build/profile/bin/TaskSmack
+# Benchmark trace — targeted hot-path capture
+./tools/profile-perf.sh bench
+./tools/profile-perf.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
 
-# Analyze
-perf report -g
+# Analyze a captured trace (top functions + optional flamegraph SVG)
+./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 
-# Generate flamegraph (requires flamegraph.pl)
-perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
+# Open in Hotspot GUI (if installed: sudo apt install hotspot)
+hotspot perf-data/perf-app-<timestamp>.data
+
+# Quick perf stat counters (no trace file)
+perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
 ```
 
-### Linux (perf stat for quick metrics)
+**Flamegraph generation** requires the Brendan Gregg FlameGraph scripts:
+```bash
+git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph
+export PATH="$HOME/opt/FlameGraph:$PATH"
+# analyze-perf.sh auto-detects them and generates the SVG
+./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
+```
+
+**WSL2 note:** `perf` requires a kernel-matched tools package. If you see a version
+mismatch warning, run `sudo apt install linux-tools-$(uname -r) linux-tools-generic`
+or profile on a native Linux machine / GitHub Actions runner.
+
+### Linux — Heap allocation profiling (heaptrack)
+
+Use `tools/profile-heap.sh` to find hot-path heap allocations that don't show up
+in CPU profiles. Approximately 2–3× runtime overhead (vs. Valgrind's ~50×).
 
 ```bash
-# Quick performance counters
-perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
+# Install
+sudo apt install heaptrack
+
+# App trace
+./tools/profile-heap.sh app
+
+# Benchmark trace — pinpoint per-call allocation sources
+./tools/profile-heap.sh bench
+./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
+
+# Open in GUI
+heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
+
+# Headless analysis (CI-friendly)
+heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
 ```
 
 ### macOS (Instruments)
@@ -532,38 +568,38 @@ open -a Instruments ./build/profile/bin/TaskSmack
 xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/TaskSmack
 ```
 
-### Windows (ETW/VTune)
+### Windows — CPU profiling (ETW)
+
+Use `tools/profile-etw.ps1` to capture and `tools/analyze-etw.ps1` to analyze.
+ETW capture self-elevates; the scripts build before prompting for elevation by default.
 
 ```powershell
-# Default ETW capture uses the optimized build for production-like timings
-cmake --preset win-optimized
-cmake --build --preset win-optimized
-
-# Capture a real app trace (self-elevates for WPR, defaults to win-optimized)
+# App trace — exercise the app, then close it (defaults to win-optimized)
 pwsh tools/profile-etw.ps1 app
 
-# Capture a targeted benchmark trace (defaults to win-benchmark)
-pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+# Benchmark trace
+pwsh tools/profile-etw.ps1 bench
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
 
-# Use win-profile explicitly when you want a frame-pointer/symbol-rich follow-up build
+# Use win-profile for symbol-rich follow-up attribution
 pwsh tools/profile-etw.ps1 app -Preset win-profile
 
-# Analyze an ETW trace and print top TaskSmack modules/functions
+# Analyze a captured trace
 pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
+
+# Skip function decoding (faster, module-level only)
+pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl -SkipFunctions
 
 # Optional VTune workflow if installed
 vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
 
-`tools/profile-etw.ps1` writes traces and logs under `perf-data/` and stops the trace
-automatically when the app exits. `tools/analyze-etw.ps1` exports both module-level and
-function-level `xperf` reports, then prints the top TaskSmack-specific hotspots.
-
 Notes:
-- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit. If they are not on `PATH`, install the Windows Performance Toolkit.
-- ETW capture requires elevation; the helper script relaunches itself as Administrator by default and fails clearly if the elevated child does not produce the expected artifacts.
-- `wpr -cancel` returns a non-zero exit code when no trace is active; the helper scripts treat that as non-fatal.
-- Prefer `win-optimized` for real app scenario capture and `win-benchmark` for benchmark capture. Use `win-profile` only when you specifically want a symbol-rich build for deeper attribution.
+- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
+- ETW capture requires elevation; `profile-etw.ps1` relaunches itself as Administrator automatically and validates all output artifacts before returning.
+- `wpr -cancel` returns a non-zero exit code when no trace is active; the scripts treat that as non-fatal.
+- Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
+- Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
 
 ### Compile-Time Profiling (-ftime-trace)
 
