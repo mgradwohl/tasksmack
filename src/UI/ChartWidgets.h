@@ -121,14 +121,16 @@ inline void plotLineWithFill(const char* label,
     const TX* plotXData = xData;
     const TY* plotYData = yData;
     int plotCount = count;
+    std::optional<std::array<TX, LINE_PLOT_MAX_POINTS_DENSE>> reducedXData;
+    std::optional<std::array<TY, LINE_PLOT_MAX_POINTS_DENSE>> reducedYData;
 
     // Clamp effective max so stride math and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
-        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
-        const int stride = std::max((count + effectiveMax - 1) / effectiveMax, 1);
+        reducedXData.emplace();
+        reducedYData.emplace();
+        const int stride = std::max(count / effectiveMax, 1);
 
         int resultIdx = 0;
         bool includedLastSample = false;
@@ -139,8 +141,8 @@ inline void plotLineWithFill(const char* label,
                 break;
             }
 
-            reducedXData[static_cast<std::size_t>(resultIdx)] = xData[i];
-            reducedYData[static_cast<std::size_t>(resultIdx)] = yData[i];
+            (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[i];
+            (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[i];
             includedLastSample = (i == (count - 1));
             ++resultIdx;
         }
@@ -150,20 +152,20 @@ inline void plotLineWithFill(const char* label,
             const int lastSampleIdx = count - 1;
             if (resultIdx < effectiveMax)
             {
-                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[lastSampleIdx];
-                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[lastSampleIdx];
+                (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[lastSampleIdx];
+                (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[lastSampleIdx];
                 ++resultIdx;
             }
             else
             {
                 const std::size_t overwriteIdx = static_cast<std::size_t>(effectiveMax - 1);
-                reducedXData[overwriteIdx] = xData[lastSampleIdx];
-                reducedYData[overwriteIdx] = yData[lastSampleIdx];
+                (*reducedXData)[overwriteIdx] = xData[lastSampleIdx];
+                (*reducedYData)[overwriteIdx] = yData[lastSampleIdx];
             }
         }
 
-        plotXData = reducedXData.data();
-        plotYData = reducedYData.data();
+        plotXData = reducedXData->data();
+        plotYData = reducedYData->data();
         plotCount = resultIdx;
     }
 
