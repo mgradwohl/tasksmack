@@ -130,43 +130,20 @@ inline void plotLineWithFill(const char* label,
     {
         reducedXData.emplace();
         reducedYData.emplace();
-        const int stride = std::max(count / effectiveMax, 1);
 
-        int resultIdx = 0;
-        bool includedLastSample = false;
-        for (int i = 0; i < count; i += stride)
+        for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
         {
-            if (resultIdx >= effectiveMax)
-            {
-                break;
-            }
+            const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);
+            const std::size_t denominator = static_cast<std::size_t>(effectiveMax - 1);
+            const int sourceIdx = static_cast<int>(numerator / denominator);
 
-            (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[i];
-            (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[i];
-            includedLastSample = (i == (count - 1));
-            ++resultIdx;
-        }
-
-        if (!includedLastSample)
-        {
-            const int lastSampleIdx = count - 1;
-            if (resultIdx < effectiveMax)
-            {
-                (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[lastSampleIdx];
-                (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[lastSampleIdx];
-                ++resultIdx;
-            }
-            else
-            {
-                const std::size_t overwriteIdx = static_cast<std::size_t>(effectiveMax - 1);
-                (*reducedXData)[overwriteIdx] = xData[lastSampleIdx];
-                (*reducedYData)[overwriteIdx] = yData[lastSampleIdx];
-            }
+            (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[sourceIdx];
+            (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[sourceIdx];
         }
 
         plotXData = reducedXData->data();
         plotYData = reducedYData->data();
-        plotCount = resultIdx;
+        plotCount = effectiveMax;
     }
 
     if (drawFill)
