@@ -46,6 +46,7 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
+using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::setupLegendDefault;
@@ -1022,18 +1023,15 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill(
-                "Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu, theme.scheme().chartCpuFill);
-
-            plotLineWithFill(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
-
-            plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
+            plotDenseLine("Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu);
+            plotDenseLine(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
+            plotDenseLine("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
 
 #ifdef _WIN32
             if (!gdiData.empty())
             {
                 const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiAlignedCount, timeData.size()));
-                plotLineWithFill("GDI Objects", timeData.data(), gdiData.data(), gdiPlotCount, theme.accentColor(4));
+                plotDenseLine("GDI Objects", timeData.data(), gdiData.data(), gdiPlotCount, theme.accentColor(4));
             }
 #endif
 
@@ -1147,10 +1145,25 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill("Read", timeData.data(), readData.data(), plotCount, theme.scheme().chartIo, theme.scheme().chartIoFill);
+            plotLineWithFill("Read",
+                             timeData.data(),
+                             readData.data(),
+                             plotCount,
+                             theme.scheme().chartIo,
+                             theme.scheme().chartIoFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
-            plotLineWithFill(
-                "Write", timeData.data(), writeData.data(), plotCount, theme.scheme().chartIoWrite, theme.scheme().chartIoWriteFill);
+            plotLineWithFill("Write",
+                             timeData.data(),
+                             writeData.data(),
+                             plotCount,
+                             theme.scheme().chartIoWrite,
+                             theme.scheme().chartIoWriteFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1236,10 +1249,25 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotLineWithFill("Sent", timeData.data(), sentData.data(), plotCount, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
+            plotLineWithFill("Sent",
+                             timeData.data(),
+                             sentData.data(),
+                             plotCount,
+                             theme.scheme().chartNetTx,
+                             theme.scheme().chartNetTxFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
-            plotLineWithFill(
-                "Received", timeData.data(), recvData.data(), plotCount, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+            plotLineWithFill("Received",
+                             timeData.data(),
+                             recvData.data(),
+                             plotCount,
+                             theme.scheme().chartNetRx,
+                             theme.scheme().chartNetRxFill,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
             if (ImPlot::IsPlotHovered())
             {
@@ -1557,7 +1585,10 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                                      gpuUtilVec.data(),
                                      plotCount,
                                      theme.scheme().gpuUtilization,
-                                     theme.scheme().gpuUtilizationFill);
+                                     theme.scheme().gpuUtilizationFill,
+                                     2.0F,
+                                     true,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())
@@ -1601,8 +1632,15 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
                 if (plotCount > 0)
                 {
-                    plotLineWithFill(
-                        "GPU Memory", timeData.data(), gpuMemVec.data(), plotCount, theme.scheme().gpuMemory, theme.scheme().gpuMemoryFill);
+                    plotLineWithFill("GPU Memory",
+                                     timeData.data(),
+                                     gpuMemVec.data(),
+                                     plotCount,
+                                     theme.scheme().gpuMemory,
+                                     theme.scheme().gpuMemoryFill,
+                                     2.0F,
+                                     true,
+                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                     // Tooltip
                     if (ImPlot::IsPlotHovered())

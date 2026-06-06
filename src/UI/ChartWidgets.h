@@ -9,9 +9,11 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <format>
 #include <functional>
 #include <limits>
@@ -32,6 +34,7 @@ inline constexpr float BAR_WIDTH = 24.0F;
 inline constexpr double SMOOTH_FACTOR = 0.5; // fraction of refresh interval used for tau
 inline constexpr double TAU_MS_MIN = 20.0;
 inline constexpr double TAU_MS_MAX = 400.0;
+inline constexpr int LINE_PLOT_MAX_POINTS_DENSE = 720;
 
 /// RAII guard to push smaller font for chart axis labels and legends
 /// RAII guard that pushes smaller font for chart rendering.
@@ -106,19 +109,63 @@ inline void plotLineWithFill(const char* label,
                              int count,
                              const ImVec4& lineColor,
                              std::optional<ImVec4> fillColor = std::nullopt,
-                             float lineThickness = 2.0F)
+                             float lineThickness = 2.0F,
+                             bool drawFill = true,
+                             int maxPointCount = 0)
 {
     if (count <= 0)
     {
         return;
     }
 
-    const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+    const auto renderSeries = [&](const TX* plotXData, const TY* plotYData, int plotCount)
+    {
+        if (drawFill)
+        {
+            const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+            // Keep fallback shaded label IDs unique when snprintf truncates to the shared "##Fill" fallback.
+            ImGui::PushID(label);
+            std::array<char, 128> shadedLabel{};
+            const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
+            const char* shadedLabelPtr =
+                (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##Fill";
 
-    const std::string shadedLabel = std::format("##{}Fill", label);
+            ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
+            ImGui::PopID();
+        }
 
-    ImPlot::PlotShaded(shadedLabel.c_str(), xData, yData, count, 0.0, {ImPlotProp_FillColor, fill});
-    ImPlot::PlotLine(label, xData, yData, count, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+        ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+    };
+
+    // Clamp effective max so stride math and buffer capacity stay in sync.
+    const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
+    if ((effectiveMax > 1) && (count > effectiveMax))
+    {
+        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData;
+        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData;
+        for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
+        {
+            const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);
+            const std::size_t denominator = static_cast<std::size_t>(effectiveMax - 1);
+            const int sourceIdx = static_cast<int>(numerator / denominator);
+
+            reducedXData[static_cast<std::size_t>(resultIdx)] = xData[sourceIdx];
+            reducedYData[static_cast<std::size_t>(resultIdx)] = yData[sourceIdx];
+        }
+
+        renderSeries(reducedXData.data(), reducedYData.data(), effectiveMax);
+        return;
+    }
+
+    renderSeries(xData, yData, count);
+}
+
+// Helper for dense-line mode: line only, no fill, with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
+// Fills are intentionally disabled; pass only the line color.
+template<typename TX, typename TY>
+inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
+{
+    plotLineWithFill(label, xData, yData, count, lineColor, std::nullopt, 2.0F, false, LINE_PLOT_MAX_POINTS_DENSE);
 }
 
 // ============================================================================

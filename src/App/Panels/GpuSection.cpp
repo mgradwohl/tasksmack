@@ -34,6 +34,7 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
+using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
@@ -220,16 +221,16 @@ void renderGpuSection(RenderContext& ctx)
 
                 if (!utilHist.empty())
                 {
-                    plotLineWithFill("Utilization",
-                                     timeData.data(),
-                                     utilHist.data(),
-                                     UI::Format::checkedCount(utilHist.size()),
-                                     theme.scheme().gpuUtilization);
+                    plotDenseLine("Utilization",
+                                  timeData.data(),
+                                  utilHist.data(),
+                                  UI::Format::checkedCount(utilHist.size()),
+                                  theme.scheme().gpuUtilization);
                 }
 
                 if (!memHist.empty())
                 {
-                    plotLineWithFill(
+                    plotDenseLine(
                         "Memory", timeData.data(), memHist.data(), UI::Format::checkedCount(memHist.size()), theme.scheme().gpuMemory);
                 }
 
@@ -237,31 +238,31 @@ void renderGpuSection(RenderContext& ctx)
                 if (caps.hasClockSpeeds && !clockHist.empty())
                 {
                     normalizeToPercent(clockHist, maxClockMHz, clockPercentBuf);
-                    plotLineWithFill("Clock",
-                                     timeData.data(),
-                                     clockPercentBuf.data(),
-                                     UI::Format::checkedCount(clockPercentBuf.size()),
-                                     theme.scheme().gpuClockFill);
+                    plotDenseLine("Clock",
+                                  timeData.data(),
+                                  clockPercentBuf.data(),
+                                  UI::Format::checkedCount(clockPercentBuf.size()),
+                                  theme.scheme().gpuClock);
                 }
 
                 // Encoder utilization
                 if (caps.hasEncoderDecoder && !encoderHist.empty())
                 {
-                    plotLineWithFill("Encoder",
-                                     timeData.data(),
-                                     encoderHist.data(),
-                                     UI::Format::checkedCount(encoderHist.size()),
-                                     theme.scheme().gpuEncoder);
+                    plotDenseLine("Encoder",
+                                  timeData.data(),
+                                  encoderHist.data(),
+                                  UI::Format::checkedCount(encoderHist.size()),
+                                  theme.scheme().gpuEncoder);
                 }
 
                 // Decoder utilization
                 if (caps.hasEncoderDecoder && !decoderHist.empty())
                 {
-                    plotLineWithFill("Decoder",
-                                     timeData.data(),
-                                     decoderHist.data(),
-                                     UI::Format::checkedCount(decoderHist.size()),
-                                     theme.scheme().gpuDecoder);
+                    plotDenseLine("Decoder",
+                                  timeData.data(),
+                                  decoderHist.data(),
+                                  UI::Format::checkedCount(decoderHist.size()),
+                                  theme.scheme().gpuDecoder);
                 }
 
                 // Tooltip on hover
@@ -462,7 +463,11 @@ void renderGpuSection(RenderContext& ctx)
                                          timeData.data(),
                                          tempPercentBuf.data(),
                                          UI::Format::checkedCount(tempPercentBuf.size()),
-                                         theme.scheme().gpuTemperature);
+                                         theme.scheme().gpuTemperature,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Power (normalized to power limit percentage)
@@ -473,14 +478,25 @@ void renderGpuSection(RenderContext& ctx)
                                          timeData.data(),
                                          powerPercentBuf.data(),
                                          UI::Format::checkedCount(powerPercentBuf.size()),
-                                         theme.scheme().gpuPower);
+                                         theme.scheme().gpuPower,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Fan speed (already a percentage)
                     if (caps.hasFanSpeed && !fanHist.empty())
                     {
-                        plotLineWithFill(
-                            "Fan", timeData.data(), fanHist.data(), UI::Format::checkedCount(fanHist.size()), theme.scheme().gpuFan);
+                        plotLineWithFill("Fan",
+                                         timeData.data(),
+                                         fanHist.data(),
+                                         UI::Format::checkedCount(fanHist.size()),
+                                         theme.scheme().gpuFan,
+                                         std::nullopt,
+                                         2.0F,
+                                         false,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Tooltip on hover
