@@ -118,16 +118,31 @@ inline void plotLineWithFill(const char* label,
         return;
     }
 
-    const TX* plotXData = xData;
-    const TY* plotYData = yData;
-    int plotCount = count;
-    std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData;
-    std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData;
+    const auto renderSeries = [&](const TX* plotXData, const TY* plotYData, int plotCount)
+    {
+        if (drawFill)
+        {
+            const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
+            // Keep fallback shaded label IDs unique when snprintf truncates to the shared "##Fill" fallback.
+            ImGui::PushID(label);
+            std::array<char, 128> shadedLabel{};
+            const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
+            const char* shadedLabelPtr =
+                (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##Fill";
+
+            ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
+            ImGui::PopID();
+        }
+
+        ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+    };
 
     // Clamp effective max so stride math and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
+        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData;
+        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData;
         for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
         {
             const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);
@@ -138,26 +153,11 @@ inline void plotLineWithFill(const char* label,
             reducedYData[static_cast<std::size_t>(resultIdx)] = yData[sourceIdx];
         }
 
-        plotXData = reducedXData.data();
-        plotYData = reducedYData.data();
-        plotCount = effectiveMax;
+        renderSeries(reducedXData.data(), reducedYData.data(), effectiveMax);
+        return;
     }
 
-    if (drawFill)
-    {
-        const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
-        // Keep fallback shaded label IDs unique when snprintf truncates to the shared "##Fill" fallback.
-        ImGui::PushID(label);
-        std::array<char, 128> shadedLabel{};
-        const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
-        const char* shadedLabelPtr =
-            (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##Fill";
-
-        ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
-        ImGui::PopID();
-    }
-
-    ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
+    renderSeries(xData, yData, count);
 }
 
 // Helper for dense-line mode: line only, no fill, with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
