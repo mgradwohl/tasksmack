@@ -121,35 +121,32 @@ inline void plotLineWithFill(const char* label,
     const TX* plotXData = xData;
     const TY* plotYData = yData;
     int plotCount = count;
-    std::optional<std::array<TX, LINE_PLOT_MAX_POINTS_DENSE>> reducedXData;
-    std::optional<std::array<TY, LINE_PLOT_MAX_POINTS_DENSE>> reducedYData;
+    std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData;
+    std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData;
 
     // Clamp effective max so stride math and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        reducedXData.emplace();
-        reducedYData.emplace();
-
         for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
         {
             const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);
             const std::size_t denominator = static_cast<std::size_t>(effectiveMax - 1);
             const int sourceIdx = static_cast<int>(numerator / denominator);
 
-            (*reducedXData)[static_cast<std::size_t>(resultIdx)] = xData[sourceIdx];
-            (*reducedYData)[static_cast<std::size_t>(resultIdx)] = yData[sourceIdx];
+            reducedXData[static_cast<std::size_t>(resultIdx)] = xData[sourceIdx];
+            reducedYData[static_cast<std::size_t>(resultIdx)] = yData[sourceIdx];
         }
 
-        plotXData = reducedXData->data();
-        plotYData = reducedYData->data();
+        plotXData = reducedXData.data();
+        plotYData = reducedYData.data();
         plotCount = effectiveMax;
     }
 
     if (drawFill)
     {
         const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
-        // Use PushID to ensure unique ImPlot item ID even if label is long or truncates.
+        // Keep fallback shaded label IDs unique when snprintf truncates to the shared "##Fill" fallback.
         ImGui::PushID(label);
         std::array<char, 128> shadedLabel{};
         const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
