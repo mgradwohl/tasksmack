@@ -122,32 +122,43 @@ inline void plotLineWithFill(const char* label,
     const TY* plotYData = yData;
     int plotCount = count;
 
-    std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
-    std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
     // Clamp effective max so stride math and buffer capacity stay in sync.
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
+        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
+        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
         const int stride = std::max((count + effectiveMax - 1) / effectiveMax, 1);
 
         int resultIdx = 0;
+        bool includedLastSample = false;
         for (int i = 0; i < count; i += stride)
         {
-            if (resultIdx < static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE))
+            if (resultIdx >= effectiveMax)
             {
-                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[i];
-                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[i];
-                ++resultIdx;
+                break;
             }
+
+            reducedXData[static_cast<std::size_t>(resultIdx)] = xData[i];
+            reducedYData[static_cast<std::size_t>(resultIdx)] = yData[i];
+            includedLastSample = (i == (count - 1));
+            ++resultIdx;
         }
 
-        if ((count > 0) && ((count - 1) % stride != 0))
+        if (!includedLastSample)
         {
-            if (resultIdx < static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE))
+            const int lastSampleIdx = count - 1;
+            if (resultIdx < effectiveMax)
             {
-                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[count - 1];
-                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[count - 1];
+                reducedXData[static_cast<std::size_t>(resultIdx)] = xData[lastSampleIdx];
+                reducedYData[static_cast<std::size_t>(resultIdx)] = yData[lastSampleIdx];
                 ++resultIdx;
+            }
+            else
+            {
+                const std::size_t overwriteIdx = static_cast<std::size_t>(effectiveMax - 1);
+                reducedXData[overwriteIdx] = xData[lastSampleIdx];
+                reducedYData[overwriteIdx] = yData[lastSampleIdx];
             }
         }
 
