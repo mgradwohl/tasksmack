@@ -242,7 +242,7 @@ void renderGpuSection(RenderContext& ctx)
                                   timeData.data(),
                                   clockPercentBuf.data(),
                                   UI::Format::checkedCount(clockPercentBuf.size()),
-                                  theme.scheme().gpuClockFill);
+                                  theme.scheme().gpuClock);
                 }
 
                 // Encoder utilization
