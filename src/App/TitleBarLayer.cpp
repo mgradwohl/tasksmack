@@ -16,8 +16,6 @@
 
 #include <cctype>
 #include <chrono>
-#include <cmath>
-#include <cstdlib>
 #include <string_view>
 #include <utility>
 
@@ -132,9 +130,10 @@ template<typename Fn> struct ScopeExit
     Fn m_fn;
 };
 
-// Hit-test callback behavior is platform dependent:
-// - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
-// - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
+// Hit-test callback:
+// - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
+// - Non-Windows: NORMAL for title bar and controls so SDL delivers mouse button events to the app;
+//   RESIZE_* for window edges so the WM handles native resize. Drag is handled client-side too.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
@@ -212,14 +211,12 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    if (isInsideBounds(x, y, layer->getIconBounds()) || isInsideBounds(x, y, layer->getHelpBounds()) ||
-        isInsideBounds(x, y, layer->getSettingsBounds()) || isInsideBounds(x, y, layer->getMinimizeBounds()) ||
-        isInsideBounds(x, y, layer->getMaximizeBounds()) || isInsideBounds(x, y, layer->getCloseBounds()))
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    return SDL_HITTEST_DRAGGABLE;
+    // Title bar drag area — return NORMAL so SDL delivers mouse button events
+    // to the app. Drag is handled client-side in beginWindowInteraction /
+    // updateWindowInteraction, mirroring the Windows path. This ensures
+    // SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
+    // double-click maximize/restore detection.
+    return SDL_HITTEST_NORMAL;
 #endif
 }
 
@@ -335,9 +332,7 @@ void TitleBarLayer::onDetach()
 
 void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
-#ifdef _WIN32
     updateWindowInteraction();
-#endif
 }
 
 void TitleBarLayer::onPostRender()
@@ -398,7 +393,10 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-#ifdef _WIN32
+    // Title bar drag area returns SDL_HITTEST_NORMAL (see hitTestCallback), so
+    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered on all platforms. Use SDL's built-in
+    // clicks field for double-click detection and the existing client-side drag/resize
+    // interaction for window movement.
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -418,89 +416,6 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     {
         endWindowInteraction();
     }
-#else
-    // On non-Windows, drag/resize is handled natively via the SDL hit-test callback
-    // (SDL_HITTEST_DRAGGABLE). SDL3's X11 backend calls return before SDL_SendMouseButton
-    // when hit-test consumes the event, so SDL's internal click_count is never
-    // incremented for title-bar clicks and event.button.clicks cannot be trusted.
-    // Button-up events always arrive (hit-test only consumes button-down), so we
-    // track UP-to-UP timing/distance and compare against SDL's own hint-based
-    // thresholds to mirror the behaviour described in SDL_HINT_MOUSE_DOUBLE_CLICK_TIME
-    // and SDL_HINT_MOUSE_DOUBLE_CLICK_RADIUS.
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT)
-    {
-        const float upX = event->button.x;
-        const float upY = event->button.y;
-        const float tbHeight = height();
-        const bool inControlArea = isPointInControlArea(upX, upY);
-
-        spdlog::debug("TitleBar BUTTON_UP x={:.1f} y={:.1f} titleBarHeight={:.1f} inControl={} clicks(sdl)={}",
-                      upX,
-                      upY,
-                      tbHeight,
-                      inControlArea,
-                      event->button.clicks);
-
-        // Any button-up outside the title-bar drag area (content, controls, resize
-        // edge) resets the saved state so an intervening click elsewhere cannot be
-        // silently bridged to a later title-bar click to produce a false double-click.
-        if (upY > tbHeight || inControlArea)
-        {
-            spdlog::debug("TitleBar click-state cleared (outside drag area)");
-            m_LastTitleBarClickUpTick = 0;
-        }
-        else
-        {
-            const uint64_t now = SDL_GetTicks();
-
-            // Read SDL's configurable double-click thresholds, falling back to
-            // SDL3's built-in defaults (500 ms, 32 px radius).
-            constexpr uint32_t DEFAULT_DOUBLE_CLICK_MS = 500;
-            constexpr float DEFAULT_DOUBLE_CLICK_RADIUS = 32.0F;
-
-            uint32_t doubleClickMs = DEFAULT_DOUBLE_CLICK_MS;
-            if (const char* hint = SDL_GetHint(SDL_HINT_MOUSE_DOUBLE_CLICK_TIME); hint != nullptr)
-            {
-                doubleClickMs = static_cast<uint32_t>(std::strtoul(hint, nullptr, 10));
-            }
-
-            float doubleClickRadius = DEFAULT_DOUBLE_CLICK_RADIUS;
-            if (const char* hint = SDL_GetHint(SDL_HINT_MOUSE_DOUBLE_CLICK_RADIUS); hint != nullptr)
-            {
-                doubleClickRadius = std::strtof(hint, nullptr);
-            }
-
-            const float dx = upX - m_LastTitleBarClickUpX;
-            const float dy = upY - m_LastTitleBarClickUpY;
-            const uint64_t elapsed = (m_LastTitleBarClickUpTick != 0) ? (now - m_LastTitleBarClickUpTick) : 0;
-            const float dist = std::sqrt((dx * dx) + (dy * dy));
-            const bool withinTime = m_LastTitleBarClickUpTick != 0 && elapsed < doubleClickMs;
-            const bool withinRadius = dist < doubleClickRadius;
-
-            spdlog::debug("TitleBar click-track: elapsed={}ms/{} dist={:.1f}/{:.1f} withinTime={} withinRadius={}",
-                          elapsed,
-                          doubleClickMs,
-                          dist,
-                          doubleClickRadius,
-                          withinTime,
-                          withinRadius);
-
-            if (withinTime && withinRadius)
-            {
-                spdlog::debug("TitleBar double-click detected → toggling maximize/restore");
-                m_LastTitleBarClickUpTick = 0; // consume: prevent triple-click triggering again
-                handleTitleBarDoubleClick(*event);
-            }
-            else
-            {
-                m_LastTitleBarClickUpTick = now;
-                m_LastTitleBarClickUpX = upX;
-                m_LastTitleBarClickUpY = upY;
-                spdlog::debug("TitleBar first-click recorded at tick={} x={:.1f} y={:.1f}", now, upX, upY);
-            }
-        }
-    }
-#endif
 }
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
