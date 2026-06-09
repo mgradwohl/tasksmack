@@ -236,10 +236,14 @@ void ShellLayer::onRender()
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
 
-        // Use (0, 0) so ImGui owns the size calculation; an explicit GetContentRegionAvail()
-        // can land the child's clip-rect bottom exactly on the table's outer-rect bottom and
-        // clip the horizontal scroll bar on certain window heights (e.g. when maximized).
-        if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
+        // Use explicit sizing based on content region available, but subtract scrollbar height to prevent
+        // clipping when maximized (see PR #591). The horizontal scrollbar needs space to render without
+        // being clipped by the child window's clip rect. Scrollbar height is typically 16-17px.
+        const ImVec2 contentAvail = ImGui::GetContentRegionAvail();
+        constexpr float SCROLLBAR_HEIGHT = 16.0F; // ImGui default scrollbar height
+        const ImVec2 childSize(contentAvail.x, (contentAvail.y > SCROLLBAR_HEIGHT) ? (contentAvail.y - SCROLLBAR_HEIGHT) : 0.0F);
+
+        if (ImGui::BeginChild("##ContentArea", childSize, ImGuiChildFlags_AlwaysUseWindowPadding))
         {
             switch (m_ActiveTab)
             {

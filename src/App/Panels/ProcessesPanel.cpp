@@ -697,11 +697,18 @@ void ProcessesPanel::renderContent()
     // Hidden columns use ImGuiTableColumnFlags_Disabled
     const int totalColumns = UI::Format::checkedCount(processColumnCount());
 
+    // Use explicit outer_size for proper scroll extent calculation.
+    // The parent child window (##ContentArea in ShellLayer) has explicit height (contentAvail.y - scrollbar_height)
+    // to prevent clipping when maximized. We use GetContentRegionAvail() to get the actual available space,
+    // which tells the table how much horizontal and vertical space it has for content + scrollbars.
+    const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
+
     if (ImGui::BeginTable("ProcessTable",
                           totalColumns,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
                               ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
+                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit,
+                          tableOuterSize))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -729,7 +736,13 @@ void ProcessesPanel::renderContent()
                 flags |= ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending;
             }
 
-            // Command column stretches, others have initial width (all can be resized/auto-fitted)
+            // Keep Command as fixed-width by default so horizontal extent is scrollable to the right edge.
+            if (col == ProcessColumn::Command)
+            {
+                flags |= ImGuiTableColumnFlags_WidthFixed;
+            }
+
+            // Columns with a positive default width are initialized as width-based columns.
             if (info.defaultWidth > 0.0F)
             {
                 // Use menuName for TableSetupColumn (shown in context menu)
