@@ -16,6 +16,8 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <string_view>
 #include <utility>
 
@@ -415,6 +417,88 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
              event->type == SDL_EVENT_WINDOW_FOCUS_LOST)
     {
         endWindowInteraction();
+    }
+#else
+    // On non-Windows, drag/resize is handled natively via the SDL hit-test callback
+    // (SDL_HITTEST_DRAGGABLE). SDL3's X11 backend calls return before SDL_SendMouseButton
+    // when hit-test consumes the event, so SDL's internal click_count is never
+    // incremented for title-bar clicks and event.button.clicks cannot be trusted.
+    // Button-up events always arrive (hit-test only consumes button-down), so we
+    // track UP-to-UP timing/distance and compare against SDL's own hint-based
+    // thresholds to mirror the behaviour described in SDL_HINT_MOUSE_DOUBLE_CLICK_TIME
+    // and SDL_HINT_MOUSE_DOUBLE_CLICK_RADIUS.
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_UP && event->button.button == SDL_BUTTON_LEFT)
+    {
+        const float upX = event->button.x;
+        const float upY = event->button.y;
+        const float tbHeight = height();
+        const bool inControlArea = isPointInControlArea(upX, upY);
+
+        spdlog::debug("TitleBar BUTTON_UP x={:.1f} y={:.1f} titleBarHeight={:.1f} inControl={} clicks(sdl)={}",
+                      upX,
+                      upY,
+                      tbHeight,
+                      inControlArea,
+                      event->button.clicks);
+
+        // Any button-up outside the title-bar drag area (content, controls, resize
+        // edge) resets the saved state so an intervening click elsewhere cannot be
+        // silently bridged to a later title-bar click to produce a false double-click.
+        if (upY > tbHeight || inControlArea)
+        {
+            spdlog::debug("TitleBar click-state cleared (outside drag area)");
+            m_LastTitleBarClickUpTick = 0;
+        }
+        else
+        {
+            const uint64_t now = SDL_GetTicks();
+
+            // Read SDL's configurable double-click thresholds, falling back to
+            // SDL3's built-in defaults (500 ms, 32 px radius).
+            constexpr uint32_t DEFAULT_DOUBLE_CLICK_MS = 500;
+            constexpr float DEFAULT_DOUBLE_CLICK_RADIUS = 32.0F;
+
+            uint32_t doubleClickMs = DEFAULT_DOUBLE_CLICK_MS;
+            if (const char* hint = SDL_GetHint(SDL_HINT_MOUSE_DOUBLE_CLICK_TIME); hint != nullptr)
+            {
+                doubleClickMs = static_cast<uint32_t>(std::strtoul(hint, nullptr, 10));
+            }
+
+            float doubleClickRadius = DEFAULT_DOUBLE_CLICK_RADIUS;
+            if (const char* hint = SDL_GetHint(SDL_HINT_MOUSE_DOUBLE_CLICK_RADIUS); hint != nullptr)
+            {
+                doubleClickRadius = std::strtof(hint, nullptr);
+            }
+
+            const float dx = upX - m_LastTitleBarClickUpX;
+            const float dy = upY - m_LastTitleBarClickUpY;
+            const uint64_t elapsed = (m_LastTitleBarClickUpTick != 0) ? (now - m_LastTitleBarClickUpTick) : 0;
+            const float dist = std::sqrt((dx * dx) + (dy * dy));
+            const bool withinTime = m_LastTitleBarClickUpTick != 0 && elapsed < doubleClickMs;
+            const bool withinRadius = dist < doubleClickRadius;
+
+            spdlog::debug("TitleBar click-track: elapsed={}ms/{} dist={:.1f}/{:.1f} withinTime={} withinRadius={}",
+                          elapsed,
+                          doubleClickMs,
+                          dist,
+                          doubleClickRadius,
+                          withinTime,
+                          withinRadius);
+
+            if (withinTime && withinRadius)
+            {
+                spdlog::debug("TitleBar double-click detected → toggling maximize/restore");
+                m_LastTitleBarClickUpTick = 0; // consume: prevent triple-click triggering again
+                handleTitleBarDoubleClick(*event);
+            }
+            else
+            {
+                m_LastTitleBarClickUpTick = now;
+                m_LastTitleBarClickUpX = upX;
+                m_LastTitleBarClickUpY = upY;
+                spdlog::debug("TitleBar first-click recorded at tick={} x={:.1f} y={:.1f}", now, upX, upY);
+            }
+        }
     }
 #endif
 }

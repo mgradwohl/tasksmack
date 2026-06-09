@@ -175,6 +175,16 @@ class TitleBarLayer : public Core::Layer
 
     bool m_TraceEnabled = false;
 
+    // Last title-bar button-up time/position for double-click detection on
+    // non-Windows. SDL3 consumes button-down events when hit-test returns
+    // SDL_HITTEST_DRAGGABLE (they never reach SDL_SendMouseButton, so SDL's
+    // internal click_count is not incremented). Button-up events always arrive,
+    // so we track them manually and compare against SDL's own hint-based
+    // thresholds (SDL_HINT_MOUSE_DOUBLE_CLICK_TIME / _RADIUS).
+    uint64_t m_LastTitleBarClickUpTick = 0;
+    float m_LastTitleBarClickUpX = 0.0F;
+    float m_LastTitleBarClickUpY = 0.0F;
+
     SDL_Cursor* m_DefaultCursor = nullptr;
     SDL_Cursor* m_NsResizeCursor = nullptr;
     SDL_Cursor* m_EwResizeCursor = nullptr;
