@@ -34,6 +34,8 @@
 #include <utility>
 #include <vector>
 
+#include <misc/cpp/imgui_stdlib.h>
+
 namespace App
 {
 
@@ -529,31 +531,7 @@ void ProcessesPanel::renderContent()
     ImGui::SetNextItemWidth(200.0F);
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
 
-    // Reserve initial capacity for search buffer if empty
-    if (m_SearchBuffer.capacity() == 0)
-    {
-        m_SearchBuffer.reserve(256);
-    }
-
-    // Resize callback for dynamic string growth
-    auto resizeCallback = [](ImGuiInputTextCallbackData* data) -> int
-    {
-        if (data->EventFlag == ImGuiInputTextFlags_CallbackResize)
-        {
-            auto* str = static_cast<std::string*>(data->UserData);
-            str->resize(static_cast<std::size_t>(data->BufTextLen));
-            data->Buf = str->data();
-        }
-        return 0;
-    };
-
-    ImGui::InputTextWithHint("##search",
-                             "Filter by name...",
-                             m_SearchBuffer.data(),
-                             m_SearchBuffer.capacity() + 1,
-                             ImGuiInputTextFlags_CallbackResize,
-                             resizeCallback,
-                             &m_SearchBuffer);
+    ImGui::InputTextWithHint("##search", "Filter by name...", &m_SearchBuffer);
     ImGui::PopStyleColor();
 
     // Clear button
@@ -705,9 +683,9 @@ void ProcessesPanel::renderContent()
 
     if (ImGui::BeginTable("ProcessTable",
                           totalColumns,
-                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
-                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit,
+                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit,
                           tableOuterSize))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row

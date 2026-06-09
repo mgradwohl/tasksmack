@@ -236,12 +236,17 @@ void ShellLayer::onRender()
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
 
-        // Use explicit sizing based on content region available, but subtract scrollbar height to prevent
-        // clipping when maximized (see PR #591). The horizontal scrollbar needs space to render without
-        // being clipped by the child window's clip rect. Scrollbar height is typically 16-17px.
+        // Size content area from available region. Reserve horizontal scrollbar height only on the
+        // Processes tab, where the process table may need it, and use the active ImGui style value
+        // instead of a hard-coded pixel constant.
         const ImVec2 contentAvail = ImGui::GetContentRegionAvail();
-        constexpr float SCROLLBAR_HEIGHT = 16.0F; // ImGui default scrollbar height
-        const ImVec2 childSize(contentAvail.x, (contentAvail.y > SCROLLBAR_HEIGHT) ? (contentAvail.y - SCROLLBAR_HEIGHT) : 0.0F);
+        float childHeight = contentAvail.y;
+        if (m_ActiveTab == ActiveTab::Processes)
+        {
+            const float scrollbarHeight = ImGui::GetStyle().ScrollbarSize;
+            childHeight = (contentAvail.y > scrollbarHeight) ? (contentAvail.y - scrollbarHeight) : 0.0F;
+        }
+        const ImVec2 childSize(contentAvail.x, childHeight);
 
         if (ImGui::BeginChild("##ContentArea", childSize, ImGuiChildFlags_AlwaysUseWindowPadding))
         {
