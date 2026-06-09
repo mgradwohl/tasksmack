@@ -130,9 +130,10 @@ template<typename Fn> struct ScopeExit
     Fn m_fn;
 };
 
-// Hit-test callback behavior is platform dependent:
-// - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
-// - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
+// Hit-test callback:
+// - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
+// - Non-Windows: NORMAL for title bar and controls so SDL delivers mouse button events to the app;
+//   RESIZE_* for window edges so the WM handles native resize. Drag is handled client-side too.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
@@ -210,14 +211,12 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    if (isInsideBounds(x, y, layer->getIconBounds()) || isInsideBounds(x, y, layer->getHelpBounds()) ||
-        isInsideBounds(x, y, layer->getSettingsBounds()) || isInsideBounds(x, y, layer->getMinimizeBounds()) ||
-        isInsideBounds(x, y, layer->getMaximizeBounds()) || isInsideBounds(x, y, layer->getCloseBounds()))
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    return SDL_HITTEST_DRAGGABLE;
+    // Title bar drag area — return NORMAL so SDL delivers mouse button events
+    // to the app. Drag is handled client-side in beginWindowInteraction /
+    // updateWindowInteraction, mirroring the Windows path. This ensures
+    // SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
+    // double-click maximize/restore detection.
+    return SDL_HITTEST_NORMAL;
 #endif
 }
 
@@ -333,9 +332,7 @@ void TitleBarLayer::onDetach()
 
 void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
-#ifdef _WIN32
     updateWindowInteraction();
-#endif
 }
 
 void TitleBarLayer::onPostRender()
@@ -396,7 +393,10 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-#ifdef _WIN32
+    // Title bar drag area returns SDL_HITTEST_NORMAL (see hitTestCallback), so
+    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered on all platforms. Use SDL's built-in
+    // clicks field for double-click detection and the existing client-side drag/resize
+    // interaction for window movement.
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -416,7 +416,6 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     {
         endWindowInteraction();
     }
-#endif
 }
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
