@@ -236,19 +236,9 @@ void ShellLayer::onRender()
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
 
-        // Size content area from available region. Reserve horizontal scrollbar height only on the
-        // Processes tab, where the process table may need it, and use the active ImGui style value
-        // instead of a hard-coded pixel constant.
-        const ImVec2 contentAvail = ImGui::GetContentRegionAvail();
-        float childHeight = contentAvail.y;
-        if (m_ActiveTab == ActiveTab::Processes)
-        {
-            const float scrollbarHeight = ImGui::GetStyle().ScrollbarSize;
-            childHeight = (contentAvail.y > scrollbarHeight) ? (contentAvail.y - scrollbarHeight) : 0.0F;
-        }
-        const ImVec2 childSize(contentAvail.x, childHeight);
-
-        if (ImGui::BeginChild("##ContentArea", childSize, ImGuiChildFlags_AlwaysUseWindowPadding))
+        // Let ImGui own child sizing so each panel can consume full available height without
+        // shell-level scrollbar reservations that affect non-process tabs.
+        if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
         {
             switch (m_ActiveTab)
             {
