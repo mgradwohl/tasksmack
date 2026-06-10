@@ -13,8 +13,11 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
+// clang-format off
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 #include <spdlog/spdlog.h>
+// clang-format on
 
 #include <algorithm>
 #include <array>
@@ -529,31 +532,7 @@ void ProcessesPanel::renderContent()
     ImGui::SetNextItemWidth(200.0F);
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
 
-    // Reserve initial capacity for search buffer if empty
-    if (m_SearchBuffer.capacity() == 0)
-    {
-        m_SearchBuffer.reserve(256);
-    }
-
-    // Resize callback for dynamic string growth
-    auto resizeCallback = [](ImGuiInputTextCallbackData* data) -> int
-    {
-        if (data->EventFlag == ImGuiInputTextFlags_CallbackResize)
-        {
-            auto* str = static_cast<std::string*>(data->UserData);
-            str->resize(static_cast<std::size_t>(data->BufTextLen));
-            data->Buf = str->data();
-        }
-        return 0;
-    };
-
-    ImGui::InputTextWithHint("##search",
-                             "Filter by name...",
-                             m_SearchBuffer.data(),
-                             m_SearchBuffer.capacity() + 1,
-                             ImGuiInputTextFlags_CallbackResize,
-                             resizeCallback,
-                             &m_SearchBuffer);
+    ImGui::InputTextWithHint("##search", "Filter by name...", &m_SearchBuffer);
     ImGui::PopStyleColor();
 
     // Clear button
@@ -697,11 +676,16 @@ void ProcessesPanel::renderContent()
     // Hidden columns use ImGuiTableColumnFlags_Disabled
     const int totalColumns = UI::Format::checkedCount(processColumnCount());
 
+    // Explicit outer_size keeps horizontal/vertical scroll extents aligned with the panel's current content region.
+    // This adapts to whichever parent layout is active instead of assuming a fixed child height contract.
+    const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
+
     if (ImGui::BeginTable("ProcessTable",
                           totalColumns,
-                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_SortMulti |
-                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY |
-                              ImGuiTableFlags_ScrollX | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit))
+                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit,
+                          tableOuterSize))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -729,7 +713,13 @@ void ProcessesPanel::renderContent()
                 flags |= ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending;
             }
 
-            // Command column stretches, others have initial width (all can be resized/auto-fitted)
+            // Keep Command as fixed-width by default so horizontal extent is scrollable to the right edge.
+            if (col == ProcessColumn::Command)
+            {
+                flags |= ImGuiTableColumnFlags_WidthFixed;
+            }
+
+            // Columns with a positive default width are initialized as width-based columns.
             if (info.defaultWidth > 0.0F)
             {
                 // Use menuName for TableSetupColumn (shown in context menu)

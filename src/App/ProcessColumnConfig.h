@@ -54,7 +54,7 @@ enum class ProcessColumn : std::uint8_t
     GpuMemory,
     GpuEngine,
     GpuDevice,
-    // Command line (typically last, stretches to fill)
+    // Command line (typically last, fixed width by default for stable horizontal scroll extent)
     Command,
     Count
 };
@@ -216,9 +216,9 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // GPU Device
         {.name="GPU Dev", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
 
-        // === Command (last, stretches) ===
+        // === Command (last, fixed-width by default) ===
         // Command
-        {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=0.0F, .defaultVisible=true, .canHide=true, .description="Full command line (0 = stretch)"},
+        {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=420.0F, .defaultVisible=true, .canHide=true, .description="Full command line"},
     }};
     // clang-format on
 

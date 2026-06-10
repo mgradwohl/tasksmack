@@ -236,9 +236,8 @@ void ShellLayer::onRender()
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
 
-        // Use (0, 0) so ImGui owns the size calculation; an explicit GetContentRegionAvail()
-        // can land the child's clip-rect bottom exactly on the table's outer-rect bottom and
-        // clip the horizontal scroll bar on certain window heights (e.g. when maximized).
+        // Let ImGui own child sizing so each panel can consume full available height without
+        // shell-level scrollbar reservations that affect non-process tabs.
         if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
         {
             switch (m_ActiveTab)
