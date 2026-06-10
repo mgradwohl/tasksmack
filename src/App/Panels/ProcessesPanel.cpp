@@ -675,10 +675,8 @@ void ProcessesPanel::renderContent()
     // Hidden columns use ImGuiTableColumnFlags_Disabled
     const int totalColumns = UI::Format::checkedCount(processColumnCount());
 
-    // Use explicit outer_size for proper scroll extent calculation.
-    // The parent child window (##ContentArea in ShellLayer) has explicit height (contentAvail.y - scrollbar_height)
-    // to prevent clipping when maximized. We use GetContentRegionAvail() to get the actual available space,
-    // which tells the table how much horizontal and vertical space it has for content + scrollbars.
+    // Explicit outer_size keeps horizontal/vertical scroll extents aligned with the panel's current content region.
+    // This adapts to whichever parent layout is active instead of assuming a fixed child height contract.
     const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
 
     if (ImGui::BeginTable("ProcessTable",
