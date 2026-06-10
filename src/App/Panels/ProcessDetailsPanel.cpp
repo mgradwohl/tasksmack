@@ -71,16 +71,8 @@ template<typename T> [[nodiscard]] auto tailVector(const std::deque<T>& data, st
     return out;
 }
 
-[[nodiscard]] auto seriesMax(const std::vector<double>& values, double current) -> double
-{
-    if (values.empty())
-    {
-        return current;
-    }
-
-    const double historyMax = *std::ranges::max_element(values);
-    return std::max(current, historyMax);
-}
+// Use public seriesMax from ChartWidgets
+using UI::Widgets::seriesMax;
 
 // ImPlot series counts are int; keep conversion explicit + checked.
 
@@ -1023,15 +1015,47 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
             const int plotCount = UI::Format::checkedCount(alignedCount);
-            plotDenseLine("Threads", timeData.data(), threadData.data(), plotCount, theme.scheme().chartCpu);
-            plotDenseLine(handleLabel, timeData.data(), handleData.data(), plotCount, theme.scheme().chartMemory);
-            plotDenseLine("Page Faults/s", timeData.data(), faultData.data(), plotCount, theme.accentColor(3));
+            plotLineWithFill("Threads",
+                             timeData.data(),
+                             threadData.data(),
+                             plotCount,
+                             theme.scheme().chartCpu,
+                             std::nullopt,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotLineWithFill(handleLabel,
+                             timeData.data(),
+                             handleData.data(),
+                             plotCount,
+                             theme.scheme().chartMemory,
+                             std::nullopt,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotLineWithFill("Page Faults/s",
+                             timeData.data(),
+                             faultData.data(),
+                             plotCount,
+                             theme.accentColor(3),
+                             std::nullopt,
+                             2.0F,
+                             true,
+                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
 #ifdef _WIN32
             if (!gdiData.empty())
             {
                 const int gdiPlotCount = UI::Format::checkedCount(std::min(gdiAlignedCount, timeData.size()));
-                plotDenseLine("GDI Objects", timeData.data(), gdiData.data(), gdiPlotCount, theme.accentColor(4));
+                plotLineWithFill("GDI Objects",
+                                 timeData.data(),
+                                 gdiData.data(),
+                                 gdiPlotCount,
+                                 theme.accentColor(4),
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 #endif
 

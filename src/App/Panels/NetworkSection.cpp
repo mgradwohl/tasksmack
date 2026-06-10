@@ -34,9 +34,11 @@ using UI::Widgets::formatAxisBytesPerSec;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
+using UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotDenseLine;
+using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
@@ -332,21 +334,69 @@ void renderNetworkSection(RenderContext& ctx)
             // When an interface is selected, show both total (muted) and interface (bright)
             if (usingInterfaceHistory)
             {
-                // Total lines (muted, in background) — line-only, no fill
-                plotDenseLine("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
-                plotDenseLine("Received (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor);
+                // Total lines (muted, in background)
+                plotLineWithFill("Sent (Total)",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 ifaceSentColor,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received (Total)",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 ifaceRecvColor,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
                 const auto ifaceRecvLabel = std::format("{} Received", ifaceDisplayName);
-                plotDenseLine(ifaceSentLabel.c_str(), netTimes.data(), ifaceSentData.data(), count, theme.scheme().chartNetTx);
-                plotDenseLine(ifaceRecvLabel.c_str(), netTimes.data(), ifaceRecvData.data(), count, theme.scheme().chartNetRx);
+                plotLineWithFill(ifaceSentLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceSentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill(ifaceRecvLabel.c_str(),
+                                 netTimes.data(),
+                                 ifaceRecvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
             else
             {
                 // Just total
-                plotDenseLine("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx);
-                plotDenseLine("Received", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx);
+                plotLineWithFill("Sent",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
             if (ImPlot::IsPlotHovered())
