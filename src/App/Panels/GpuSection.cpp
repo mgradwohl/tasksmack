@@ -240,7 +240,8 @@ void renderGpuSection(RenderContext& ctx)
                 {
                     normalizeToPercent(clockHist, maxClockMHz, clockPercentBuf);
                     const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
-                    plotDenseLine("Clock (% of MHz reference)",
+                    const auto clockLabel = std::format("Clock (% of {:.0f} MHz)", static_cast<double>(maxClockMHz));
+                    plotDenseLine(clockLabel.c_str(),
                                   clockTimeData.values.data(),
                                   clockPercentBuf.data(),
                                   UI::Format::checkedCount(clockTimeData.values.size()),
