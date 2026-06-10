@@ -37,6 +37,7 @@ using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::tailAlignedSpan;
 using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
 using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
@@ -238,30 +239,33 @@ void renderGpuSection(RenderContext& ctx)
                 if (caps.hasClockSpeeds && !clockHist.empty())
                 {
                     normalizeToPercent(clockHist, maxClockMHz, clockPercentBuf);
-                    plotDenseLine("Clock",
-                                  timeData.data(),
+                    const auto clockTimeData = tailAlignedSpan(timeData, clockPercentBuf.size());
+                    plotDenseLine("Clock (% of MHz reference)",
+                                  clockTimeData.values.data(),
                                   clockPercentBuf.data(),
-                                  UI::Format::checkedCount(clockPercentBuf.size()),
+                                  UI::Format::checkedCount(clockTimeData.values.size()),
                                   theme.scheme().gpuClock);
                 }
 
                 // Encoder utilization
                 if (caps.hasEncoderDecoder && !encoderHist.empty())
                 {
+                    const auto encoderTimeData = tailAlignedSpan(timeData, encoderHist.size());
                     plotDenseLine("Encoder",
-                                  timeData.data(),
+                                  encoderTimeData.values.data(),
                                   encoderHist.data(),
-                                  UI::Format::checkedCount(encoderHist.size()),
+                                  UI::Format::checkedCount(encoderTimeData.values.size()),
                                   theme.scheme().gpuEncoder);
                 }
 
                 // Decoder utilization
                 if (caps.hasEncoderDecoder && !decoderHist.empty())
                 {
+                    const auto decoderTimeData = tailAlignedSpan(timeData, decoderHist.size());
                     plotDenseLine("Decoder",
-                                  timeData.data(),
+                                  decoderTimeData.values.data(),
                                   decoderHist.data(),
-                                  UI::Format::checkedCount(decoderHist.size()),
+                                  UI::Format::checkedCount(decoderTimeData.values.size()),
                                   theme.scheme().gpuDecoder);
                 }
 
@@ -304,17 +308,33 @@ void renderGpuSection(RenderContext& ctx)
                         }
                         if (caps.hasClockSpeeds && *idxVal < clockHist.size())
                         {
-                            ImGui::TextColored(theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[*idxVal]));
+                            const auto clockTimeData = tailAlignedSpan(timeData, clockHist.size());
+                            if (*idxVal >= clockTimeData.offset)
+                            {
+                                const size_t clockIdx = *idxVal - clockTimeData.offset;
+                                ImGui::TextColored(
+                                    theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[clockIdx]));
+                            }
                         }
                         if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
                         {
-                            ImGui::TextColored(
-                                theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[*idxVal]).c_str());
+                            const auto encoderTimeData = tailAlignedSpan(timeData, encoderHist.size());
+                            if (*idxVal >= encoderTimeData.offset)
+                            {
+                                const size_t encoderIdx = *idxVal - encoderTimeData.offset;
+                                ImGui::TextColored(
+                                    theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[encoderIdx]).c_str());
+                            }
                         }
                         if (caps.hasEncoderDecoder && *idxVal < decoderHist.size())
                         {
-                            ImGui::TextColored(
-                                theme.scheme().gpuDecoder, "Decoder: %s", UI::Format::percentCompact(decoderHist[*idxVal]).c_str());
+                            const auto decoderTimeData = tailAlignedSpan(timeData, decoderHist.size());
+                            if (*idxVal >= decoderTimeData.offset)
+                            {
+                                const size_t decoderIdx = *idxVal - decoderTimeData.offset;
+                                ImGui::TextColored(
+                                    theme.scheme().gpuDecoder, "Decoder: %s", UI::Format::percentCompact(decoderHist[decoderIdx]).c_str());
+                            }
                         }
                         ImGui::EndTooltip();
                     }
@@ -459,10 +479,11 @@ void renderGpuSection(RenderContext& ctx)
                     if (caps.hasTemperature && !tempHist.empty())
                     {
                         normalizeToPercent(tempHist, maxTempC, tempPercentBuf);
-                        plotLineWithFill("Temp",
-                                         timeData.data(),
+                        const auto tempTimeData = tailAlignedSpan(timeData, tempPercentBuf.size());
+                        plotLineWithFill("Temp (% of 100°C)",
+                                         tempTimeData.values.data(),
                                          tempPercentBuf.data(),
-                                         UI::Format::checkedCount(tempPercentBuf.size()),
+                                         UI::Format::checkedCount(tempTimeData.values.size()),
                                          theme.scheme().gpuTemperature,
                                          std::nullopt,
                                          2.0F,
@@ -474,10 +495,11 @@ void renderGpuSection(RenderContext& ctx)
                     if (caps.hasPowerMetrics && !powerHist.empty())
                     {
                         normalizeToPercent(powerHist, maxPowerW, powerPercentBuf);
-                        plotLineWithFill("Power",
-                                         timeData.data(),
+                        const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
+                        plotLineWithFill("Power (% of power limit)",
+                                         powerTimeData.values.data(),
                                          powerPercentBuf.data(),
-                                         UI::Format::checkedCount(powerPercentBuf.size()),
+                                         UI::Format::checkedCount(powerTimeData.values.size()),
                                          theme.scheme().gpuPower,
                                          std::nullopt,
                                          2.0F,
@@ -488,10 +510,11 @@ void renderGpuSection(RenderContext& ctx)
                     // Fan speed (already a percentage)
                     if (caps.hasFanSpeed && !fanHist.empty())
                     {
+                        const auto fanTimeData = tailAlignedSpan(timeData, fanHist.size());
                         plotLineWithFill("Fan",
-                                         timeData.data(),
+                                         fanTimeData.values.data(),
                                          fanHist.data(),
-                                         UI::Format::checkedCount(fanHist.size()),
+                                         UI::Format::checkedCount(fanTimeData.values.size()),
                                          theme.scheme().gpuFan,
                                          std::nullopt,
                                          2.0F,
@@ -511,15 +534,31 @@ void renderGpuSection(RenderContext& ctx)
                             ImGui::Separator();
                             if (caps.hasTemperature && *idxVal < tempHist.size())
                             {
-                                ImGui::TextColored(theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[*idxVal]));
+                                const auto tempTimeData = tailAlignedSpan(timeData, tempHist.size());
+                                if (*idxVal >= tempTimeData.offset)
+                                {
+                                    const size_t tempIdx = *idxVal - tempTimeData.offset;
+                                    ImGui::TextColored(
+                                        theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[tempIdx]));
+                                }
                             }
                             if (caps.hasPowerMetrics && *idxVal < powerHist.size())
                             {
-                                ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[*idxVal]));
+                                const auto powerTimeData = tailAlignedSpan(timeData, powerHist.size());
+                                if (*idxVal >= powerTimeData.offset)
+                                {
+                                    const size_t powerIdx = *idxVal - powerTimeData.offset;
+                                    ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[powerIdx]));
+                                }
                             }
                             if (caps.hasFanSpeed && *idxVal < fanHist.size())
                             {
-                                ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[*idxVal]));
+                                const auto fanTimeData = tailAlignedSpan(timeData, fanHist.size());
+                                if (*idxVal >= fanTimeData.offset)
+                                {
+                                    const size_t fanIdx = *idxVal - fanTimeData.offset;
+                                    ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanHist[fanIdx]));
+                                }
                             }
                             ImGui::EndTooltip();
                         }

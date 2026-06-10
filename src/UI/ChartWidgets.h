@@ -18,6 +18,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -322,6 +323,28 @@ struct NowBar
     double value01 = 0.0;
     ImVec4 color;
 };
+
+[[nodiscard]] inline double normalizeToUnitInterval(double value, double maxValue)
+{
+    if (maxValue <= 0.0)
+    {
+        return 0.0;
+    }
+    return std::clamp(value / maxValue, 0.0, 1.0);
+}
+
+template<typename T> struct TailAlignedSpan
+{
+    std::span<const T> values;
+    std::size_t offset = 0;
+};
+
+template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
+{
+    const std::size_t clampedCount = std::min(count, data.size());
+    const std::size_t offset = data.size() - clampedCount;
+    return {std::span<const T>(data.data() + offset, clampedCount), offset};
+}
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
 //   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText

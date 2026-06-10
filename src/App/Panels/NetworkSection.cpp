@@ -293,10 +293,17 @@ void renderNetworkSection(RenderContext& ctx)
                          .color = theme.scheme().chartNetRx};
 
     // Determine plot title based on selection
+    const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
+    const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
+
     std::string plotTitle = "Total";
-    if (selectedInterface >= 0 && hasValidSelection)
+    if (usingInterfaceHistory)
     {
         plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+    }
+    else if (interfaceHistoryUnavailable)
+    {
+        plotTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
     }
 
     // Colors for interface-specific lines (lighter/dashed to distinguish from total)
@@ -315,8 +322,15 @@ void renderNetworkSection(RenderContext& ctx)
 
             const int count = UI::Format::checkedCount(aligned);
 
+            if (interfaceHistoryUnavailable)
+            {
+                ImGui::TextColored(theme.scheme().textMuted,
+                                   "Per-interface history unavailable; showing total network history for the chart below.");
+                ImGui::Spacing();
+            }
+
             // When an interface is selected, show both total (muted) and interface (bright)
-            if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+            if (usingInterfaceHistory)
             {
                 // Total lines (muted, in background) — line-only, no fill
                 plotDenseLine("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor);
@@ -346,7 +360,7 @@ void renderNetworkSection(RenderContext& ctx)
                         const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::Separator();
-                        if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+                        if (usingInterfaceHistory)
                         {
                             // Show both total and interface values
                             ImGui::TextColored(theme.scheme().textMuted, "Total:");
