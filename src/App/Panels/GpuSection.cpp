@@ -34,7 +34,6 @@ using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::PLOT_FLAGS_DEFAULT;
-using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::tailAlignedSpan;

@@ -27,12 +27,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
-# On Windows, Ninja + clang-scan-deps command lines can exceed cmd.exe limits.
-# Force response files so dependency scanning and compilation stay below that limit.
-if(WIN32 AND CMAKE_GENERATOR MATCHES "Ninja")
-    set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON CACHE BOOL "Force response files for Ninja commands" FORCE)
-endif()
-
 # Keep clangd fed regardless of config: copy compile_commands.json to source root on build.
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     add_custom_target(copy-compile-commands ALL
@@ -211,6 +205,7 @@ endif()
 
 include(FetchContent)
 include(GNUInstallDirs)
+# Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
 find_package(OpenGL REQUIRED)

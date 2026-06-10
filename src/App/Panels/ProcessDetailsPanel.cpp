@@ -46,7 +46,6 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::plotDenseLine;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::setupLegendDefault;
@@ -1703,12 +1702,12 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             .color = theme.scheme().gpuUtilization,
         };
 
-        const double gpuMemMax = seriesMax(gpuMemVec, static_cast<double>(m_SmoothedUsage.gpuMemoryBytes));
+        const double gpuMemMax = seriesMax(gpuMemVec, m_SmoothedUsage.gpuMemoryBytes);
         const NowBar gpuMemBar{
             .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
             .label = "GPU Memory",
             .tooltipText = std::format("GPU Memory: {}", UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes)),
-            .value01 = (gpuMemMax > 0.0) ? std::clamp(static_cast<double>(m_SmoothedUsage.gpuMemoryBytes) / gpuMemMax, 0.0, 1.0) : 0.0,
+            .value01 = (gpuMemMax > 0.0) ? std::clamp(m_SmoothedUsage.gpuMemoryBytes / gpuMemMax, 0.0, 1.0) : 0.0,
             .color = theme.scheme().gpuMemory,
         };
 

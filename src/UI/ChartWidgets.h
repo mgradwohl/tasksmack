@@ -18,6 +18,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <type_traits>
