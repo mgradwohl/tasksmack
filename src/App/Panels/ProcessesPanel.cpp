@@ -13,8 +13,11 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
+// clang-format off
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 #include <spdlog/spdlog.h>
+// clang-format on
 
 #include <algorithm>
 #include <array>
@@ -33,8 +36,6 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <misc/cpp/imgui_stdlib.h>
 
 namespace App
 {
