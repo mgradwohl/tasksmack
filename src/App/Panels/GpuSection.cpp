@@ -306,7 +306,7 @@ void renderGpuSection(RenderContext& ctx)
                                 ImGui::TextColored(theme.scheme().gpuMemory, "Memory: %s", UI::Format::percentCompact(pct).c_str());
                             }
                         }
-                        if (caps.hasClockSpeeds && *idxVal < clockHist.size())
+                        if (caps.hasClockSpeeds && !clockHist.empty())
                         {
                             const auto clockTimeData = tailAlignedSpan(timeData, clockHist.size());
                             if (*idxVal >= clockTimeData.offset)
@@ -316,7 +316,7 @@ void renderGpuSection(RenderContext& ctx)
                                     theme.scheme().gpuClock, "Clock: %u MHz", static_cast<unsigned int>(clockHist[clockIdx]));
                             }
                         }
-                        if (caps.hasEncoderDecoder && *idxVal < encoderHist.size())
+                        if (caps.hasEncoderDecoder && !encoderHist.empty())
                         {
                             const auto encoderTimeData = tailAlignedSpan(timeData, encoderHist.size());
                             if (*idxVal >= encoderTimeData.offset)
@@ -326,7 +326,7 @@ void renderGpuSection(RenderContext& ctx)
                                     theme.scheme().gpuEncoder, "Encoder: %s", UI::Format::percentCompact(encoderHist[encoderIdx]).c_str());
                             }
                         }
-                        if (caps.hasEncoderDecoder && *idxVal < decoderHist.size())
+                        if (caps.hasEncoderDecoder && !decoderHist.empty())
                         {
                             const auto decoderTimeData = tailAlignedSpan(timeData, decoderHist.size());
                             if (*idxVal >= decoderTimeData.offset)
@@ -532,7 +532,7 @@ void renderGpuSection(RenderContext& ctx)
                             const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
-                            if (caps.hasTemperature && *idxVal < tempHist.size())
+                            if (caps.hasTemperature && !tempHist.empty())
                             {
                                 const auto tempTimeData = tailAlignedSpan(timeData, tempHist.size());
                                 if (*idxVal >= tempTimeData.offset)
@@ -542,7 +542,7 @@ void renderGpuSection(RenderContext& ctx)
                                         theme.scheme().gpuTemperature, "Temperature: %d°C", static_cast<int>(tempHist[tempIdx]));
                                 }
                             }
-                            if (caps.hasPowerMetrics && *idxVal < powerHist.size())
+                            if (caps.hasPowerMetrics && !powerHist.empty())
                             {
                                 const auto powerTimeData = tailAlignedSpan(timeData, powerHist.size());
                                 if (*idxVal >= powerTimeData.offset)
@@ -551,7 +551,7 @@ void renderGpuSection(RenderContext& ctx)
                                     ImGui::TextColored(theme.scheme().gpuPower, "Power: %.1fW", static_cast<double>(powerHist[powerIdx]));
                                 }
                             }
-                            if (caps.hasFanSpeed && *idxVal < fanHist.size())
+                            if (caps.hasFanSpeed && !fanHist.empty())
                             {
                                 const auto fanTimeData = tailAlignedSpan(timeData, fanHist.size());
                                 if (*idxVal >= fanTimeData.offset)

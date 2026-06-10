@@ -343,6 +343,10 @@ template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(con
 {
     const std::size_t clampedCount = std::min(count, data.size());
     const std::size_t offset = data.size() - clampedCount;
+    if (clampedCount == 0)
+    {
+        return {std::span<const T>{}, offset};
+    }
     return {std::span<const T>(data.data() + offset, clampedCount), offset};
 }
 
