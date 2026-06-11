@@ -18,6 +18,8 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -102,6 +104,20 @@ inline std::string formatAgeSeconds(double relativeSeconds)
     return std::format("Age: {:.1f}s", ageSeconds);
 }
 
+/// Compute dynamic max for NowBar and Y-axis scaling.
+/// Returns max of all values in history plus current, with a minimum floor of 1.0.
+/// Used to keep NowBar height consistent with chart Y-axis.
+[[nodiscard]] inline double seriesMax(const std::vector<double>& values, double current)
+{
+    if (values.empty())
+    {
+        return std::max(current, 1.0);
+    }
+    const auto it = std::ranges::max_element(values);
+    const double historyMax = (it != values.end()) ? *it : 1.0;
+    return std::max({historyMax, current, 1.0});
+}
+
 template<typename TX, typename TY>
 inline void plotLineWithFill(const char* label,
                              const TX* xData,
@@ -123,15 +139,10 @@ inline void plotLineWithFill(const char* label,
         if (drawFill)
         {
             const ImVec4 fill = fillColor.value_or(ImVec4{lineColor.x, lineColor.y, lineColor.z, lineColor.w * 0.35F});
-            // Keep fallback shaded label IDs unique when snprintf truncates to the shared "##Fill" fallback.
-            ImGui::PushID(label);
-            std::array<char, 128> shadedLabel{};
-            const int shadedLabelLen = std::snprintf(shadedLabel.data(), shadedLabel.size(), "##%sFill", label);
-            const char* shadedLabelPtr =
-                (shadedLabelLen > 0 && shadedLabelLen < static_cast<int>(shadedLabel.size())) ? shadedLabel.data() : "##Fill";
-
-            ImPlot::PlotShaded(shadedLabelPtr, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
-            ImGui::PopID();
+            // Render fill with same label as line so ImPlot treats them as one series.
+            // When user clicks legend to hide the series, both fill and line hide together.
+            // Render fill first so line appears on top.
+            ImPlot::PlotShaded(label, plotXData, plotYData, plotCount, 0.0, {ImPlotProp_FillColor, fill});
         }
 
         ImPlot::PlotLine(label, plotXData, plotYData, plotCount, {ImPlotProp_LineColor, lineColor, ImPlotProp_LineWeight, lineThickness});
@@ -160,8 +171,10 @@ inline void plotLineWithFill(const char* label,
     renderSeries(xData, yData, count);
 }
 
-// Helper for dense-line mode: line only, no fill, with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
-// Fills are intentionally disabled; pass only the line color.
+/// Helper for line-only rendering with stride downsampling to LINE_PLOT_MAX_POINTS_DENSE points.
+/// Fills are intentionally disabled; pass only the line color.
+/// NOTE: For visual consistency, prefer plotLineWithFill(..., drawFill=true) to show fills.
+/// Use plotDenseLine only for charts that should remain line-only (e.g., sparse event streams).
 template<typename TX, typename TY>
 inline void plotDenseLine(const char* label, const TX* xData, const TY* yData, int count, const ImVec4& lineColor)
 {
@@ -322,6 +335,32 @@ struct NowBar
     double value01 = 0.0;
     ImVec4 color;
 };
+
+[[nodiscard]] inline double normalizeToUnitInterval(double value, double maxValue)
+{
+    if (maxValue <= 0.0)
+    {
+        return 0.0;
+    }
+    return std::clamp(value / maxValue, 0.0, 1.0);
+}
+
+template<typename T> struct TailAlignedSpan
+{
+    std::span<const T> values;
+    std::size_t offset = 0;
+};
+
+template<typename T> [[nodiscard]] inline TailAlignedSpan<T> tailAlignedSpan(const std::vector<T>& data, std::size_t count)
+{
+    const std::size_t clampedCount = std::min(count, data.size());
+    const std::size_t offset = data.size() - clampedCount;
+    if (clampedCount == 0)
+    {
+        return {std::span<const T>{}, offset};
+    }
+    return {std::span<const T>(data.data() + offset, clampedCount), offset};
+}
 
 // Returns the tooltip string to display for a NowBar, using the fallback chain:
 //   tooltipText (if non-empty) -> "label: valueText" (if both non-empty) -> label -> valueText

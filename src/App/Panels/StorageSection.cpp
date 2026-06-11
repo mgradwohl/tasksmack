@@ -34,6 +34,7 @@ using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
+using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
@@ -52,19 +53,21 @@ void renderDiskCell(std::string_view deviceName,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme)
 {
-    const double readMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)), currentRead, 1.0});
-    const double writeMax =
-        std::max({writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)), currentWrite, 1.0});
+    const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
+                                     writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
+                                     currentRead,
+                                     currentWrite,
+                                     1.0});
 
     const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(currentRead),
                          .label = "Read",
                          .tooltipText = {},
-                         .value01 = std::clamp(currentRead / readMax, 0.0, 1.0),
+                         .value01 = normalizeToUnitInterval(currentRead, diskMax),
                          .color = theme.scheme().chartIo};
     const NowBar writeBar{.valueText = UI::Format::formatBytesPerSec(currentWrite),
                           .label = "Write",
                           .tooltipText = {},
-                          .value01 = std::clamp(currentWrite / writeMax, 0.0, 1.0),
+                          .value01 = normalizeToUnitInterval(currentWrite, diskMax),
                           .color = theme.scheme().chartIoWrite};
 
     const std::string plotId = std::format("##DiskPlot_{}", deviceName);

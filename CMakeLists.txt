@@ -205,7 +205,8 @@ endif()
 
 include(FetchContent)
 include(GNUInstallDirs)
-set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE ALWAYS)
+# Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
+set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
 find_package(OpenGL REQUIRED)
 
@@ -336,9 +337,6 @@ if(_glad_includes)
 endif()
 
 # FreeType for improved font rendering (always use FetchContent to avoid noisy Findfreetype warnings)
-
-# Avoid FetchContent's auto-find_package for freetype (prevents Findfreetype casing warning)
-set(FETCHCONTENT_TRY_FIND_PACKAGE_FREETYPE FALSE)
 
 FetchContent_Declare(
     freetype
