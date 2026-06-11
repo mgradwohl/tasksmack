@@ -514,12 +514,15 @@ void renderGpuSection(RenderContext& ctx)
                                          UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
-                    // Power (normalized to power limit percentage)
+                    // Power (normalized to actual reference watts; includes fallback note when limit is unavailable)
                     if (caps.hasPowerMetrics && !powerHist.empty())
                     {
                         normalizeToPercent(powerHist, maxPowerW, powerPercentBuf);
                         const auto powerTimeData = tailAlignedSpan(timeData, powerPercentBuf.size());
-                        plotLineWithFill("Power (% of power limit)",
+                        const bool hasPowerLimitReference = snap.powerLimitWatts > 0.0;
+                        const auto powerLabel = std::format(
+                            "Power (% of {:.0f}W{})", static_cast<double>(maxPowerW), hasPowerLimitReference ? "" : " fallback");
+                        plotLineWithFill(powerLabel.c_str(),
                                          powerTimeData.values.data(),
                                          powerPercentBuf.data(),
                                          UI::Format::checkedCount(powerTimeData.values.size()),
