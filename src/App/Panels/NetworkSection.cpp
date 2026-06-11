@@ -322,13 +322,6 @@ void renderNetworkSection(RenderContext& ctx)
 
             const int count = UI::Format::checkedCount(aligned);
 
-            if (interfaceHistoryUnavailable)
-            {
-                ImGui::TextColored(theme.scheme().textMuted,
-                                   "Per-interface history unavailable; showing total network history for the chart below.");
-                ImGui::Spacing();
-            }
-
             // When an interface is selected, show both total (muted) and interface (bright)
             if (usingInterfaceHistory)
             {
@@ -447,6 +440,11 @@ void renderNetworkSection(RenderContext& ctx)
 
     ImGui::TextColored(
         theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
+    if (interfaceHistoryUnavailable)
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
+        ImGui::Spacing();
+    }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);

@@ -105,7 +105,7 @@ inline std::string formatAgeSeconds(double relativeSeconds)
 }
 
 /// Compute dynamic max for NowBar and Y-axis scaling.
-/// Returns max of all values in history plus current, ensuring NowBar scales with visible data range.
+/// Returns max of all values in history plus current, with a minimum floor of 1.0.
 /// Used to keep NowBar height consistent with chart Y-axis.
 [[nodiscard]] inline double seriesMax(const std::vector<double>& values, double current)
 {
