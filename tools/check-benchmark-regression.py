@@ -41,9 +41,14 @@ def normalize_time(value: float, unit: str) -> float:
 
 def load_benchmarks(path: Path) -> dict[str, dict]:
     """Return a dict mapping benchmark name → benchmark record."""
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("benchmarks"), list):
+        raise ValueError("expected a JSON object containing a 'benchmarks' array")
+
     result: dict[str, dict] = {}
-    for bm in data.get("benchmarks", []):
+    for bm in data["benchmarks"]:
+        if not isinstance(bm, dict):
+            raise ValueError("each entry in 'benchmarks' must be a JSON object")
         aggregate_name = bm.get("aggregate_name")
         if aggregate_name and aggregate_name != "median":
             continue
@@ -72,12 +77,19 @@ def main() -> int:
         print(f"ERROR: current file not found: {args.current}", file=sys.stderr)
         return 2
 
-    baseline = load_benchmarks(args.baseline)
-    current  = load_benchmarks(args.current)
+    try:
+        baseline = load_benchmarks(args.baseline)
+        current = load_benchmarks(args.current)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"ERROR: invalid benchmark input: {exc}", file=sys.stderr)
+        return 2
 
     if not baseline:
-        print("WARNING: baseline file contains no benchmarks; skipping comparison.")
-        return 0
+        print("ERROR: baseline file contains no usable benchmarks.", file=sys.stderr)
+        return 2
+    if not current:
+        print("ERROR: current file contains no usable benchmarks.", file=sys.stderr)
+        return 2
 
     print(f"Comparing {len(current)} current benchmark(s) against {len(baseline)} baseline(s).")
     print(f"Regression threshold: {args.threshold:.1f}%")
@@ -85,13 +97,12 @@ def main() -> int:
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
-    matched = 0
+    compared = 0
 
     for name, cur_bm in current.items():
         if name not in baseline:
             # New benchmark — no comparison possible
             continue
-        matched += 1
         base_bm = baseline[name]
 
         # Prefer real_time, fall back to cpu_time
@@ -119,6 +130,7 @@ def main() -> int:
             print(f"  SKIP  {name}: baseline timing normalized to zero")
             continue
 
+        compared += 1
         pct_change = ((cur_time_normalized - base_time_normalized) / base_time_normalized) * 100.0
 
         if pct_change > args.threshold:
@@ -126,8 +138,8 @@ def main() -> int:
         elif pct_change < -5.0:
             improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
 
-    if matched == 0:
-        print("ERROR: no matching benchmark names between baseline and current run.", file=sys.stderr)
+    if compared == 0:
+        print("ERROR: no valid matching benchmarks could be compared.", file=sys.stderr)
         return 2
 
     # ── Report improvements ───────────────────────────────────────────────────
@@ -146,7 +158,7 @@ def main() -> int:
         print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%.")
         return 1
 
-    print(f"All {matched} matched benchmark(s) within {args.threshold:.1f}% threshold.")
+    print(f"All {compared} matched benchmark(s) within {args.threshold:.1f}% threshold.")
     return 0
 
 

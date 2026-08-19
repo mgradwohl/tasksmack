@@ -82,6 +82,9 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 }
 
 # ── Step 1: Core build tools ─────────────────────────────────────────────────
+Write-Host "==> Installing Visual Studio C++ Build Tools and Windows SDK..."
+Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
 Write-Host "==> Installing CMake..."
 Invoke-WinGet install --id Kitware.CMake --source winget --silent --accept-package-agreements --accept-source-agreements
 
@@ -97,8 +100,7 @@ if (-not $DryRun) {
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing LLVM $LlvmVersion..."
-$llvmId = "LLVM.LLVM.$LlvmVersion"
-Invoke-WinGet install --id $llvmId --source winget --silent --accept-package-agreements --accept-source-agreements
+Invoke-WinGet install --id LLVM.LLVM --version $LlvmVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
 Write-Host ""
 Write-Host "==> Setting LLVM_ROOT environment variable..."

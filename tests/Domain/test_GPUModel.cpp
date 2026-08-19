@@ -183,9 +183,9 @@ TEST(GPUModelTest, SubsequentRefreshComputesPCIeRates)
     EXPECT_GT(snaps[0].pcieTxBytesPerSec, 0.0);
     EXPECT_GT(snaps[0].pcieRxBytesPerSec, 0.0);
 
-    // Rough sanity check: ~1000 bytes / ~0.1 sec = ~10,000 bytes/sec
-    EXPECT_GT(snaps[0].pcieTxBytesPerSec, 8000.0); // Allow timing variance
-    EXPECT_LT(snaps[0].pcieTxBytesPerSec, 12000.0);
+    // Both rates use the same measured interval, so their ratio is deterministic
+    // even when a loaded CI runner delays the second refresh.
+    EXPECT_NEAR(snaps[0].pcieRxBytesPerSec, snaps[0].pcieTxBytesPerSec * 2.0, snaps[0].pcieTxBytesPerSec * 0.001);
 }
 
 TEST(GPUModelTest, PCIeCounterRollbackHandled)

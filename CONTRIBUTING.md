@@ -48,6 +48,8 @@ pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
 
+The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, and ccache.
+
 ### One-Command Dev Workflow
 
 After setup, use CMake workflow presets for the full configure → build → test cycle in a single command:

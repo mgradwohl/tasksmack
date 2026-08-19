@@ -140,6 +140,8 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -fsanitize=memory -fPIE -fno-omit-frame-pointer -fsanitize-memory-track-origins=2",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=memory -fPIE -pie",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=memory",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF",
                 "TASKSMACK_ENABLE_FETCHCONTENT_CACHE": "OFF"
             }
@@ -179,6 +181,8 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
@@ -192,6 +196,8 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=thread -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
