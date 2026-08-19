@@ -57,6 +57,7 @@ install_manifest.txt
 Testing/
 CTestTestfile.cmake
 compile_commands.json
+compile_commands_notidy.json
 
 # VS Code / CLion
 *.user

@@ -64,6 +64,10 @@ done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
 COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+# clang-tidy reads from compile_commands_notidy.json when available (written by the
+# generate-clang-tidy-compile-commands CMake target), which preserves the live
+# compile_commands.json that clangd watches.  Fall back to the live file otherwise.
+COMPILE_COMMANDS_TIDY="${BUILD_DIR}/compile_commands_notidy.json"
 CONFIG_FILE="${PROJECT_ROOT}/.clang-tidy"
 
 # Find clang-tidy
@@ -98,23 +102,41 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
     cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Strip C++20 module flags and PCH references from compile_commands.json.
-# CMake emits two PCH-related flag groups per TU:
-#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
-#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
-#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
-# clang-tidy cannot use any of these without a prior full build, so strip all.
-if $VERBOSE; then
-    echo "Stripping module and PCH flags from compile_commands.json..."
+# Build the clean tidy database if not already present.
+# The generate-clang-tidy-compile-commands CMake target writes compile_commands_notidy.json
+# (module/PCH flags stripped) without touching the live compile_commands.json.
+if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
+    if $VERBOSE; then
+        echo "Generating compile_commands_notidy.json via CMake target..."
+    fi
+    cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
 fi
-sed -i.bak \
-    -e 's/@[^ ]*\.modmap//g' \
-    -e 's/-fmodule-output=[^ ]*//g' \
-    -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
-    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-    -e 's/-Xclang -fno-pch-timestamp//g' \
-    "$COMPILE_COMMANDS"
-rm -f "${COMPILE_COMMANDS}.bak"
+
+# If the CMake target didn't produce the file (older build dir or no CLANG_TIDY_EXE at configure
+# time), fall back to generating it here from the live database.
+if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
+    if $VERBOSE; then
+        echo "Falling back: stripping module/PCH flags from compile_commands.json → compile_commands_notidy.json"
+    fi
+    # Strip C++20 module flags and PCH references from a copy; never touch the original.
+    sed \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Xclang -fno-pch-timestamp//g' \
+        "$COMPILE_COMMANDS" > "$COMPILE_COMMANDS_TIDY"
+else
+    # File exists; ensure PCH flags that CMake target doesn't strip are also removed.
+    # The CMake target strips only module flags; do PCH stripping here non-destructively.
+    sed -i \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Xclang -fno-pch-timestamp//g' \
+        "$COMPILE_COMMANDS_TIDY"
+fi
+
+COMPILE_COMMANDS_IN_USE="$COMPILE_COMMANDS_TIDY"
 
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
@@ -174,13 +196,13 @@ run_clang_tidy() {
         --config-file="$CONFIG_FILE" \
         --header-filter="$HEADER_FILTER_REGEX" \
         --exclude-header-filter="$EXCLUDE_HEADER_FILTER_REGEX" \
-        -p "$BUILD_DIR" \
+        -p "$COMPILE_COMMANDS_IN_USE" \
         --extra-arg=-std=c++23 \
         --extra-arg=-Wno-unknown-warning-option \
         "$file" 2>&1
 }
 export -f run_clang_tidy
-export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_IN_USE
 
 # Run clang-tidy in parallel
 HAS_ERRORS=0

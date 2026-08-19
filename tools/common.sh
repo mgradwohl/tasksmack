@@ -21,7 +21,13 @@ check_command() {
 validate_build_prereqs() {
     check_command cmake "apt install cmake" || return 1
     check_command ninja "apt install ninja-build" || return 1
-    check_command clang++-22 "apt install clang-22 lld-22" || return 1
+    # Use the version-aware finder so the check stays valid after LLVM upgrades.
+    local clangpp
+    clangpp="$(find_llvm_tool "clang++" 2>/dev/null || true)"
+    if [[ -z "$clangpp" ]]; then
+        echo "Error: clang++ not found. Install via: apt install clang-22 lld-22 (or later)" >&2
+        return 1
+    fi
     return 0
 }
 

@@ -52,6 +52,15 @@ set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM ca
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
 set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86-64-v3, x86-64-v2). Empty string means no -march flag.")
+# Clang -ftime-trace: emits per-TU compile-time flamegraphs (<source>.json) for chrome://tracing.
+# Enable with -DTASKSMACK_ENABLE_TIME_TRACE=ON to diagnose slow compilation hot spots.
+option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph output (Clang only)" OFF)
+# Linker selection on Unix (ignored on Windows, which always uses lld-link via CMAKE_LINKER_TYPE=LLD).
+# Supported values: lld (default), mold (faster incremental debug links), default (system linker).
+set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
+# Print linker peak RSS after each link step (lld --print-memory-usage).
+# Useful for tracking link-memory growth over time. Logged in CI as a step output.
+option(TASKSMACK_LINK_STATS "Print linker memory usage after each link (lld only)" OFF)
 
 # Compiler caching (ccache/sccache) - required for development
 if(TASKSMACK_ENABLE_CCACHE)
@@ -214,6 +223,33 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(STATUS "Configuring TaskSmack with clang: ${CMAKE_CXX_COMPILER}")
 else()
     message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
+endif()
+
+# Compile-time flamegraph tracing (Clang only).
+# Emits per-TU <source>.json files; visualise with chrome://tracing or tools/time-trace.sh.
+if(TASKSMACK_ENABLE_TIME_TRACE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-ftime-trace)
+        message(STATUS "Compile-time tracing enabled (-ftime-trace). Run tools/time-trace.sh after build.")
+    else()
+        message(WARNING "TASKSMACK_ENABLE_TIME_TRACE requires Clang. Ignoring on ${CMAKE_CXX_COMPILER_ID}.")
+    endif()
+endif()
+
+# Linker selection on Unix.
+# TASKSMACK_LINKER controls which linker is used: lld (default), mold (faster incremental), default (system).
+# On Windows the linker is always lld-link (set via CMAKE_LINKER_TYPE=LLD in CMakePresets.json).
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(TASKSMACK_LINKER STREQUAL "mold")
+        set(_ts_linker_flag "-fuse-ld=mold")
+        message(STATUS "Linker: mold (opt-in)")
+    elseif(TASKSMACK_LINKER STREQUAL "default")
+        set(_ts_linker_flag "")
+        message(STATUS "Linker: system default")
+    else()
+        set(_ts_linker_flag "-fuse-ld=lld")
+        message(STATUS "Linker: lld (default)")
+    endif()
 endif()
 
 # Security hardening flags for release builds
@@ -563,32 +599,28 @@ elseif(WIN32)
 endif()
 
 if(CLANG_TIDY_EXE)
-    # Generate a module-free compile_commands.json for clang-tidy
-    # CMake/Ninja adds C++20 module dependency files (@*.modmap) that clang-tidy doesn't understand.
-    # This target strips only those C++20 module flags. PCH flags (-Xclang -include-pch, etc.) are
-    # stripped separately by the clang-tidy scripts (clang-tidy.sh / clang-tidy.ps1).
-    # Use platform-appropriate tools: sed on Unix, PowerShell on Windows
+    # Generate a clean compile_commands_notidy.json for clang-tidy, stripping flags
+    # that clang-tidy cannot handle (C++20 module @*.modmap dependency files, PCH flags).
+    # Writing to a *separate* file preserves the live compile_commands.json that clangd watches;
+    # clang-tidy.sh uses compile_commands_notidy.json via -p so clangd is never disturbed.
     if(WIN32)
         add_custom_target(generate-clang-tidy-compile-commands
-            COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_BINARY_DIR}/compile_commands.json
-                ${CMAKE_BINARY_DIR}/compile_commands.json.bak
             COMMAND powershell -NoProfile -Command
-                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
+                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands_notidy.json' -NoNewline"
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
+            COMMENT "Writing compile_commands_notidy.json (module flags stripped, for clang-tidy)"
         )
     else()
         add_custom_target(generate-clang-tidy-compile-commands
             COMMAND ${CMAKE_COMMAND} -E copy
                 ${CMAKE_BINARY_DIR}/compile_commands.json
-                ${CMAKE_BINARY_DIR}/compile_commands.json.bak
+                ${CMAKE_BINARY_DIR}/compile_commands_notidy.json
             COMMAND sed -i
                 -e "s/@[^ ]*\\.modmap//g"
                 -e "s/-fmodule-output=[^ ]*//g"
-                ${CMAKE_BINARY_DIR}/compile_commands.json
+                ${CMAKE_BINARY_DIR}/compile_commands_notidy.json
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
+            COMMENT "Writing compile_commands_notidy.json (module flags stripped, for clang-tidy)"
         )
     endif()
 
@@ -675,7 +707,20 @@ target_compile_features(TaskSmack PRIVATE cxx_std_23)
 # so optimized and RelWithDebInfo builds keep the same link toolchain as Debug.
 if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
-    target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread -fuse-ld=lld)
+    if(_ts_linker_flag)
+        target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
+    else()
+        target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
+    endif()
+endif()
+
+# Linker memory usage reporting (lld --print-memory-usage).
+# Append -Wl,--print-memory-usage so lld prints peak RSS after each link step.
+# Gate on lld being selected: mold uses --perf, default linker may not support it.
+if(TASKSMACK_LINK_STATS AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+        AND (TASKSMACK_LINKER STREQUAL "lld" OR TASKSMACK_LINKER STREQUAL ""))
+    target_link_options(TaskSmack PRIVATE "LINKER:--print-memory-usage")
+    message(STATUS "Link memory stats enabled (--print-memory-usage)")
 endif()
 
 # Precompiled headers

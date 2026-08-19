@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -87,11 +88,17 @@ jobs:
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
+        env:
+          GTEST_SHUFFLE: '1'
+          GTEST_RANDOM_SEED: '0'
         run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GTEST_SHUFFLE: '1'
+          GTEST_RANDOM_SEED: '0'
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results (Linux)
@@ -109,3 +116,15 @@ jobs:
           name: windows-${{ inputs.build_type }}-test-results
           path: build/win-${{ inputs.build_type }}/test-results.xml
           retention-days: 30
+
+      - name: Publish test results to Job Summary
+        if: always()
+        uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
+        with:
+          name: Test Results (${{ inputs.os }} ${{ inputs.build_type }})
+          path: |
+            build/${{ inputs.build_type }}/test-results.xml
+            build/win-${{ inputs.build_type }}/test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false

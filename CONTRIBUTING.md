@@ -27,6 +27,35 @@ pip install -r requirements.txt
 pre-commit install
 ```
 
+### Automated Setup (Linux)
+
+Instead of installing prerequisites manually, run:
+
+```bash
+./tools/setup-dev.sh          # Install all prerequisites automatically
+./tools/check-prereqs.sh      # Verify environment after setup
+```
+
+Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+
+### Automated Setup (Windows)
+
+```powershell
+pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
+pwsh tools/check-prereqs.ps1  # Verify environment
+```
+
+### One-Command Dev Workflow
+
+After setup, use CMake workflow presets for the full configure → build → test cycle in a single command:
+
+```bash
+cmake --workflow --preset dev          # Linux debug build + test
+cmake --workflow --preset win-dev      # Windows debug build + test
+cmake --workflow --preset coverage     # Coverage build + test
+cmake --workflow --preset full-sanitizers  # ASan+UBSan + TSan
+```
+
 ## Check Prerequisites
 
 If you just want a quick check of your environment, run:
@@ -156,6 +185,18 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+### Cleaning Build Artifacts
+
+Remove stale build directories, FetchContent cache, and coverage output:
+
+```bash
+./tools/clean.sh          # Remove build/ and coverage/  (Linux)
+./tools/clean.sh --all    # Also removes .cache/fetchcontent (triggers full dependency re-download)
+./tools/clean.sh --dry-run  # Preview what would be removed without deleting anything
+
+pwsh tools/clean.ps1      # Windows equivalent (same flags)
+```
+
 ### CPU Compatibility
 
 The `optimized` and `win-optimized` presets target the x86-64-v3 microarchitecture, which requires AVX2 support (Haswell 2013+ or Excavator 2015+ CPUs). If you encounter "Illegal instruction" errors, your CPU may not support these instructions.
@@ -179,10 +220,12 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
 | `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2, 2009+) |
-| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped (Haswell 2013+) |
+| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped, whole-program vtables (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
 | `tsan` | — | ThreadSanitizer (Linux only) |
+| `msan` | — | MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only; requires MSan-instrumented libc++) |
+| `unity` | `win-unity` | Unity (jumbo) build for fast end-to-end checks; trades incremental correctness for speed |
 
 ### Build Commands
 
@@ -603,16 +646,21 @@ Notes:
 
 ### Compile-Time Profiling (-ftime-trace)
 
-To identify slow headers and compilation bottlenecks:
+To identify slow headers and compilation bottlenecks, use the `TASKSMACK_ENABLE_TIME_TRACE` CMake option:
 
 ```bash
-# Add -ftime-trace to your build
-cmake --preset debug -DCMAKE_CXX_FLAGS="-ftime-trace"
+# Configure with -ftime-trace enabled (Clang emits per-TU .json trace files)
+cmake --preset debug -DTASKSMACK_ENABLE_TIME_TRACE=ON
 cmake --build --preset debug
 
-# Each .cpp generates a .json trace file
-# Open in Chrome's chrome://tracing or Perfetto
+# Collect and merge all trace files, then open in chrome://tracing or Perfetto
+./tools/time-trace.sh debug
+
+# Or list trace files without opening
+./tools/time-trace.sh --list
 ```
+
+Each `.cpp` file generates a `<source>.json` trace alongside its `.o` file. `tools/time-trace.sh` merges all traces into `build/debug/time-trace-merged.json` for easy visualization.
 
 ### Resize Performance Instrumentation
 
@@ -823,6 +871,9 @@ Key CMake options:
 |--------|---------|-------------|
 | `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable extra warnings |
 | `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
+| `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` (Clang): per-TU compile-time flamegraphs |
+| `TASKSMACK_LINKER` | `lld` | Linker to use: `lld`, `mold`, or `default` |
+| `TASKSMACK_LINK_STATS` | `OFF` | Print linker memory usage (`--print-memory-usage`) |
 
 To disable warnings-as-errors for local iteration:
 

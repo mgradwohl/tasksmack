@@ -1,0 +1,28 @@
+name: Dependency Review
+
+# Block PRs that introduce dependencies with known CVEs.
+# Uses GitHub's dependency review API (requires the dependency graph to be enabled).
+# Complements the OSV scanner workflow (which runs on push); this blocks at the PR gate.
+
+on:
+  pull_request:
+    branches: [main, 'dev/**']
+
+permissions: {}
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Review dependencies for CVEs
+        uses: actions/dependency-review-action@38ecb5b593bf0eb19e335c03f97670f792489a8b # v4.7.1
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
