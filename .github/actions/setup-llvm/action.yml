@@ -48,14 +48,24 @@ runs:
 
     - name: Install LLVM ${{ inputs.llvm-version }}
       shell: bash
+      env:
+        INSTALL_CCACHE: ${{ inputs.install-ccache }}
+        INSTALL_CLANGD: ${{ inputs.install-clangd }}
+        INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
+        INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        INSTALL_NINJA: ${{ inputs.install-ninja }}
+        LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
-        LLVM_VER="${{ inputs.llvm-version }}"
+        LLVM_VER="$LLVM_VERSION"
         if [[ -z "$LLVM_VER" ]]; then
           LLVM_VER='22'
         fi
 
-        # Download and run LLVM installer
-        wget https://apt.llvm.org/llvm.sh
+        # Verify the installer before granting it root privileges.
+        LLVM_INSTALLER_SHA256='03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae'
+        curl --fail --silent --show-error --location \
+          --output llvm.sh https://apt.llvm.org/llvm.sh
+        echo "$LLVM_INSTALLER_SHA256  llvm.sh" | sha256sum --check --strict
         chmod +x llvm.sh
         sudo ./llvm.sh "$LLVM_VER"
         rm -f llvm.sh
@@ -63,19 +73,19 @@ runs:
         # Build package list - always include GUI dependencies
         PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev"
 
-        if [[ "${{ inputs.install-ninja }}" == "true" ]]; then
+        if [[ "$INSTALL_NINJA" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"
         fi
-        if [[ "${{ inputs.install-ccache }}" == "true" ]]; then
+        if [[ "$INSTALL_CCACHE" == "true" ]]; then
           PACKAGES="$PACKAGES ccache"
         fi
-        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_FORMAT" == "true" ]]; then
           PACKAGES="$PACKAGES clang-format-${LLVM_VER}"
         fi
-        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_TIDY" == "true" ]]; then
           PACKAGES="$PACKAGES clang-tidy-${LLVM_VER}"
         fi
-        if [[ "${{ inputs.install-clangd }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANGD" == "true" ]]; then
           PACKAGES="$PACKAGES clangd-${LLVM_VER}"
         fi
 
@@ -85,8 +95,14 @@ runs:
 
     - name: Configure LLVM alternatives
       shell: bash
+      env:
+        INSTALL_CLANGD: ${{ inputs.install-clangd }}
+        INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
+        INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        INSTALL_COVERAGE_TOOLS: ${{ inputs.install-coverage-tools }}
+        LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
-        VER="${{ inputs.llvm-version }}"
+        VER="$LLVM_VERSION"
         if [[ -z "$VER" ]]; then
           VER='22'
         fi
@@ -102,25 +118,25 @@ runs:
         sudo update-alternatives --set clang++ /usr/bin/clang++-$VER
 
         # Optional: clang-format
-        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_FORMAT" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-$VER 100
           sudo update-alternatives --set clang-format /usr/bin/clang-format-$VER
         fi
 
         # Optional: clang-tidy
-        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_TIDY" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-$VER 100
           sudo update-alternatives --set clang-tidy /usr/bin/clang-tidy-$VER
         fi
 
         # Optional: clangd
-        if [[ "${{ inputs.install-clangd }}" == "true" ]] && [[ -x "/usr/bin/clangd-$VER" ]]; then
+        if [[ "$INSTALL_CLANGD" == "true" ]] && [[ -x "/usr/bin/clangd-$VER" ]]; then
           sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-$VER 100
           sudo update-alternatives --set clangd /usr/bin/clangd-$VER
         fi
 
         # Optional: coverage tools
-        if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
+        if [[ "$INSTALL_COVERAGE_TOOLS" == "true" ]]; then
           sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-$VER 100
           sudo update-alternatives --install /usr/bin/llvm-cov llvm-cov /usr/bin/llvm-cov-$VER 100
           sudo update-alternatives --set llvm-profdata /usr/bin/llvm-profdata-$VER
@@ -129,20 +145,25 @@ runs:
 
     - name: Verify installation
       shell: bash
+      env:
+        INSTALL_CLANGD: ${{ inputs.install-clangd }}
+        INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
+        INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        INSTALL_COVERAGE_TOOLS: ${{ inputs.install-coverage-tools }}
       run: |
         echo "=== LLVM Installation Summary ==="
         clang --version | head -1
         clang++ --version | head -1
-        if [[ "${{ inputs.install-clang-format }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_FORMAT" == "true" ]]; then
           clang-format --version
         fi
-        if [[ "${{ inputs.install-clang-tidy }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANG_TIDY" == "true" ]]; then
           clang-tidy --version | head -1
         fi
-        if [[ "${{ inputs.install-clangd }}" == "true" ]]; then
+        if [[ "$INSTALL_CLANGD" == "true" ]]; then
           clangd --version | head -1
         fi
-        if [[ "${{ inputs.install-coverage-tools }}" == "true" ]]; then
+        if [[ "$INSTALL_COVERAGE_TOOLS" == "true" ]]; then
           llvm-profdata --version 2>&1 | head -1 || echo "llvm-profdata: $(which llvm-profdata || echo 'not found')"
           llvm-cov --version 2>&1 | head -1 || echo "llvm-cov: $(which llvm-cov || echo 'not found')"
         fi
