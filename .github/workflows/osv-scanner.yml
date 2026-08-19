@@ -53,7 +53,7 @@ jobs:
           path: sbom.spdx.json
           retention-days: 1
 
-  # Scan the SBOM (C++ FetchContent deps) and requirements.txt (Python) against OSV.
+  # Scan the SBOM and both Python dependency manifests against OSV.
   # The reusable workflow handles checkout, download of the artifact, scanning,
   # SARIF upload to the Security tab, and job failure on vulnerabilities.
   vulnerability-scan:
@@ -66,6 +66,7 @@ jobs:
     with:
       scan-args: |-
         --lockfile=requirements.txt
+        --lockfile=requirements-glad.lock
         --sbom=./sbom.spdx.json
       download-artifact: sbom-file
       results-file-name: results.sarif

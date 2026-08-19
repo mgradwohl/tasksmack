@@ -1,5 +1,6 @@
 #include "SystemModel.h"
 
+#include "History.h"
 #include "Numeric.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -47,104 +48,77 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
 void SystemModel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    // Trim timestamps first to know how many samples to drop from other tracks.
-    std::size_t removeCount = 0;
-    while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
-    {
-        m_Timestamps.pop_front();
-        ++removeCount;
-    }
-
-    auto trimSamples = [removeCount](auto& dq)
-    {
-        for (std::size_t i = 0; i < removeCount && !dq.empty(); ++i)
-        {
-            dq.pop_front();
-        }
-    };
-
-    trimSamples(m_CpuHistory);
-    trimSamples(m_CpuUserHistory);
-    trimSamples(m_CpuSystemHistory);
-    trimSamples(m_CpuIowaitHistory);
-    trimSamples(m_CpuIdleHistory);
-    trimSamples(m_MemoryHistory);
-    trimSamples(m_MemoryCachedHistory);
-    trimSamples(m_SwapHistory);
-    trimSamples(m_PowerHistory);
-    trimSamples(m_BatteryChargeHistory);
-    trimSamples(m_NetRxHistory);
-    trimSamples(m_NetTxHistory);
+    const std::size_t removeCount = HistoryUtils::trimBefore(m_Timestamps,
+                                                             cutoff,
+                                                             m_CpuHistory,
+                                                             m_CpuUserHistory,
+                                                             m_CpuSystemHistory,
+                                                             m_CpuIowaitHistory,
+                                                             m_CpuIdleHistory,
+                                                             m_MemoryHistory,
+                                                             m_MemoryCachedHistory,
+                                                             m_SwapHistory,
+                                                             m_PowerHistory,
+                                                             m_BatteryChargeHistory,
+                                                             m_NetRxHistory,
+                                                             m_NetTxHistory);
 
     // Per-interface network history
     for (auto& [name, hist] : m_PerInterfaceRxHistory)
     {
-        trimSamples(hist);
+        HistoryUtils::trimFront(hist, removeCount);
     }
     for (auto& [name, hist] : m_PerInterfaceTxHistory)
     {
-        trimSamples(hist);
+        HistoryUtils::trimFront(hist, removeCount);
     }
 
     for (auto& coreHist : m_PerCoreHistory)
     {
-        trimSamples(coreHist);
+        HistoryUtils::trimFront(coreHist, removeCount);
     }
 
     // Ensure all history buffers remain aligned by truncating to the smallest non-empty size.
-    std::size_t minSize = std::numeric_limits<std::size_t>::max();
-    const auto updateMin = [&minSize](std::size_t size)
-    {
-        if (size > 0)
-        {
-            minSize = std::min(minSize, size);
-        }
-    };
-
-    updateMin(m_Timestamps.size());
-    updateMin(m_CpuHistory.size());
-    updateMin(m_CpuUserHistory.size());
-    updateMin(m_CpuSystemHistory.size());
-    updateMin(m_CpuIowaitHistory.size());
-    updateMin(m_CpuIdleHistory.size());
-    updateMin(m_MemoryHistory.size());
-    updateMin(m_MemoryCachedHistory.size());
-    updateMin(m_SwapHistory.size());
-    updateMin(m_PowerHistory.size());
-    updateMin(m_BatteryChargeHistory.size());
-    updateMin(m_NetRxHistory.size());
-    updateMin(m_NetTxHistory.size());
+    std::size_t minSize = HistoryUtils::minimumNonEmptySize(m_Timestamps,
+                                                            m_CpuHistory,
+                                                            m_CpuUserHistory,
+                                                            m_CpuSystemHistory,
+                                                            m_CpuIowaitHistory,
+                                                            m_CpuIdleHistory,
+                                                            m_MemoryHistory,
+                                                            m_MemoryCachedHistory,
+                                                            m_SwapHistory,
+                                                            m_PowerHistory,
+                                                            m_BatteryChargeHistory,
+                                                            m_NetRxHistory,
+                                                            m_NetTxHistory);
     for (const auto& coreHist : m_PerCoreHistory)
     {
-        updateMin(coreHist.size());
+        if (!coreHist.empty())
+        {
+            minSize = std::min(minSize, coreHist.size());
+        }
     }
 
     if (minSize != std::numeric_limits<std::size_t>::max())
     {
-        auto trimToMin = [minSize](auto& dq)
-        {
-            while (dq.size() > minSize)
-            {
-                dq.pop_front();
-            }
-        };
-
-        trimToMin(m_Timestamps);
-        trimToMin(m_CpuHistory);
-        trimToMin(m_CpuUserHistory);
-        trimToMin(m_CpuSystemHistory);
-        trimToMin(m_CpuIowaitHistory);
-        trimToMin(m_CpuIdleHistory);
-        trimToMin(m_MemoryHistory);
-        trimToMin(m_MemoryCachedHistory);
-        trimToMin(m_SwapHistory);
-        trimToMin(m_PowerHistory);
-        trimToMin(m_BatteryChargeHistory);
-        trimToMin(m_NetRxHistory);
-        trimToMin(m_NetTxHistory);
+        HistoryUtils::trimFrontToSize(minSize,
+                                      m_Timestamps,
+                                      m_CpuHistory,
+                                      m_CpuUserHistory,
+                                      m_CpuSystemHistory,
+                                      m_CpuIowaitHistory,
+                                      m_CpuIdleHistory,
+                                      m_MemoryHistory,
+                                      m_MemoryCachedHistory,
+                                      m_SwapHistory,
+                                      m_PowerHistory,
+                                      m_BatteryChargeHistory,
+                                      m_NetRxHistory,
+                                      m_NetTxHistory);
         for (auto& coreHist : m_PerCoreHistory)
         {
-            trimToMin(coreHist);
+            HistoryUtils::trimFrontToSize(minSize, coreHist);
         }
     }
 }
@@ -211,61 +185,61 @@ const Platform::SystemCapabilities& SystemModel::capabilities() const
 std::vector<float> SystemModel::cpuHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_CpuHistory.begin(), m_CpuHistory.end()};
+    return HistoryUtils::toVector(m_CpuHistory);
 }
 
 std::vector<float> SystemModel::cpuUserHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_CpuUserHistory.begin(), m_CpuUserHistory.end()};
+    return HistoryUtils::toVector(m_CpuUserHistory);
 }
 
 std::vector<float> SystemModel::cpuSystemHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_CpuSystemHistory.begin(), m_CpuSystemHistory.end()};
+    return HistoryUtils::toVector(m_CpuSystemHistory);
 }
 
 std::vector<float> SystemModel::cpuIowaitHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_CpuIowaitHistory.begin(), m_CpuIowaitHistory.end()};
+    return HistoryUtils::toVector(m_CpuIowaitHistory);
 }
 
 std::vector<float> SystemModel::cpuIdleHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_CpuIdleHistory.begin(), m_CpuIdleHistory.end()};
+    return HistoryUtils::toVector(m_CpuIdleHistory);
 }
 
 std::vector<float> SystemModel::memoryHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_MemoryHistory.begin(), m_MemoryHistory.end()};
+    return HistoryUtils::toVector(m_MemoryHistory);
 }
 
 std::vector<float> SystemModel::powerHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_PowerHistory.begin(), m_PowerHistory.end()};
+    return HistoryUtils::toVector(m_PowerHistory);
 }
 
 std::vector<float> SystemModel::batteryChargeHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_BatteryChargeHistory.begin(), m_BatteryChargeHistory.end()};
+    return HistoryUtils::toVector(m_BatteryChargeHistory);
 }
 
 std::vector<float> SystemModel::netRxHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_NetRxHistory.begin(), m_NetRxHistory.end()};
+    return HistoryUtils::toVector(m_NetRxHistory);
 }
 
 std::vector<float> SystemModel::netTxHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_NetTxHistory.begin(), m_NetTxHistory.end()};
+    return HistoryUtils::toVector(m_NetTxHistory);
 }
 
 std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& interfaceName) const
@@ -274,7 +248,7 @@ std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& inte
     const auto it = m_PerInterfaceRxHistory.find(interfaceName);
     if (it != m_PerInterfaceRxHistory.end())
     {
-        return {it->second.begin(), it->second.end()};
+        return HistoryUtils::toVector(it->second);
     }
     return {};
 }
@@ -285,7 +259,7 @@ std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& inte
     const auto it = m_PerInterfaceTxHistory.find(interfaceName);
     if (it != m_PerInterfaceTxHistory.end())
     {
-        return {it->second.begin(), it->second.end()};
+        return HistoryUtils::toVector(it->second);
     }
     return {};
 }
@@ -293,13 +267,13 @@ std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& inte
 std::vector<float> SystemModel::memoryCachedHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_MemoryCachedHistory.begin(), m_MemoryCachedHistory.end()};
+    return HistoryUtils::toVector(m_MemoryCachedHistory);
 }
 
 std::vector<float> SystemModel::swapHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SwapHistory.begin(), m_SwapHistory.end()};
+    return HistoryUtils::toVector(m_SwapHistory);
 }
 
 std::vector<std::vector<float>> SystemModel::perCoreHistory() const
@@ -310,7 +284,7 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 
     for (const auto& coreHist : m_PerCoreHistory)
     {
-        result.emplace_back(coreHist.begin(), coreHist.end());
+        result.push_back(HistoryUtils::toVector(coreHist));
     }
 
     return result;
@@ -319,7 +293,7 @@ std::vector<std::vector<float>> SystemModel::perCoreHistory() const
 std::vector<double> SystemModel::timestamps() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_Timestamps.begin(), m_Timestamps.end()};
+    return HistoryUtils::toVector(m_Timestamps);
 }
 
 void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds)
@@ -396,13 +370,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             {
                 if (iface.rxBytes >= prevIface->rxBytes)
                 {
-                    const uint64_t rxDelta = iface.rxBytes - prevIface->rxBytes;
-                    ifaceSnap.rxBytesPerSec = Numeric::toDouble(rxDelta) / timeDelta;
+                    ifaceSnap.rxBytesPerSec = Numeric::counterRate(iface.rxBytes, prevIface->rxBytes, timeDelta);
                 }
                 if (iface.txBytes >= prevIface->txBytes)
                 {
-                    const uint64_t txDelta = iface.txBytes - prevIface->txBytes;
-                    ifaceSnap.txBytesPerSec = Numeric::toDouble(txDelta) / timeDelta;
+                    ifaceSnap.txBytesPerSec = Numeric::counterRate(iface.txBytes, prevIface->txBytes, timeDelta);
                 }
             }
         }
@@ -438,13 +410,11 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             // Only compute if counters increased (handle overflow/restart)
             if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
             {
-                const std::uint64_t rxDelta = counters.netRxBytes - m_PrevCounters.netRxBytes;
-                snap.netRxBytesPerSec = Numeric::toDouble(rxDelta) / timeDelta;
+                snap.netRxBytesPerSec = Numeric::counterRate(counters.netRxBytes, m_PrevCounters.netRxBytes, timeDelta);
             }
             if (counters.netTxBytes >= m_PrevCounters.netTxBytes)
             {
-                const std::uint64_t txDelta = counters.netTxBytes - m_PrevCounters.netTxBytes;
-                snap.netTxBytesPerSec = Numeric::toDouble(txDelta) / timeDelta;
+                snap.netTxBytesPerSec = Numeric::counterRate(counters.netTxBytes, m_PrevCounters.netTxBytes, timeDelta);
             }
         }
     }

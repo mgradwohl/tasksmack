@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <deque>
 #include <string>
+#include <vector>
 
 namespace Domain
 {
@@ -13,6 +15,46 @@ namespace
 // Use a small capacity for easier testing
 using TestHistory = History<int, 5>;
 using FloatHistory = History<float, 10>;
+
+// =============================================================================
+// Shared History Utilities
+// =============================================================================
+
+TEST(HistoryUtilsTest, TrimBeforeKeepsAlignedSequencesSynchronized)
+{
+    std::deque<double> timestamps{1.0, 2.0, 3.0};
+    std::deque<int> first{10, 20, 30};
+    std::deque<int> second{100, 200, 300};
+
+    EXPECT_EQ(HistoryUtils::trimBefore(timestamps, 2.5, first, second), 2);
+    EXPECT_EQ(timestamps, std::deque<double>({3.0}));
+    EXPECT_EQ(first, std::deque<int>({30}));
+    EXPECT_EQ(second, std::deque<int>({300}));
+}
+
+TEST(HistoryUtilsTest, AlignFrontToSizeTrimsAndPadsOldestSamples)
+{
+    std::deque<int> samples{1, 2, 3};
+    HistoryUtils::alignFrontToSize(samples, 2);
+    EXPECT_EQ(samples, std::deque<int>({2, 3}));
+
+    HistoryUtils::alignFrontToSize(samples, 4);
+    EXPECT_EQ(samples, std::deque<int>({0, 0, 2, 3}));
+}
+
+TEST(HistoryUtilsTest, FindsMinimumNonEmptySize)
+{
+    const std::deque<int> empty;
+    const std::deque<int> longHistory{1, 2, 3};
+    const std::deque<int> shortHistory{1, 2};
+    EXPECT_EQ(HistoryUtils::minimumNonEmptySize(empty, longHistory, shortHistory), 2);
+}
+
+TEST(HistoryUtilsTest, CopiesSequenceToVector)
+{
+    const std::deque<int> samples{1, 2, 3};
+    EXPECT_EQ(HistoryUtils::toVector(samples), std::vector<int>({1, 2, 3}));
+}
 
 // =============================================================================
 // Construction and Initial State

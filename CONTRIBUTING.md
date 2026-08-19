@@ -943,9 +943,12 @@ PR optimization: docs-only pull requests skip compile/test and environment-valid
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
-(via Syft SBOM generated from `CMakeLists.txt`) and Python `requirements.txt` against the
+(via Syft SBOM generated from `CMakeLists.txt`) and both Python dependency manifests against the
 [OSV vulnerability database](https://osv.dev) on pushes to `main`, pull requests targeting
 `main`, and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+Release and CI builds install GLAD's Python dependencies from the hash-locked
+`requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
+SHA-256 digest before executing it.
 
 ### Release Artifacts
 
