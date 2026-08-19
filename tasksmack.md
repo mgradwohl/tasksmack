@@ -334,7 +334,6 @@ The following log-level semantics are enforced across all layers:
 - Domain models use `DEBUG` for refresh events; `WARN` when a capability is disabled at runtime.
 - UI code logs at `INFO` or above only; never `DEBUG` or `TRACE` from render paths.
 - Tests run with spdlog silenced (level `off`) via `TestLogSuppressor` to keep `--output-on-failure` clean.
-- CI sanitizer runs (ASAN, TSAN) set log level to `INFO` to avoid false-positive data-race reports from per-frame `TRACE`/`DEBUG` paths.
 
 ## Archived: Process Enumeration Implementation Plan
 

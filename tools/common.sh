@@ -28,6 +28,12 @@ validate_build_prereqs() {
         echo "Error: clang++ not found. Install via: apt install clang-22 lld-22 (or later)" >&2
         return 1
     fi
+    local clangpp_version
+    clangpp_version="$(get_llvm_tool_major_version "$clangpp" 2>/dev/null || true)"
+    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 22 ]]; then
+        echo "Error: clang++ >= 22 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -60,6 +66,12 @@ find_llvm_tool() {
     fi
 
     return 1
+}
+
+# Print the LLVM major version for the given executable path.
+get_llvm_tool_major_version() {
+    local tool_path="$1"
+    "$tool_path" --version 2>/dev/null | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1
 }
 
 # Returns 0 if the given executable exists and is Python >= 3.14 (project minimum).

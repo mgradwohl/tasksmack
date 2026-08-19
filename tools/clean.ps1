@@ -49,7 +49,8 @@ foreach ($t in $targets) {
     if (Test-Path $t) {
         if ($DryRun) {
             Write-Host "[dry-run] Remove-Item -Recurse -Force $t"
-        } else {
+        }
+        elseif ($PSCmdlet.ShouldProcess($t, "Remove build artifact")) {
             Write-Host "Removing: $t"
             Remove-Item -Recurse -Force $t
         }

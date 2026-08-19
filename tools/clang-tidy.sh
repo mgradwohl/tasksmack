@@ -64,10 +64,8 @@ done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
 COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
-# clang-tidy reads from compile_commands_notidy.json when available (written by the
-# generate-clang-tidy-compile-commands CMake target), which preserves the live
-# compile_commands.json that clangd watches.  Fall back to the live file otherwise.
-COMPILE_COMMANDS_TIDY="${BUILD_DIR}/compile_commands_notidy.json"
+TIDY_COMPDB_DIR="${BUILD_DIR}/clang-tidy-compdb"
+COMPILE_COMMANDS_TIDY="${TIDY_COMPDB_DIR}/compile_commands.json"
 CONFIG_FILE="${PROJECT_ROOT}/.clang-tidy"
 
 # Find clang-tidy
@@ -102,23 +100,21 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
     cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Build the clean tidy database if not already present.
-# The generate-clang-tidy-compile-commands CMake target writes compile_commands_notidy.json
-# (module/PCH flags stripped) without touching the live compile_commands.json.
-if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
-    if $VERBOSE; then
-        echo "Generating compile_commands_notidy.json via CMake target..."
-    fi
-    cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
+# Build the clean tidy database on every invocation so it stays in sync with the active build.
+# The generate-clang-tidy-compile-commands target writes a sanitized compile_commands.json into
+# ${BUILD_DIR}/clang-tidy-compdb without touching the live database clangd watches.
+if $VERBOSE; then
+    echo "Generating clang-tidy compilation database via CMake target..."
 fi
+cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
 
 # If the CMake target didn't produce the file (older build dir or no CLANG_TIDY_EXE at configure
 # time), fall back to generating it here from the live database.
 if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
     if $VERBOSE; then
-        echo "Falling back: stripping module/PCH flags from compile_commands.json → compile_commands_notidy.json"
+        echo "Falling back: writing sanitized compile_commands.json for clang-tidy"
     fi
-    # Strip C++20 module flags and PCH references from a copy; never touch the original.
+    mkdir -p "$TIDY_COMPDB_DIR"
     sed \
         -e 's/@[^ ]*\.modmap//g' \
         -e 's/-fmodule-output=[^ ]*//g' \
@@ -126,14 +122,6 @@ if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
         -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
         -e 's/-Xclang -fno-pch-timestamp//g' \
         "$COMPILE_COMMANDS" > "$COMPILE_COMMANDS_TIDY"
-else
-    # File exists; ensure PCH flags that CMake target doesn't strip are also removed.
-    # The CMake target strips only module flags; do PCH stripping here non-destructively.
-    sed -i \
-        -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
-        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-        -e 's/-Xclang -fno-pch-timestamp//g' \
-        "$COMPILE_COMMANDS_TIDY"
 fi
 
 COMPILE_COMMANDS_IN_USE="$COMPILE_COMMANDS_TIDY"

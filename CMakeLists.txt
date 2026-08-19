@@ -58,8 +58,8 @@ option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph 
 # Linker selection on Unix (ignored on Windows, which always uses lld-link via CMAKE_LINKER_TYPE=LLD).
 # Supported values: lld (default), mold (faster incremental debug links), default (system linker).
 set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
-# Print linker peak RSS after each link step (lld --print-memory-usage).
-# Useful for tracking link-memory growth over time. Logged in CI as a step output.
+# Print lld's memory-region usage report after each link step (--print-memory-usage).
+# This is linker-provided diagnostic output, not a process RSS measurement.
 option(TASKSMACK_LINK_STATS "Print linker memory usage after each link (lld only)" OFF)
 
 # Compiler caching (ccache/sccache) - required for development
@@ -240,6 +240,12 @@ endif()
 # TASKSMACK_LINKER controls which linker is used: lld (default), mold (faster incremental), default (system).
 # On Windows the linker is always lld-link (set via CMAKE_LINKER_TYPE=LLD in CMakePresets.json).
 if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(NOT TASKSMACK_LINKER STREQUAL "lld"
+            AND NOT TASKSMACK_LINKER STREQUAL "mold"
+            AND NOT TASKSMACK_LINKER STREQUAL "default")
+        message(FATAL_ERROR "Invalid TASKSMACK_LINKER='${TASKSMACK_LINKER}'. Expected one of: lld, mold, default.")
+    endif()
+
     if(TASKSMACK_LINKER STREQUAL "mold")
         set(_ts_linker_flag "-fuse-ld=mold")
         message(STATUS "Linker: mold (opt-in)")
@@ -599,35 +605,41 @@ elseif(WIN32)
 endif()
 
 if(CLANG_TIDY_EXE)
-    # Generate a clean compile_commands_notidy.json for clang-tidy, stripping flags
+    # Generate a clean compile_commands.json for clang-tidy in a dedicated directory, stripping flags
     # that clang-tidy cannot handle (C++20 module @*.modmap dependency files, PCH flags).
-    # Writing to a *separate* file preserves the live compile_commands.json that clangd watches;
-    # clang-tidy.sh uses compile_commands_notidy.json via -p so clangd is never disturbed.
+    # Writing to a *separate* directory preserves the live compile_commands.json that clangd watches;
+    # clang-tidy tools point -p at the dedicated directory so clangd is never disturbed.
+    set(TASKSMACK_CLANG_TIDY_COMPDB_DIR "${CMAKE_BINARY_DIR}/clang-tidy-compdb")
     if(WIN32)
         add_custom_target(generate-clang-tidy-compile-commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             COMMAND powershell -NoProfile -Command
-                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands_notidy.json' -NoNewline"
+                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' -replace '-Xclang -include-pch -Xclang [^ ]*', '' -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', '' -replace '-Xclang -fno-pch-timestamp', '' | Set-Content '${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json' -NoNewline"
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Writing compile_commands_notidy.json (module flags stripped, for clang-tidy)"
+            COMMENT "Writing clang-tidy compile_commands.json (module/PCH flags stripped)"
         )
     else()
         add_custom_target(generate-clang-tidy-compile-commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             COMMAND ${CMAKE_COMMAND} -E copy
                 ${CMAKE_BINARY_DIR}/compile_commands.json
-                ${CMAKE_BINARY_DIR}/compile_commands_notidy.json
+                ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json
             COMMAND sed -i
                 -e "s/@[^ ]*\\.modmap//g"
                 -e "s/-fmodule-output=[^ ]*//g"
-                ${CMAKE_BINARY_DIR}/compile_commands_notidy.json
+                -e "s/-Xclang -include-pch -Xclang [^ ]*//g"
+                -e "s/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g"
+                -e "s/-Xclang -fno-pch-timestamp//g"
+                ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Writing compile_commands_notidy.json (module flags stripped, for clang-tidy)"
+            COMMENT "Writing clang-tidy compile_commands.json (module/PCH flags stripped)"
         )
     endif()
 
     add_custom_target(run-clang-tidy
         COMMAND ${CLANG_TIDY_EXE}
             --config-file=${CMAKE_SOURCE_DIR}/.clang-tidy
-            -p ${CMAKE_BINARY_DIR}
+            -p ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             --extra-arg=-std=c++23
             --extra-arg=-Wno-unknown-warning-option
             ${TASKSMACK_SOURCES}
@@ -714,9 +726,8 @@ if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endif()
 endif()
 
-# Linker memory usage reporting (lld --print-memory-usage).
-# Append -Wl,--print-memory-usage so lld prints peak RSS after each link step.
-# Gate on lld being selected: mold uses --perf, default linker may not support it.
+# Linker memory-region usage reporting (lld --print-memory-usage).
+# Gate on lld being selected: mold uses different diagnostics, default linker may not support it.
 if(TASKSMACK_LINK_STATS AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"
         AND (TASKSMACK_LINKER STREQUAL "lld" OR TASKSMACK_LINKER STREQUAL ""))
     target_link_options(TaskSmack PRIVATE "LINKER:--print-memory-usage")

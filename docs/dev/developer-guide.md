@@ -46,7 +46,7 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 \
 | LLVM/Clang 22 | [releases.llvm.org](https://releases.llvm.org/) — set `LLVM_ROOT` env var |
 | CMake 3.29+ | `winget install Kitware.CMake` |
 | Ninja | `winget install Ninja-build.Ninja` |
-| Python 3 + jinja2 | `winget install Python.Python.3.12` then `pip install jinja2` |
+| Python 3 + jinja2 | `winget install Python.Python.3.14` then `pip install jinja2` |
 | ccache (optional) | `winget install ccache` |
 
 ---

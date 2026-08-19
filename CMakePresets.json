@@ -678,9 +678,9 @@
             ]
         },
         {
-            "name": "full-sanitizers",
-            "displayName": "Full Sanitizers (asan-ubsan + tsan)",
-            "description": "Build and test with AddressSanitizer+UBSan, then ThreadSanitizer.",
+            "name": "asan-ubsan-cycle",
+            "displayName": "ASan+UBSan (configure → build → test)",
+            "description": "Configure, build, and test the AddressSanitizer+UBSan preset.",
             "steps": [
                 {
                     "type": "configure",
@@ -693,7 +693,14 @@
                 {
                     "type": "test",
                     "name": "asan-ubsan"
-                },
+                }
+            ]
+        },
+        {
+            "name": "tsan-cycle",
+            "displayName": "TSan (configure → build → test)",
+            "description": "Configure, build, and test the ThreadSanitizer preset.",
+            "steps": [
                 {
                     "type": "configure",
                     "name": "tsan"

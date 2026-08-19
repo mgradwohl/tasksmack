@@ -53,7 +53,8 @@ After setup, use CMake workflow presets for the full configure → build → tes
 cmake --workflow --preset dev          # Linux debug build + test
 cmake --workflow --preset win-dev      # Windows debug build + test
 cmake --workflow --preset coverage     # Coverage build + test
-cmake --workflow --preset full-sanitizers  # ASan+UBSan + TSan
+cmake --workflow --preset asan-ubsan-cycle # ASan+UBSan
+cmake --workflow --preset tsan-cycle       # TSan
 ```
 
 ## Check Prerequisites
@@ -117,7 +118,7 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 Install Python + jinja2:
 
 ```powershell
-winget install Python.Python.3.12
+winget install Python.Python.3.14
 pip install jinja2
 ```
 
@@ -191,7 +192,7 @@ Remove stale build directories, FetchContent cache, and coverage output:
 
 ```bash
 ./tools/clean.sh          # Remove build/ and coverage/  (Linux)
-./tools/clean.sh --all    # Also removes .cache/fetchcontent (triggers full dependency re-download)
+./tools/clean.sh --all    # Also removes .cache/, dist/, and profiles/ (triggers dependency re-download / drops PGO data)
 ./tools/clean.sh --dry-run  # Preview what would be removed without deleting anything
 
 pwsh tools/clean.ps1      # Windows equivalent (same flags)

@@ -27,6 +27,9 @@ function Invoke-WinGet {
         Write-Host "[dry-run] winget $($Args -join ' ')"
     } else {
         winget @Args
+        if ($LASTEXITCODE -ne 0) {
+            throw "winget failed with exit code $LASTEXITCODE: winget $($Args -join ' ')"
+        }
     }
 }
 
@@ -48,7 +51,7 @@ Write-Host "==> Installing Ninja..."
 Invoke-WinGet install --id Ninja-build.Ninja --source winget --silent --accept-package-agreements --accept-source-agreements
 
 Write-Host "==> Installing Python 3..."
-Invoke-WinGet install --id Python.Python.3.13 --source winget --silent --accept-package-agreements --accept-source-agreements
+Invoke-WinGet install --id Python.Python.3.14 --source winget --silent --accept-package-agreements --accept-source-agreements
 
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
 Write-Host ""
@@ -72,16 +75,16 @@ Write-Host ""
 Write-Host "==> Installing ccache..."
 Invoke-WinGet install --id ccache.ccache --source winget --silent --accept-package-agreements --accept-source-agreements
 
-if (-not $Minimal) {
-    # ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────
-    Write-Host ""
-    Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
-    if ($DryRun) {
-        Write-Host "[dry-run] pip install jinja2"
-    } else {
-        pip install jinja2
-    }
+# ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
+Write-Host ""
+Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
+if ($DryRun) {
+    Write-Host "[dry-run] pip install jinja2"
+} else {
+    pip install jinja2
+}
 
+if (-not $Minimal) {
     # ── Step 5: pre-commit ──────────────────────────────────────────────────
     Write-Host ""
     Write-Host "==> Installing pre-commit (optional but recommended)..."

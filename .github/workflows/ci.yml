@@ -38,6 +38,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
+          predicate-quantifier: every
           filters: |
             docs_only:
               - '**/*.md'
@@ -68,14 +69,16 @@ jobs:
               echo "windows_only=false" >> "$GITHUB_OUTPUT"
             else
               echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
-              # linux_only=true when the PR touches Linux platform files but NOT Windows platform files
+              # With predicate-quantifier=every, linux_platform=true only when every changed
+              # file matches the Linux-specific allowlist.
               if [[ "${{ steps.filter.outputs.linux_platform }}" = 'true' && \
                     "${{ steps.filter.outputs.windows_platform }}" = 'false' ]]; then
                 echo "linux_only=true" >> "$GITHUB_OUTPUT"
               else
                 echo "linux_only=false" >> "$GITHUB_OUTPUT"
               fi
-              # windows_only=true when the PR touches Windows platform files but NOT Linux platform files
+              # With predicate-quantifier=every, windows_platform=true only when every changed
+              # file matches the Windows-specific allowlist.
               if [[ "${{ steps.filter.outputs.windows_platform }}" = 'true' && \
                     "${{ steps.filter.outputs.linux_platform }}" = 'false' ]]; then
                 echo "windows_only=true" >> "$GITHUB_OUTPUT"
@@ -421,12 +424,13 @@ jobs:
     steps:
       - name: Check all required jobs passed
         env:
+          DETECT_RESULT:  ${{ needs.detect-docs-only.result }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
         run: |
           failed=false
-          for job_result in "$LINUX_RESULT" "$WINDOWS_RESULT" "$DOCS_RESULT"; do
+          for job_result in "$DETECT_RESULT" "$LINUX_RESULT" "$WINDOWS_RESULT" "$DOCS_RESULT"; do
             case "$job_result" in
               success|skipped) ;;  # skipped = platform-only filter excluded the job
               *) echo "❌ A required job failed or was cancelled: $job_result"; failed=true ;;

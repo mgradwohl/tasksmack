@@ -70,7 +70,7 @@ echo ""
 # ── Step 1: Base build tools ──────────────────────────────────────────────────
 echo "==> Installing base build tools (cmake, ninja, python3, ccache)..."
 if $DRY_RUN; then
-    sudo apt-get update 2>/dev/null || true
+    echo "[dry-run] sudo apt-get update"
 else
     sudo apt-get update
 fi
@@ -117,7 +117,7 @@ if ! $MINIMAL; then
     # ── Step 3: Coverage and profiling tools ─────────────────────────────────
     echo ""
     echo "==> Installing coverage and profiling tools..."
-    run_apt "llvm-$LLVM_VERSION" "clangd-$LLVM_VERSION"
+    run_apt "clangd-$LLVM_VERSION"
     if ! $DRY_RUN; then
         sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata "/usr/bin/llvm-profdata-$LLVM_VERSION" 100
         sudo update-alternatives --install /usr/bin/llvm-cov      llvm-cov      "/usr/bin/llvm-cov-$LLVM_VERSION"      100

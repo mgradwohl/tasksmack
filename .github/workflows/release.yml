@@ -163,8 +163,8 @@ jobs:
         uses: sigstore/cosign-installer@3454e46d5f6a9a65ce5abe69f0d6cc52f02b6a5c # v3.7.0
 
       - name: Sign release artifacts with Sigstore (keyless OIDC)
-        # Produces a .sig file alongside each release artifact.
-        # Verifiable with: cosign verify-blob --bundle <file>.sig <file>
+        # Produces a .bundle file alongside each release artifact.
+        # Verifiable with: cosign verify-blob --bundle <file>.bundle <file>
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |

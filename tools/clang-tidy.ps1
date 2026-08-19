@@ -55,6 +55,8 @@ $ExcludeHeaderFilterRegex = "^$ProjectRootRegex[\\/](build|dist|coverage|\.cache
 # Build directory
 $BuildDir = Join-Path $ProjectRoot "build\win-$BuildType"
 $CompileCommandsJson = Join-Path $BuildDir "compile_commands.json"
+$TidyCompdbDir = Join-Path $BuildDir "clang-tidy-compdb"
+$CompileCommandsTidy = Join-Path $TidyCompdbDir "compile_commands.json"
 
 # Find clang-tidy
 $ClangTidy = $null
@@ -97,22 +99,29 @@ if (-not (Test-Path $CompileCommandsJson)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Strip C++20 module flags and PCH references from compile_commands.json.
+# Generate a sanitized compile_commands.json for clang-tidy without touching the live file.
 # CMake emits two PCH-related flag groups per TU:
 #   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
 #   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
 #   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
 # clang-tidy cannot use any of these without a prior full build, so strip all.
 if ($ShowDetails) {
-    Write-Host "Stripping module and PCH flags from compile_commands.json..."
+    Write-Host "Generating sanitized clang-tidy compilation database..."
 }
-$content = Get-Content $CompileCommandsJson -Raw
-$content = $content -replace '@[^ ]*\.modmap', ''
-$content = $content -replace '-fmodule-output=[^ ]*', ''
-$content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
-$content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
-$content = $content -replace '-Xclang -fno-pch-timestamp', ''
-Set-Content $CompileCommandsJson -Value $content -NoNewline
+& cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
+if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
+    Write-Host "Falling back to local compile_commands sanitization..."
+}
+if (-not (Test-Path $CompileCommandsTidy)) {
+    $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
+    $content = Get-Content $CompileCommandsJson -Raw
+    $content = $content -replace '@[^ ]*\.modmap', ''
+    $content = $content -replace '-fmodule-output=[^ ]*', ''
+    $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
+    $content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
+    $content = $content -replace '-Xclang -fno-pch-timestamp', ''
+    Set-Content $CompileCommandsTidy -Value $content -NoNewline
+}
 
 # Determine files to analyze
 if ($ChangedOnly) {
@@ -180,7 +189,7 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     $file = $_
     $clangTidy = $using:ClangTidy
     $configFile = $using:ConfigFile
-    $buildDir = $using:BuildDir
+    $buildDir = $using:TidyCompdbDir
     $projectRoot = $using:ProjectRoot
     $showDetails = $using:ShowDetails
 

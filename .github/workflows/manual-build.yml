@@ -1,7 +1,7 @@
 name: Manual Build
 
-# Replaces the four standalone build-linux-debug.yml / build-linux-release.yml /
-# build-windows-debug.yml / build-windows-release.yml workflows.
+# Provides the consolidated manual-dispatch entry point for the same platform/build
+# combinations covered by the standalone build-* workflows.
 # Use this when you need to trigger a specific platform/build-type combination from the
 # GitHub Actions UI without opening a PR or pushing to a tracked branch.
 

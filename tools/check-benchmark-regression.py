@@ -23,15 +23,31 @@ import sys
 from pathlib import Path
 
 
+UNIT_TO_NANOSECONDS = {
+    "ns": 1.0,
+    "us": 1000.0,
+    "ms": 1000_000.0,
+    "s": 1000_000_000.0,
+}
+
+
+def normalize_time(value: float, unit: str) -> float:
+    """Convert a benchmark time value into nanoseconds for comparison."""
+    factor = UNIT_TO_NANOSECONDS.get(unit)
+    if factor is None:
+        raise ValueError(f"unsupported time unit: {unit}")
+    return value * factor
+
+
 def load_benchmarks(path: Path) -> dict[str, dict]:
     """Return a dict mapping benchmark name → benchmark record."""
     data = json.loads(path.read_text())
     result: dict[str, dict] = {}
     for bm in data.get("benchmarks", []):
-        name = bm.get("name", "")
-        # Skip aggregate rows (mean, median, stddev, cv)
-        if bm.get("aggregate_name") in ("mean", "median", "stddev", "cv"):
+        aggregate_name = bm.get("aggregate_name")
+        if aggregate_name and aggregate_name != "median":
             continue
+        name = bm.get("run_name") or bm.get("name", "")
         if name:
             result[name] = bm
     return result
@@ -67,8 +83,8 @@ def main() -> int:
     print(f"Regression threshold: {args.threshold:.1f}%")
     print()
 
-    regressions: list[tuple[str, float, float, float]] = []
-    improvements: list[tuple[str, float, float, float]] = []
+    regressions: list[tuple[str, float, float, float, str]] = []
+    improvements: list[tuple[str, float, float, float, str]] = []
     matched = 0
 
     for name, cur_bm in current.items():
@@ -81,17 +97,30 @@ def main() -> int:
         # Prefer real_time, fall back to cpu_time
         cur_time  = cur_bm.get("real_time")  or cur_bm.get("cpu_time")
         base_time = base_bm.get("real_time") or base_bm.get("cpu_time")
+        cur_unit = cur_bm.get("time_unit", "ns")
+        base_unit = base_bm.get("time_unit", "ns")
 
         if cur_time is None or base_time is None or base_time == 0:
             print(f"  SKIP  {name}: missing timing data")
             continue
 
-        pct_change = ((cur_time - base_time) / base_time) * 100.0
+        try:
+            cur_time_normalized = normalize_time(cur_time, cur_unit)
+            base_time_normalized = normalize_time(base_time, base_unit)
+        except ValueError as exc:
+            print(f"  SKIP  {name}: {exc}")
+            continue
+
+        if base_time_normalized == 0:
+            print(f"  SKIP  {name}: baseline timing normalized to zero")
+            continue
+
+        pct_change = ((cur_time_normalized - base_time_normalized) / base_time_normalized) * 100.0
 
         if pct_change > args.threshold:
-            regressions.append((name, base_time, cur_time, pct_change))
+            regressions.append((name, base_time, cur_time, pct_change, cur_unit))
         elif pct_change < -5.0:
-            improvements.append((name, base_time, cur_time, pct_change))
+            improvements.append((name, base_time, cur_time, pct_change, cur_unit))
 
     if matched == 0:
         print("No matching benchmark names between baseline and current run.")
@@ -101,16 +130,14 @@ def main() -> int:
     # ── Report improvements ───────────────────────────────────────────────────
     if improvements:
         print(f"✅ Improvements ({len(improvements)}):")
-        for name, base, cur, pct in sorted(improvements, key=lambda x: x[3]):
-            unit = "ns"
+        for name, base, cur, pct, unit in sorted(improvements, key=lambda x: x[3]):
             print(f"   {name}: {base:.1f}{unit} → {cur:.1f}{unit}  ({pct:+.1f}%)")
         print()
 
     # ── Report regressions ────────────────────────────────────────────────────
     if regressions:
         print(f"❌ Regressions ({len(regressions)}) — exceeded {args.threshold:.1f}% threshold:")
-        for name, base, cur, pct in sorted(regressions, key=lambda x: -x[3]):
-            unit = "ns"
+        for name, base, cur, pct, unit in sorted(regressions, key=lambda x: -x[3]):
             print(f"   {name}: {base:.1f}{unit} → {cur:.1f}{unit}  ({pct:+.1f}%)")
         print()
         print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%.")

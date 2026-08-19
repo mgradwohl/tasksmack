@@ -31,9 +31,11 @@ if [[ ! -d "$BUILD_DIR" ]]; then
     exit 1
 fi
 
-# Collect all .json trace files (exclude compile_commands*.json and CMake cache files)
+# Collect all trace JSON files.
+# Keep traces under CMakeFiles/ because Clang emits them alongside object files there.
+# Exclude compile database artifacts, CMake cache/metadata, and any previously merged output.
 mapfile -t TRACE_FILES < <(find "$BUILD_DIR" -name "*.json" -not -name "compile_commands*" \
-    -not -path "*/CMakeFiles/*" -not -name "CMakeCache*" 2>/dev/null | sort)
+    -not -name "CMakeCache*" -not -name "time-trace-merged.json" 2>/dev/null | sort)
 
 if [[ ${#TRACE_FILES[@]} -eq 0 ]]; then
     echo "No -ftime-trace JSON files found in $BUILD_DIR." >&2
@@ -64,7 +66,12 @@ all_events = []
 for path in input_files:
     try:
         data = json.loads(pathlib.Path(path).read_text())
-        events = data.get("traceEvents", []) or data if isinstance(data, list) else []
+        if isinstance(data, dict):
+            events = data.get("traceEvents", [])
+        elif isinstance(data, list):
+            events = data
+        else:
+            events = []
         all_events.extend(events)
     except Exception as e:
         print(f"  Warning: skipping {path}: {e}", file=sys.stderr)
