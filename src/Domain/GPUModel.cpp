@@ -2,6 +2,7 @@
 
 #include "GPUSnapshot.h"
 #include "History.h"
+#include "Numeric.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
@@ -10,7 +11,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -250,17 +250,8 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     if (previous != nullptr && timeDeltaSeconds > 0.0)
     {
         // PCIe bandwidth rates
-        if (current.pcieTxBytes >= previous->pcieTxBytes)
-        {
-            const std::uint64_t txDelta = current.pcieTxBytes - previous->pcieTxBytes;
-            snapshot.pcieTxBytesPerSec = static_cast<double>(txDelta) / timeDeltaSeconds;
-        }
-
-        if (current.pcieRxBytes >= previous->pcieRxBytes)
-        {
-            const std::uint64_t rxDelta = current.pcieRxBytes - previous->pcieRxBytes;
-            snapshot.pcieRxBytesPerSec = static_cast<double>(rxDelta) / timeDeltaSeconds;
-        }
+        snapshot.pcieTxBytesPerSec = Numeric::counterRate(current.pcieTxBytes, previous->pcieTxBytes, timeDeltaSeconds);
+        snapshot.pcieRxBytesPerSec = Numeric::counterRate(current.pcieRxBytes, previous->pcieRxBytes, timeDeltaSeconds);
     }
 
     return snapshot;
