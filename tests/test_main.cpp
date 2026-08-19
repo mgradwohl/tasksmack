@@ -15,16 +15,19 @@ namespace
 // Log level is restored when this object is destroyed (per-test or global).
 class TestLogSuppressor : public ::testing::Environment
 {
-public:
+  public:
     void SetUp() override
     {
         m_savedLevel = spdlog::get_level();
         spdlog::set_level(spdlog::level::off);
     }
 
-    void TearDown() override { spdlog::set_level(m_savedLevel); }
+    void TearDown() override
+    {
+        spdlog::set_level(m_savedLevel);
+    }
 
-private:
+  private:
     spdlog::level::level_enum m_savedLevel{spdlog::level::info};
 };
 

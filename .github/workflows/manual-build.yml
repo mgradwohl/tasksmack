@@ -36,6 +36,7 @@ jobs:
   build:
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ${{ inputs.os }}

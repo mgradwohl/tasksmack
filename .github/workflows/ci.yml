@@ -97,6 +97,7 @@ jobs:
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -110,6 +111,7 @@ jobs:
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -123,6 +125,7 @@ jobs:
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-2025
@@ -136,6 +139,7 @@ jobs:
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: windows-2025
