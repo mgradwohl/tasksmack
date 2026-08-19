@@ -12,12 +12,14 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
+#include "ProcParsing.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <concepts>
@@ -26,12 +28,9 @@
 #include <exception>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <ios>
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -40,6 +39,7 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <pwd.h>
 #include <sched.h>
 #include <sys/types.h>
@@ -86,6 +86,11 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     // Explicit conversion: keeps -Wconversion/-Wsign-conversion happy, and callers have already ensured value is positive.
     return static_cast<uint64_t>(value);
 }
+
+using ProcParsing::parseNum;
+using ProcParsing::readProcFile;
+using ProcParsing::readProcFileFull;
+using ProcParsing::skipSpaces;
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -315,39 +320,56 @@ long LinuxProcessProbe::ticksPerSecond() const
 
 bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters) const
 {
-    // Format: /proc/[pid]/stat
+    // Format: /proc/[pid]/stat — single line
     // Fields: pid (comm) state ppid pgrp session tty_nr tpgid flags
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const auto statPath = m_ProcRoot / std::to_string(pid) / "stat";
-    std::ifstream statFile(statPath);
-    if (!statFile.is_open())
+    const std::string statPath = (m_ProcRoot / std::to_string(pid) / "stat").string();
+
+    // 1 KiB is ample: comm is kernel-capped at 15 chars, and the remaining
+    // ~22 numeric fields are at most ~462 bytes total.
+    std::array<char, 1024> buf{};
+    const std::size_t len = readProcFile(statPath.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return false;
     }
 
-    std::string line;
-    if (!std::getline(statFile, line))
+    const char* const beg = buf.data();
+    const char* const end = buf.data() + len;
+
+    // Process name is in parentheses; find first '(' and last ')' to handle
+    // names that themselves contain parentheses (e.g. "process (name)").
+    const char* nameStart = beg;
+    while (nameStart < end && *nameStart != '(')
+    {
+        ++nameStart;
+    }
+    if (nameStart >= end)
     {
         return false;
     }
 
-    // Process name is in parentheses and may contain spaces or parentheses
-    // Find the last ')' to handle names like "process (name)"
-    const auto nameStart = line.find('(');
-    const auto nameEnd = line.rfind(')');
-
-    if (nameStart == std::string::npos || nameEnd == std::string::npos || nameEnd <= nameStart)
+    const char* nameEnd = end - 1;
+    while (nameEnd > nameStart && *nameEnd != ')')
+    {
+        --nameEnd;
+    }
+    if (nameEnd <= nameStart)
     {
         return false;
     }
 
     counters.pid = pid;
-    counters.name = line.substr(nameStart + 1, nameEnd - nameStart - 1);
+    counters.name = std::string(nameStart + 1, static_cast<std::size_t>(nameEnd - nameStart - 1));
 
-    // Parse fields after the name
-    std::istringstream fieldStream(line.substr(nameEnd + 2)); // Skip ") "
+    // Fields follow the closing ')': ") state ppid pgrp ..."
+    const char* q = nameEnd + 1;
+    if (q < end && *q == ' ')
+    {
+        ++q;
+    }
 
     char stateChar = '?';
     int32_t parentPid = 0;
@@ -372,14 +394,27 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
     uint64_t vsize = 0;
     int64_t rss = 0;
 
-    // clang-format off
-    fieldStream >> stateChar >> parentPid >> pgrp >> session >> ttyNr >> tpgid
-                >> flags >> minflt >> cminflt >> majflt >> cmajflt
-                >> utime >> stime >> cutime >> cstime >> priority >> nice
-                >> numThreads >> itrealvalue >> starttime >> vsize >> rss;
-    // clang-format on
+    // State is a single character; skip leading whitespace then read it.
+    q = skipSpaces(q, end);
+    if (q >= end)
+    {
+        return false;
+    }
+    stateChar = *q++;
 
-    if (fieldStream.fail())
+    // clang-format off
+    if (!parseNum(q, end, parentPid)  || !parseNum(q, end, pgrp)        ||
+        !parseNum(q, end, session)    || !parseNum(q, end, ttyNr)       ||
+        !parseNum(q, end, tpgid)      || !parseNum(q, end, flags)       ||
+        !parseNum(q, end, minflt)     || !parseNum(q, end, cminflt)     ||
+        !parseNum(q, end, majflt)     || !parseNum(q, end, cmajflt)     ||
+        !parseNum(q, end, utime)      || !parseNum(q, end, stime)       ||
+        !parseNum(q, end, cutime)     || !parseNum(q, end, cstime)      ||
+        !parseNum(q, end, priority)   || !parseNum(q, end, nice)        ||
+        !parseNum(q, end, numThreads) || !parseNum(q, end, itrealvalue) ||
+        !parseNum(q, end, starttime)  || !parseNum(q, end, vsize)       ||
+        !parseNum(q, end, rss))
+    // clang-format on
     {
         return false;
     }
@@ -423,19 +458,20 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    const auto statmPath = (m_ProcRoot / std::to_string(pid) / "statm").string();
-    std::ifstream statmFile(statmPath);
-    if (!statmFile.is_open())
+    const std::string statmPath = (m_ProcRoot / std::to_string(pid) / "statm").string();
+    std::array<char, 128> buf{};
+    const std::size_t len = readProcFile(statmPath.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return;
     }
 
+    const char* q = buf.data();
+    const char* const end = buf.data() + len;
     uint64_t size = 0;
     uint64_t resident = 0;
     uint64_t shared = 0;
-
-    statmFile >> size >> resident >> shared;
-    if (!statmFile.fail())
+    if (parseNum(q, end, size) && parseNum(q, end, resident) && parseNum(q, end, shared))
     {
         // statm gives more accurate RSS, update if available
         counters.rssBytes = resident * m_PageSize;
@@ -449,68 +485,129 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     // Format is key:value pairs, one per line
     // We need: Uid: <real> <effective> <saved> <filesystem>
 
-    const auto statusPath = (procRoot / std::to_string(pid) / "status").string();
-    std::ifstream statusFile(statusPath);
-    if (!statusFile.is_open())
+    const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
+    constexpr std::size_t BUF_SIZE = 2048;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
         return;
     }
 
-    std::string line;
-    while (std::getline(statusFile, line))
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+    while (p < end)
     {
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
+        {
+            ++lineEnd;
+        }
+
         // Look for "Uid:" line
-        if (line.starts_with("Uid:"))
+        constexpr std::string_view UID_PREFIX = "Uid:";
+        if (static_cast<std::size_t>(lineEnd - p) > UID_PREFIX.size() && std::string_view(p, UID_PREFIX.size()) == UID_PREFIX)
         {
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
-            const char* ptr = line.data() + 4;
-            const char* const pEnd = line.data() + line.size();
-            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            const char* ptr = p + UID_PREFIX.size();
+            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
             {
                 ++ptr;
             }
             uid_t realUid = 0;
-            if (std::from_chars(ptr, pEnd, realUid).ec == std::errc{})
+            if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
             {
                 counters.user = getUsername(realUid);
             }
             break;
         }
+
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
 void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
 {
     // Format: /proc/[pid]/cmdline
-    // Arguments are separated by null bytes
+    // Arguments are separated by NUL bytes
 
-    const auto cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
-    std::ifstream cmdlineFile(cmdlinePath, std::ios::binary);
-    if (!cmdlineFile.is_open())
+    const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
+
+    // Open once: distinguishes "unreadable" (permission denied, hidepid) from
+    // "readable but empty" (kernel threads), avoiding a second open() call.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
     {
+        // Cannot read the file — leave command unchanged rather than
+        // incorrectly labelling a non-kernel process as a kernel thread.
         return;
     }
 
-    std::string cmdline;
-    std::getline(cmdlineFile, cmdline, '\0');
-
-    // Read remaining arguments
-    std::string arg;
-    while (std::getline(cmdlineFile, arg, '\0') && !arg.empty())
+    // RAII guard — ensures fd is closed on all paths, including exception paths
+    // (buf.reserve / buf.insert can throw on OOM).
+    struct FdGuard
     {
-        cmdline += ' ';
-        cmdline += arg;
+        int m_fd;
+        ~FdGuard() noexcept
+        {
+            ::close(m_fd);
+        }
+    } guard{fd};
+
+    // Read until EOF so long command lines are not truncated.
+    std::vector<char> buf;
+    buf.reserve(4096);
+    std::array<char, 4096> chunk{};
+    bool readError = false;
+    for (;;)
+    {
+        const auto n = ::read(fd, chunk.data(), chunk.size());
+        if (n == 0)
+        {
+            break; // EOF
+        }
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by signal — retry
+            }
+            readError = true;
+            break; // I/O error
+        }
+        buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
 
-    // Some processes (like kernel threads) have empty cmdline - use name instead
-    if (cmdline.empty())
+    if (readError)
     {
+        // Treat a read error the same as open() failure: leave command unchanged
+        // rather than incorrectly labelling the process as a kernel thread.
+        return;
+    }
+
+    if (buf.empty())
+    {
+        // File opened and fully read but is empty: genuine kernel thread — use bracketed name.
         counters.command = "[" + counters.name + "]";
+        return;
     }
-    else
+
+    // Replace NUL argument separators with spaces, then trim trailing space.
+    std::string cmdline(buf.data(), buf.size());
+    for (auto& c : cmdline)
     {
-        counters.command = std::move(cmdline);
+        if (c == '\0')
+        {
+            c = ' ';
+        }
     }
+    while (!cmdline.empty() && cmdline.back() == ' ')
+    {
+        cmdline.pop_back();
+    }
+
+    counters.command = std::move(cmdline);
 }
 
 void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
@@ -561,49 +658,60 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // or being the owner of the process. If we can't read it, we silently skip
     // (capabilities() already reports hasIoCounters = false by default).
 
-    const auto ioPath = (procRoot / std::to_string(pid) / "io").string();
-    std::ifstream ioFile(ioPath);
-    if (!ioFile.is_open())
+    const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
+    constexpr std::size_t BUF_SIZE = 512;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(ioPath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
         // Common case: insufficient permissions, just return
         return;
     }
 
-    std::string line;
-    while (std::getline(ioFile, line))
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+    while (p < end)
     {
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
+        {
+            ++lineEnd;
+        }
+
         constexpr std::string_view readPrefix = "read_bytes:";
         constexpr std::string_view writePrefix = "write_bytes:";
 
-        if (line.starts_with(readPrefix))
+        const std::string_view lineView(p, static_cast<std::size_t>(lineEnd - p));
+
+        if (lineView.starts_with(readPrefix))
         {
             // Parse value with from_chars: no substr alloc, no istringstream alloc
-            const char* ptr = line.data() + readPrefix.size();
-            const char* const pEnd = line.data() + line.size();
-            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            const char* ptr = p + readPrefix.size();
+            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
             {
                 ++ptr;
             }
             uint64_t readBytes = 0;
-            if (std::from_chars(ptr, pEnd, readBytes).ec == std::errc{})
+            if (std::from_chars(ptr, lineEnd, readBytes).ec == std::errc{})
             {
                 counters.readBytes = readBytes;
             }
         }
-        else if (line.starts_with(writePrefix))
+        else if (lineView.starts_with(writePrefix))
         {
-            const char* ptr = line.data() + writePrefix.size();
-            const char* const pEnd = line.data() + line.size();
-            while (ptr < pEnd && (*ptr == ' ' || *ptr == '\t'))
+            const char* ptr = p + writePrefix.size();
+            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
             {
                 ++ptr;
             }
             uint64_t writeBytes = 0;
-            if (std::from_chars(ptr, pEnd, writeBytes).ec == std::errc{})
+            if (std::from_chars(ptr, lineEnd, writeBytes).ec == std::errc{})
             {
                 counters.writeBytes = writeBytes;
             }
         }
+
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
@@ -640,41 +748,68 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     // Check if procRoot/self/io is readable to determine I/O counter availability.
     // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
     // or being the owner of the target process.
-    const std::ifstream selfIo(procRoot / "self" / "io");
-    return selfIo.is_open();
+    const std::string selfIoPath = (procRoot / "self" / "io").string();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+    const int fd = ::open(selfIoPath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd == -1)
+    {
+        return false;
+    }
+    ::close(fd);
+    return true;
 }
 
 std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
 {
     // Try cgroup v2 first: freezer.state
     const auto cgroupV2FreezerPath = std::format("/sys/fs/cgroup/{}/freezer.state", pid);
-    std::ifstream freezerStateV2(cgroupV2FreezerPath);
-    if (freezerStateV2.is_open())
     {
-        std::string state;
-        freezerStateV2 >> state;
-        if (state == "FROZEN" || state == "FREEZING")
+        std::array<char, 16> stateBuf{};
+        const std::size_t stateLen = readProcFile(cgroupV2FreezerPath.c_str(), stateBuf.data(), stateBuf.size());
+        if (stateLen > 0)
         {
-            return "Suspended";
+            const std::string_view state(stateBuf.data(), stateLen);
+            if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
+            {
+                return "Suspended";
+            }
         }
     }
 
     // Fallback to cgroup v1 freezer hierarchy
     // /proc/[pid]/cgroup lists all cgroups for the process
     const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    std::ifstream cgroupFile(cgroupPath);
-    if (cgroupFile.is_open())
+    constexpr std::size_t CGROUP_BUF = 2048;
+    std::array<char, CGROUP_BUF> cgroupBuf{};
+    const std::size_t cgroupLen = readProcFile(cgroupPath.c_str(), cgroupBuf.data(), CGROUP_BUF);
+    if (cgroupLen > 0)
     {
-        std::string line;
-        while (std::getline(cgroupFile, line))
+        const char* p = cgroupBuf.data();
+        const char* const end = cgroupBuf.data() + cgroupLen;
+        while (p < end)
         {
-            // Format: hierarchy-ID:controllers:cgroup-path
-            const auto firstColon = line.find(':');
-            const auto secondColon = line.find(':', firstColon + 1);
-            if (firstColon != std::string::npos && secondColon != std::string::npos)
+            const char* lineEnd = p;
+            while (lineEnd < end && *lineEnd != '\n')
             {
-                const std::string_view controllers{line.data() + firstColon + 1, secondColon - firstColon - 1};
-                const std::string_view cgroupSubPath{line.data() + secondColon + 1};
+                ++lineEnd;
+            }
+
+            // Format: hierarchy-ID:controllers:cgroup-path
+            const char* firstColon = p;
+            while (firstColon < lineEnd && *firstColon != ':')
+            {
+                ++firstColon;
+            }
+            const char* secondColon = (firstColon < lineEnd) ? firstColon + 1 : lineEnd;
+            while (secondColon < lineEnd && *secondColon != ':')
+            {
+                ++secondColon;
+            }
+
+            if (firstColon < lineEnd && secondColon < lineEnd)
+            {
+                const std::string_view controllers(firstColon + 1, static_cast<std::size_t>(secondColon - firstColon - 1));
+                const std::string_view cgroupSubPath(secondColon + 1, static_cast<std::size_t>(lineEnd - secondColon - 1));
 
                 // Check if this line has the freezer controller
                 if (controllers.contains("freezer"))
@@ -685,12 +820,13 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
                     {
                         const std::filesystem::path freezePathV1 =
                             std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
-                        std::ifstream freezeFileV1(freezePathV1);
-                        if (freezeFileV1.is_open())
+                        const std::string freezePathStr = freezePathV1.string();
+                        std::array<char, 16> freezeStateBuf{};
+                        const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
+                        if (freezeLen > 0)
                         {
-                            std::string state;
-                            freezeFileV1 >> state;
-                            if (state == "FROZEN" || state == "FREEZING")
+                            const std::string_view state(freezeStateBuf.data(), freezeLen);
+                            if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
                             {
                                 return "Suspended";
                             }
@@ -698,6 +834,8 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
                     }
                 }
             }
+
+            p = (lineEnd < end) ? lineEnd + 1 : end;
         }
     }
 
@@ -706,18 +844,36 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
-    // Format: /proc/stat
-    // First line: cpu user nice system idle iowait irq softirq steal guest guest_nice
+    // Format: /proc/stat — first line: "cpu user nice system idle iowait irq softirq steal …"
+    // We only need the first line, so 256 bytes is ample.
 
-    const auto statPath = m_ProcRoot / "stat";
-    std::ifstream statFile(statPath);
-    if (!statFile.is_open())
+    const std::string statPath = (m_ProcRoot / "stat").string();
+    std::array<char, 256> buf{};
+    const std::size_t len = readProcFile(statPath.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
-        spdlog::warn("Failed to open {}", statPath.string());
+        spdlog::warn("Failed to open {}", statPath);
         return 0;
     }
 
-    std::string cpuLabel;
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+
+    // First line must start with "cpu "
+    if (len < 4 || p[0] != 'c' || p[1] != 'p' || p[2] != 'u' || p[3] != ' ')
+    {
+        spdlog::warn("Failed to parse {}", statPath);
+        return 0;
+    }
+    p += 4; // skip "cpu "
+
+    // Find end of first line
+    const char* lineEnd = p;
+    while (lineEnd < end && *lineEnd != '\n')
+    {
+        ++lineEnd;
+    }
+
     uint64_t user = 0;
     uint64_t nice = 0;
     uint64_t system = 0;
@@ -727,11 +883,10 @@ uint64_t LinuxProcessProbe::readTotalCpuTime() const
     uint64_t softirq = 0;
     uint64_t steal = 0;
 
-    statFile >> cpuLabel >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
-
-    if (statFile.fail() || cpuLabel != "cpu")
+    if (!parseNum(p, lineEnd, user) || !parseNum(p, lineEnd, nice) || !parseNum(p, lineEnd, system) || !parseNum(p, lineEnd, idle) ||
+        !parseNum(p, lineEnd, iowait) || !parseNum(p, lineEnd, irq) || !parseNum(p, lineEnd, softirq) || !parseNum(p, lineEnd, steal))
     {
-        spdlog::warn("Failed to parse {}", statPath.string());
+        spdlog::warn("Failed to parse {}", statPath);
         return 0;
     }
 
@@ -743,30 +898,40 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
 {
     // Format: /proc/stat contains a line: btime <epoch_seconds>
     // btime is the time the system booted in seconds since Unix epoch
+    // The btime line appears after all cpu lines; on systems with very large core
+    // counts /proc/stat can exceed 64 KiB, so read until EOF.
 
-    const auto statPath = procRoot / "stat";
-    std::ifstream statFile(statPath);
-    if (!statFile.is_open())
+    const std::string statPath = (procRoot / "stat").string();
+    const std::vector<char> buf = readProcFileFull(statPath.c_str());
+    if (buf.empty())
     {
-        spdlog::warn("Failed to open {} for boot time", statPath.string());
+        spdlog::warn("Failed to open {} for boot time", statPath);
         return 0;
     }
 
-    std::string line;
-    while (std::getline(statFile, line))
+    const char* p = buf.data();
+    const char* const end = buf.data() + buf.size();
+    while (p < end)
     {
-        if (line.starts_with("btime "))
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
+        {
+            ++lineEnd;
+        }
+
+        constexpr std::string_view BTIME_PREFIX = "btime ";
+        if (static_cast<std::size_t>(lineEnd - p) > BTIME_PREFIX.size() && std::string_view(p, BTIME_PREFIX.size()) == BTIME_PREFIX)
         {
             uint64_t bootTime = 0;
-            const char* begin = line.data() + 6; // Skip "btime "
-            const char* const end = line.data() + line.size();
-            auto result = std::from_chars(begin, end, bootTime);
-            if (result.ec == std::errc{})
+            const char* begin = p + BTIME_PREFIX.size();
+            if (std::from_chars(begin, lineEnd, bootTime).ec == std::errc{})
             {
                 return bootTime;
             }
             break;
         }
+
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     return 0;
@@ -774,40 +939,45 @@ uint64_t LinuxProcessProbe::readBootTime(const std::filesystem::path& procRoot)
 
 uint64_t LinuxProcessProbe::systemTotalMemory() const
 {
-    const auto meminfoPath = m_ProcRoot / "meminfo";
-    std::ifstream meminfo(meminfoPath);
-    if (!meminfo.is_open())
+    const std::string meminfoPath = (m_ProcRoot / "meminfo").string();
+    constexpr std::size_t BUF_SIZE = 4096;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFile(meminfoPath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
     {
-        spdlog::error("Failed to open {}", meminfoPath.string());
+        spdlog::error("Failed to open {}", meminfoPath);
         return 0;
     }
 
-    std::string line;
-    while (std::getline(meminfo, line))
+    const char* p = buf.data();
+    const char* const end = buf.data() + len;
+    while (p < end)
     {
-        if (line.starts_with("MemTotal:"))
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n')
         {
-            const auto colonPos = line.find(':');
-            if (colonPos == std::string::npos)
-            {
-                continue;
-            }
+            ++lineEnd;
+        }
 
-            const char* begin = line.data() + colonPos + 1;
-            const char* const end = line.data() + line.size();
-            while (begin < end && (*begin == ' ' || *begin == '\t'))
+        constexpr std::string_view MEM_TOTAL_PREFIX = "MemTotal:";
+        if (static_cast<std::size_t>(lineEnd - p) > MEM_TOTAL_PREFIX.size() &&
+            std::string_view(p, MEM_TOTAL_PREFIX.size()) == MEM_TOTAL_PREFIX)
+        {
+            const char* begin = p + MEM_TOTAL_PREFIX.size();
+            while (begin < lineEnd && (*begin == ' ' || *begin == '\t'))
             {
                 ++begin;
             }
-
             uint64_t kb = 0;
-            const auto [ptr, ec] = std::from_chars(begin, end, kb);
-            if (ec == std::errc())
+            const auto [ptr, ec] = std::from_chars(begin, lineEnd, kb);
+            if (ec == std::errc{})
             {
                 (void) ptr;
                 return kb * 1024ULL;
             }
         }
+
+        p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 
     spdlog::warn("MemTotal not found in /proc/meminfo");
@@ -825,9 +995,11 @@ bool LinuxProcessProbe::detectPowerCap()
 
     for (const auto& path : possiblePaths)
     {
-        const std::ifstream file(path);
-        if (file.good())
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd != -1)
         {
+            ::close(fd);
             m_PowerCapPath = path;
             return true;
         }
@@ -871,16 +1043,16 @@ uint64_t LinuxProcessProbe::readSystemEnergy() const
         return 0;
     }
 
-    std::ifstream file(m_PowerCapPath);
-    if (!file.is_open())
+    std::array<char, 32> buf{};
+    const std::size_t len = readProcFile(m_PowerCapPath.c_str(), buf.data(), buf.size());
+    if (len == 0)
     {
         return 0;
     }
 
+    const char* p = buf.data();
     uint64_t energyUj = 0;
-    file >> energyUj;
-
-    if (file.fail())
+    if (!parseNum(p, buf.data() + len, energyUj))
     {
         return 0;
     }

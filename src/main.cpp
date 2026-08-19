@@ -9,9 +9,11 @@
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
+#include "Core/EnvUtils.h"
 #include "UI/UILayer.h"
 #include "version.h"
 
+#include <SDL3/SDL.h>
 #include <spdlog/common.h>
 #include <spdlog/logger.h>
 #include <spdlog/spdlog.h>
@@ -134,11 +136,22 @@ auto runApp() -> int
     spdlog::set_level(spdlog::level::debug);
     spdlog::flush_on(spdlog::level::debug);
 #else
-    // In release builds, silence info/debug noise while preserving warnings,
-    // errors, and critical failures so production issues remain diagnosable.
-    // The compile-time SPDLOG_ACTIVE_LEVEL guard only silences the SPDLOG_*
-    // macros; direct spdlog::info() calls respect this runtime level.
-    spdlog::set_level(spdlog::level::warn);
+    // In release builds, default to warn to silence info/debug noise while
+    // preserving warnings, errors, and critical failures.
+    // Override at runtime via TASKSMACK_LOG_LEVEL=trace|debug|info|warn|error|critical|off.
+    // TASKSMACK_TRACE_RESIZE_PERF also promotes the level to info automatically.
+    {
+        spdlog::level::level_enum runtimeLevel = spdlog::level::warn;
+        if (const char* levelEnv = SDL_getenv("TASKSMACK_LOG_LEVEL"); levelEnv != nullptr)
+        {
+            runtimeLevel = spdlog::level::from_str(levelEnv);
+        }
+        else if (Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF")))
+        {
+            runtimeLevel = spdlog::level::info;
+        }
+        spdlog::set_level(runtimeLevel);
+    }
 #endif
 
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);

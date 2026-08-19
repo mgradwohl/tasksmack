@@ -2,6 +2,7 @@
 
 // NOLINTNEXTLINE(misc-include-cleaner) - GPUModel.h used for m_GPUModel method calls
 #include "GPUModel.h"
+#include "History.h"
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
@@ -408,43 +409,43 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
 std::vector<double> ProcessModel::systemNetSentHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemNetSentHistory.begin(), m_SystemNetSentHistory.end()};
+    return HistoryUtils::toVector(m_SystemNetSentHistory);
 }
 
 std::vector<double> ProcessModel::systemNetRecvHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemNetRecvHistory.begin(), m_SystemNetRecvHistory.end()};
+    return HistoryUtils::toVector(m_SystemNetRecvHistory);
 }
 
 std::vector<double> ProcessModel::systemPageFaultsHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemPageFaultsHistory.begin(), m_SystemPageFaultsHistory.end()};
+    return HistoryUtils::toVector(m_SystemPageFaultsHistory);
 }
 
 std::vector<double> ProcessModel::systemThreadCountHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemThreadCountHistory.begin(), m_SystemThreadCountHistory.end()};
+    return HistoryUtils::toVector(m_SystemThreadCountHistory);
 }
 
 std::vector<double> ProcessModel::systemHandleCountHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemHandleCountHistory.begin(), m_SystemHandleCountHistory.end()};
+    return HistoryUtils::toVector(m_SystemHandleCountHistory);
 }
 
 std::vector<double> ProcessModel::systemPowerHistory() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_SystemPowerHistory.begin(), m_SystemPowerHistory.end()};
+    return HistoryUtils::toVector(m_SystemPowerHistory);
 }
 
 std::vector<double> ProcessModel::historyTimestamps() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_Timestamps.begin(), m_Timestamps.end()};
+    return HistoryUtils::toVector(m_Timestamps);
 }
 
 void ProcessModel::setMaxHistorySeconds(double seconds)
@@ -670,16 +671,6 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
 
     if (previous != nullptr && elapsedSeconds > 0.0)
     {
-        auto computeRate = [elapsedSeconds](std::uint64_t currentValue, std::uint64_t previousValue) -> double
-        {
-            if (currentValue >= previousValue)
-            {
-                const std::uint64_t delta = currentValue - previousValue;
-                return Numeric::toDouble(delta) / elapsedSeconds;
-            }
-            return 0.0;
-        };
-
         // I/O and page fault rates use delta-based calculation:
         //   rate = (currentCounter - previousCounter) / elapsedSeconds
         //
@@ -689,9 +680,9 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         //
         // Network rates are computed separately in computeSnapshots() using the baseline
         // approach - see comments there and in ProcessModel.h for details.
-        snapshot.ioReadBytesPerSec = computeRate(current.readBytes, previous->readBytes);
-        snapshot.ioWriteBytesPerSec = computeRate(current.writeBytes, previous->writeBytes);
-        snapshot.pageFaultsPerSec = computeRate(current.pageFaultCount, previous->pageFaultCount);
+        snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
+        snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
+        snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
     }
 
     if (previous != nullptr && timeDeltaUs > 0)
@@ -722,36 +713,14 @@ void ProcessModel::trimHistory()
 
     const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
 
-    // Find how many timestamps are older than cutoff
-    size_t trimCount = 0;
-    for (const auto& ts : m_Timestamps)
-    {
-        if (ts < cutoff)
-        {
-            ++trimCount;
-        }
-        else
-        {
-            break; // Timestamps are in order, so we can stop early
-        }
-    }
-
-    // Trim the same count from all history deques to keep them synchronized
-    auto trimFront = [trimCount](auto& dq)
-    {
-        for (size_t i = 0; i < trimCount && !dq.empty(); ++i)
-        {
-            dq.pop_front();
-        }
-    };
-
-    trimFront(m_Timestamps);
-    trimFront(m_SystemNetSentHistory);
-    trimFront(m_SystemNetRecvHistory);
-    trimFront(m_SystemPageFaultsHistory);
-    trimFront(m_SystemThreadCountHistory);
-    trimFront(m_SystemHandleCountHistory);
-    trimFront(m_SystemPowerHistory);
+    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps,
+                                               cutoff,
+                                               m_SystemNetSentHistory,
+                                               m_SystemNetRecvHistory,
+                                               m_SystemPageFaultsHistory,
+                                               m_SystemThreadCountHistory,
+                                               m_SystemHandleCountHistory,
+                                               m_SystemPowerHistory));
 }
 
 std::string ProcessModel::translateState(char rawState)

@@ -14,6 +14,20 @@ template<typename T>
     return static_cast<double>(value);
 }
 
+template<std::unsigned_integral T> [[nodiscard]] constexpr auto counterDelta(T current, T previous) noexcept -> T
+{
+    return current >= previous ? current - previous : T{};
+}
+
+template<std::unsigned_integral T> [[nodiscard]] constexpr auto counterRate(T current, T previous, double elapsedSeconds) noexcept -> double
+{
+    if (elapsedSeconds <= 0.0)
+    {
+        return 0.0;
+    }
+    return toDouble(counterDelta(current, previous)) / elapsedSeconds;
+}
+
 [[nodiscard]] inline auto clampPercentToFloat(double percent) noexcept -> float
 {
     const double clamped = std::clamp(percent, 0.0, 100.0);

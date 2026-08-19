@@ -9,6 +9,7 @@
 /release/
 /optimized/
 /.cache/
+/.venv/
 
 # CodeQL build artifacts
 /_codeql_build_dir/
@@ -24,6 +25,21 @@
 *.profdata
 /profiles/
 coverage-output.txt
+/perf-data/*.etl
+/perf-data/*.etl.NGENPDB/
+/perf-data/etw-*.log
+/perf-data/etw-*.txt
+/perf-data/etw-*.json
+/perf-data/pgo-hot*.txt
+/perf-data/pgo-hot*.json
+/perf-data/SymCache/
+/perf-data/*.data
+/perf-data/*.log
+/perf-data/*-report.txt
+/perf-data/*-summary.txt
+/perf-data/*-flamegraph.svg
+heaptrack.*.gz
+*.pdb
 
 # Test results and sanitizer outputs
 test-results.xml
@@ -42,6 +58,7 @@ install_manifest.txt
 Testing/
 CTestTestfile.cmake
 compile_commands.json
+compile_commands_notidy.json
 
 # VS Code / CLion
 *.user

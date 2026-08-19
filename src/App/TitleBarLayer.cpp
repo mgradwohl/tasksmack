@@ -12,12 +12,12 @@
 #include <glad/gl.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
+#include <stb_image.h>
 
 #include <cctype>
 #include <chrono>
 #include <string_view>
-
-#include <stb_image.h>
+#include <utility>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -88,12 +88,52 @@ bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
 
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
-constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 30.0F;
-constexpr float RESIZE_PENDING_IDLE_FLUSH_SECONDS = 1.0F / 60.0F;
+constexpr float RESIZE_SIZE_COMMIT_INTERVAL_SECONDS = 1.0F / 20.0F;
 
-// Hit-test callback behavior is platform dependent:
-// - Windows: force NORMAL and use client-side drag/resize to avoid modal move/size redraw stalls.
-// - Non-Windows: keep native draggable/resize hit-test behavior for compositor-friendly moves/resizes.
+// Conditionally time an operation and accumulate the duration into accumMs.
+// When traceEnabled is false the call reduces to a branch and a direct callable invocation.
+template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
+{
+    if (!traceEnabled)
+    {
+        std::forward<Fn>(fn)();
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::forward<Fn>(fn)();
+    accumMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Lightweight RAII scope guard — runs a callable on scope exit.
+template<typename Fn> struct ScopeExit
+{
+    explicit ScopeExit(Fn fn) : m_fn(std::move(fn))
+    {}
+    // noexcept: exceptions must not escape destructors. The callables used here
+    // (trace logging accumulations) are non-throwing; the try/catch is a safety
+    // net that prevents std::terminate if that assumption is ever violated.
+    ~ScopeExit() noexcept
+    {
+        try
+        {
+            m_fn();
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: keep destructor noexcept
+        {}
+    }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ScopeExit(ScopeExit&&) = delete;
+    ScopeExit& operator=(ScopeExit&&) = delete;
+
+  private:
+    Fn m_fn;
+};
+
+// Hit-test callback:
+// - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
+// - Non-Windows: NORMAL for title bar and controls so SDL delivers mouse button events to the app;
+//   RESIZE_* for window edges so the WM handles native resize. Drag is handled client-side too.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
@@ -171,14 +211,12 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    if (isInsideBounds(x, y, layer->getIconBounds()) || isInsideBounds(x, y, layer->getHelpBounds()) ||
-        isInsideBounds(x, y, layer->getSettingsBounds()) || isInsideBounds(x, y, layer->getMinimizeBounds()) ||
-        isInsideBounds(x, y, layer->getMaximizeBounds()) || isInsideBounds(x, y, layer->getCloseBounds()))
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    return SDL_HITTEST_DRAGGABLE;
+    // Title bar drag area — return NORMAL so SDL delivers mouse button events
+    // to the app. Drag is handled client-side in beginWindowInteraction /
+    // updateWindowInteraction, mirroring the Windows path. This ensures
+    // SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
+    // double-click maximize/restore detection.
+    return SDL_HITTEST_NORMAL;
 #endif
 }
 
@@ -269,6 +307,8 @@ void TitleBarLayer::onAttach()
         spdlog::warn("Failed to load title bar icon from {}", iconPath);
     }
 
+    m_TraceEnabled = isResizePerfTracingEnabled();
+
     // Set up hit test for window dragging
     setupHitTest();
     createSystemCursors();
@@ -292,9 +332,7 @@ void TitleBarLayer::onDetach()
 
 void TitleBarLayer::onUpdate([[maybe_unused]] float deltaTime)
 {
-#ifdef _WIN32
     updateWindowInteraction();
-#endif
 }
 
 void TitleBarLayer::onPostRender()
@@ -355,7 +393,10 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-#ifdef _WIN32
+    // Title bar drag area returns SDL_HITTEST_NORMAL (see hitTestCallback), so
+    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered on all platforms. Use SDL's built-in
+    // clicks field for double-click detection and the existing client-side drag/resize
+    // interaction for window movement.
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -375,7 +416,6 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
     {
         endWindowInteraction();
     }
-#endif
 }
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
@@ -511,24 +551,22 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     if (edge != ResizeEdge::None)
     {
         const auto [startX, startY] = window.getPosition();
-        m_CustomResizeActive = true;
-        m_ActiveResizeEdge = edge;
-        m_ResizeStartMouseGlobalX = globalMouseX;
-        m_ResizeStartMouseGlobalY = globalMouseY;
-        m_ResizeStartWindowX = startX;
-        m_ResizeStartWindowY = startY;
-        m_ResizeStartWindowWidth = windowWidth;
-        m_ResizeStartWindowHeight = windowHeight;
-        m_LastAppliedWindowX = startX;
-        m_LastAppliedWindowY = startY;
-        m_LastAppliedWindowWidth = windowWidth;
-        m_LastAppliedWindowHeight = windowHeight;
-        m_HasPendingResizeCommit = false;
-        m_PendingResizeWidth = windowWidth;
-        m_PendingResizeHeight = windowHeight;
-        m_LastResizeSizeCommitTime = Core::Application::getTime();
-        m_LastResizeDesiredChangeTime = m_LastResizeSizeCommitTime;
-        m_CustomDragActive = false;
+        m_InteractionMode = InteractionMode::Resize;
+        m_Resize.edge = edge;
+        m_Resize.startMouseGlobalX = globalMouseX;
+        m_Resize.startMouseGlobalY = globalMouseY;
+        m_Resize.startWindowX = startX;
+        m_Resize.startWindowY = startY;
+        m_Resize.startWindowWidth = windowWidth;
+        m_Resize.startWindowHeight = windowHeight;
+        m_Resize.lastAppliedX = startX;
+        m_Resize.lastAppliedY = startY;
+        m_Resize.lastAppliedWidth = windowWidth;
+        m_Resize.lastAppliedHeight = windowHeight;
+        m_Resize.hasPendingCommit = false;
+        m_Resize.pendingWidth = windowWidth;
+        m_Resize.pendingHeight = windowHeight;
+        m_Resize.lastSizeCommitTime = Core::Application::getTime();
         return;
     }
 
@@ -539,49 +577,51 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
             // Don't restore yet — defer restore until the pointer has actually moved
             // past the drag threshold so a bare click doesn't unmaximize the window.
             const auto [maxX, maxY] = window.getPosition();
-            m_PendingDragRestore = true;
-            m_MaximizedWindowX = maxX;
-            m_MaximizedWindowWidth = windowWidth;
-            m_CustomDragActive = true;
-            m_DragStartMouseGlobalX = globalMouseX;
-            m_DragStartMouseGlobalY = globalMouseY;
+            m_Drag.pendingRestore = true;
+            m_Drag.maximizedWindowX = maxX;
+            m_Drag.maximizedWindowWidth = windowWidth;
+            m_InteractionMode = InteractionMode::Drag;
+            m_Drag.startMouseGlobalX = globalMouseX;
+            m_Drag.startMouseGlobalY = globalMouseY;
             // Placeholder positions replaced once restore actually happens.
-            m_DragStartWindowX = maxX;
-            m_DragStartWindowY = maxY;
-            m_LastAppliedWindowX = maxX;
-            m_LastAppliedWindowY = maxY;
-            m_CustomResizeActive = false;
-            m_ActiveResizeEdge = ResizeEdge::None;
+            m_Drag.startWindowX = maxX;
+            m_Drag.startWindowY = maxY;
+            m_Drag.lastAppliedX = maxX;
+            m_Drag.lastAppliedY = maxY;
+            m_Resize.edge = ResizeEdge::None;
             (void) maxY;
         }
         else
         {
             const auto [startX, startY] = window.getPosition();
-            m_CustomDragActive = true;
-            m_DragStartMouseGlobalX = globalMouseX;
-            m_DragStartMouseGlobalY = globalMouseY;
-            m_DragStartWindowX = startX;
-            m_DragStartWindowY = startY;
-            m_LastAppliedWindowX = startX;
-            m_LastAppliedWindowY = startY;
-            m_CustomResizeActive = false;
-            m_ActiveResizeEdge = ResizeEdge::None;
+            m_InteractionMode = InteractionMode::Drag;
+            m_Drag.startMouseGlobalX = globalMouseX;
+            m_Drag.startMouseGlobalY = globalMouseY;
+            m_Drag.startWindowX = startX;
+            m_Drag.startWindowY = startY;
+            m_Drag.lastAppliedX = startX;
+            m_Drag.lastAppliedY = startY;
+            m_Resize.edge = ResizeEdge::None;
         }
     }
 }
 
+// Called every frame while a custom drag or resize is in progress. Reads the
+// current global mouse state, computes the desired window position/size delta
+// from the recorded start positions, applies rate-limited SDL calls, and
+// fires a WindowResizedEvent when a size commit is issued. Ends the interaction
+// (via endWindowInteraction) if the left mouse button is no longer held.
 void TitleBarLayer::updateWindowInteraction()
 {
-    if (!m_CustomDragActive && !m_CustomResizeActive)
+    if (m_InteractionMode == InteractionMode::None)
     {
         return;
     }
 
     using Clock = std::chrono::steady_clock;
     constexpr double SLOW_TITLEBAR_UPDATE_MS = 250.0;
-    const bool traceEnabled = isResizePerfTracingEnabled();
-    const bool startedDrag = m_CustomDragActive;
-    const bool startedResize = m_CustomResizeActive;
+    const bool startedDrag = (m_InteractionMode == InteractionMode::Drag);
+    const bool startedResize = (m_InteractionMode == InteractionMode::Resize);
 
     double mouseStateMs = 0.0;
     double restoreMs = 0.0;
@@ -589,73 +629,37 @@ void TitleBarLayer::updateWindowInteraction()
     double setSizeMs = 0.0;
     double raiseResizeEventMs = 0.0;
 
-    const auto updateStart = traceEnabled ? Clock::now() : Clock::time_point{};
-    struct SlowUpdateTraceGuard
-    {
-        bool traceEnabled = false;
-        bool startedDrag = false;
-        bool startedResize = false;
-        const TitleBarLayer* self = nullptr;
-        double* mouseStateMs = nullptr;
-        double* restoreMs = nullptr;
-        double* setPositionMs = nullptr;
-        double* setSizeMs = nullptr;
-        double* raiseResizeEventMs = nullptr;
-        Clock::time_point updateStart{};
-
-        ~SlowUpdateTraceGuard()
+    const auto updateStart = m_TraceEnabled ? Clock::now() : Clock::time_point{};
+    const ScopeExit traceScope{
+        [&]
         {
-            if (!traceEnabled)
+            if (!m_TraceEnabled)
             {
                 return;
             }
-
             const double totalMs = std::chrono::duration<double, std::milli>(Clock::now() - updateStart).count();
             if (totalMs < SLOW_TITLEBAR_UPDATE_MS)
             {
                 return;
             }
-
             const char* mode = startedDrag ? "drag" : (startedResize ? "resize" : "none");
             spdlog::info("ResizePerfTitleBarSlowUpdate: mode={} edge={} total={:.3f} ms mouse={:.3f} ms restore={:.3f} ms setPos={:.3f} ms "
                          "setSize={:.3f} ms raiseResizeEvent={:.3f} ms",
                          mode,
-                         static_cast<int>(self->m_ActiveResizeEdge),
+                         static_cast<int>(m_Resize.edge),
                          totalMs,
-                         *mouseStateMs,
-                         *restoreMs,
-                         *setPositionMs,
-                         *setSizeMs,
-                         *raiseResizeEventMs);
-        }
-    };
+                         mouseStateMs,
+                         restoreMs,
+                         setPositionMs,
+                         setSizeMs,
+                         raiseResizeEventMs);
+        }};
 
-    const SlowUpdateTraceGuard traceScope{
-        .traceEnabled = traceEnabled,
-        .startedDrag = startedDrag,
-        .startedResize = startedResize,
-        .self = this,
-        .mouseStateMs = &mouseStateMs,
-        .restoreMs = &restoreMs,
-        .setPositionMs = &setPositionMs,
-        .setSizeMs = &setSizeMs,
-        .raiseResizeEventMs = &raiseResizeEventMs,
-        .updateStart = updateStart,
-    };
-
+    // Query the OS for the current pointer position and button mask.
     float globalMouseXF = 0.0F;
     float globalMouseYF = 0.0F;
     SDL_MouseButtonFlags mouseButtons = 0U;
-    if (traceEnabled)
-    {
-        const auto opStart = Clock::now();
-        mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-        mouseStateMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-    }
-    else
-    {
-        mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-    }
+    timedOp(m_TraceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -667,310 +671,149 @@ void TitleBarLayer::updateWindowInteraction()
     const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
-    if (m_CustomDragActive)
+    if (m_InteractionMode == InteractionMode::Drag)
     {
-        const int dx = globalMouseX - m_DragStartMouseGlobalX;
-        const int dy = globalMouseY - m_DragStartMouseGlobalY;
+        updateDrag(globalMouseX, globalMouseY, window, restoreMs, setPositionMs);
+    }
+    else
+    {
+        updateResize(globalMouseX, globalMouseY, window, setPositionMs, setSizeMs, raiseResizeEventMs);
+    }
+}
 
-        if (m_PendingDragRestore)
+void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window, double& restoreMs, double& setPositionMs)
+{
+    const int dx = mx - m_Drag.startMouseGlobalX;
+    const int dy = my - m_Drag.startMouseGlobalY;
+
+    if (m_Drag.pendingRestore)
+    {
+        // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
+        // any direction so a bare click on the title bar does not unmaximize.
+        constexpr int DRAG_THRESHOLD = 5;
+        if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
         {
-            // Defer restore until mouse has moved at least DRAG_THRESHOLD pixels in
-            // any direction so a bare click on the title bar does not unmaximize.
-            constexpr int DRAG_THRESHOLD = 5;
-            if (dx > -DRAG_THRESHOLD && dx < DRAG_THRESHOLD && dy > -DRAG_THRESHOLD && dy < DRAG_THRESHOLD)
-            {
-                return;
-            }
-            // Threshold crossed — restore and rebase the drag origin.
-            const float xProportion =
-                static_cast<float>(m_DragStartMouseGlobalX - m_MaximizedWindowX) / static_cast<float>(m_MaximizedWindowWidth);
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.restore();
-                restoreMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.restore();
-            }
-            const auto [restoredX, restoredY] = window.getPosition();
-            const auto [restoredWidth, restoredHeight] = window.getSize();
-            const int adjustedX = m_DragStartMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(adjustedX, restoredY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(adjustedX, restoredY);
-            }
-            m_DragStartWindowX = adjustedX;
-            m_DragStartWindowY = restoredY;
-            m_LastAppliedWindowX = adjustedX;
-            m_LastAppliedWindowY = restoredY;
-            m_PendingDragRestore = false;
-            (void) restoredX;
-            (void) restoredHeight;
             return;
         }
-
-        const int targetX = m_DragStartWindowX + dx;
-        const int targetY = m_DragStartWindowY + dy;
-        if (targetX != m_LastAppliedWindowX || targetY != m_LastAppliedWindowY)
-        {
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(targetX, targetY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(targetX, targetY);
-            }
-            m_LastAppliedWindowX = targetX;
-            m_LastAppliedWindowY = targetY;
-        }
+        // Threshold crossed — restore and rebase the drag origin.
+        const float xProportion =
+            static_cast<float>(m_Drag.startMouseGlobalX - m_Drag.maximizedWindowX) / static_cast<float>(m_Drag.maximizedWindowWidth);
+        timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
+        const auto [restoredX, restoredY] = window.getPosition();
+        const auto [restoredWidth, restoredHeight] = window.getSize();
+        const int adjustedX = m_Drag.startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
+        Core::Application::get().signalWindowGeometryChanged();
+        m_Drag.startWindowX = adjustedX;
+        m_Drag.startWindowY = restoredY;
+        m_Drag.lastAppliedX = adjustedX;
+        m_Drag.lastAppliedY = restoredY;
+        m_Drag.pendingRestore = false;
+        (void) restoredX;
+        (void) restoredHeight;
         return;
     }
 
-    if (m_CustomResizeActive)
+    const int targetX = m_Drag.startWindowX + dx;
+    const int targetY = m_Drag.startWindowY + dy;
+    if (targetX != m_Drag.lastAppliedX || targetY != m_Drag.lastAppliedY)
     {
-        constexpr int MIN_WINDOW_WIDTH = Core::WINDOW_MIN_DIMENSION;
-        constexpr int MIN_WINDOW_HEIGHT = Core::WINDOW_MIN_DIMENSION;
-        constexpr int MAX_WINDOW_WIDTH = Core::WINDOW_MAX_DIMENSION;
-        constexpr int MAX_WINDOW_HEIGHT = Core::WINDOW_MAX_DIMENSION;
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(targetX, targetY); });
+        Core::Application::get().signalWindowGeometryChanged();
+        m_Drag.lastAppliedX = targetX;
+        m_Drag.lastAppliedY = targetY;
+    }
+}
 
-        const int dx = globalMouseX - m_ResizeStartMouseGlobalX;
-        const int dy = globalMouseY - m_ResizeStartMouseGlobalY;
+void TitleBarLayer::updateResize(
+    const int mx, const int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs)
+{
+    const int dx = mx - m_Resize.startMouseGlobalX;
+    const int dy = my - m_Resize.startMouseGlobalY;
 
-        int newX = m_ResizeStartWindowX;
-        int newY = m_ResizeStartWindowY;
-        int newWidth = m_ResizeStartWindowWidth;
-        int newHeight = m_ResizeStartWindowHeight;
+    const auto [newX, newY, newWidth, newHeight] = computeResizeGeometry(
+        m_Resize.edge, m_Resize.startWindowX, m_Resize.startWindowY, m_Resize.startWindowWidth, m_Resize.startWindowHeight, dx, dy);
 
-        switch (m_ActiveResizeEdge)
+    const bool positionChanged = (newX != m_Resize.lastAppliedX) || (newY != m_Resize.lastAppliedY);
+    const bool sizeChanged = (newWidth != m_Resize.lastAppliedWidth) || (newHeight != m_Resize.lastAppliedHeight);
+    const float now = Core::Application::getTime();
+    bool sizeCommitApplied = false;
+
+    if (positionChanged)
+    {
+        timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(newX, newY); });
+        Core::Application::get().signalWindowGeometryChanged();
+        m_Resize.lastAppliedX = newX;
+        m_Resize.lastAppliedY = newY;
+    }
+    if (sizeChanged)
+    {
+        const bool commitIntervalElapsed = (now - m_Resize.lastSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
+        if (commitIntervalElapsed)
         {
-        case ResizeEdge::Left:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            break;
-        case ResizeEdge::Right:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            break;
-        case ResizeEdge::Top:
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::Bottom:
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::TopLeft:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::TopRight:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            newY = m_ResizeStartWindowY + dy;
-            newHeight = m_ResizeStartWindowHeight - dy;
-            break;
-        case ResizeEdge::BottomLeft:
-            newX = m_ResizeStartWindowX + dx;
-            newWidth = m_ResizeStartWindowWidth - dx;
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::BottomRight:
-            newWidth = m_ResizeStartWindowWidth + dx;
-            newHeight = m_ResizeStartWindowHeight + dy;
-            break;
-        case ResizeEdge::None:
-            break;
+            timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+            Core::Application::get().signalWindowGeometryChanged();
+            m_Resize.lastAppliedWidth = newWidth;
+            m_Resize.lastAppliedHeight = newHeight;
+            m_Resize.lastSizeCommitTime = now;
+            m_Resize.hasPendingCommit = false;
+            sizeCommitApplied = true;
         }
-
-        if (newWidth < MIN_WINDOW_WIDTH)
+        else
         {
-            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
-            {
-                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MIN_WINDOW_WIDTH);
-            }
-            newWidth = MIN_WINDOW_WIDTH;
+            m_Resize.hasPendingCommit = true;
+            m_Resize.pendingWidth = newWidth;
+            m_Resize.pendingHeight = newHeight;
         }
+    }
+    else if (m_Resize.hasPendingCommit)
+    {
+        // sizeChanged is false here: the current desired size already matches the last
+        // committed size, meaning the user dragged back to the committed geometry.
+        // The pending commit is now stale — applying it would jump the window to an
+        // intermediate size the user no longer wants — so cancel it immediately.
+        m_Resize.hasPendingCommit = false;
+    }
 
-        if (newWidth > MAX_WINDOW_WIDTH)
+    if (sizeCommitApplied)
+    {
+        // Coalesce immediate resize events to avoid flooding the event bus
+        // during edge/corner drags. SDL will still emit pixel-size events,
+        // so this path only provides low-latency updates for interactive drag.
+        int pixelW = 0;
+        int pixelH = 0;
+        SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
+        constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
+        const float resizeEventNow = Core::Application::getTime();
+        const bool pixelSizeChanged = (pixelW != m_Resize.lastImmediatePixelW) || (pixelH != m_Resize.lastImmediatePixelH);
+        const bool intervalElapsed = (resizeEventNow - m_Resize.lastImmediateEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
+        if (pixelSizeChanged && intervalElapsed)
         {
-            if (m_ActiveResizeEdge == ResizeEdge::Left || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::BottomLeft)
-            {
-                newX = m_ResizeStartWindowX + (m_ResizeStartWindowWidth - MAX_WINDOW_WIDTH);
-            }
-            newWidth = MAX_WINDOW_WIDTH;
-        }
-
-        if (newHeight < MIN_WINDOW_HEIGHT)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::TopRight)
-            {
-                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MIN_WINDOW_HEIGHT);
-            }
-            newHeight = MIN_WINDOW_HEIGHT;
-        }
-
-        if (newHeight > MAX_WINDOW_HEIGHT)
-        {
-            if (m_ActiveResizeEdge == ResizeEdge::Top || m_ActiveResizeEdge == ResizeEdge::TopLeft ||
-                m_ActiveResizeEdge == ResizeEdge::TopRight)
-            {
-                newY = m_ResizeStartWindowY + (m_ResizeStartWindowHeight - MAX_WINDOW_HEIGHT);
-            }
-            newHeight = MAX_WINDOW_HEIGHT;
-        }
-
-        const bool positionChanged = (newX != m_LastAppliedWindowX) || (newY != m_LastAppliedWindowY);
-        const bool sizeChanged = (newWidth != m_LastAppliedWindowWidth) || (newHeight != m_LastAppliedWindowHeight);
-        const float now = Core::Application::getTime();
-        bool sizeCommitApplied = false;
-
-        if (positionChanged)
-        {
-            if (traceEnabled)
-            {
-                const auto opStart = Clock::now();
-                window.setPosition(newX, newY);
-                setPositionMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-            }
-            else
-            {
-                window.setPosition(newX, newY);
-            }
-            m_LastAppliedWindowX = newX;
-            m_LastAppliedWindowY = newY;
-        }
-        if (sizeChanged)
-        {
-            const bool commitIntervalElapsed = (now - m_LastResizeSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
-            const bool skipDuplicateSize = (newWidth == m_LastAppliedWindowWidth) && (newHeight == m_LastAppliedWindowHeight);
-            if (commitIntervalElapsed)
-            {
-                if (!skipDuplicateSize)
-                {
-                    if (traceEnabled)
-                    {
-                        const auto opStart = Clock::now();
-                        SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
-                        setSizeMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                    }
-                    else
-                    {
-                        SDL_SetWindowSize(window.getHandle(), newWidth, newHeight);
-                    }
-                }
-                m_LastAppliedWindowWidth = newWidth;
-                m_LastAppliedWindowHeight = newHeight;
-                m_LastResizeSizeCommitTime = now;
-                m_LastResizeDesiredChangeTime = now;
-                m_HasPendingResizeCommit = false;
-                sizeCommitApplied = true;
-            }
-            else
-            {
-                m_HasPendingResizeCommit = true;
-                m_PendingResizeWidth = newWidth;
-                m_PendingResizeHeight = newHeight;
-                m_LastResizeDesiredChangeTime = now;
-            }
-        }
-        else if (m_HasPendingResizeCommit)
-        {
-            const bool idleElapsed = (now - m_LastResizeDesiredChangeTime) >= RESIZE_PENDING_IDLE_FLUSH_SECONDS;
-            if (idleElapsed)
-            {
-                const bool skipDuplicatePending =
-                    (m_PendingResizeWidth == m_LastAppliedWindowWidth) && (m_PendingResizeHeight == m_LastAppliedWindowHeight);
-                if (!skipDuplicatePending)
-                {
-                    if (traceEnabled)
-                    {
-                        const auto opStart = Clock::now();
-                        SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight);
-                        setSizeMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                    }
-                    else
-                    {
-                        SDL_SetWindowSize(window.getHandle(), m_PendingResizeWidth, m_PendingResizeHeight);
-                    }
-                    m_LastAppliedWindowWidth = m_PendingResizeWidth;
-                    m_LastAppliedWindowHeight = m_PendingResizeHeight;
-                }
-                m_LastResizeSizeCommitTime = now;
-                m_HasPendingResizeCommit = false;
-                sizeCommitApplied = true;
-            }
-            else
-            {
-                return;
-            }
-        }
-
-        if (sizeCommitApplied)
-        {
-            // Coalesce immediate resize events to avoid flooding the event bus
-            // during edge/corner drags. SDL will still emit pixel-size events,
-            // so this path only provides low-latency updates for interactive drag.
-            int pixelW = 0;
-            int pixelH = 0;
-            SDL_GetWindowSizeInPixels(window.getHandle(), &pixelW, &pixelH);
-            constexpr float MIN_RESIZE_EVENT_INTERVAL_SECONDS = 1.0F / 120.0F;
-            const float resizeEventNow = Core::Application::getTime();
-            const bool pixelSizeChanged = (pixelW != m_LastImmediateResizePixelW) || (pixelH != m_LastImmediateResizePixelH);
-            const bool intervalElapsed = (resizeEventNow - m_LastImmediateResizeEventTime) >= MIN_RESIZE_EVENT_INTERVAL_SECONDS;
-            if (pixelSizeChanged && intervalElapsed)
-            {
-                m_LastImmediateResizePixelW = pixelW;
-                m_LastImmediateResizePixelH = pixelH;
-                m_LastImmediateResizeEventTime = resizeEventNow;
-                Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
-                if (traceEnabled)
-                {
-                    const auto opStart = Clock::now();
-                    Core::Application::get().raiseEvent(resizeEvent);
-                    raiseResizeEventMs += std::chrono::duration<double, std::milli>(Clock::now() - opStart).count();
-                }
-                else
-                {
-                    Core::Application::get().raiseEvent(resizeEvent);
-                }
-            }
+            m_Resize.lastImmediatePixelW = pixelW;
+            m_Resize.lastImmediatePixelH = pixelH;
+            m_Resize.lastImmediateEventTime = resizeEventNow;
+            Core::WindowResizedEvent resizeEvent(pixelW, pixelH);
+            timedOp(m_TraceEnabled, raiseResizeEventMs, [&] { Core::Application::get().raiseEvent(resizeEvent); });
         }
     }
 }
 
 void TitleBarLayer::endWindowInteraction()
 {
-    if (m_CustomResizeActive && m_HasPendingResizeCommit)
+    if (m_InteractionMode == InteractionMode::Resize && m_Resize.hasPendingCommit)
     {
         auto& window = Core::Application::get().getWindow();
         SDL_Window* sdlWindow = window.getHandle();
         if (sdlWindow != nullptr)
         {
-            SDL_SetWindowSize(sdlWindow, m_PendingResizeWidth, m_PendingResizeHeight);
-            m_LastAppliedWindowWidth = m_PendingResizeWidth;
-            m_LastAppliedWindowHeight = m_PendingResizeHeight;
-            m_LastResizeSizeCommitTime = Core::Application::getTime();
+            SDL_SetWindowSize(sdlWindow, m_Resize.pendingWidth, m_Resize.pendingHeight);
         }
-        m_HasPendingResizeCommit = false;
+        // m_Resize will be zeroed below
     }
 
-    m_CustomDragActive = false;
-    m_CustomResizeActive = false;
-    m_ActiveResizeEdge = ResizeEdge::None;
-    m_PendingDragRestore = false;
+    m_Drag = {};
+    m_Resize = {};
+    m_InteractionMode = InteractionMode::None;
     m_HasCursorSample = false;
 }
 
@@ -1063,9 +906,9 @@ void TitleBarLayer::updateResizeCursor()
     const ResizeEdge prevEdge = m_CachedHoverEdge;
     ResizeEdge edge = m_CachedHoverEdge;
 
-    if (m_CustomResizeActive)
+    if (m_InteractionMode == InteractionMode::Resize)
     {
-        edge = m_ActiveResizeEdge;
+        edge = m_Resize.edge;
     }
     else
     {

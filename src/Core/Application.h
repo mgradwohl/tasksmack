@@ -74,6 +74,14 @@ class Application
         return getTime() < m_InteractionRedrawUntil;
     }
 
+    /// Called by layers (e.g. TitleBarLayer) whenever they actually move or resize the
+    /// window. Gating grace-period renders on geometry changes avoids rendering identical
+    /// frames during the post-interaction grace window (see m_WindowGeometryChangedThisFrame).
+    void signalWindowGeometryChanged() noexcept
+    {
+        m_WindowGeometryChangedThisFrame = true;
+    }
+
     [[nodiscard]] static Application& get();
     [[nodiscard]] static float getTime();
     static void setInstance(std::unique_ptr<Application> app);
@@ -86,6 +94,16 @@ class Application
     bool m_Running = false;
     float m_InteractionRedrawUntil = 0.0F;
     bool m_ResizePerfTraceEnabled = false;
+    /// True while vsync has been temporarily disabled for an active resize/move interaction.
+    /// Restored to the original setting (adaptive vsync) when the interaction ends.
+    bool m_VsyncDisabledForInteraction = false;
+    /// Set to true by signalWindowGeometryChanged() (called from TitleBarLayer) whenever
+    /// the window position or size actually changes during a frame's onUpdate pass.
+    /// Cleared at the top of each main-loop iteration so it reflects only the PREVIOUS
+    /// frame's geometry activity. Used to gate grace-period sleep: we skip the idle sleep
+    /// only when geometry was in flux last frame, avoiding ~20 wasted renders after
+    /// the user releases the mouse while the window is stationary.
+    bool m_WindowGeometryChangedThisFrame = false;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
     /// the immediate-repaint-on-resize path share identical rendering logic.

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <utility>
+#include <vector>
 
 namespace Domain
 {
@@ -121,5 +123,66 @@ template<typename T, std::size_t Capacity> class History
     std::size_t m_WriteIndex = 0;
     std::size_t m_Size = 0;
 };
+
+namespace HistoryUtils
+{
+
+template<typename Sequence> void trimFront(Sequence& sequence, std::size_t count)
+{
+    while (count > 0 && !sequence.empty())
+    {
+        sequence.pop_front();
+        --count;
+    }
+}
+
+template<typename... Sequences> void trimFrontToSize(std::size_t targetSize, Sequences&... sequences)
+{
+    (trimFront(sequences, sequences.size() > targetSize ? sequences.size() - targetSize : 0), ...);
+}
+
+template<typename Sequence> void alignFrontToSize(Sequence& sequence, std::size_t targetSize)
+{
+    trimFrontToSize(targetSize, sequence);
+    while (sequence.size() < targetSize)
+    {
+        sequence.push_front({});
+    }
+}
+
+template<typename TimestampSequence, typename... Sequences>
+[[nodiscard]] std::size_t trimBefore(TimestampSequence& timestamps, double cutoff, Sequences&... alignedSequences)
+{
+    std::size_t removeCount = 0;
+    while (removeCount < timestamps.size() && timestamps[removeCount] < cutoff)
+    {
+        ++removeCount;
+    }
+
+    trimFront(timestamps, removeCount);
+    (trimFront(alignedSequences, removeCount), ...);
+    return removeCount;
+}
+
+template<typename... Sequences> [[nodiscard]] std::size_t minimumNonEmptySize(const Sequences&... sequences)
+{
+    std::size_t minimum = std::numeric_limits<std::size_t>::max();
+    const auto updateMinimum = [&minimum](const auto& sequence)
+    {
+        if (!sequence.empty())
+        {
+            minimum = std::min(minimum, sequence.size());
+        }
+    };
+    (updateMinimum(sequences), ...);
+    return minimum;
+}
+
+template<typename Sequence> [[nodiscard]] auto toVector(const Sequence& sequence) -> std::vector<typename Sequence::value_type>
+{
+    return {sequence.begin(), sequence.end()};
+}
+
+} // namespace HistoryUtils
 
 } // namespace Domain

@@ -29,11 +29,12 @@ jobs:
   build-test:
     name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
     runs-on: ${{ inputs.os }}
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
       contents: read
+      checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -57,7 +58,7 @@ jobs:
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -87,12 +88,12 @@ jobs:
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux'
@@ -109,3 +110,18 @@ jobs:
           name: windows-${{ inputs.build_type }}-test-results
           path: build/win-${{ inputs.build_type }}/test-results.xml
           retention-days: 30
+
+      - name: Publish test results to Job Summary
+        if: >-
+          always() &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
+        with:
+          name: Test Results (${{ inputs.os }} ${{ inputs.build_type }})
+          path: |
+            build/${{ inputs.build_type }}/test-results.xml
+            build/win-${{ inputs.build_type }}/test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false

@@ -293,10 +293,17 @@ void renderNetworkSection(RenderContext& ctx)
                          .color = theme.scheme().chartNetRx};
 
     // Determine plot title based on selection
+    const bool usingInterfaceHistory = showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty();
+    const bool interfaceHistoryUnavailable = showingInterface && !usingInterfaceHistory;
+
     std::string plotTitle = "Total";
-    if (selectedInterface >= 0 && hasValidSelection)
+    if (usingInterfaceHistory)
     {
         plotTitle = interfaces[static_cast<size_t>(selectedInterface)].name;
+    }
+    else if (interfaceHistoryUnavailable)
+    {
+        plotTitle = std::format("Total (selected: {}, history unavailable)", ifaceDisplayName);
     }
 
     // Colors for interface-specific lines (lighter/dashed to distinguish from total)
@@ -316,13 +323,27 @@ void renderNetworkSection(RenderContext& ctx)
             const int count = UI::Format::checkedCount(aligned);
 
             // When an interface is selected, show both total (muted) and interface (bright)
-            if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+            if (usingInterfaceHistory)
             {
-                // Total lines (muted, in background) — scale fill alpha to match the muted line alpha
-                const auto ifaceSentFill = UI::withAlpha(theme.scheme().chartNetTxFill, theme.scheme().chartNetTxFill.w * 0.7F);
-                const auto ifaceRecvFill = UI::withAlpha(theme.scheme().chartNetRxFill, theme.scheme().chartNetRxFill.w * 0.7F);
-                plotLineWithFill("Sent (Total)", netTimes.data(), sentData.data(), count, ifaceSentColor, ifaceSentFill);
-                plotLineWithFill("Received (Total)", netTimes.data(), recvData.data(), count, ifaceRecvColor, ifaceRecvFill);
+                // Total lines (muted, in background)
+                plotLineWithFill("Sent (Total)",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 ifaceSentColor,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received (Total)",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 ifaceRecvColor,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 // Interface-specific lines (bright, in foreground)
                 const auto ifaceSentLabel = std::format("{} Sent", ifaceDisplayName);
@@ -332,20 +353,41 @@ void renderNetworkSection(RenderContext& ctx)
                                  ifaceSentData.data(),
                                  count,
                                  theme.scheme().chartNetTx,
-                                 theme.scheme().chartNetTxFill);
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 plotLineWithFill(ifaceRecvLabel.c_str(),
                                  netTimes.data(),
                                  ifaceRecvData.data(),
                                  count,
                                  theme.scheme().chartNetRx,
-                                 theme.scheme().chartNetRxFill);
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
             else
             {
                 // Just total
-                plotLineWithFill("Sent", netTimes.data(), sentData.data(), count, theme.scheme().chartNetTx, theme.scheme().chartNetTxFill);
-                plotLineWithFill(
-                    "Received", netTimes.data(), recvData.data(), count, theme.scheme().chartNetRx, theme.scheme().chartNetRxFill);
+                plotLineWithFill("Sent",
+                                 netTimes.data(),
+                                 sentData.data(),
+                                 count,
+                                 theme.scheme().chartNetTx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Received",
+                                 netTimes.data(),
+                                 recvData.data(),
+                                 count,
+                                 theme.scheme().chartNetRx,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
             if (ImPlot::IsPlotHovered())
@@ -359,7 +401,7 @@ void renderNetworkSection(RenderContext& ctx)
                         const auto ageText = formatAgeSeconds(static_cast<double>(netTimes[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::Separator();
-                        if (showingInterface && !ifaceSentData.empty() && !ifaceRecvData.empty())
+                        if (usingInterfaceHistory)
                         {
                             // Show both total and interface values
                             ImGui::TextColored(theme.scheme().textMuted, "Total:");
@@ -398,6 +440,11 @@ void renderNetworkSection(RenderContext& ctx)
 
     ImGui::TextColored(
         theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle.c_str(), aligned);
+    if (interfaceHistoryUnavailable)
+    {
+        ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
+        ImGui::Spacing();
+    }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", HISTORY_PLOT_HEIGHT_DEFAULT, plot, {sentBar, recvBar}, false, NETWORK_NOW_BAR_COLUMNS);

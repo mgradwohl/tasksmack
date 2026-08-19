@@ -315,6 +315,26 @@ Items 1–3 are shipped (see [completed-features.md](completed-features.md)). Re
 
 This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
 
+## Logging
+
+TaskSmack uses [spdlog](https://github.com/gabime/spdlog) for all structured log output.
+The following log-level semantics are enforced across all layers:
+
+| Level      | Intended use                                                                        | Example                                            |
+|------------|-------------------------------------------------------------------------------------|----------------------------------------------------|
+| `TRACE`    | Per-frame or per-probe data — never enabled in normal operation                     | Raw CPU tick counter read from `/proc/stat`        |
+| `DEBUG`    | Lifecycle and state-change diagnostics — never unthrottled per-frame output         | `"Refreshed ProcessModel: 148 processes in 3 ms"`  |
+| `INFO`     | Application lifecycle — startup, shutdown, window open/close                       | `"Window created 1280×800"`                        |
+| `WARN`     | Graceful degradation — a probe or feature is unavailable but the app continues     | `"NVML unavailable; GPU monitoring disabled"`      |
+| `ERROR`    | Non-fatal failure — a probe read failed for this cycle; retry next refresh          | `"read /proc/42/io: permission denied"`            |
+| `CRITICAL` | Unrecoverable failure — app must exit                                              | `"SDL_Init failed: out of memory"`                  |
+
+**Rules:**
+- Platform probes use `ERROR` for I/O failures and `WARN` for missing optional capabilities.
+- Domain models use `DEBUG` for refresh events; `WARN` when a capability is disabled at runtime.
+- UI code may use `DEBUG` for initialization or throttled state changes; render paths never emit unthrottled `DEBUG` or `TRACE` output.
+- Tests run with spdlog silenced (level `off`) via `TestLogSuppressor` to keep `--output-on-failure` clean.
+
 ## Archived: Process Enumeration Implementation Plan
 
 This section was originally captured in a now-removed `process.md` file as a detailed implementation plan.

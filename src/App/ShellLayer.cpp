@@ -216,6 +216,7 @@ void ShellLayer::onRender()
 
     const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                                          ImGuiWindowFlags_NoSavedSettings;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
@@ -234,9 +235,10 @@ void ShellLayer::onRender()
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(CONTENT_PADDING_H, CONTENT_PADDING_V));
-        const ImVec2 contentSize(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
 
-        if (ImGui::BeginChild("##ContentArea", contentSize, ImGuiChildFlags_AlwaysUseWindowPadding))
+        // Let ImGui own child sizing so each panel can consume full available height without
+        // shell-level scrollbar reservations that affect non-process tabs.
+        if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
         {
             switch (m_ActiveTab)
             {

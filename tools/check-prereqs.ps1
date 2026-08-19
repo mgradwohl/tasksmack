@@ -403,6 +403,39 @@ else {
     # Don't fail for optional coverage tools
 }
 
+# Optional Windows profiling tools
+$wprPath = Get-ToolPath "wpr"
+if ($wprPath) {
+    Write-Status -Name "wpr" -Status "ok" -Version "available" -Path $wprPath -Required ""
+}
+else {
+    Write-Status -Name "wpr" -Status "fail" -Version $null -Path $wprPath -Required ""
+}
+
+$xperfPath = Get-ToolPath "xperf"
+if ($xperfPath) {
+    Write-Status -Name "xperf" -Status "ok" -Version "available" -Path $xperfPath -Required ""
+}
+else {
+    Write-Status -Name "xperf" -Status "fail" -Version $null -Path $xperfPath -Required ""
+}
+
+$wpaPath = Get-ToolPath "wpa"
+if ($wpaPath) {
+    Write-Status -Name "wpa" -Status "ok" -Version "available" -Path $wpaPath -Required ""
+}
+else {
+    Write-Status -Name "wpa" -Status "fail" -Version $null -Path $wpaPath -Required ""
+}
+
+$wpaExporterPath = Get-ToolPath "wpaexporter"
+if ($wpaExporterPath) {
+    Write-Status -Name "wpaexporter" -Status "ok" -Version "available" -Path $wpaExporterPath -Required ""
+}
+else {
+    Write-Status -Name "wpaexporter" -Status "fail" -Version $null -Path $wpaExporterPath -Required ""
+}
+
 # Check Python 3 (required for GLAD OpenGL loader generation)
 $python3Ver = Get-Python3Version
 $pythonCmd = Get-WorkingPythonCommand

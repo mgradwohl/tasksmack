@@ -112,21 +112,42 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
             if (!memHist.empty())
             {
-                plotLineWithFill(
-                    "Used", timeData.data(), memHist.data(), UI::Format::checkedCount(memHist.size()), theme.scheme().chartMemory);
+                plotLineWithFill("Used",
+                                 timeData.data(),
+                                 memHist.data(),
+                                 UI::Format::checkedCount(memHist.size()),
+                                 theme.scheme().chartMemory,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                 peakMemPercent = static_cast<double>(*std::ranges::max_element(memHist));
             }
 
             if (!cachedHist.empty())
             {
-                plotLineWithFill(
-                    "Cached", timeData.data(), cachedHist.data(), UI::Format::checkedCount(cachedHist.size()), theme.scheme().chartCpu);
+                plotLineWithFill("Cached",
+                                 timeData.data(),
+                                 cachedHist.data(),
+                                 UI::Format::checkedCount(cachedHist.size()),
+                                 theme.scheme().chartCpu,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
             if (!swapHist.empty())
             {
-                plotLineWithFill(
-                    "Swap", timeData.data(), swapHist.data(), UI::Format::checkedCount(swapHist.size()), theme.scheme().chartIo);
+                plotLineWithFill("Swap",
+                                 timeData.data(),
+                                 swapHist.data(),
+                                 UI::Format::checkedCount(swapHist.size()),
+                                 theme.scheme().chartIo,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
             // Peak memory reference line

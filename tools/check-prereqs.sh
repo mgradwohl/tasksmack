@@ -447,6 +447,69 @@ main() {
         echo -e "${GREEN}llvm-cov${NC}: ${llvm_cov_ver} (${llvm_cov_path})"
     fi
 
+    # ── Linux profiling tools (all optional) ────────────────────────────────
+    echo
+    echo "Linux profiling tools (optional — used by tools/profile-perf.sh, analyze-perf.sh, profile-heap.sh):"
+
+    # perf — CPU sampling (profile-perf.sh, analyze-perf.sh)
+    local perf_ver perf_warn
+    perf_ver="$(perf --version 2>/dev/null | awk '{print $NF}' || true)"
+    perf_warn="$(perf --version 2>&1 | grep -i "not found for kernel" || true)"
+    if [[ -n "${perf_warn}" ]]; then
+        local kernel_ver
+        kernel_ver="$(uname -r)"
+        echo -e "${YELLOW}perf${NC}: installed but kernel/tools version mismatch (running ${kernel_ver})"
+        echo -e "       Fix: sudo apt install linux-tools-$(uname -r) linux-tools-generic"
+    elif [[ -n "${perf_ver}" ]]; then
+        local perf_path
+        perf_path="$(command -v perf 2>/dev/null || true)"
+        echo -e "${GREEN}perf${NC}: ${perf_ver} (${perf_path})"
+    else
+        echo -e "${YELLOW}perf${NC}: not found (sudo apt install linux-tools-generic)"
+    fi
+
+    # flamegraph.pl + stackcollapse-perf.pl — SVG flamegraphs (analyze-perf.sh)
+    local flamegraph_path stackcollapse_path
+    flamegraph_path="$(command -v flamegraph.pl 2>/dev/null || \
+        { [[ -x "${HOME}/opt/FlameGraph/flamegraph.pl" ]] && echo "${HOME}/opt/FlameGraph/flamegraph.pl"; } || true)"
+    stackcollapse_path="$(command -v stackcollapse-perf.pl 2>/dev/null || \
+        { [[ -x "${HOME}/opt/FlameGraph/stackcollapse-perf.pl" ]] && echo "${HOME}/opt/FlameGraph/stackcollapse-perf.pl"; } || true)"
+    if [[ -n "${flamegraph_path}" && -n "${stackcollapse_path}" ]]; then
+        echo -e "${GREEN}flamegraph.pl${NC}: ${flamegraph_path}"
+        echo -e "${GREEN}stackcollapse-perf.pl${NC}: ${stackcollapse_path}"
+    else
+        echo -e "${YELLOW}FlameGraph${NC}: not found (git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph)"
+    fi
+
+    # hotspot — GUI perf viewer (analyze-perf.sh optional launch)
+    local hotspot_path
+    hotspot_path="$(command -v hotspot 2>/dev/null || true)"
+    if [[ -n "${hotspot_path}" ]]; then
+        echo -e "${GREEN}hotspot${NC}: ${hotspot_path}"
+    else
+        echo -e "${YELLOW}hotspot${NC}: not found (sudo apt install hotspot)"
+    fi
+
+    # heaptrack — heap allocation profiler (profile-heap.sh)
+    local heaptrack_path
+    heaptrack_path="$(command -v heaptrack 2>/dev/null || true)"
+    if [[ -n "${heaptrack_path}" ]]; then
+        local heaptrack_ver
+        heaptrack_ver="$(heaptrack --version 2>/dev/null | head -1 || echo "available")"
+        echo -e "${GREEN}heaptrack${NC}: ${heaptrack_ver} (${heaptrack_path})"
+    else
+        echo -e "${YELLOW}heaptrack${NC}: not found (sudo apt install heaptrack)"
+    fi
+
+    # heaptrack_print — headless heaptrack analysis (profile-heap.sh)
+    local heaptrack_print_path
+    heaptrack_print_path="$(command -v heaptrack_print 2>/dev/null || true)"
+    if [[ -n "${heaptrack_print_path}" ]]; then
+        echo -e "${GREEN}heaptrack_print${NC}: ${heaptrack_print_path}"
+    else
+        echo -e "${YELLOW}heaptrack_print${NC}: not found (ships with heaptrack)"
+    fi
+
     # Python 3 (required for GLAD OpenGL loader generation)
     local py_ver
     py_ver="$(get_python3_version)"

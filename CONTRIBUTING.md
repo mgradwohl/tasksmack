@@ -20,11 +20,46 @@ To avoid duplication and doc drift, these are the canonical docs:
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
 
-# Install Python dependencies (including pre-commit)
-pip install -r requirements.txt
+# Python 3.14+ is required.
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # Set up pre-commit hooks (recommended)
 pre-commit install
+```
+
+### Automated Setup (Linux)
+
+Instead of installing prerequisites manually, run:
+
+```bash
+./tools/setup-dev.sh          # Install all prerequisites automatically
+source .venv/bin/activate     # Use the project-local Python environment
+./tools/check-prereqs.sh      # Verify environment after setup
+```
+
+The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+
+### Automated Setup (Windows)
+
+```powershell
+pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
+pwsh tools/check-prereqs.ps1  # Verify environment
+```
+
+The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, and ccache.
+
+### One-Command Dev Workflow
+
+After setup, use CMake workflow presets for the full configure → build → test cycle in a single command:
+
+```bash
+cmake --workflow --preset dev          # Linux debug build + test
+cmake --workflow --preset win-dev      # Windows debug build + test
+cmake --workflow --preset coverage     # Coverage build + test
+cmake --workflow --preset asan-ubsan-cycle # ASan+UBSan
+cmake --workflow --preset tsan-cycle       # TSan
 ```
 
 ## Check Prerequisites
@@ -57,7 +92,7 @@ ctest --preset win-debug
 - clang-tidy and clang-format
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
-- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected from system or fetched if not found
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
@@ -88,8 +123,8 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 Install Python + jinja2:
 
 ```powershell
-winget install Python.Python.3.12
-pip install jinja2
+winget install Python.Python.3.14
+py -3.14 -m pip install jinja2
 ```
 
 ## Pre-commit Hooks (Recommended)
@@ -99,8 +134,9 @@ Pre-commit hooks automatically check your code before each commit, catching form
 ### Install
 
 ```bash
-# Install pre-commit (one-time setup)
-pip install pre-commit
+# Activate the project environment created during setup, then install pre-commit.
+source .venv/bin/activate
+python -m pip install pre-commit
 
 # Install the git hooks (run from project root)
 pre-commit install
@@ -109,7 +145,7 @@ pre-commit install
 Or install from requirements.txt:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 pre-commit install
 ```
 
@@ -156,6 +192,18 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+### Cleaning Build Artifacts
+
+Remove stale build directories, FetchContent cache, and coverage output:
+
+```bash
+./tools/clean.sh          # Remove build/ and coverage/  (Linux)
+./tools/clean.sh --all    # Also removes .cache/, dist/, profiles/, and compilation databases
+./tools/clean.sh --dry-run  # Preview what would be removed without deleting anything
+
+pwsh tools/clean.ps1      # Windows equivalent (same flags)
+```
+
 ### CPU Compatibility
 
 The `optimized` and `win-optimized` presets target the x86-64-v3 microarchitecture, which requires AVX2 support (Haswell 2013+ or Excavator 2015+ CPUs). If you encounter "Illegal instruction" errors, your CPU may not support these instructions.
@@ -179,10 +227,12 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
 | `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2, 2009+) |
-| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped (Haswell 2013+) |
+| `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped, whole-program vtables (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
 | `tsan` | — | ThreadSanitizer (Linux only) |
+| `msan` | — | MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only; requires MSan-instrumented libc++) |
+| `unity` | `win-unity` | Unity (jumbo) build for fast end-to-end checks; trades incremental correctness for speed |
 
 ### Build Commands
 
@@ -492,30 +542,66 @@ On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement
 
 ## Performance Profiling
 
-The `profile` and `win-profile` presets are optimized for profiling with frame pointers preserved.
+The `profile` and `win-profile` presets build at `-O2 -g -DNDEBUG` with frame pointers
+preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). All profiling scripts
+write artifacts under `perf-data/` and emit `KEY=value` lines at exit for scripting.
 
-### Linux (perf)
+### Linux — CPU profiling (perf)
+
+Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
+Default preset is `profile` for app mode and `benchmark` for bench mode.
 
 ```bash
-# Build with profiling preset
-cmake --preset profile
-cmake --build --preset profile
+# App trace — exercise the app, then close it
+./tools/profile-perf.sh app
 
-# Run with perf record
-perf record -g ./build/profile/bin/TaskSmack
+# Benchmark trace — targeted hot-path capture
+./tools/profile-perf.sh bench
+./tools/profile-perf.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
 
-# Analyze
-perf report -g
+# Analyze a captured trace (top functions + optional flamegraph SVG)
+./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 
-# Generate flamegraph (requires flamegraph.pl)
-perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
+# Open in Hotspot GUI (if installed: sudo apt install hotspot)
+hotspot perf-data/perf-app-<timestamp>.data
+
+# Quick perf stat counters (no trace file)
+perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
 ```
 
-### Linux (perf stat for quick metrics)
+**Flamegraph generation** requires the Brendan Gregg FlameGraph scripts:
+```bash
+git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph
+export PATH="$HOME/opt/FlameGraph:$PATH"
+# analyze-perf.sh auto-detects them and generates the SVG
+./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
+```
+
+**WSL2 note:** `perf` requires a kernel-matched tools package. If you see a version
+mismatch warning, run `sudo apt install linux-tools-$(uname -r) linux-tools-generic`
+or profile on a native Linux machine / GitHub Actions runner.
+
+### Linux — Heap allocation profiling (heaptrack)
+
+Use `tools/profile-heap.sh` to find hot-path heap allocations that don't show up
+in CPU profiles. Approximately 2–3× runtime overhead (vs. Valgrind's ~50×).
 
 ```bash
-# Quick performance counters
-perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
+# Install
+sudo apt install heaptrack
+
+# App trace
+./tools/profile-heap.sh app
+
+# Benchmark trace — pinpoint per-call allocation sources
+./tools/profile-heap.sh bench
+./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
+
+# Open in GUI
+heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
+
+# Headless analysis (CI-friendly)
+heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
 ```
 
 ### macOS (Instruments)
@@ -532,30 +618,111 @@ open -a Instruments ./build/profile/bin/TaskSmack
 xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/TaskSmack
 ```
 
-### Windows (ETW/VTune)
+### Windows — CPU profiling (ETW)
+
+Use `tools/profile-etw.ps1` to capture and `tools/analyze-etw.ps1` to analyze.
+ETW capture self-elevates; the scripts build before prompting for elevation by default.
 
 ```powershell
-# Build with profiling preset
-cmake --preset win-profile
-cmake --build --preset win-profile
+# App trace — exercise the app, then close it (defaults to win-optimized)
+pwsh tools/profile-etw.ps1 app
 
-# Use Windows Performance Analyzer (WPA) or Intel VTune
-# For VTune:
+# Benchmark trace
+pwsh tools/profile-etw.ps1 bench
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
+
+# Use win-profile for symbol-rich follow-up attribution
+pwsh tools/profile-etw.ps1 app -Preset win-profile
+
+# Analyze a captured trace
+pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
+
+# Skip function decoding (faster, module-level only)
+pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl -SkipFunctions
+
+# Optional VTune workflow if installed
 vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 ```
 
+Notes:
+- `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
+- ETW capture requires elevation; `profile-etw.ps1` relaunches itself as Administrator automatically and validates all output artifacts before returning.
+- `wpr -cancel` returns a non-zero exit code when no trace is active; the scripts treat that as non-fatal.
+- Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
+- Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
+
 ### Compile-Time Profiling (-ftime-trace)
 
-To identify slow headers and compilation bottlenecks:
+To identify slow headers and compilation bottlenecks, use the `TASKSMACK_ENABLE_TIME_TRACE` CMake option:
 
 ```bash
-# Add -ftime-trace to your build
-cmake --preset debug -DCMAKE_CXX_FLAGS="-ftime-trace"
+# Configure with -ftime-trace enabled (Clang emits per-TU .json trace files)
+cmake --preset debug -DTASKSMACK_ENABLE_TIME_TRACE=ON
 cmake --build --preset debug
 
-# Each .cpp generates a .json trace file
-# Open in Chrome's chrome://tracing or Perfetto
+# Collect and merge all trace files, then open in chrome://tracing or Perfetto
+./tools/time-trace.sh debug
+
+# Or list trace files without opening
+./tools/time-trace.sh --list
 ```
+
+Each `.cpp` file generates a `<source>.json` trace alongside its `.o` file. `tools/time-trace.sh` merges all traces into `build/debug/time-trace-merged.json` for easy visualization.
+
+### Resize Performance Instrumentation
+
+TaskSmack has built-in resize/interaction frame-timing instrumentation that works in any build.
+Enable it by setting `TASKSMACK_TRACE_RESIZE_PERF=1` before launching:
+
+```bash
+# Linux — optimized build (recommended for realistic numbers)
+cmake --preset optimized
+cmake --build --preset optimized
+TASKSMACK_TRACE_RESIZE_PERF=1 ./build/optimized/bin/TaskSmack 2>&1 | tee /tmp/resize-trace.log
+
+# Linux — profile build (frame pointers preserved for follow-up perf/flamegraph)
+cmake --preset profile
+cmake --build --preset profile
+TASKSMACK_TRACE_RESIZE_PERF=1 ./build/profile/bin/TaskSmack 2>&1 | tee /tmp/resize-trace.log
+```
+
+```powershell
+# Windows — profile build
+cmake --preset win-profile
+cmake --build --preset win-profile
+$env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object /tmp/resize-trace.log
+```
+
+Resize the window (edges and corners) for 20–30 seconds, then close the app.
+The log contains `ResizePerf[interaction-progress|interaction-end|shutdown]` lines with
+per-phase timing for every 0.5 s window:
+
+```
+ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
+  frames=109 resizeFrames=109
+  drain avg/max=0.140/2.278 ms    ← SDL event drain
+  update avg/max=0.018/1.453 ms   ← domain model refresh (all layers)
+  render avg/max=0.572/8.798 ms   ← ImGui layout + draw call generation
+  post avg/max=0.558/0.784 ms     ← post-render (all layers)
+  swap avg/max=3.299/12.408 ms    ← GL buffer swap (includes vsync stall)
+```
+
+Frames or layers that exceed 250 ms emit additional `ResizePerfSlowFrame` /
+`ResizePerfSlowLayer` / `ResizePerfTitleBarSlowUpdate` lines for pinpoint attribution.
+
+You can also control the spdlog runtime level directly (useful for CI or scripted runs):
+
+```bash
+# Show only info+ in a release build (same effect as TASKSMACK_TRACE_RESIZE_PERF=1)
+TASKSMACK_LOG_LEVEL=info ./build/optimized/bin/TaskSmack
+
+# Full debug verbosity in an optimized build
+TASKSMACK_LOG_LEVEL=debug ./build/optimized/bin/TaskSmack
+```
+
+`TASKSMACK_LOG_LEVEL` accepts any spdlog level name: `trace`, `debug`, `info`, `warn`,
+`error`, `critical`, `off`. When both env vars are set, `TASKSMACK_LOG_LEVEL` takes
+precedence.
 
 ## Profile-Guided Optimization (PGO)
 
@@ -711,6 +878,9 @@ Key CMake options:
 |--------|---------|-------------|
 | `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable extra warnings |
 | `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
+| `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` for TaskSmack sources (Clang): per-TU compile-time flamegraphs |
+| `TASKSMACK_ENABLE_UNITY_BUILD` | `OFF` | Enable unity compilation for TaskSmack-owned targets |
+| `TASKSMACK_LINKER` | `lld` | Linker used by all TaskSmack executables: `lld`, `mold`, or `default` |
 
 To disable warnings-as-errors for local iteration:
 
@@ -724,7 +894,7 @@ Some choices are intentional (to keep the build predictable across Windows/Linux
 
 - CMake Presets are the source of truth for configurations
 - FetchContent is used for dependencies (prefer `SYSTEM` to reduce third-party warning noise)
-- Platform default C++ standard libraries are used (libstdc++ on Linux, MSVC STL on Windows)
+- Presets use libc++ on Linux and the MSVC STL on Windows
 
 Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks is tracked in GitHub issues (#60, #61, #62, #63, #64).
 
@@ -779,9 +949,12 @@ PR optimization: docs-only pull requests skip compile/test and environment-valid
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
-(via Syft SBOM generated from `CMakeLists.txt`) and Python `requirements.txt` against the
+(via Syft SBOM generated from `CMakeLists.txt`) and both Python dependency manifests against the
 [OSV vulnerability database](https://osv.dev) on pushes to `main`, pull requests targeting
 `main`, and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+Release and CI builds install GLAD's Python dependencies from the hash-locked
+`requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
+SHA-256 digest before executing it.
 
 ### Release Artifacts
 

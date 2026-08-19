@@ -302,11 +302,28 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     m_RefreshAccumulatorSec += deltaTime;
     using SecondsF = std::chrono::duration<float>;
-    const auto effectiveInterval =
-        chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, Core::Application::get().isInteractionRedrawActive());
+    const bool interactionActive = Core::Application::get().isInteractionRedrawActive();
+
+    // On the frame the interaction ends, queue an immediate refresh so the
+    // display shows fresh data as soon as the user releases the mouse/resize handle.
+    if (m_WasInteractionActive && !interactionActive)
+    {
+        m_ForceRefresh = true;
+    }
+    m_WasInteractionActive = interactionActive;
+
+    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, interactionActive);
     m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(effectiveInterval.count(), 1LL), 1000), std::memory_order_release);
     const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
     const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
+
+    // Hard-suppress synchronous probe reads during active interaction.
+    // The accumulator keeps advancing so the next refresh fires on schedule after
+    // release (or immediately via the force-refresh queued above).
+    if (interactionActive && !m_ForceRefresh)
+    {
+        return;
+    }
 
     if (m_ForceRefresh || intervalElapsed)
     {
@@ -761,7 +778,7 @@ void SystemMetricsPanel::renderOverview()
         // Align to timestamps - use process timestamps as primary if available, else system timestamps
         const auto& alignTimestamps = !procTimestamps.empty() ? procTimestamps : timestamps;
         const size_t powerCount = std::min(powerHistDouble.size(), alignTimestamps.size());
-        const size_t batteryCount = std::min(batteryHistFloat.size(), timestamps.size());
+        const size_t batteryCount = std::min(batteryHistFloat.size(), alignTimestamps.size());
         const size_t alignedCount = std::max(powerCount, batteryCount);
 
         if (alignedCount > 0)
@@ -792,6 +809,8 @@ void SystemMetricsPanel::renderOverview()
 
             std::vector<float> timeData = buildTimeAxis(alignTimestamps, alignedCount, nowSeconds);
             const auto axis = makeTimeAxisConfig(alignTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+            const size_t powerOffset = alignedCount - powerHist.size();
+            const size_t batteryOffset = alignedCount - batteryHist.size();
             // Update smoothed values
             const float targetPower = powerHist.empty() ? 0.0F : powerHist.back();
             const float targetBattery = batteryHist.empty() ? 0.0F : batteryHist.back();
@@ -849,10 +868,14 @@ void SystemMetricsPanel::renderOverview()
                     if (!powerHist.empty())
                     {
                         plotLineWithFill("Power",
-                                         timeData.data(),
+                                         timeData.data() + static_cast<std::ptrdiff_t>(powerOffset),
                                          powerHist.data(),
                                          UI::Format::checkedCount(powerHist.size()),
-                                         theme.scheme().chartCpu);
+                                         theme.scheme().chartCpu,
+                                         std::nullopt,
+                                         2.0F,
+                                         true,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                     }
 
                     // Plot battery charge on secondary Y-axis
@@ -860,10 +883,14 @@ void SystemMetricsPanel::renderOverview()
                     {
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                         plotLineWithFill("Battery",
-                                         timeData.data(),
+                                         timeData.data() + static_cast<std::ptrdiff_t>(batteryOffset),
                                          batteryHist.data(),
                                          UI::Format::checkedCount(batteryHist.size()),
-                                         theme.scheme().chartMemory);
+                                         theme.scheme().chartMemory,
+                                         std::nullopt,
+                                         2.0F,
+                                         true,
+                                         UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
                     }
 
@@ -878,14 +905,16 @@ void SystemMetricsPanel::renderOverview()
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
 
-                            if (*idxVal < powerHist.size())
+                            if (*idxVal >= powerOffset)
                             {
-                                const double powerVal = Domain::Numeric::toDouble(powerHist[*idxVal]);
+                                const size_t powerIdx = *idxVal - powerOffset;
+                                const double powerVal = Domain::Numeric::toDouble(powerHist[powerIdx]);
                                 ImGui::TextColored(theme.scheme().chartCpu, "Power: %s", UI::Format::formatPowerOrZero(powerVal).c_str());
                             }
-                            if (*idxVal < batteryHist.size() && snap.power.hasBattery)
+                            if ((*idxVal >= batteryOffset) && snap.power.hasBattery)
                             {
-                                const double batteryVal = Domain::Numeric::toDouble(batteryHist[*idxVal]);
+                                const size_t batteryIdx = *idxVal - batteryOffset;
+                                const double batteryVal = Domain::Numeric::toDouble(batteryHist[batteryIdx]);
                                 ImGui::TextColored(
                                     theme.scheme().chartMemory, "Battery: %s", UI::Format::percentCompact(batteryVal).c_str());
                             }
@@ -1069,9 +1098,33 @@ void SystemMetricsPanel::renderOverview()
                 ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
 
                 const int count = UI::Format::checkedCount(alignedCount);
-                plotLineWithFill("Threads", timeData.data(), threadData.data(), count, theme.scheme().chartCpu);
-                plotLineWithFill("Page Faults/s", timeData.data(), faultData.data(), count, theme.accentColor(3));
-                plotLineWithFill(handleLabel, timeData.data(), handleData.data(), count, theme.scheme().chartMemory);
+                plotLineWithFill("Threads",
+                                 timeData.data(),
+                                 threadData.data(),
+                                 count,
+                                 theme.scheme().chartCpu,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill("Page Faults/s",
+                                 timeData.data(),
+                                 faultData.data(),
+                                 count,
+                                 theme.accentColor(3),
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotLineWithFill(handleLabel,
+                                 timeData.data(),
+                                 handleData.data(),
+                                 count,
+                                 theme.scheme().chartMemory,
+                                 std::nullopt,
+                                 2.0F,
+                                 true,
+                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
 
                 if (ImPlot::IsPlotHovered())
                 {

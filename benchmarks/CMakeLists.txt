@@ -101,6 +101,7 @@ target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
     spdlog::spdlog_header_only
 )
+tasksmack_apply_linux_toolchain(TaskSmackBenchmarks)
 
 # Platform-specific library linking
 if(UNIX AND NOT APPLE)
