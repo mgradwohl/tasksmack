@@ -34,7 +34,7 @@ fi
 # Collect all trace JSON files.
 # Keep traces under CMakeFiles/ because Clang emits them alongside object files there.
 # Exclude compile database artifacts, CMake cache/metadata, and any previously merged output.
-mapfile -t TRACE_FILES < <(find "$BUILD_DIR" -name "*.json" -not -name "compile_commands*" \
+mapfile -t TRACE_FILES < <(find "$BUILD_DIR" -path "*/CMakeFiles/*" -name "*.json" -not -name "compile_commands*" \
     -not -name "CMakeCache*" -not -name "time-trace-merged.json" 2>/dev/null | sort)
 
 if [[ ${#TRACE_FILES[@]} -eq 0 ]]; then

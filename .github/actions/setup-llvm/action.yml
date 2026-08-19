@@ -65,6 +65,21 @@ runs:
           exit 1
         fi
 
+        # Bound transient mirror failures and fall back from the Azure mirror before
+        # llvm.sh performs its own apt update. This prevents a stalled mirror from
+        # consuming the entire job timeout.
+        sudo tee /etc/apt/apt.conf.d/80-tasksmack-network >/dev/null <<'APT_CONFIG'
+        Acquire::Retries "2";
+        Acquire::http::Timeout "15";
+        Acquire::https::Timeout "15";
+        APT_CONFIG
+        if ! sudo apt-get update; then
+          sudo sed -i \
+            's|https\?://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+          sudo apt-get update
+        fi
+
         # Verify the installer before granting it root privileges.
         LLVM_INSTALLER_SHA256='03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae'
         curl --fail --silent --show-error --location \

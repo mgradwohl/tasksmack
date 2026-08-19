@@ -18,6 +18,6 @@ jobs:
       checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: windows-latest
+      os: windows-2025
       build_type: release
       llvm-semver-version: '22.1.0'

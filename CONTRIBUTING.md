@@ -20,8 +20,10 @@ To avoid duplication and doc drift, these are the canonical docs:
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
 
-# Install Python dependencies (including pre-commit)
-pip install -r requirements.txt
+# Python 3.14+ is required.
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # Set up pre-commit hooks (recommended)
 pre-commit install
@@ -33,10 +35,11 @@ Instead of installing prerequisites manually, run:
 
 ```bash
 ./tools/setup-dev.sh          # Install all prerequisites automatically
+source .venv/bin/activate     # Use the project-local Python environment
 ./tools/check-prereqs.sh      # Verify environment after setup
 ```
 
-Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
 
 ### Automated Setup (Windows)
 
@@ -87,7 +90,7 @@ ctest --preset win-debug
 - clang-tidy and clang-format
 - ccache 4.9.1+ (recommended for faster rebuilds)
 - llvm-profdata and llvm-cov (coverage)
-- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected from system or fetched if not found
 - **Optional GPU monitoring libraries:**
   - NVIDIA drivers with NVML (libnvidia-ml.so) for NVIDIA GPU support
@@ -119,7 +122,7 @@ Install Python + jinja2:
 
 ```powershell
 winget install Python.Python.3.14
-pip install jinja2
+py -3.14 -m pip install jinja2
 ```
 
 ## Pre-commit Hooks (Recommended)
@@ -129,8 +132,9 @@ Pre-commit hooks automatically check your code before each commit, catching form
 ### Install
 
 ```bash
-# Install pre-commit (one-time setup)
-pip install pre-commit
+# Activate the project environment created during setup, then install pre-commit.
+source .venv/bin/activate
+python -m pip install pre-commit
 
 # Install the git hooks (run from project root)
 pre-commit install
@@ -139,7 +143,7 @@ pre-commit install
 Or install from requirements.txt:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 pre-commit install
 ```
 
@@ -872,7 +876,7 @@ Key CMake options:
 |--------|---------|-------------|
 | `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable extra warnings |
 | `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
-| `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` (Clang): per-TU compile-time flamegraphs |
+| `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` for TaskSmack sources (Clang): per-TU compile-time flamegraphs |
 | `TASKSMACK_ENABLE_UNITY_BUILD` | `OFF` | Enable unity compilation for TaskSmack-owned targets |
 | `TASKSMACK_LINKER` | `lld` | Linker to use: `lld`, `mold`, or `default` |
 
@@ -888,7 +892,7 @@ Some choices are intentional (to keep the build predictable across Windows/Linux
 
 - CMake Presets are the source of truth for configurations
 - FetchContent is used for dependencies (prefer `SYSTEM` to reduce third-party warning noise)
-- Platform default C++ standard libraries are used (libstdc++ on Linux, MSVC STL on Windows)
+- Presets use libc++ on Linux and the MSVC STL on Windows
 
 Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks is tracked in GitHub issues (#60, #61, #62, #63, #64).
 

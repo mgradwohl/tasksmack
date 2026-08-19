@@ -13,6 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=tools/common.sh
 source "${SCRIPT_DIR}/common.sh"
@@ -107,12 +108,9 @@ fi
 echo "==> Installing base build tools (CMake, Ninja, Python 3.14, ccache)..."
 run_apt cmake ninja-build python3.14 python3.14-venv ccache libfreetype6-dev
 
-PYTHON_ENV="/opt/tasksmack-python"
-run_cmd sudo python3.14 -m venv "$PYTHON_ENV"
-run_cmd sudo "$PYTHON_ENV/bin/python" -m pip install --upgrade pip jinja2
-run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python
-run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python3
-run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python3.14
+PYTHON_ENV="${REPO_ROOT}/.venv"
+run_cmd python3.14 -m venv "$PYTHON_ENV"
+run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip jinja2
 
 # ── Step 3: LLVM / Clang toolchain ───────────────────────────────────────────
 echo ""
@@ -173,17 +171,17 @@ if ! $MINIMAL; then
     # ── Step 7: Optional tools (pre-commit) ──────────────────────────────────
     echo ""
     echo "==> Installing pre-commit (optional but recommended)..."
-    run_cmd sudo "$PYTHON_ENV/bin/python" -m pip install pre-commit
-    run_cmd sudo ln -sf "$PYTHON_ENV/bin/pre-commit" /usr/local/bin/pre-commit
+    run_cmd "$PYTHON_ENV/bin/python" -m pip install pre-commit
 fi
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Verify environment:  ./tools/check-prereqs.sh"
-echo "  2. Configure project:   cmake --preset debug"
-echo "  3. Build:               cmake --build --preset debug"
-echo "  4. Run tests:           ctest --preset debug"
+echo "  1. Activate Python:     source .venv/bin/activate"
+echo "  2. Verify environment:  ./tools/check-prereqs.sh"
+echo "  3. Configure project:   cmake --preset debug"
+echo "  4. Build:               cmake --build --preset debug"
+echo "  5. Run tests:           ctest --preset debug"
 echo ""
 echo "For full documentation see CONTRIBUTING.md"

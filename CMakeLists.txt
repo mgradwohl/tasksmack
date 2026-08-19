@@ -224,17 +224,6 @@ else()
     message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
 endif()
 
-# Compile-time flamegraph tracing (Clang only).
-# Emits per-TU <source>.json files; visualise with chrome://tracing or tools/time-trace.sh.
-if(TASKSMACK_ENABLE_TIME_TRACE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        add_compile_options(-ftime-trace)
-        message(STATUS "Compile-time tracing enabled (-ftime-trace). Run tools/time-trace.sh after build.")
-    else()
-        message(WARNING "TASKSMACK_ENABLE_TIME_TRACE requires Clang. Ignoring on ${CMAKE_CXX_COMPILER_ID}.")
-    endif()
-endif()
-
 # Linker selection on Unix.
 # TASKSMACK_LINKER controls which linker is used: lld (default), mold (faster incremental), default (system).
 # On Windows the linker is always lld-link (set via CMAKE_LINKER_TYPE=LLD in CMakePresets.json).
@@ -343,6 +332,12 @@ set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering exte
 
 FetchContent_MakeAvailable(SDL3)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
+
+# Prefer the project-local environment created by tools/setup-dev.sh without
+# overriding the machine's system Python.
+if(NOT Python3_EXECUTABLE AND EXISTS "${CMAKE_SOURCE_DIR}/.venv/bin/python")
+    set(Python3_EXECUTABLE "${CMAKE_SOURCE_DIR}/.venv/bin/python" CACHE FILEPATH "Python interpreter")
+endif()
 
 # Early check for GLAD requirements (Python3 + jinja2)
 # GLAD generation uses jinja2 templates and fails with cryptic errors if not installed
@@ -713,6 +708,16 @@ add_executable(TaskSmack WIN32
     ${TASKSMACK_HEADERS}
 )
 
+# Compile-time flamegraph tracing is limited to TaskSmack sources so FetchContent
+# dependencies do not emit unrelated traces or incur tracing overhead.
+if(TASKSMACK_ENABLE_TIME_TRACE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(TaskSmack PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-ftime-trace>")
+        message(STATUS "Compile-time tracing enabled (-ftime-trace). Run tools/time-trace.sh after build.")
+    else()
+        message(WARNING "TASKSMACK_ENABLE_TIME_TRACE requires Clang. Ignoring on ${CMAKE_CXX_COMPILER_ID}.")
+    endif()
+endif()
 # Embed custom manifest on Windows (for DPI awareness and OS compatibility)
 if(WIN32 AND EXISTS ${CMAKE_BINARY_DIR}/app.manifest)
     target_link_options(TaskSmack PRIVATE

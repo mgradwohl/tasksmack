@@ -9,6 +9,7 @@
 /release/
 /optimized/
 /.cache/
+/.venv/
 
 # CodeQL build artifacts
 /_codeql_build_dir/

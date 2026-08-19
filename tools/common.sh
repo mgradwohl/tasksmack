@@ -85,15 +85,16 @@ _python_meets_min() {
     (( major > 3 || (major == 3 && minor >= 14) ))
 }
 
-# Find the first Python >= 3.14 interpreter in PATH.
-# Tries 'python3' then 'python' to handle pyenv/custom installs where either
-# may point to the qualifying version.
+# Find the first Python >= 3.14 interpreter in the project venv or PATH.
 # Prints the resolved filesystem path on success; returns 1 if no qualifying interpreter found.
 find_python() {
     local exe
-    for exe in python3 python; do
+    local common_dir repo_root
+    common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_root="$(cd "${common_dir}/.." && pwd)"
+    for exe in "${repo_root}/.venv/bin/python" python3.14 python3 python; do
         if _python_meets_min "$exe"; then
-            type -P "$exe"
+            command -v "$exe"
             return 0
         fi
     done

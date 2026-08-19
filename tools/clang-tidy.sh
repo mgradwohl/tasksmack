@@ -125,7 +125,7 @@ if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
         "$COMPILE_COMMANDS" > "$COMPILE_COMMANDS_TIDY"
 fi
 
-COMPILE_COMMANDS_IN_USE="$COMPILE_COMMANDS_TIDY"
+COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
@@ -185,13 +185,13 @@ run_clang_tidy() {
         --config-file="$CONFIG_FILE" \
         --header-filter="$HEADER_FILTER_REGEX" \
         --exclude-header-filter="$EXCLUDE_HEADER_FILTER_REGEX" \
-        -p "$COMPILE_COMMANDS_IN_USE" \
+        -p "$COMPILE_COMMANDS_DIR_IN_USE" \
         --extra-arg=-std=c++23 \
         --extra-arg=-Wno-unknown-warning-option \
         "$file" 2>&1
 }
 export -f run_clang_tidy
-export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_IN_USE
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_DIR_IN_USE
 
 # Run clang-tidy in parallel
 HAS_ERRORS=0

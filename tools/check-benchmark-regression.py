@@ -95,8 +95,12 @@ def main() -> int:
         base_bm = baseline[name]
 
         # Prefer real_time, fall back to cpu_time
-        cur_time  = cur_bm.get("real_time")  or cur_bm.get("cpu_time")
-        base_time = base_bm.get("real_time") or base_bm.get("cpu_time")
+        cur_time = cur_bm.get("real_time")
+        if cur_time is None:
+            cur_time = cur_bm.get("cpu_time")
+        base_time = base_bm.get("real_time")
+        if base_time is None:
+            base_time = base_bm.get("cpu_time")
         cur_unit = cur_bm.get("time_unit", "ns")
         base_unit = base_bm.get("time_unit", "ns")
 

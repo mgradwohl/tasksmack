@@ -73,7 +73,7 @@ fi
 for t in "${TARGETS[@]}"; do
     if [[ -e "$t" ]]; then
         if $DRY_RUN; then
-            echo "[dry-run] rm -rf $t"
+            printf '[dry-run] rm -rf "%s"\n' "$t"
         else
             echo "Removing: $t"
             rm -rf "$t"

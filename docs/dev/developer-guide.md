@@ -12,14 +12,14 @@ For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Inst
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Clang + lld | 22 | `sudo apt install clang-22 lld-22` |
-| libc++ / libc++abi | 22 | `sudo apt install libc++-22-dev libc++abi-22-dev` |
-| clang-tidy | 22 | `sudo apt install clang-tidy-22` |
-| clang-format | 22 | `sudo apt install clang-format-22` |
-| CMake | 3.29+ (latest stable 3.x recommended) | `sudo apt install cmake` |
+| Clang + lld | 22 | `./tools/setup-dev.sh` |
+| libc++ / libc++abi | 22 | `./tools/setup-dev.sh` |
+| clang-tidy | 22 | `./tools/setup-dev.sh` |
+| clang-format | 22 | `./tools/setup-dev.sh` |
+| CMake | 3.29+ (latest stable 3.x recommended) | `./tools/setup-dev.sh` |
 | Ninja | any | `sudo apt install ninja-build` |
 | ccache | 4.9.1+ | `sudo apt install ccache` |
-| Python 3 + jinja2 | 3.x | `sudo apt install python3 python3-jinja2` |
+| Python + jinja2 | 3.14+ | `./tools/setup-dev.sh` |
 | FreeType | 2.13+ | `sudo apt install libfreetype6-dev` |
 | llvm-profdata + llvm-cov | 22 | `sudo apt install llvm-22` |
 
@@ -31,13 +31,15 @@ For build-system details (presets, sanitizers, benchmarks, PGO), see [Build Inst
 # Intel: no package needed — the probe reads /sys/class/drm via sysfs (kernel DRM must be available)
 ```
 
-**Full one-liner (Ubuntu/Debian):**
+**Automated Ubuntu setup:**
 
 ```bash
-sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 \
-    libc++-22-dev libc++abi-22-dev cmake ninja-build ccache \
-    python3 python3-jinja2 libfreetype6-dev
+./tools/setup-dev.sh
+source .venv/bin/activate
+./tools/check-prereqs.sh
 ```
+
+The script configures the signed upstream repositories needed for LLVM 22, CMake 3.29+, and Python 3.14; Ubuntu 24.04's default repositories do not provide all declared minimum versions.
 
 ### Windows
 
@@ -46,7 +48,7 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 \
 | LLVM/Clang 22 | [releases.llvm.org](https://releases.llvm.org/) — set `LLVM_ROOT` env var |
 | CMake 3.29+ | `winget install Kitware.CMake` |
 | Ninja | `winget install Ninja-build.Ninja` |
-| Python 3 + jinja2 | `winget install Python.Python.3.14` then `pip install jinja2` |
+| Python 3.14+ with jinja2 | `winget install Python.Python.3.14` then `py -3.14 -m pip install jinja2` |
 | ccache (optional) | `winget install ccache` |
 
 ---
@@ -58,8 +60,10 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 \
 git clone https://github.com/mgradwohl/tasksmack.git
 cd tasksmack
 
-# 2. Install Python dependencies (includes pre-commit)
-pip install -r requirements.txt
+# 2. Create a project-local Python 3.14 environment and install dependencies
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
 # 3. Install git pre-commit hooks (strongly recommended)
 pre-commit install
