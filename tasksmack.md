@@ -1,842 +1,191 @@
-# TaskSmack Architecture Overview
+# TaskSmack Architecture
 
-TaskSmack is a cross-platform system monitor and task manager that delivers a fast, ImGui-driven UI on top of accurate, high-frequency system metrics.
+This document is the canonical description of TaskSmack's architecture and current engineering direction. User-facing behavior belongs in the [User Guide](docs/guide/user-guide.md), shipped features in [completed-features.md](completed-features.md), and developer commands in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Goals
+## Design Goals
 
-- Immediate-mode UI built with Dear ImGui (docking + multi-viewport)
-- OpenGL rendering via SDL3 windowing
-- Accurate metrics that stay responsive under load
-- Strict separation between platform probes, data modeling, UI, and rendering
-- Scalability to thousands of processes
-- Extensibility without premature complexity
+- Keep operating-system access isolated and capability-aware.
+- Derive rates and percentages from raw counters in testable domain models.
+- Publish stable snapshots that UI code can render without touching platform APIs.
+- Keep expensive process and GPU collection off the render path.
+- Bound history and cache growth during long-running sessions.
+- Preserve a single application target without sacrificing module boundaries.
 
-## Inspirations and References
+## Layer Model
 
-- [Process Explorer (Sysinternals / Microsoft Learn)](https://learn.microsoft.com/en-us/sysinternals/downloads/process-explorer)
-- [System Informer](https://www.systeminformer.com/)
-- [System Informer GitHub](https://github.com/winsiderss/systeminformer)
-- [System Explorer (TechSpot archive)](https://www.techspot.com/downloads/5015-system-explorer.html)
-- [Glances (GitHub)](https://github.com/nicolargo/glances)
-- [Glances Documentation](https://glances.readthedocs.io/en/latest/quickstart.html)
-- [btop++ (GitHub)](https://github.com/aristocratos/btop)
-- [iStat Menus (Bjango)](https://bjango.com/mac/istatmenus/)
+```mermaid
+flowchart TD
+    OS[Operating-system APIs]
+    Platform[Platform<br/>probes, actions, paths]
+    Domain[Domain<br/>models, snapshots, history]
+    App[App<br/>panels and composition]
+    UI[UI<br/>ImGui and ImPlot helpers]
+    Core[Core<br/>application, window, events]
 
-## High-Level Architecture
-
-```
-[ Platform Probes ]  -->  [ Domain Snapshots ]  -->  [ UI Layers ]
-        ^                         ^                       |
-        |                         |                       v
-     OS APIs               Data Modeling         OpenGL Renderer
-                                                        |
-                                                     SDL3
+    OS --> Platform
+    Platform --> Domain
+    Domain --> App
+    Core --> App
+    UI --> App
+    Platform -. construction-time wiring .-> App
+    Platform -. path provider only .-> Core
 ```
 
-- Platform probes are stateless readers of OS counters.
-- Panels poll probes synchronously on the main thread via `onUpdate()`; `BackgroundSampler` is implemented but not yet active.
-- Domain code transforms counters into snapshots and maintains history.
-- UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
-- OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
+The diagram shows runtime data flow. Compile-time dependencies are constrained more tightly: Domain depends on Platform interfaces, App is the composition root, and UI never depends on Platform.
 
-## Lessons from the Reference Architecture
+### `src/Platform`
 
-### Core Library vs. Application Executable
+- Declares probe and action interfaces.
+- Implements Linux and Windows access to process, system, disk, GPU, power, networking, and path APIs.
+- Returns cumulative counters and capability flags rather than UI-ready rates.
+- Contains no Domain, Core, UI, or App dependencies.
 
-- In this repo today, TaskSmack is built as a single application target with layered modules under `src/`.
-- The long-term goal is still to keep the platform/domain math reusable and testable, even if it remains in one binary.
-- **Takeaway:** keep OS probes, domain math, and UI responsibilities separated so splitting into libraries later is low-risk.
+### `src/Domain`
 
-### Layer-Based Composition
+- Owns `ProcessModel`, `SystemModel`, `StorageModel`, `GPUModel`, immutable snapshots, and bounded history.
+- Converts cumulative counters into deltas, percentages, and rates.
+- Handles counter rollback, PID reuse, sanity limits, and history retention.
+- Depends only on Platform interfaces and the C++ standard library.
 
-- Layers expose `onAttach`, `onDetach`, `onUpdate(delta)`, `onRender`, `onPostRender`.
-- Layers update/render sequentially; input is handled via ImGui input state.
-- **Takeaway:** model TaskSmack panes (processes, metrics, details) as panels, hosted/managed by a top-level shell layer on the layer stack.
+### `src/Core`
 
-### Window Owns OS Events, Application Routes Them
+- Owns application startup, the main loop, the SDL3 window, events, and shutdown.
+- Owns `PathService`, the only caller of `Platform::makePathProvider()`.
+- Confines window-system and OpenGL context work to Core/UI boundaries.
 
-- SDL3 delivers events via `SDL_PollEvent()`.
-- Core processes SDL3 events each frame and passes them to ImGui via the SDL3 backend.
-- Layers/panels react via ImGui input state rather than a custom event bus.
-- **Takeaway:** keep SDL3-specific window/input plumbing inside Core; keep the rest of the system platform-agnostic.
+### `src/UI`
 
-## Repository Layout
+- Owns Dear ImGui and ImPlot integration, themes, icons, shared widgets, charts, and formatting.
+- May consume Domain snapshots and Core path services.
+- Never creates probes or calls operating-system APIs.
 
-```
-TaskSmack/
-  CMakeLists.txt
-  CMakePresets.json
-  assets/
-  src/
-    App/
-    Core/
-    Domain/
-    Platform/
-    UI/
-    main.cpp
-  tests/
-  tools/
-```
+### `src/App`
 
-## Module Responsibilities
+- Owns the shell, settings, title bar, panels, and user configuration.
+- Creates Platform probes and injects them into Domain models.
+- Coordinates sampling cadence, snapshot caching, selection, and rendering.
+- Is the only general composition root for `Platform::make*Probe()` and process-action factories.
 
-### src/Core
+## Dependency Rules
 
-- Owns the application loop and layer stack.
-- Creates and manages the SDL3 window (and thereby the OpenGL context).
-- Provides time utilities, logging bootstrap, and shutdown coordination.
-- Contains zero platform metrics code and only minimal OpenGL usage for context creation.
+| From | Allowed dependencies |
+|------|----------------------|
+| Platform | OS APIs and standard/third-party utility libraries |
+| Domain | Platform interfaces |
+| Core | Domain; Platform path provider through `PathService`; SDL3/OpenGL |
+| UI | Domain; Core path access; ImGui/ImPlot/OpenGL |
+| App | Platform factories, Domain, Core, and UI |
 
-### src/UI
+Hard rules:
 
-- Configures Dear ImGui and ImPlot (contexts, styling, ini persistence).
-- Hooks the ImGui SDL3 and OpenGL3 backends.
-- Hosts shared widgets, tables, and chart components.
-- Consumes immutable domain snapshots plus renderer-provided frame info.
-- Contains no direct OS calls outside the ImGui backends.
+- Platform probes return raw counters; Domain computes rates and percentages.
+- Domain never includes Platform implementations or calls Platform factories.
+- `Platform::makePathProvider()` is called only by `Core::PathService`.
+- UI and non-panel App code do not include `Platform/Factory.h`.
+- OpenGL calls remain in Core and UI.
 
-### src/App
+## Sampling and Publication
 
-- Owns application panels and UI composition.
-- Wires Domain models into UI rendering; drives refresh via panel `onUpdate()`.
-- Implements panel lifecycle (`onAttach`, `onDetach`, `onUpdate`, `render`).
+Sampling is deliberately mixed according to workload:
 
-### src/Domain
+1. `ProcessesPanel::onAttach()` creates a process probe, performs one synchronous seed read, and transfers probe ownership to `Domain::BackgroundSampler`.
+2. `BackgroundSampler` uses `std::jthread` and `std::stop_token` to enumerate processes at the configured interval.
+3. Its callback calls `ProcessModel::updateFromCounters()`, which computes process snapshots under synchronization and increments a snapshot version.
+4. `ProcessesPanel` copies snapshots only when that version changes, avoiding render-frame deep copies.
+5. `SystemMetricsPanel` refreshes system and storage models from its main-thread `onUpdate()` cadence.
+6. GPU refresh runs on a dedicated `std::jthread`; the panel reads the latest GPU model state.
+7. App rendering consumes cached snapshots and histories through ImGui/ImPlot.
 
-- Defines immutable snapshot types representing system state.
-- Implements history buffers with decimation (`History<T>` ring buffers).
-- Owns `ProcessModel`, `SystemModel`, and rate calculations derived from counter deltas.
-- Enforces a cross-platform metrics contract (CPU% semantics, PID reuse handling, delta-based rates).
-- Deterministic and unit-testable; no SDL3, OpenGL, or OS calls.
+The default interval is 1 second and can be configured from 100 ms to 5 seconds. History defaults to 5 minutes and is bounded from 10 seconds to 30 minutes. Shared defaults and clamps live in `src/Domain/SamplingConfig.h`.
 
-### src/Platform
+### Process Identity and Rates
 
-- Declares probe interfaces (`IProcessProbe`, `ISystemProbe`, `INetworkProbe`, `IDiskProbe`, ...).
-- Provides platform implementations under `windows/` and `linux/`.
-- Provides stateless reads of raw counters from OS APIs.
-- Produces raw measurements only; domain transforms them into UI-ready data.
+Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
 
-## Dependency Direction
-
-```
-App/UI
-  ↓
-Core
-  ↓
-Domain
-  ↑
-Platform
-  ↑
-OS APIs
-```
-
-Rules:
-- Domain depends on nothing else.
-- UI never calls platform APIs directly; use `Core::Application::get().paths()` for path resolution.
-- Platform never depends on UI or renderer.
-- OpenGL usage is confined to Core/UI only.
-
-## Composition Root and Allowed Dependency Matrix
-
-App panels serve as the **composition root**: they are the only place where Platform probes are
-instantiated and injected into Domain models. This is intentional and correct—only App panels
-have enough context to pair the right Platform implementation with the right Domain model.
-
-The key distinction is **construction-time wiring** (allowed in App panels) vs **runtime calls**
-(which must respect the layering rules):
-
-| Layer | May call at construction / `onAttach` | May call at runtime |
-|---|---|---|
-| Platform | OS APIs | OS APIs |
-| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
-| Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
-| App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
-| UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |
-
-**Rules derived from the matrix:**
-
-- `Platform::makePathProvider()` is called **only** inside `Core::PathService` (owned by `Application`).
-  All path resolution elsewhere goes through `Core::Application::get().paths()`.
-- `Platform::make*Probe()` and `Platform::makeProcessActions()` are called **only** from App panel
-  `onAttach` / constructors (the composition root), never from UI rendering code or Domain.
-- No new `#include "Platform/Factory.h"` should appear in `UI/` or non-panel `App/` code.
-
-## UI Layer Model
-
-- **ShellLayer:** docking root, main menu bar, global settings (refresh cadence, theme, column visibility), shared selection state.
-- **ProcessesPanel:** process list with sorting and details selection.
-- **ProcessDetailsPanel:** detailed view for the currently selected process.
-- **SystemMetricsPanel:** plots and timelines backed by domain history.
-
-## Sampling and Snapshot Pipeline
-
-1. **Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals (default 1 second).
-2. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
-3. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
-
-> **Note:** `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but not yet used. It is a future option to move probe enumeration off the main thread if UI responsiveness becomes a concern on systems with thousands of processes.
-
-## Process Scalability Guidance
-
-- Maintain a stable cache keyed by PID + start time to cope with PID reuse.
-- Build hierarchical process trees incrementally or during sampling, not every frame on the UI thread.
-- Perform sorting and filtering off the UI thread and publish ready-to-render view models.
-
-## OpenGL + SDL3 Integration Details
-
-- SDL3 handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
-- OpenGL core profile (3.3+); only the renderer and ImGui backend issue GL calls.
-- GLAD provides the OpenGL function loader (generated at build time via Python + jinja2).
-- ImGui integrations: `imgui_impl_sdl3` for events and `imgui_impl_opengl3` for rendering.
-- SDL3 events are polled each frame; input is handled via ImGui input state.
-
-## Platform Strategy
-
-### Windows
-- Processes and CPU: `NtQuerySystemInformation` (SystemProcessInformation).
-- Disk and network: begin with simpler APIs, plan for ETW kernel providers for fidelity.
-- Services: SCM APIs and registry queries.
-- GPU: DXGI for enumeration, NVML for NVIDIA GPU metrics; per-process GPU memory and utilization via NVML's `DeviceGetComputeRunningProcesses`/`DeviceGetGraphicsRunningProcesses` (NVIDIA) or PDH Performance Counters (all vendors).
-
-### Linux
-- Processes and CPU: `/proc/stat`, `/proc/[pid]/stat`, `/proc/[pid]/io`, `/proc/meminfo`.
-- Networking: `/proc/net/*` for a baseline; Netlink (`NETLINK_INET_DIAG`) for high-fidelity connections.
-- Services: systemd D-Bus if parity with Windows services is desired.
-- GPU: DRM/sysfs for temperatures, NVML for NVIDIA hardware, ROCm SMI for AMD GPUs.
-
-Each platform implements the same probe interfaces; automated tests ensure contract compliance.
-
-## Platform-Specific Capabilities and Limitations
-
-TaskSmack uses a capability-based system to handle platform differences gracefully. The UI automatically adapts based on what each OS provides.
-
-### Windows Capabilities
-
-**Supported:**
-- Per-core CPU metrics (via `NtQuerySystemInformation`)
-- Process enumeration with full details (PID, name, command line, user, memory, I/O counters)
-- Process CPU times (user + system)
-- Memory metrics (total, available, free, swap)
-- System uptime and boot timestamp
-- CPU base frequency (from registry)
-- Process priority (mapped to nice-like values: -20 to +19)
-- Process termination and killing
-- Thread counts per process
-
-**Not Supported (OS limitations):**
-- **I/O wait time** (`iowait`): Windows doesn't expose this metric; it's a Linux-specific concept
-- **Steal time** (`steal`): Only meaningful in virtualized environments with specific hypervisors
-- **Load average**: Windows has no equivalent to Unix load average (1/5/15 minute averages)
-- **Process stop/continue**: Windows doesn't have SIGSTOP/SIGCONT equivalents
-- **Shared memory per process**: Windows doesn't expose shared memory pages the same way Linux `/proc/[pid]/statm` does
-
-### Linux Capabilities
-
-**Supported:**
-- All Windows capabilities above, plus:
-- **I/O wait time** (`iowait`): Time spent waiting for I/O to complete
-- **Steal time** (`steal`): Time stolen by hypervisor for other VMs (virtualization-aware)
-- **Load average**: 1, 5, and 15 minute load averages from `/proc/loadavg`
-- **Process stop/continue**: Full signal support including SIGSTOP, SIGCONT
-- **Shared memory per process**: From `/proc/[pid]/statm`
-- **Process I/O counters**: Requires root access to `/proc/[pid]/io`
-
-**Limitations:**
-- Process I/O counters (`readBytes`, `writeBytes`) require root/elevated privileges to access `/proc/[pid]/io`
+- CPU percentage uses process CPU delta divided by total system CPU delta.
+- Disk I/O and page-fault rates use consecutive sample deltas.
+- Per-process network rates are lifetime averages from the first observed baseline.
+- System and interface network rates use consecutive sample deltas.
+- GPU data is merged into process snapshots when the platform can attribute usage.
 
 ### Capability Reporting
 
-Each probe reports its capabilities via the `capabilities()` method:
+Probe capabilities describe whether fields such as I/O, command line, user, priority, network, GPU, and process status are available. Panels use those flags to hide unsupported columns and actions. Reduced-privilege detection can surface an elevation notice when elevation would restore data.
 
-```cpp
-// Example: Check what the current platform supports
-auto systemProbe = Platform::makeSystemProbe();
-auto caps = systemProbe->capabilities();
+Capability absence is not an error. A supported platform may still omit metrics because of kernel configuration, permissions, hardware, drivers, or optional vendor libraries.
 
-if (caps.hasLoadAvg) {
-    // Display load average (Linux only)
-}
+## Platform Strategy
 
-if (caps.hasIoWait) {
-    // Display I/O wait percentage (Linux only)
-}
-```
+### Linux
 
-The UI uses these capabilities to:
-- Hide unavailable columns/metrics automatically
-- Show platform-appropriate tooltips and help text
-- Avoid attempting unsupported operations (e.g., process stop on Windows)
+| Area | Primary sources |
+|------|-----------------|
+| Processes and CPU | `/proc/stat`, `/proc/[pid]/stat`, `/proc/[pid]/status`, `/proc/[pid]/io` |
+| Memory | `/proc/meminfo`, process `statm`/status data |
+| Network | `/proc/net/dev`, Netlink `INET_DIAG`, `/proc/[pid]/fd` ownership mapping |
+| Storage | Linux block-device and filesystem interfaces |
+| Power | `/sys/class/power_supply` |
+| GPU | NVML for NVIDIA, ROCm SMI for AMD, DRM/sysfs for Intel and generic discovery |
+| Process actions | POSIX signals, `setpriority`, affinity APIs |
 
-## Plugin Strategy (Deferred)
+Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network attribution requires Linux 4.2+ Netlink support.
 
-- Use a C ABI surface (`extern "C"`) with versioned function tables and plain structs.
-- Support serialized payloads (msgpack/json) if ABI-neutral data exchange is required.
-- Consider out-of-process plugins over IPC for high isolation.
-- Avoid exposing a C++ ABI until a compelling use case appears.
+### Windows
 
-## Security and Privacy Considerations
+| Area | Primary sources |
+|------|-----------------|
+| Processes and CPU | `NtQuerySystemInformation` and process APIs |
+| Memory | Windows memory and process-information APIs |
+| Network | interface tables and TCP EStats |
+| Storage and power | Windows system APIs |
+| GPU | DXGI, NVML, and PDH |
+| Process actions | `TerminateProcess`, priority classes, affinity APIs |
 
-- **Least privilege:** request elevation only when required, provide clear prompts and audit logs.
-- **Sensitive actions:** confirm disruptive operations (handle closing, driver/service edits).
-- **Data handling:** disable telemetry by default; keep remote access opt-in and local-only unless reconfigured.
-- **Hardening:** sandbox plugin execution, default-deny risky operations, plan for signed update channels.
+Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
 
-## Feature Roadmap
+Only Linux and Windows are implemented. Windows builds target Windows 10 or later.
 
-1. **Foundation**
-   - SDL3 + ImGui docking shell
-   - Metrics contract implementation and main-loop-driven refresh
-   - Basic CPU/memory metrics and process list on a single platform
-2. **Core Monitoring**
-   - Per-process CPU, memory, IO metrics with histories
-   - Network interface stats and secondary platform support
-3. **Controls and Polish**
-   - Process controls (kill, priority adjustments)
-   - GPU metrics (best effort per vendor)
-   - Config file integration (toml++) and theming
-Items 1–3 are shipped (see [completed-features.md](completed-features.md)). Remaining work:
+## Application and Rendering Lifecycle
 
-4. **Advanced Features**
-   - Services and startup managers
-   - Plugin system enablement
-   - Remote API (read-only first)
-   - Handle/DLL inspection
-   - Per-process GPU improvements (multi-GPU LUID matching)
-   - Windows per-process network tracking (GetPerTcpConnectionEStats / ETW)
+`Core::Application` drains SDL3 events, updates layers, renders one frame, and presents it. Panels react to application events and ImGui input rather than polling SDL directly. Resize handling batches queued events before rendering and updates the viewport from framebuffer-size events.
 
-## Stack
+The application throttles idle and minimized rendering. Domain and Platform code remain graphics-agnostic.
 
-- Windowing/rendering: SDL3 + OpenGL (GLAD) + Dear ImGui (docking) + ImPlot
-- Concurrency: `std::jthread` with `std::stop_token`
-- Data model: immutable snapshots with deque-backed histories
-- Configuration: toml++
-- Logging: spdlog
-- Testing: Google Test
+## Configuration and Paths
 
-This structure keeps TaskSmack UI-first, snapshot-driven, and cleanly layered, delivering a fast, accurate task manager while leaving room for future extensions.
+`App::UserConfig` persists TOML settings through platform-aware paths:
+
+- Linux: `~/.config/tasksmack/config.toml`
+- Windows: `%APPDATA%\TaskSmack\config.toml`
+
+Configuration includes theme, font size, process columns, sampling interval, history duration, platform cache intervals, chart behavior, window state, and privilege-notice preference. User themes live in the adjacent `themes/` directory.
 
 ## Logging
 
-TaskSmack uses [spdlog](https://github.com/gabime/spdlog) for all structured log output.
-The following log-level semantics are enforced across all layers:
+TaskSmack uses spdlog with these conventions:
 
-| Level      | Intended use                                                                        | Example                                            |
-|------------|-------------------------------------------------------------------------------------|----------------------------------------------------|
-| `TRACE`    | Per-frame or per-probe data — never enabled in normal operation                     | Raw CPU tick counter read from `/proc/stat`        |
-| `DEBUG`    | Lifecycle and state-change diagnostics — never unthrottled per-frame output         | `"Refreshed ProcessModel: 148 processes in 3 ms"`  |
-| `INFO`     | Application lifecycle — startup, shutdown, window open/close                       | `"Window created 1280×800"`                        |
-| `WARN`     | Graceful degradation — a probe or feature is unavailable but the app continues     | `"NVML unavailable; GPU monitoring disabled"`      |
-| `ERROR`    | Non-fatal failure — a probe read failed for this cycle; retry next refresh          | `"read /proc/42/io: permission denied"`            |
-| `CRITICAL` | Unrecoverable failure — app must exit                                              | `"SDL_Init failed: out of memory"`                  |
+| Level | Use |
+|-------|-----|
+| `TRACE` | High-volume probe or frame diagnostics |
+| `DEBUG` | Lifecycle details, refresh diagnostics, and state changes |
+| `INFO` | Application lifecycle and major configuration changes |
+| `WARN` | Graceful degradation or unavailable optional capabilities |
+| `ERROR` | Recoverable failures that prevent a sample or operation |
+| `CRITICAL` | Unrecoverable startup or runtime failure |
 
-**Rules:**
-- Platform probes use `ERROR` for I/O failures and `WARN` for missing optional capabilities.
-- Domain models use `DEBUG` for refresh events; `WARN` when a capability is disabled at runtime.
-- UI code may use `DEBUG` for initialization or throttled state changes; render paths never emit unthrottled `DEBUG` or `TRACE` output.
-- Tests run with spdlog silenced (level `off`) via `TestLogSuppressor` to keep `--output-on-failure` clean.
+Render paths must not emit unthrottled logs. Repeated background-sampling failures are throttled, and tests silence routine logging.
 
-## Archived: Process Enumeration Implementation Plan
+## Testing Boundaries
 
-This section was originally captured in a now-removed `process.md` file as a detailed implementation plan.
+- Platform contract tests verify probe and action semantics on each operating system.
+- Domain tests inject mocks to verify calculations, history, rollback handling, and threading.
+- App and UI tests cover configuration, panels, widgets, and formatting.
+- Integration tests exercise cross-layer wiring and real platform probes.
 
-**Note:** this appendix is historical and is not guaranteed to match the current code. Treat the actual source in `src/Platform/`, `src/Domain/`, and `src/App/` as canonical.
+The test and benchmark commands are documented only in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Design Philosophy
+## Current Engineering Direction
 
-This plan proposed using **probe interfaces** that collect **raw counters**, with the
-**domain layer** computing deltas and rates. This separates OS-specific code from math/logic, enabling:
+The core monitoring, process-control, GPU, network, storage, power, configuration, and theming paths are implemented. Future work should extend the existing contracts rather than bypass them. Candidate areas include service/startup management, handle and module inspection, a read-only remote API, and a versioned plugin boundary.
 
-- Unit-testable domain calculations
-- Clean platform boundary (no `#ifdef` soup)
-- Consistent semantics across OSes
-- Flexible smoothing/windowing options
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         UI Layer                                │
-│  (reads immutable snapshots, never calls probes directly)       │
-└─────────────────────────────────────────────────────────────────┘
-                ▲
-                │ reads
-┌─────────────────────────────────────────────────────────────────┐
-│                       Domain Layer                              │
-│  - Snapshot structs (immutable, POD-like)                       │
-│  - Calculators (compute deltas, rates, percentages)             │
-│  - History buffers (ring buffers with decimation)               │
-└─────────────────────────────────────────────────────────────────┘
-                ▲
-                │ raw counters
-┌─────────────────────────────────────────────────────────────────┐
-│                      Platform Layer                             │
-│  - Probe interfaces (ICpuProbe, IProcessProbe, etc.)            │
-│  - Platform implementations (LinuxCpuProbe, WindowsCpuProbe)    │
-│  - Factory function (make_platform_probes())                    │
-└─────────────────────────────────────────────────────────────────┘
-                ▲
-                │ OS APIs
-┌─────────────────────────────────────────────────────────────────┐
-│  Linux: /proc/*, sysfs      │  Windows: NtQuery*, ToolHelp32    │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Key Design Decisions
-
-#### 1. Probes Return Raw Counters, Not Final Values
-
-**Why:** CPU% and rates require deltas over time. Probes should be stateless readers; domain owns the math.
-
-```cpp
-// WRONG: Probe computes final value (hides state, untestable math)
-virtual double getCpuPercent() = 0;
-
-// RIGHT: Probe returns raw counters (domain computes from deltas)
-virtual CpuCounters readCounters() = 0;
-```
-
-#### 2. Many Small Probes (Not One God-Object)
-
-Each metric group gets its own probe interface:
-
-- `IProcessProbe` - process enumeration
-- `ICpuProbe` - CPU counters (total + per-core)
-- `IMemoryProbe` - memory counters
-- `INetProbe` - network interface stats (future)
-- `IDiskProbe` - disk I/O stats (future)
-
-**Pros:** Clear responsibilities, easy to stub in tests, incremental implementation.
-
-#### 3. Capability Reporting
-
-OSes expose different data. Probes report what they support:
-
-```cpp
-struct ProcessCapabilities {
-  bool hasIoCounters = false;
-  bool hasThreadCount = false;
-  bool hasStartTime = true;
-};
-
-virtual ProcessCapabilities capabilities() const = 0;
-```
-
-UI degrades gracefully (hides unavailable columns).
-
-#### 4. Factory Pattern for Platform Selection
-
-Single `#ifdef` location:
-
-```cpp
-// Platform/Factory.h
-std::unique_ptr<IProcessProbe> makeProcessProbe();
-std::unique_ptr<ICpuProbe> makeCpuProbe();
-
-// Platform/Linux/Factory.cpp (compiled on Linux)
-std::unique_ptr<IProcessProbe> makeProcessProbe() {
-  return std::make_unique<LinuxProcessProbe>();
-}
-
-// Platform/Windows/Factory.cpp (compiled on Windows)
-std::unique_ptr<IProcessProbe> makeProcessProbe() {
-  return std::make_unique<WindowsProcessProbe>();
-}
-```
-
-#### 5. Explicit Sampling Model
-
-The proposed sampler runs on a background thread at a configured interval (e.g., 1 second):
-
-```
-Sampler Thread                    Domain                      UI Thread
-   │                              │                             │
-   │──── readCounters() ─────────►│                             │
-   │                              │── compute(prev, cur) ──────►│
-   │                              │   publish(snapshot)         │
-   │                              │                             │
-   │        (1 second later)      │                             │
-   │──── readCounters() ─────────►│                             │
-   │                              │── compute(prev, cur) ──────►│
-   │                              │   publish(snapshot)         │
-```
-
-### Phase 1: Process Enumeration (This Implementation)
-
-#### File Structure
-
-```
-src/
-├── Platform/
-│   ├── ProcessTypes.h           # Raw counter structs
-│   ├── IProcessProbe.h          # Probe interface
-│   ├── Factory.h                # Factory declarations
-│   ├── Linux/
-│   │   ├── LinuxProcessProbe.h
-│   │   ├── LinuxProcessProbe.cpp
-│   │   └── Factory.cpp
-│   └── Windows/
-│       ├── WindowsProcessProbe.h
-│       ├── WindowsProcessProbe.cpp
-│       └── Factory.cpp
-├── Domain/
-│   ├── ProcessSnapshot.h        # Immutable snapshot struct
-│   ├── ProcessModel.h           # Calculator + cache
-│   └── ProcessModel.cpp
-└── App/
-  ├── ShellLayer.h             # (modified)
-  └── ShellLayer.cpp           # (modified)
-```
-
-#### Platform Layer: Raw Counters
-
-```cpp
-// Platform/ProcessTypes.h
-namespace Platform {
-
-// Raw counters from OS - no computed values
-struct ProcessCounters {
-  int32_t pid = 0;
-  int32_t parentPid = 0;
-  std::string name;
-  std::string state;           // Raw state char/string from OS
-  uint64_t startTimeTicks = 0; // For PID reuse detection
-
-  // CPU time (cumulative ticks or jiffies)
-  uint64_t userTime = 0;
-  uint64_t systemTime = 0;
-
-  // Memory (bytes)
-  uint64_t rssBytes = 0;
-  uint64_t virtualBytes = 0;
-
-  // Optional fields (check capabilities)
-  uint64_t readBytes = 0;
-  uint64_t writeBytes = 0;
-  int32_t threadCount = 0;
-};
-
-struct ProcessCapabilities {
-  bool hasIoCounters = false;
-  bool hasThreadCount = false;
-  bool hasUserSystemTime = true;
-  bool hasStartTime = true;
-};
-
-} // namespace Platform
-```
-
-#### Platform Layer: Probe Interface
-
-```cpp
-// Platform/IProcessProbe.h
-namespace Platform {
-
-class IProcessProbe {
-public:
-  virtual ~IProcessProbe() = default;
-
-  // Returns raw counters for all processes (stateless read)
-  virtual std::vector<ProcessCounters> enumerate() = 0;
-
-  // What this platform supports
-  virtual ProcessCapabilities capabilities() const = 0;
-
-  // System-wide values needed for CPU% calculation
-  virtual uint64_t totalCpuTime() const = 0;
-  virtual long ticksPerSecond() const = 0;
-};
-
-} // namespace Platform
-```
-
-#### Domain Layer: Computed Snapshot
-
-```cpp
-// Domain/ProcessSnapshot.h
-namespace Domain {
-
-// Immutable, UI-ready data (computed from counter deltas)
-struct ProcessSnapshot {
-  int32_t pid = 0;
-  int32_t parentPid = 0;
-  std::string name;
-  std::string displayState;    // "Running", "Sleeping", etc.
-
-  double cpuPercent = 0.0;     // Computed from deltas
-  uint64_t memoryBytes = 0;
-  uint64_t virtualBytes = 0;
-
-  // Optional (may be 0 if not supported)
-  double ioReadBytesPerSec = 0.0;
-  double ioWriteBytesPerSec = 0.0;
-  int32_t threadCount = 0;
-
-  // For stable identity across samples
-  uint64_t uniqueKey = 0;      // hash(pid, startTime)
-};
-
-} // namespace Domain
-```
-
-#### Domain Layer: Model (Calculator + Cache)
-
-```cpp
-// Domain/ProcessModel.h
-namespace Domain {
-
-class ProcessModel {
-public:
-  explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe);
-
-  // Call periodically (e.g., every 1 second)
-  void refresh();
-
-  // Get latest computed snapshots (thread-safe read)
-  const std::vector<ProcessSnapshot>& snapshots() const;
-
-  // Stats
-  size_t processCount() const;
-
-private:
-  std::unique_ptr<Platform::IProcessProbe> m_Probe;
-
-  // Previous counters for delta calculation (keyed by uniqueKey)
-  std::unordered_map<uint64_t, Platform::ProcessCounters> m_PrevCounters;
-  uint64_t m_PrevTotalCpuTime = 0;
-
-  // Latest computed snapshots
-  std::vector<ProcessSnapshot> m_Snapshots;
-
-  // Helpers
-  ProcessSnapshot computeSnapshot(
-    const Platform::ProcessCounters& current,
-    const Platform::ProcessCounters* previous,
-    uint64_t totalCpuDelta) const;
-
-  static uint64_t makeUniqueKey(int32_t pid, uint64_t startTime);
-  static std::string translateState(const std::string& rawState);
-};
-
-} // namespace Domain
-```
-
-#### Linux Implementation
-
-```cpp
-// Platform/Linux/LinuxProcessProbe.cpp
-
-// Reads from:
-// - /proc/[pid]/stat     -> pid, name, state, ppid, utime, stime, starttime
-// - /proc/[pid]/statm    -> rss, vsize (in pages)
-// - /proc/[pid]/io       -> read_bytes, write_bytes (optional, needs permissions)
-// - /proc/stat           -> total CPU time (for calculating %)
-// - sysconf(_SC_CLK_TCK) -> ticks per second
-```
-
-#### CPU% Calculation
-
-```cpp
-// In ProcessModel::computeSnapshot()
-
-// CPU% = (processCpuDelta / totalCpuDelta) * 100
-// where:
-//   processCpuDelta = (current.userTime + current.systemTime)
-//                   - (previous.userTime + previous.systemTime)
-//   totalCpuDelta   = currentTotalCpu - previousTotalCpu
-
-if (previous != nullptr && totalCpuDelta > 0) {
-  uint64_t processDelta = (current.userTime + current.systemTime)
-              - (previous->userTime + previous->systemTime);
-  snapshot.cpuPercent = (static_cast<double>(processDelta) /
-              static_cast<double>(totalCpuDelta)) * 100.0;
-}
-```
-
-#### UI Integration
-
-```cpp
-// In ShellLayer
-
-class ShellLayer : public Core::Layer {
-private:
-  std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
-  float m_RefreshTimer = 0.0F;
-  static constexpr float REFRESH_INTERVAL = 1.0F;  // seconds
-
-public:
-  void onAttach() override {
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(
-      Platform::makeProcessProbe()
-    );
-    m_ProcessModel->refresh();  // Initial population
-  }
-
-  void onUpdate(float deltaTime) override {
-    m_RefreshTimer += deltaTime;
-    if (m_RefreshTimer >= REFRESH_INTERVAL) {
-      m_ProcessModel->refresh();
-      m_RefreshTimer = 0.0F;
-    }
-  }
-
-  void renderProcessesPanel() {
-    for (const auto& proc : m_ProcessModel->snapshots()) {
-      // Render row with proc.pid, proc.name, proc.cpuPercent, etc.
-    }
-  }
-};
-```
-
-## CMake Integration
-
-```cmake
-# Conditional platform sources
-if(WIN32)
-  set(PLATFORM_SOURCES
-    src/Platform/Windows/WindowsProcessProbe.cpp
-    src/Platform/Windows/Factory.cpp
-  )
-else()
-  set(PLATFORM_SOURCES
-    src/Platform/Linux/LinuxProcessProbe.cpp
-    src/Platform/Linux/Factory.cpp
-  )
-endif()
-
-set(TASKSMACK_SOURCES
-  ${TASKSMACK_SOURCES}
-  src/Domain/ProcessModel.cpp
-  ${PLATFORM_SOURCES}
-)
-```
-
-### Implementation Order
-
-1. **Pick an issue** (or create one) and clarify acceptance criteria.
-2. **Create a branch** for the work.
-3. **Create Platform types and interface** (`ProcessTypes.h`, `IProcessProbe.h`)
-4. **Create Domain snapshot and model** (`ProcessSnapshot.h`, `ProcessModel.h/cpp`)
-5. **Implement Linux probe** (`LinuxProcessProbe.cpp`)
-6. **Implement Windows probe** (`WindowsProcessProbe.cpp`)
-7. **Create factory for both platforms** (`Factory.h`, `Linux/Factory.cpp`, `Windows/Factory.cpp`)
-8. **Integrate with ShellLayer** (add ProcessModel, wire up refresh)
-9. **Update CMakeLists.txt** (add new sources and tests)
-10. **Write automated tests** (domain calculations + platform contract)
-11. **Build and test**
-
-### Future Phases
-
-#### Phase 2: System Metrics
-
-- `ICpuProbe` - total/per-core CPU counters
-- `IMemoryProbe` - system memory counters
-- Domain calculators for CPU% over time, memory trends
-
-#### Phase 3: Background Sampling (Implemented, Not Yet Active)
-
-- `std::jthread` sampler with `std::stop_token` — **implemented** in `src/Domain/BackgroundSampler.{h,cpp}`
-- Lock-free snapshot publishing
-- Configurable refresh intervals
-- Currently unused: panels refresh synchronously on the main thread via `onUpdate()`. Activate if UI responsiveness issues arise on systems with thousands of processes.
-
-#### Phase 4: Process Actions
-
-- Kill, suspend, resume processes
-- Priority adjustment
-- Requires elevated permissions handling
-
-### Testing Strategy
-
-- **Domain tests:** Feed mock `ProcessCounters` to `ProcessModel`, verify CPU% math
-- **Platform tests:** Run on actual OS, verify probe reads real data
-- **Integration tests:** Full stack with short refresh interval
-
-### Notes
-
-- PID reuse: Handled by `uniqueKey = hash(pid, startTime)`
-- Permissions: Some Linux `/proc/[pid]/io` requires same-user or root
-- Performance: Enumerate all PIDs at 1 Hz is fine; optimize if needed later
-
-## Per-Process Network and I/O Monitoring
-
-### Overview
-
-TaskSmack implements infrastructure for tracking per-process network and I/O rates. The implementation follows the same layered architecture as CPU/memory monitoring.
-
-### Architecture
-
-```
-Platform: Raw cumulative counters (netSentBytes, netReceivedBytes, readBytes, writeBytes)
-    ↓
-Domain: Time-based rate calculation (delta bytes / delta time = bytes/sec)
-    ↓
-UI: Formatted display in Process Details Overview tab
-```
-
-### Implementation Status
-
-**Completed (December 2024)**:
-- Platform types extended with network and I/O counters (`ProcessTypes.h`)
-- Domain layer computes rates from counter deltas with timestamp tracking (`ProcessModel.cpp`)
-- UI displays rates in Process Details panel with auto-scaling units (B/s, KB/s, MB/s, GB/s)
-- Comprehensive unit tests for rate calculations and edge cases
-- I/O rate calculations fixed (were previously stubbed)
-
-**Platform Probe Implementation (Future Work)**:
-- **Linux**: Per-process network requires complex implementation
-  - Parse `/proc/net/tcp*` to find socket inodes
-  - Match inodes to `/proc/[pid]/fd/*` to associate with processes
-  - Use eBPF or netlink INET_DIAG to track per-socket byte counters
-  - Alternative: System-level network interface stats from `/proc/net/dev` (not per-process)
-  - I/O: Requires reading `/proc/[pid]/io` (needs root or same-user permissions)
-
-- **Windows**:
-  - Network: Use ETW (Event Tracing for Windows) kernel providers or `GetPerTcpConnectionEStats`
-  - I/O: Available via `GetProcessIoCounters` (already implemented for Windows probe)
-
-### Rate Calculation Algorithm
-
-```cpp
-// ProcessModel tracks time between samples
-std::chrono::steady_clock::time_point m_PrevSampleTime;
-
-// On each refresh:
-auto currentTime = std::chrono::steady_clock::now();
-double timeDeltaSeconds = duration_cast<milliseconds>(currentTime - m_PrevSampleTime).count() / 1000.0;
-
-// For each process with previous counters:
-if (current.netSentBytes >= previous.netSentBytes) {
-    uint64_t bytesDelta = current.netSentBytes - previous.netSentBytes;
-    snapshot.netSentBytesPerSec = bytesDelta / timeDeltaSeconds;
-}
-```
-
-### Usage in UI
-
-The Process Details panel automatically displays network and I/O sections when rates are non-zero:
-
-```cpp
-void ProcessDetailsPanel::renderNetworkStats(const ProcessSnapshot& proc) {
-    if (proc.netSentBytesPerSec == 0.0 && proc.netReceivedBytesPerSec == 0.0)
-        return;  // Hide section if no network activity
-
-    // Display sent/received rates with auto-scaling units
-}
-```
-
-### Testing
-
-Comprehensive unit tests in `tests/Domain/test_ProcessModel.cpp`:
-- Zero rates on first sample (no previous data)
-- Correct rate calculation from counter deltas
-- Counter rollback handling (process restart, overflow)
-- Combined network + I/O monitoring
-- Thread-safe concurrent access
-
-### Future Enhancements
-
-1. **Linux eBPF Implementation**: Most accurate per-process network tracking
-2. **Windows ETW Integration**: Real-time network event tracing
-3. **Historical Charts**: Add network/IO rate history graphs to Process Details
-4. **Table Columns**: Add network/IO rate columns to main process table
-5. **Aggregation**: Total network/IO usage across selected processes
+Do not treat roadmap items as shipped features; [completed-features.md](completed-features.md) is the canonical implemented-feature list.
