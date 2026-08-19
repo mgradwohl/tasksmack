@@ -16,7 +16,6 @@
                 "CMAKE_CXX_STANDARD_REQUIRED": "ON",
                 "CMAKE_CXX_EXTENSIONS": "OFF",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_LINKER_TYPE": "LLD",
                 "TASKSMACK_ENABLE_FETCHCONTENT_CACHE": "ON"
             }
         },
@@ -56,6 +55,7 @@
             "cacheVariables": {
                 "CMAKE_CXX_COMPILER": "$env{LLVM_ROOT}/bin/clang++.exe",
                 "CMAKE_C_COMPILER": "$env{LLVM_ROOT}/bin/clang.exe",
+                "CMAKE_LINKER_TYPE": "LLD",
                 "CMAKE_EXE_LINKER_FLAGS": "",
                 "CMAKE_SHARED_LINKER_FLAGS": ""
             },
@@ -106,7 +106,7 @@
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -s",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread -s",
-                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer -fwhole-program-vtables -fvirtual-function-elimination"
             }
         },
         {
@@ -131,6 +131,47 @@
             }
         },
         {
+            "name": "msan",
+            "displayName": "MSan",
+            "description": "MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only). Requires MSan-instrumented libc++.",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -fsanitize=memory -fPIE -fno-omit-frame-pointer -fsanitize-memory-track-origins=2",
+                "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=memory -fPIE -pie",
+                "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=memory",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
+                "TASKSMACK_ENABLE_PCH": "OFF",
+                "TASKSMACK_ENABLE_FETCHCONTENT_CACHE": "OFF"
+            }
+        },
+        {
+            "name": "unity",
+            "displayName": "Unity (fast check build)",
+            "description": "Debug build with unity (jumbo) compilation for fast end-to-end checks. Trades incremental correctness for speed.",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern",
+                "CMAKE_UNITY_BUILD": "OFF",
+                "TASKSMACK_ENABLE_UNITY_BUILD": "ON"
+            }
+        },
+        {
+            "name": "win-unity",
+            "displayName": "Windows Unity (fast check build)",
+            "description": "Windows debug build with unity (jumbo) compilation for fast end-to-end checks.",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-unity",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern",
+                "CMAKE_UNITY_BUILD": "OFF",
+                "TASKSMACK_ENABLE_UNITY_BUILD": "ON"
+            }
+        },
+        {
             "name": "asan-ubsan",
             "displayName": "ASan+UBSan",
             "description": "Debug build with AddressSanitizer and UndefinedBehaviorSanitizer (Linux only)",
@@ -140,6 +181,8 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
@@ -153,6 +196,8 @@
                 "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=thread -fno-omit-frame-pointer",
                 "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
                 "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=thread",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF"
             }
         },
@@ -245,7 +290,7 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "TASKSMACK_ENABLE_IPO": "ON",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer"
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fomit-frame-pointer -fwhole-program-vtables -fvirtual-function-elimination"
             }
         },
         {
@@ -432,6 +477,18 @@
             "name": "win-pgo-use",
             "displayName": "Windows PGO Use",
             "configurePreset": "win-pgo-use"
+        },
+        {
+            "name": "msan",
+            "configurePreset": "msan"
+        },
+        {
+            "name": "unity",
+            "configurePreset": "unity"
+        },
+        {
+            "name": "win-unity",
+            "configurePreset": "win-unity"
         }
     ],
     "testPresets": [
@@ -552,6 +609,151 @@
             "output": {
                 "outputOnFailure": true
             }
+        },
+        {
+            "name": "msan",
+            "configurePreset": "msan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "jobs": 0,
+                "timeout": 120
+            }
+        },
+        {
+            "name": "unity",
+            "configurePreset": "unity",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "jobs": 0,
+                "timeout": 60
+            }
+        },
+        {
+            "name": "win-unity",
+            "configurePreset": "win-unity",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "jobs": 0,
+                "timeout": 60
+            }
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "dev",
+            "displayName": "Dev (configure \u2192 build \u2192 test)",
+            "description": "Configure, build, and test the debug preset in one command: cmake --workflow --preset dev",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "debug"
+                },
+                {
+                    "type": "build",
+                    "name": "debug"
+                },
+                {
+                    "type": "test",
+                    "name": "debug"
+                }
+            ]
+        },
+        {
+            "name": "win-dev",
+            "displayName": "Windows Dev (configure \u2192 build \u2192 test)",
+            "description": "Configure, build, and test the Windows debug preset in one command.",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "win-debug"
+                },
+                {
+                    "type": "build",
+                    "name": "win-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "win-debug"
+                }
+            ]
+        },
+        {
+            "name": "asan-ubsan-cycle",
+            "displayName": "ASan+UBSan (configure → build → test)",
+            "description": "Configure, build, and test the AddressSanitizer+UBSan preset.",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "asan-ubsan"
+                },
+                {
+                    "type": "build",
+                    "name": "asan-ubsan"
+                },
+                {
+                    "type": "test",
+                    "name": "asan-ubsan"
+                }
+            ]
+        },
+        {
+            "name": "tsan-cycle",
+            "displayName": "TSan (configure → build → test)",
+            "description": "Configure, build, and test the ThreadSanitizer preset.",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "tsan"
+                },
+                {
+                    "type": "build",
+                    "name": "tsan"
+                },
+                {
+                    "type": "test",
+                    "name": "tsan"
+                }
+            ]
+        },
+        {
+            "name": "coverage",
+            "displayName": "Coverage (configure \u2192 build \u2192 test)",
+            "description": "Configure, build, and test the coverage preset. Run tools/coverage.sh afterwards for the HTML report.",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "coverage"
+                },
+                {
+                    "type": "build",
+                    "name": "coverage"
+                },
+                {
+                    "type": "test",
+                    "name": "coverage"
+                }
+            ]
+        },
+        {
+            "name": "benchmark",
+            "displayName": "Benchmark (configure \u2192 build)",
+            "description": "Configure and build the benchmark preset. Run tools/bench.sh afterwards.",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "benchmark"
+                },
+                {
+                    "type": "build",
+                    "name": "benchmark"
+                }
+            ]
         }
     ]
 }

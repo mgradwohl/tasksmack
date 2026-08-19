@@ -163,7 +163,7 @@ jobs:
 
   win-coverage:
     needs: [validate-environment]
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 35
     permissions:
       contents: read
@@ -479,4 +479,90 @@ jobs:
         if: steps.sanitizer-test.outputs.test_result != '0'
         run: |
           echo "Sanitizer detected issues. Failing the job."
+          exit 1
+
+  benchmark-regression:
+    needs: [validate-environment]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+        with:
+          key: linux-benchmark
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure
+        run: cmake --preset benchmark -DPython3_EXECUTABLE="$(which python)"
+
+      - name: Build
+        run: cmake --build --preset benchmark
+
+      - name: Run benchmarks
+        run: |
+          mkdir -p perf-data
+          ./tools/bench.sh benchmark
+          # bench.sh writes perf-data/benchmark-<timestamp>.json; link the latest for comparison
+          latest_json=$(ls -t perf-data/benchmark-*.json 2>/dev/null | head -1)
+          if [[ -z "$latest_json" ]]; then
+            echo "ERROR: benchmark output JSON not found" >&2
+            exit 1
+          fi
+          cp "$latest_json" perf-data/benchmark-current.json
+          echo "BENCHMARK_JSON=$latest_json" >> "$GITHUB_ENV"
+
+      - name: Check for regression
+        id: regression-check
+        run: |
+          python3 tools/check-benchmark-regression.py \
+            --baseline perf-data/linux-baseline.json \
+            --current  perf-data/benchmark-current.json \
+            --threshold 15 \
+            2>&1 | tee benchmark-regression-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Add benchmark summary to workflow summary
+        if: always()
+        run: |
+          echo "## Benchmark Regression Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f benchmark-regression-output.txt ]]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat benchmark-regression-output.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: benchmark-results
+          path: |
+            perf-data/benchmark-current.json
+            benchmark-regression-output.txt
+          retention-days: 30
+
+      - name: Fail if regression detected
+        if: steps.regression-check.outputs.exit_code != '0'
+        run: |
+          echo "Benchmark regression detected. See summary for details."
           exit 1

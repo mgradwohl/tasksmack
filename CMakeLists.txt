@@ -48,10 +48,18 @@ option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
+option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
 set(TASKSMACK_MARCH "" CACHE STRING "Target microarchitecture (e.g., native, x86-64-v3, x86-64-v2). Empty string means no -march flag.")
+# Clang -ftime-trace: emits per-TU compile-time flamegraphs (<source>.json) for chrome://tracing.
+# Enable with -DTASKSMACK_ENABLE_TIME_TRACE=ON to diagnose slow compilation hot spots.
+option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph output (Clang only)" OFF)
+# Linker selection on Unix (ignored on Windows, which always uses lld-link via CMAKE_LINKER_TYPE=LLD).
+# Supported values: lld (default), mold (faster incremental debug links), default (system linker).
+set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
+set_property(CACHE TASKSMACK_LINKER PROPERTY STRINGS lld mold default)
 
 # Compiler caching (ccache/sccache) - required for development
 if(TASKSMACK_ENABLE_CCACHE)
@@ -216,6 +224,39 @@ else()
     message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
 endif()
 
+# Linker selection on Unix.
+# TASKSMACK_LINKER controls which linker is used: lld (default), mold (faster incremental), default (system).
+# On Windows the linker is always lld-link (set via CMAKE_LINKER_TYPE=LLD in CMakePresets.json).
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(NOT TASKSMACK_LINKER STREQUAL "lld"
+            AND NOT TASKSMACK_LINKER STREQUAL "mold"
+            AND NOT TASKSMACK_LINKER STREQUAL "default")
+        message(FATAL_ERROR "Invalid TASKSMACK_LINKER='${TASKSMACK_LINKER}'. Expected one of: lld, mold, default.")
+    endif()
+
+    if(TASKSMACK_LINKER STREQUAL "mold")
+        set(_ts_linker_flag "-fuse-ld=mold")
+        message(STATUS "Linker: mold (opt-in)")
+    elseif(TASKSMACK_LINKER STREQUAL "default")
+        set(_ts_linker_flag "")
+        message(STATUS "Linker: system default")
+    else()
+        set(_ts_linker_flag "-fuse-ld=lld")
+        message(STATUS "Linker: lld (default)")
+    endif()
+endif()
+
+function(tasksmack_apply_linux_toolchain target)
+    if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        if(_ts_linker_flag)
+            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
+        else()
+            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        endif()
+    endif()
+endfunction()
+
 # Security hardening flags for release builds
 # Applied only for Release-type builds to avoid impacting Debug ergonomics (e.g., ASAN stack checks).
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
@@ -303,9 +344,15 @@ set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering exte
 FetchContent_MakeAvailable(SDL3)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
+# Prefer the project-local environment created by tools/setup-dev.sh without
+# overriding the machine's system Python.
+if(NOT Python3_EXECUTABLE AND EXISTS "${CMAKE_SOURCE_DIR}/.venv/bin/python")
+    set(Python3_EXECUTABLE "${CMAKE_SOURCE_DIR}/.venv/bin/python" CACHE FILEPATH "Python interpreter")
+endif()
+
 # Early check for GLAD requirements (Python3 + jinja2)
 # GLAD generation uses jinja2 templates and fails with cryptic errors if not installed
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.14 REQUIRED COMPONENTS Interpreter)
 execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import jinja2"
     RESULT_VARIABLE JINJA2_CHECK
@@ -563,39 +610,41 @@ elseif(WIN32)
 endif()
 
 if(CLANG_TIDY_EXE)
-    # Generate a module-free compile_commands.json for clang-tidy
-    # CMake/Ninja adds C++20 module dependency files (@*.modmap) that clang-tidy doesn't understand.
-    # This target strips only those C++20 module flags. PCH flags (-Xclang -include-pch, etc.) are
-    # stripped separately by the clang-tidy scripts (clang-tidy.sh / clang-tidy.ps1).
-    # Use platform-appropriate tools: sed on Unix, PowerShell on Windows
+    # Generate a clean compile_commands.json for clang-tidy in a dedicated directory, stripping flags
+    # that clang-tidy cannot handle (C++20 module @*.modmap dependency files, PCH flags).
+    # Writing to a *separate* directory preserves the live compile_commands.json that clangd watches;
+    # clang-tidy tools point -p at the dedicated directory so clangd is never disturbed.
+    set(TASKSMACK_CLANG_TIDY_COMPDB_DIR "${CMAKE_BINARY_DIR}/clang-tidy-compdb")
     if(WIN32)
         add_custom_target(generate-clang-tidy-compile-commands
-            COMMAND ${CMAKE_COMMAND} -E copy
-                ${CMAKE_BINARY_DIR}/compile_commands.json
-                ${CMAKE_BINARY_DIR}/compile_commands.json.bak
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             COMMAND powershell -NoProfile -Command
-                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' | Set-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -NoNewline"
+                "(Get-Content '${CMAKE_BINARY_DIR}/compile_commands.json' -Raw) -replace '@[^ ]*\\.modmap', '' -replace '-fmodule-output=[^ ]*', '' -replace '-Xclang -include-pch -Xclang [^ ]*', '' -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', '' -replace '-Xclang -fno-pch-timestamp', '' | Set-Content '${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json' -NoNewline"
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
+            COMMENT "Writing clang-tidy compile_commands.json (module/PCH flags stripped)"
         )
     else()
         add_custom_target(generate-clang-tidy-compile-commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             COMMAND ${CMAKE_COMMAND} -E copy
                 ${CMAKE_BINARY_DIR}/compile_commands.json
-                ${CMAKE_BINARY_DIR}/compile_commands.json.bak
+                ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json
             COMMAND sed -i
                 -e "s/@[^ ]*\\.modmap//g"
                 -e "s/-fmodule-output=[^ ]*//g"
-                ${CMAKE_BINARY_DIR}/compile_commands.json
+                -e "s/-Xclang -include-pch -Xclang [^ ]*//g"
+                -e "s/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g"
+                -e "s/-Xclang -fno-pch-timestamp//g"
+                ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}/compile_commands.json
             DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
-            COMMENT "Stripping C++20 module flags from compile_commands.json for clang-tidy"
+            COMMENT "Writing clang-tidy compile_commands.json (module/PCH flags stripped)"
         )
     endif()
 
     add_custom_target(run-clang-tidy
         COMMAND ${CLANG_TIDY_EXE}
             --config-file=${CMAKE_SOURCE_DIR}/.clang-tidy
-            -p ${CMAKE_BINARY_DIR}
+            -p ${TASKSMACK_CLANG_TIDY_COMPDB_DIR}
             --extra-arg=-std=c++23
             --extra-arg=-Wno-unknown-warning-option
             ${TASKSMACK_SOURCES}
@@ -657,11 +706,29 @@ if(WIN32)
     message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
 endif()
 
+# Enable unity compilation only after third-party targets have been declared. Setting
+# CMAKE_UNITY_BUILD in a preset would also combine dependency sources and can trigger
+# collisions between their private macros and identifiers.
+if(TASKSMACK_ENABLE_UNITY_BUILD)
+    set(CMAKE_UNITY_BUILD ON)
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
+endif()
+
 add_executable(TaskSmack WIN32
     ${TASKSMACK_SOURCES}
     ${TASKSMACK_HEADERS}
 )
 
+# Compile-time flamegraph tracing is limited to TaskSmack sources so FetchContent
+# dependencies do not emit unrelated traces or incur tracing overhead.
+if(TASKSMACK_ENABLE_TIME_TRACE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(TaskSmack PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-ftime-trace>")
+        message(STATUS "Compile-time tracing enabled (-ftime-trace). Run tools/time-trace.sh after build.")
+    else()
+        message(WARNING "TASKSMACK_ENABLE_TIME_TRACE requires Clang. Ignoring on ${CMAKE_CXX_COMPILER_ID}.")
+    endif()
+endif()
 # Embed custom manifest on Windows (for DPI awareness and OS compatibility)
 if(WIN32 AND EXISTS ${CMAKE_BINARY_DIR}/app.manifest)
     target_link_options(TaskSmack PRIVATE
@@ -671,12 +738,9 @@ endif()
 
 target_compile_features(TaskSmack PRIVATE cxx_std_23)
 
-# Ensure libc++/pthread/lld are applied across all configs on Linux when using Clang,
-# so optimized and RelWithDebInfo builds keep the same link toolchain as Debug.
-if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
-    target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread -fuse-ld=lld)
-endif()
+# Keep libc++, pthread, and the selected linker consistent across all
+# TaskSmack-owned executables and configurations.
+tasksmack_apply_linux_toolchain(TaskSmack)
 
 # Precompiled headers
 if(TASKSMACK_ENABLE_PCH)

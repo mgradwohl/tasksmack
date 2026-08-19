@@ -64,6 +64,8 @@ done
 
 BUILD_DIR="${PROJECT_ROOT}/build/${BUILD_TYPE}"
 COMPILE_COMMANDS="${BUILD_DIR}/compile_commands.json"
+TIDY_COMPDB_DIR="${BUILD_DIR}/clang-tidy-compdb"
+COMPILE_COMMANDS_TIDY="${TIDY_COMPDB_DIR}/compile_commands.json"
 CONFIG_FILE="${PROJECT_ROOT}/.clang-tidy"
 
 # Find clang-tidy
@@ -98,23 +100,32 @@ if [[ ! -f "$COMPILE_COMMANDS" ]]; then
     cmake --build "$BUILD_DIR" --target copy-compile-commands
 fi
 
-# Strip C++20 module flags and PCH references from compile_commands.json.
-# CMake emits two PCH-related flag groups per TU:
-#   1. -Xclang -include-pch -Xclang /path/cmake_pch.hxx.pch  (binary PCH)
-#   2. -Xclang -include    -Xclang /path/cmake_pch.hxx        (PCH source include)
-#   3. -Xclang -fno-pch-timestamp                            (PCH reproducibility flag, defensive)
-# clang-tidy cannot use any of these without a prior full build, so strip all.
+# Build the clean tidy database on every invocation so it stays in sync with the active build.
+# The generate-clang-tidy-compile-commands target writes a sanitized compile_commands.json into
+# ${BUILD_DIR}/clang-tidy-compdb without touching the live database clangd watches.
 if $VERBOSE; then
-    echo "Stripping module and PCH flags from compile_commands.json..."
+    echo "Generating clang-tidy compilation database via CMake target..."
 fi
-sed -i.bak \
-    -e 's/@[^ ]*\.modmap//g' \
-    -e 's/-fmodule-output=[^ ]*//g' \
-    -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
-    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
-    -e 's/-Xclang -fno-pch-timestamp//g' \
-    "$COMPILE_COMMANDS"
-rm -f "${COMPILE_COMMANDS}.bak"
+rm -f "$COMPILE_COMMANDS_TIDY"
+cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
+
+# If the CMake target didn't produce the file (older build dir or no CLANG_TIDY_EXE at configure
+# time), fall back to generating it here from the live database.
+if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
+    if $VERBOSE; then
+        echo "Falling back: writing sanitized compile_commands.json for clang-tidy"
+    fi
+    mkdir -p "$TIDY_COMPDB_DIR"
+    sed \
+        -e 's/@[^ ]*\.modmap//g' \
+        -e 's/-fmodule-output=[^ ]*//g' \
+        -e 's/-Xclang -include-pch -Xclang [^ ]*//g' \
+        -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g' \
+        -e 's/-Xclang -fno-pch-timestamp//g' \
+        "$COMPILE_COMMANDS" > "$COMPILE_COMMANDS_TIDY"
+fi
+
+COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 
 # Determine files to analyze
 if [[ ${#FILES[@]} -eq 0 ]]; then
@@ -174,13 +185,13 @@ run_clang_tidy() {
         --config-file="$CONFIG_FILE" \
         --header-filter="$HEADER_FILTER_REGEX" \
         --exclude-header-filter="$EXCLUDE_HEADER_FILTER_REGEX" \
-        -p "$BUILD_DIR" \
+        -p "$COMPILE_COMMANDS_DIR_IN_USE" \
         --extra-arg=-std=c++23 \
         --extra-arg=-Wno-unknown-warning-option \
         "$file" 2>&1
 }
 export -f run_clang_tidy
-export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_DIR_IN_USE
 
 # Run clang-tidy in parallel
 HAS_ERRORS=0

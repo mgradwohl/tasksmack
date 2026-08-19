@@ -42,7 +42,9 @@ runs:
         # before any apt operations so only the repos we need are active.
         sudo rm -f \
           /etc/apt/sources.list.d/azure-cli.list \
+          /etc/apt/sources.list.d/azure-cli.sources \
           /etc/apt/sources.list.d/microsoft-prod.list \
+          /etc/apt/sources.list.d/microsoft-prod.sources \
           /etc/apt/sources.list.d/packages-microsoft-prod.list
         sudo find /etc/apt/sources.list.d/ -name '*microsoft*' -delete 2>/dev/null || true
 
@@ -65,13 +67,30 @@ runs:
           exit 1
         fi
 
+        # GitHub's Ubuntu mirror list prefers azure.archive.ubuntu.com, which can
+        # accept a connection and then stall indefinitely. Select the standard
+        # archive before any apt operation so a hung Azure request cannot prevent
+        # fallback logic from ever running.
+        sudo tee /etc/apt/apt.conf.d/80-tasksmack-network >/dev/null <<'APT_CONFIG'
+        Acquire::Retries "2";
+        Acquire::http::Timeout "15";
+        Acquire::https::Timeout "15";
+        APT_CONFIG
+        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+          echo 'https://archive.ubuntu.com/ubuntu/' |
+            sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+        fi
+        sudo sed -i \
+          's|https\?://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+          /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+
         # Verify the installer before granting it root privileges.
         LLVM_INSTALLER_SHA256='03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae'
         curl --fail --silent --show-error --location \
           --output llvm.sh https://apt.llvm.org/llvm.sh
         echo "$LLVM_INSTALLER_SHA256  llvm.sh" | sha256sum --check --strict
         chmod +x llvm.sh
-        sudo ./llvm.sh "$LLVM_VER"
+        sudo timeout --kill-after=10s 300s ./llvm.sh "$LLVM_VER"
         rm -f llvm.sh
 
         # Build package list - always include GUI dependencies
@@ -94,8 +113,8 @@ runs:
         fi
 
         # Install packages
-        sudo apt-get update
-        sudo apt-get install -y $PACKAGES
+        sudo timeout --kill-after=10s 180s apt-get update
+        sudo timeout --kill-after=10s 300s apt-get install -y $PACKAGES
 
     - name: Configure LLVM alternatives
       shell: bash

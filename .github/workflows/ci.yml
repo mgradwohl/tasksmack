@@ -5,6 +5,7 @@ on:
     branches: ['dev/**']
   pull_request:
     branches: [main, 'dev/**']
+  merge_group:
   schedule:
     # Run weekly on Sundays at 09:00 UTC
     - cron: '0 9 * * 0'
@@ -29,8 +30,10 @@ jobs:
       pull-requests: read
     outputs:
       docs_only: ${{ steps.set_output.outputs.docs_only }}
+      linux_only: ${{ steps.set_output.outputs.linux_only }}
+      windows_only: ${{ steps.set_output.outputs.windows_only }}
     steps:
-      - name: Detect docs-only pull request changes
+      - name: Detect docs-only and platform-only pull request changes
         id: filter
         if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
@@ -44,8 +47,12 @@ jobs:
               - '.github/pull_request_template.md'
               - '.github/PULL_REQUEST_TEMPLATE/**'
               - 'LICENSE'
+            linux_platform:
+              - 'src/Platform/Linux/**'
+            windows_platform:
+              - 'src/Platform/Windows/**'
 
-      - name: Normalize docs-only output
+      - name: Normalize outputs
         id: set_output
         # github.head_ref is attacker-controlled (the PR branch name); passing it
         # directly into an inline shell expression enables script injection. Bind it
@@ -58,18 +65,42 @@ jobs:
                   "${{ github.event.pull_request.user.login }}" = 'github-actions[bot]' && \
                   "${HEAD_REF}" == chore/changelog-* ]]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
+              echo "linux_only=false" >> "$GITHUB_OUTPUT"
+              echo "windows_only=false" >> "$GITHUB_OUTPUT"
             else
               echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
+              # With predicate-quantifier=every, linux_platform=true only when every changed
+              # file matches the Linux-specific allowlist.
+              if [[ "${{ steps.filter.outputs.linux_platform }}" = 'true' && \
+                    "${{ steps.filter.outputs.windows_platform }}" = 'false' ]]; then
+                echo "linux_only=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "linux_only=false" >> "$GITHUB_OUTPUT"
+              fi
+              # With predicate-quantifier=every, windows_platform=true only when every changed
+              # file matches the Windows-specific allowlist.
+              if [[ "${{ steps.filter.outputs.windows_platform }}" = 'true' && \
+                    "${{ steps.filter.outputs.linux_platform }}" = 'false' ]]; then
+                echo "windows_only=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "windows_only=false" >> "$GITHUB_OUTPUT"
+              fi
             fi
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "linux_only=false" >> "$GITHUB_OUTPUT"
+            echo "windows_only=false" >> "$GITHUB_OUTPUT"
           fi
 
   build-linux-debug:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
+    if: >-
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      github.event_name != 'schedule' &&
+      needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -77,9 +108,13 @@ jobs:
 
   build-linux-release:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: >-
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       os: ubuntu-24.04
@@ -87,22 +122,30 @@ jobs:
 
   build-windows-debug:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && github.event_name != 'schedule'
+    if: >-
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      github.event_name != 'schedule' &&
+      needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: windows-latest
+      os: windows-2025
       build_type: debug
 
   build-windows-release:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: >-
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
+      checks: write
     uses: ./.github/workflows/reusable-build-test.yml
     with:
-      os: windows-latest
+      os: windows-2025
       build_type: release
 
   docs-hygiene:
@@ -301,3 +344,137 @@ jobs:
           name: iwyu-results
           path: iwyu-output.txt
           retention-days: 14
+
+  # Advisory asan-ubsan run on PRs — non-blocking; promotes awareness of memory/UB issues
+  # before they reach main.  Promoted to blocking in sanitizers.yml on push to main.
+  asan-ubsan-advisory:
+    needs: [detect-docs-only]
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.detect-docs-only.outputs.docs_only != 'true'
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+        with:
+          key: linux-asan-ubsan-advisory
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure
+        run: cmake --preset asan-ubsan -DPython3_EXECUTABLE="$(which python)"
+
+      - name: Build
+        run: cmake --build --preset asan-ubsan
+
+      - name: Test (advisory — failure annotates but does not block)
+        run: |
+          ctest --preset asan-ubsan -j "$(nproc)" --output-on-failure --timeout 120 \
+            2>&1 | tee asan-ubsan-output.txt || true
+          echo "## ASan+UBSan Advisory" >> "$GITHUB_STEP_SUMMARY"
+          if grep -qE "ERROR:|runtime error:|SUMMARY:" asan-ubsan-output.txt; then
+            echo "⚠️ **Status:** Issues detected (advisory — does not block merge)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "✅ **Status:** No sanitizer issues detected" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload sanitizer output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: asan-ubsan-advisory
+          path: asan-ubsan-output.txt
+          retention-days: 7
+
+  # ── Gate job ────────────────────────────────────────────────────────────────
+  # A single required check for branch protection.  All required jobs must succeed
+  # for this job to pass, giving a single status check to configure in branch settings.
+  # Uses `always()` so the gate always runs even when upstream jobs are skipped.
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - detect-docs-only
+      - build-linux-debug
+      - build-linux-release
+      - build-windows-debug
+      - build-windows-release
+      - docs-hygiene
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check all required jobs passed
+        env:
+          DETECT_RESULT:  ${{ needs.detect-docs-only.result }}
+          DOCS_ONLY:      ${{ needs.detect-docs-only.outputs.docs_only }}
+          LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
+          WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
+          EVENT_NAME:     ${{ github.event_name }}
+          LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
+          LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
+          WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
+          DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
+        run: |
+          failed=false
+
+          if [[ "$DETECT_RESULT" != 'success' ]]; then
+            echo "❌ Change detection did not succeed: $DETECT_RESULT"
+            failed=true
+          fi
+          if [[ "$DOCS_RESULT" != 'success' ]]; then
+            echo "❌ Documentation hygiene did not succeed: $DOCS_RESULT"
+            failed=true
+          fi
+          if [[ "$EVENT_NAME" != 'schedule' ]]; then
+            if [[ "$LINUX_RESULT" != 'success' &&
+                  ! ("$LINUX_RESULT" == 'skipped' &&
+                     ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
+              echo "❌ Linux debug build did not succeed or have an intentional skip: $LINUX_RESULT"
+              failed=true
+            fi
+            if [[ "$WINDOWS_RESULT" != 'success' &&
+                  ! ("$WINDOWS_RESULT" == 'skipped' &&
+                     ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
+              echo "❌ Windows debug build did not succeed or have an intentional skip: $WINDOWS_RESULT"
+              failed=true
+            fi
+          fi
+
+          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            if [[ "$LINUX_RELEASE_RESULT" != 'success' ]]; then
+              echo "❌ Linux release build did not succeed: $LINUX_RELEASE_RESULT"
+              failed=true
+            fi
+            if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
+              echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
+              failed=true
+            fi
+          fi
+
+          if $failed; then
+            echo "CI gate FAILED — one or more required jobs did not pass."
+            exit 1
+          fi
+          echo "✅ All required CI jobs passed."

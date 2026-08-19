@@ -29,6 +29,26 @@ using namespace std::chrono_literals;
 // Use shared mock from TestMocks namespace
 using TestMocks::MockProcessProbe;
 
+namespace
+{
+
+template<typename Predicate> [[nodiscard]] bool waitFor(Predicate predicate, std::chrono::milliseconds timeout = 2000ms)
+{
+    constexpr auto POLL_INTERVAL = 5ms;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(POLL_INTERVAL);
+    }
+    return true;
+}
+
+} // namespace
+
 // =============================================================================
 // Construction Tests
 // =============================================================================
@@ -597,7 +617,7 @@ TEST(BackgroundSamplerTest, ProbeEnumerateThrowingSamplerContinues)
     Domain::BackgroundSampler sampler(std::move(probe), config);
     sampler.start();
 
-    std::this_thread::sleep_for(100ms);
+    const bool continuedAfterException = waitFor([&] { return rawProbe->enumerateCount() > 1; });
 
     // Sampler should still be running despite repeated exceptions from the probe
     EXPECT_TRUE(sampler.isRunning());
@@ -605,7 +625,7 @@ TEST(BackgroundSamplerTest, ProbeEnumerateThrowingSamplerContinues)
     sampler.stop();
 
     // Probe's enumerate should have been called multiple times (sampler kept looping)
-    EXPECT_GT(rawProbe->enumerateCount(), 1);
+    EXPECT_TRUE(continuedAfterException);
 }
 
 TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
@@ -629,7 +649,7 @@ TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
         });
 
     sampler.start();
-    std::this_thread::sleep_for(100ms);
+    const bool continuedAfterException = waitFor([&] { return callCount.load() > 1; });
 
     // Sampler should still be running despite repeated callback exceptions
     EXPECT_TRUE(sampler.isRunning());
@@ -637,7 +657,7 @@ TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
     sampler.stop();
 
     // Callback should have been called multiple times (sampler kept looping after each throw)
-    EXPECT_GT(callCount.load(), 1);
+    EXPECT_TRUE(continuedAfterException);
 }
 
 // ========== Unknown exception handling (catch(...) branch L172) ==========
@@ -697,17 +717,9 @@ TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
 
     // Wait until at least two enumerate() calls have occurred: the first confirms the
     // loop ran, and the second confirms the sampler continued after catching the exception.
-    constexpr auto kMinCalls = 2;
-    constexpr auto kMaxWait = 2000ms;
-    constexpr auto kPollInterval = 5ms;
-    auto waited = 0ms;
-    while (callCount->load() < kMinCalls && waited < kMaxWait)
-    {
-        std::this_thread::sleep_for(kPollInterval);
-        waited += kPollInterval;
-    }
+    const bool continuedAfterException = waitFor([&] { return callCount->load() >= 2; });
 
-    EXPECT_GE(callCount->load(), kMinCalls);
+    EXPECT_TRUE(continuedAfterException);
     EXPECT_TRUE(sampler.isRunning());
 
     sampler.stop();

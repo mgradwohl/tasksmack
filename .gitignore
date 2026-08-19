@@ -9,6 +9,7 @@
 /release/
 /optimized/
 /.cache/
+/.venv/
 
 # CodeQL build artifacts
 /_codeql_build_dir/
@@ -57,6 +58,7 @@ install_manifest.txt
 Testing/
 CTestTestfile.cmake
 compile_commands.json
+compile_commands_notidy.json
 
 # VS Code / CLion
 *.user

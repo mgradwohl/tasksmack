@@ -1,0 +1,43 @@
+name: Manual Build
+
+# Provides the consolidated manual-dispatch entry point for the same platform/build
+# combinations covered by the standalone build-* workflows.
+# Use this when you need to trigger a specific platform/build-type combination from the
+# GitHub Actions UI without opening a PR or pushing to a tracked branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Runner OS'
+        required: true
+        default: 'ubuntu-24.04'
+        type: choice
+        options:
+          - ubuntu-24.04
+          - windows-2025
+      build_type:
+        description: 'Build preset type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+          - relwithdebinfo
+
+concurrency:
+  group: manual-build-${{ github.ref }}-${{ inputs.os }}-${{ inputs.build_type }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ${{ inputs.os }}
+      build_type: ${{ inputs.build_type }}

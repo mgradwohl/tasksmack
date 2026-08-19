@@ -21,7 +21,19 @@ check_command() {
 validate_build_prereqs() {
     check_command cmake "apt install cmake" || return 1
     check_command ninja "apt install ninja-build" || return 1
-    check_command clang++-22 "apt install clang-22 lld-22" || return 1
+    # Use the version-aware finder so the check stays valid after LLVM upgrades.
+    local clangpp
+    clangpp="$(find_llvm_tool "clang++" 2>/dev/null || true)"
+    if [[ -z "$clangpp" ]]; then
+        echo "Error: clang++ not found. Install via: apt install clang-22 lld-22 (or later)" >&2
+        return 1
+    fi
+    local clangpp_version
+    clangpp_version="$(get_llvm_tool_major_version "$clangpp" 2>/dev/null || true)"
+    if [[ -z "$clangpp_version" || "$clangpp_version" -lt 22 ]]; then
+        echo "Error: clang++ >= 22 required, found: ${clangpp_version:-unknown} ($clangpp)" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -56,6 +68,12 @@ find_llvm_tool() {
     return 1
 }
 
+# Print the LLVM major version for the given executable path.
+get_llvm_tool_major_version() {
+    local tool_path="$1"
+    "$tool_path" --version 2>/dev/null | grep -oE 'version [0-9]+' | grep -oE '[0-9]+' | head -1
+}
+
 # Returns 0 if the given executable exists and is Python >= 3.14 (project minimum).
 # Usage: _python_meets_min python3
 _python_meets_min() {
@@ -67,15 +85,16 @@ _python_meets_min() {
     (( major > 3 || (major == 3 && minor >= 14) ))
 }
 
-# Find the first Python >= 3.14 interpreter in PATH.
-# Tries 'python3' then 'python' to handle pyenv/custom installs where either
-# may point to the qualifying version.
+# Find the first Python >= 3.14 interpreter in the project venv or PATH.
 # Prints the resolved filesystem path on success; returns 1 if no qualifying interpreter found.
 find_python() {
     local exe
-    for exe in python3 python; do
+    local common_dir repo_root
+    common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_root="$(cd "${common_dir}/.." && pwd)"
+    for exe in "${repo_root}/.venv/bin/python" python3.14 python3 python; do
         if _python_meets_min "$exe"; then
-            type -P "$exe"
+            command -v "$exe"
             return 0
         fi
     done

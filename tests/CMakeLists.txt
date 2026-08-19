@@ -187,12 +187,14 @@ target_include_directories(TaskSmackTests PRIVATE
 )
 
 target_link_libraries(TaskSmackTests PRIVATE
-    gtest_main
+    gtest
+    gmock
     spdlog::spdlog_header_only
     tomlplusplus::tomlplusplus
     SDL3::SDL3
     glad_gl_core_33
 )
+tasksmack_apply_linux_toolchain(TaskSmackTests)
 
 # Platform-specific library linking
 if(UNIX AND NOT APPLE)
