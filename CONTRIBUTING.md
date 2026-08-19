@@ -457,6 +457,23 @@ caller-provided `suppressions=` will override the project's — add entries to
 This suppression filters known ThreadSanitizer false positives in third-party
 pthread barrier paths, while preserving any caller-provided TSAN flags.
 
+## Fuzzing (Linux only)
+
+ClusterFuzzLite continuously exercises the allocation-free `/proc` numeric
+parsers with libFuzzer and AddressSanitizer. Pull requests that change the
+parser or fuzzing configuration run a short code-change fuzzing job; `main`
+also produces a baseline build. Separate weekly jobs perform a longer batch
+run and prune the resulting corpus.
+
+To run the current target locally with Clang:
+
+```bash
+mkdir -p build/fuzz
+clang++-22 -std=c++23 -Isrc -fsanitize=fuzzer,address \
+  tests/fuzz/fuzz_proc_parsing.cpp -o build/fuzz/fuzz_proc_parsing
+./build/fuzz/fuzz_proc_parsing -max_total_time=60
+```
+
 ## Benchmarks
 
 TaskSmack includes a benchmark suite using [Google Benchmark](https://github.com/google/benchmark) for tracking performance regressions and identifying hot paths.
@@ -930,6 +947,10 @@ GitHub Actions runs:
   - Sanitizers (Linux: ASan+UBSan, TSan)
 - `pre-commit.yml`:
   - pre-commit hooks (includes formatting and hygiene checks)
+- `codeql.yml`:
+  - CodeQL security-and-quality analysis on pushes to `main`, pull requests, and a weekly schedule
+- `cflite_pr.yml`, `cflite_build.yml`, `cflite_batch.yml`, and `cflite_prune.yml`:
+  - ClusterFuzzLite parser fuzzing on relevant pull requests, baseline builds on `main`, and weekly batch/pruning jobs
 - `osv-scanner.yml`:
   - Dependency vulnerability scan (Syft SBOM + OSV database)
 

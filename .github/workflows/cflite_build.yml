@@ -1,0 +1,28 @@
+name: ClusterFuzzLite Continuous Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.clusterfuzzlite/**'
+      - '.github/workflows/cflite_*.yml'
+      - 'src/Platform/Linux/ProcParsing.h'
+      - 'tests/fuzz/**'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build:
+    name: Build fuzzers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Build and upload fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: c++
+          sanitizer: address
+          upload-build: true

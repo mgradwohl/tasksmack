@@ -1,22 +1,23 @@
 #pragma once
 
-// Keep this header parseable on non-Linux platforms (e.g. Windows clangd)
-// by exposing the helpers only when targeting Linux and required headers exist.
-#if defined(__linux__) && __has_include(<unistd.h>)
-
-#include <array>
-#include <cerrno>
 #include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <system_error>
+
+#if defined(__linux__) && __has_include(<unistd.h>)
+#include <array>
+#include <cerrno>
 #include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace Platform::ProcParsing
 {
+
+#if defined(__linux__) && __has_include(<unistd.h>)
 
 /// Read a /proc or /sys virtual file using low-level POSIX I/O.
 /// Avoids std::ifstream overhead (locale machinery, sentry, streambuf allocations).
@@ -99,6 +100,8 @@ namespace Platform::ProcParsing
     return buf;
 }
 
+#endif
+
 /// Skip ASCII space/tab characters, returning the updated pointer.
 [[nodiscard]] constexpr const char* skipSpaces(const char* p, const char* end) noexcept
 {
@@ -142,5 +145,3 @@ inline bool parseDouble(const char*& p, const char* end, double& out) noexcept
 }
 
 } // namespace Platform::ProcParsing
-
-#endif // defined(__linux__) && __has_include(<unistd.h>)
