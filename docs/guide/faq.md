@@ -51,7 +51,7 @@ sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
 
 **Checklist:**
 
-1. Confirm the driver is installed: `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) should run successfully.
+1. Confirm the driver is installed: run `nvidia-smi` for NVIDIA, or `rocm-smi` for AMD on Linux with ROCm.
 2. For NVML or ROCm, check that the shared library is discoverable through the normal loader path.
 3. Restart TaskSmack after installing the driver.
 

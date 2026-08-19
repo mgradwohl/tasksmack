@@ -14,7 +14,7 @@ This directory contains TOML theme files that customize TaskSmack's appearance.
 1. Copy an existing theme file, such as `arctic-fire.toml`.
 2. Rename it, such as `my-theme.toml`.
 3. Edit the colors.
-4. Restart TaskSmack or reload themes.
+4. Restart TaskSmack to load the new theme.
 
 ### User Themes Directory
 
