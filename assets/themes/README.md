@@ -4,17 +4,17 @@ This directory contains TOML theme files that customize TaskSmack's appearance.
 
 ## Using Themes
 
-1. Select a theme from **Settings** (⚙) → **Theme** dropdown
-2. Click **Apply** to activate the theme
+1. Select a theme from **Settings** → **Theme**.
+2. Click **Apply**.
 
 ## Creating Custom Themes
 
 ### Quick Start
 
-1. Copy an existing theme file (e.g., `arctic-fire.toml`)
-2. Rename it (e.g., `my-theme.toml`)
-3. Edit the colors to your liking
-4. Restart TaskSmack or reload themes
+1. Copy an existing theme file, such as `arctic-fire.toml`.
+2. Rename it, such as `my-theme.toml`.
+3. Edit the colors.
+4. Restart TaskSmack to load the new theme.
 
 ### User Themes Directory
 
@@ -202,10 +202,20 @@ Alpha values:
 |-------|-------------|
 | Arctic Fire | Blue → Emerald → Amber → Red gradient (dark) |
 | Arctic Fire Light | Light version of Arctic Fire |
+| Latte | Catppuccin-inspired warm light background with pastel accents |
+| Mocha | Catppuccin-inspired warm dark background with pastel accents |
 | Cyberpunk | Neon pink/cyan synthwave aesthetic (dark) |
 | Cyberpunk Light | Light version of Cyberpunk |
+| Dracula | Dark purple theme with vivid accents |
+| Gruvbox | Warm retro dark theme |
+| Gruvbox Light | Warm retro light theme |
 | Monochrome | Classic green terminal/CRT aesthetic (dark) |
 | Monochrome Light | Light version with green accents |
+| Nord | Cool polar dark palette |
+| Nord Light | Cool polar light palette |
+| Solarized Dark | Solarized palette for dark backgrounds |
+| Solarized Light | Solarized palette for light backgrounds |
+| Tokyo Night | Deep navy theme with vivid accents |
 | Ubuntu Dark | Ubuntu/GNOME-inspired dark theme |
 | Ubuntu Light | Ubuntu/GNOME-inspired light theme |
 | Windows Dark | Windows 11 dark mode inspired |

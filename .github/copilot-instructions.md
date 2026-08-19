@@ -1,22 +1,24 @@
 # TaskSmack - Copilot Instructions
 
-Cross-platform system monitor (C++23 / Clang 21+ / OpenGL / ImGui). Strict layered architecture: **Platform → Domain → UI**.
+Cross-platform system monitor (C++23 / Clang/LLVM 22 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
 
-> **Related Docs:** [README.md](../README.md) (project overview), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture + implementation notes), [completed-features.md](../completed-features.md) (shipped features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../completed-features.md) (implemented features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
 
 ## Documentation Map (Source of Truth)
 
 TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
 
-- **Users / project overview:** [README.md](../README.md)
-    - Keep this feature-focused. It should only include a small section pointing contributors to [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Project landing page:** [README.md](../README.md)
+    - Keep this concise: overview, support, downloads, highlights, and documentation index.
+- **User guide:** [docs/guide/user-guide.md](../docs/guide/user-guide.md) and [docs/guide/faq.md](../docs/guide/faq.md)
+    - Installation, usage, configuration, platform differences, and troubleshooting.
 - **Contributors / engineering workflow (canonical):** [CONTRIBUTING.md](../CONTRIBUTING.md)
     - Build/test/tools, prerequisites, formatting/linting, packaging, contributor workflow.
     - If you change build/test/tooling, update this file.
-- **Architecture + engineering notes (canonical):** [tasksmack.md](../tasksmack.md)
-    - Platform → Domain → UI contract, design rationale, roadmap / engineering notes.
-- **Shipped features list (canonical):** [completed-features.md](../completed-features.md)
-    - Completed features should live here; other docs may link to it.
+- **Architecture + engineering direction (canonical):** [tasksmack.md](../tasksmack.md)
+    - Layer contracts, sampling, capability behavior, platform strategy, and roadmap.
+- **Implemented features list (canonical):** [completed-features.md](../completed-features.md)
+    - User-visible and engineering features already implemented.
 - **Agent guidance:** [copilot-instructions.md](copilot-instructions.md) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
     - Primarily for agents, but still useful to contributors.
 - **Security policy:** [SECURITY.md](../SECURITY.md)
@@ -29,7 +31,7 @@ Contribution process helpers:
 - PR checklist: [.github/pull_request_template.md](pull_request_template.md)
 - Issue templates: [.github/ISSUE_TEMPLATE/](ISSUE_TEMPLATE/)
 
-If you need to add new documentation, keep it narrowly scoped and update the relevant file(s) above to link to it.
+The `docs/dev/` pages are navigation pages, not duplicate developer references. If you need to add documentation, keep it narrowly scoped and link to the relevant canonical source.
 
 ## Quick Reference
 
@@ -37,7 +39,11 @@ If you need to add new documentation, keep it narrowly scoped and update the rel
 
 **Essential commands:**
 ```bash
-# Lint first (catches issues early)
+# Configure, build, and test
+cmake --workflow --preset dev       # Linux
+cmake --workflow --preset win-dev   # Windows
+
+# Lint
 ./tools/clang-tidy.sh debug    # Linux
 pwsh tools/clang-tidy.ps1 debug # Windows
 
@@ -45,9 +51,6 @@ pwsh tools/clang-tidy.ps1 debug # Windows
 ./tools/clang-format.sh        # Linux
 pwsh tools/clang-format.ps1    # Windows
 
-# Test after changes
-ctest --preset debug            # Linux
-ctest --preset win-debug        # Windows
 ```
 
 ## Architecture (Critical)
@@ -108,9 +111,11 @@ struct ProcessCapabilities {
 ```
 
 ### Data Refresh (Current Architecture)
-- Panels call `model->refresh()` synchronously from their `onUpdate()` method on the main thread
-- Refresh cadence is accumulator-based: each `onUpdate(deltaTime)` accumulates time and calls `refresh()` when the configured interval elapses (default 1 second)
-- `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but **not yet active** — it is a future option for moving enumeration off the main thread if UI responsiveness issues arise
+- `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
+- `SystemMetricsPanel` refreshes system and storage models from its main-thread `onUpdate()` cadence
+- GPU refresh uses a dedicated `std::jthread`
+- UI code uses snapshot versions and caches to avoid redundant process-list copies between samples
+- The default refresh interval is 1 second and is user-configurable
 
 ### Panel Lifecycle
 ```cpp
@@ -124,7 +129,7 @@ void render(bool* open) override { /* ImGui::Begin/End, render version-cached sn
 
 ### Language & Style
 - **C++ Standard:** C++23 (required)
-- **Compiler:** Clang 21+ with lld linker
+- **Compiler:** Clang/LLVM 22 with lld by default
 - **Formatting:** `.clang-format` (LLVM base, Allman braces) - run before commits
 - **Static Analysis:** `.clang-tidy` - run regularly
 
@@ -290,7 +295,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
 - New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
 - When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
-- **GLAD dependency:** Requires Python 3 + jinja2 at build time for OpenGL loader generation
+- **GLAD dependency:** Requires Python 3.14+ with jinja2 at build time for OpenGL loader generation
 - **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.
 
 ---

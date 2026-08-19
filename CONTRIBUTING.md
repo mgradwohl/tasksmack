@@ -2,17 +2,25 @@
 
 Thanks for contributing!
 
-This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging).
+This document is the single source of truth for developer setup and workflows (build, test, format, lint, profiling, and packaging).
 
 ## Documentation
 
 To avoid duplication and doc drift, these are the canonical docs:
 
-- [README.md](README.md): user-facing features (with a small contributor pointer to this file)
+- [README.md](README.md): project landing page and documentation index
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
-- [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
-- [completed-features.md](completed-features.md): canonical shipped-features list
+- [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
+- [completed-features.md](completed-features.md): canonical implemented-feature inventory
+- [docs/guide/](docs/guide/): user guide and troubleshooting
+- [docs/dev/](docs/dev/): concise docs-site navigation back to these canonical developer sources
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
+
+Avoid copying contributor commands or architecture diagrams into additional Markdown files. Link to the relevant canonical section instead.
+
+### C++ API Documentation
+
+JSDoc and language-level docstrings are not C++ conventions. When declaration-level API documentation is useful, use Doxygen-compatible `///` or `/** ... */` comments in headers. Document contracts, ownership, units, thread safety, and platform limitations; do not narrate self-explanatory accessors or repeat implementation details. Repository-level design and workflow guidance belongs in the Markdown sources above.
 
 ## Quick Start
 
@@ -71,13 +79,10 @@ If you just want a quick check of your environment, run:
 .\tools\check-prereqs.ps1   # Windows
 ```
 
-# Configure + build (Windows)
-```cmake --preset win-debug
-cmake --build --preset win-debug
-```
-
-# Run tests
 ```bash
+# Manual Windows configure, build, and test
+cmake --preset win-debug
+cmake --build --preset win-debug
 ctest --preset win-debug
 ```
 
@@ -117,7 +122,7 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - CMake 3.29+
 - Ninja
 - ccache 4.9.1+ (optional but recommended)
-- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
 
 Install Python + jinja2:
@@ -362,9 +367,6 @@ IWYU analyzes `#include` directives and suggests additions/removals for cleaner 
 ```bash
 # Ubuntu/Debian
 sudo apt install iwyu
-
-# macOS
-brew install include-what-you-use
 ```
 
 **Notes:**
@@ -602,20 +604,6 @@ heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
 
 # Headless analysis (CI-friendly)
 heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
-```
-
-### macOS (Instruments)
-
-```bash
-# Build with profile preset
-cmake --preset profile
-cmake --build --preset profile
-
-# Open in Instruments
-open -a Instruments ./build/profile/bin/TaskSmack
-
-# Or use command line
-xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/TaskSmack
 ```
 
 ### Windows — CPU profiling (ETW)

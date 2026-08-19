@@ -181,7 +181,7 @@ Copilot will read your feedback and update the PR.
 Copilot reads these files automatically:
 - `.github/copilot-instructions.md` - Architecture and coding standards
 - `README.md` - Project overview
-- `tasksmack.md` - Architecture + process/metrics notes
+- `tasksmack.md` - Canonical architecture and metrics pipeline
 - `CONTRIBUTING.md` - Build/test/tools workflow
 - `completed-features.md` - Shipped features list
 - Encoding: project strings are UTF-8 internally. On Windows, use wide Win32/PDH APIs and convert at the boundaries; avoid ANSI APIs.
@@ -268,7 +268,7 @@ If Copilot's PR has clang-tidy warnings:
 |------|---------|
 | `.github/copilot-instructions.md` | Architecture, coding standards, patterns |
 | `README.md` | Project overview |
-| `tasksmack.md` | High-level architecture vision + process/metrics notes |
+| `tasksmack.md` | Canonical architecture, sampling, and engineering direction |
 | `CONTRIBUTING.md` | Build/test/tools workflow |
 | `completed-features.md` | Shipped features |
 | `.clang-format` | Code formatting rules |
@@ -300,7 +300,7 @@ Use these labels to help Copilot prioritize:
 - [GitHub Copilot Best Practices](https://docs.github.com/en/copilot/tutorials/coding-agent/get-the-best-results)
 - [TaskSmack Architecture](../tasksmack.md)
 - [TaskSmack Contributing Guide](../CONTRIBUTING.md)
-- [TaskSmack Process / Metrics Notes](../tasksmack.md)
+- [TaskSmack User Guide](../docs/guide/user-guide.md)
 
 ---
 
