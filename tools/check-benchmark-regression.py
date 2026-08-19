@@ -7,9 +7,9 @@ Usage:
         --current perf-data/benchmark-latest.json [--threshold 15]
 
 Exit codes:
-    0  All benchmarks within threshold (or no matching benchmarks found)
+    0  All matched benchmarks are within threshold
     1  One or more benchmarks regressed beyond the threshold
-    2  Usage error / file not found
+    2  Usage error, invalid input, or no matching benchmarks
 
 The threshold is a percentage: a benchmark that is more than THRESHOLD% slower than the
 baseline is considered a regression.  Improvements are always accepted.
@@ -83,8 +83,8 @@ def main() -> int:
     print(f"Regression threshold: {args.threshold:.1f}%")
     print()
 
-    regressions: list[tuple[str, float, float, float, str]] = []
-    improvements: list[tuple[str, float, float, float, str]] = []
+    regressions: list[tuple[str, float, str, float, str, float]] = []
+    improvements: list[tuple[str, float, str, float, str, float]] = []
     matched = 0
 
     for name, cur_bm in current.items():
@@ -118,32 +118,31 @@ def main() -> int:
         pct_change = ((cur_time_normalized - base_time_normalized) / base_time_normalized) * 100.0
 
         if pct_change > args.threshold:
-            regressions.append((name, base_time, cur_time, pct_change, cur_unit))
+            regressions.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
         elif pct_change < -5.0:
-            improvements.append((name, base_time, cur_time, pct_change, cur_unit))
+            improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
 
     if matched == 0:
-        print("No matching benchmark names between baseline and current run.")
-        print("Run will be treated as passing (no regressions detectable).")
-        return 0
+        print("ERROR: no matching benchmark names between baseline and current run.", file=sys.stderr)
+        return 2
 
     # ── Report improvements ───────────────────────────────────────────────────
     if improvements:
-        print(f"✅ Improvements ({len(improvements)}):")
-        for name, base, cur, pct, unit in sorted(improvements, key=lambda x: x[3]):
-            print(f"   {name}: {base:.1f}{unit} → {cur:.1f}{unit}  ({pct:+.1f}%)")
+        print(f"Improvements ({len(improvements)}):")
+        for name, base, base_unit, cur, cur_unit, pct in sorted(improvements, key=lambda x: x[5]):
+            print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%)")
         print()
 
     # ── Report regressions ────────────────────────────────────────────────────
     if regressions:
-        print(f"❌ Regressions ({len(regressions)}) — exceeded {args.threshold:.1f}% threshold:")
-        for name, base, cur, pct, unit in sorted(regressions, key=lambda x: -x[3]):
-            print(f"   {name}: {base:.1f}{unit} → {cur:.1f}{unit}  ({pct:+.1f}%)")
+        print(f"Regressions ({len(regressions)}) - exceeded {args.threshold:.1f}% threshold:")
+        for name, base, base_unit, cur, cur_unit, pct in sorted(regressions, key=lambda x: -x[5]):
+            print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%)")
         print()
         print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%.")
         return 1
 
-    print(f"✅ All {matched} matched benchmark(s) within {args.threshold:.1f}% threshold.")
+    print(f"All {matched} matched benchmark(s) within {args.threshold:.1f}% threshold.")
     return 0
 
 

@@ -25,7 +25,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install TaskSmack development prerequisites on Linux (Ubuntu/Debian).
+Install TaskSmack development prerequisites on Ubuntu.
 
 Options:
   --dry-run    Print apt commands without executing them
@@ -67,31 +67,56 @@ echo "LLVM version: $LLVM_VERSION"
 if $DRY_RUN; then echo "(dry-run mode — nothing will be installed)"; fi
 echo ""
 
-# ── Step 1: Base build tools ──────────────────────────────────────────────────
-echo "==> Installing base build tools (cmake, ninja, python3, ccache)..."
+# ── Step 1: Signed package repositories ───────────────────────────────────────
+echo "==> Configuring signed package repositories..."
 if $DRY_RUN; then
     echo "[dry-run] sudo apt-get update"
 else
     sudo apt-get update
 fi
-run_apt cmake ninja-build python3 python3-pip python3-jinja2 ccache libfreetype6-dev
-
-# ── Step 2: LLVM / Clang toolchain ───────────────────────────────────────────
-echo ""
-echo "==> Installing LLVM $LLVM_VERSION toolchain..."
-if ! command -v wget &>/dev/null; then
-    run_apt wget
-fi
+run_apt ca-certificates gnupg software-properties-common wget
 
 if $DRY_RUN; then
-    echo "[dry-run] download and run llvm.sh for LLVM $LLVM_VERSION"
+    echo "[dry-run] add signed Kitware, deadsnakes, and apt.llvm.org repositories"
 else
-    wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
-    chmod +x /tmp/llvm.sh
-    sudo /tmp/llvm.sh "$LLVM_VERSION"
-    rm -f /tmp/llvm.sh
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    if [[ "${ID:-}" != "ubuntu" || -z "${UBUNTU_CODENAME:-}" ]]; then
+        echo "Error: automatic setup currently supports Ubuntu only." >&2
+        exit 1
+    fi
+
+    wget -qO- https://apt.kitware.com/keys/kitware-archive-latest.asc |
+        gpg --dearmor |
+        sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${UBUNTU_CODENAME} main" |
+        sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key |
+        gpg --dearmor |
+        sudo tee /usr/share/keyrings/llvm-archive-keyring.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://apt.llvm.org/${UBUNTU_CODENAME}/ llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" |
+        sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+
+    sudo apt-get update
 fi
 
+# ── Step 2: Base build tools ──────────────────────────────────────────────────
+echo "==> Installing base build tools (CMake, Ninja, Python 3.14, ccache)..."
+run_apt cmake ninja-build python3.14 python3.14-venv ccache libfreetype6-dev
+
+PYTHON_ENV="/opt/tasksmack-python"
+run_cmd sudo python3.14 -m venv "$PYTHON_ENV"
+run_cmd sudo "$PYTHON_ENV/bin/python" -m pip install --upgrade pip jinja2
+run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python
+run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python3
+run_cmd sudo ln -sf "$PYTHON_ENV/bin/python" /usr/local/bin/python3.14
+
+# ── Step 3: LLVM / Clang toolchain ───────────────────────────────────────────
+echo ""
+echo "==> Installing LLVM $LLVM_VERSION toolchain..."
 run_apt \
     "clang-$LLVM_VERSION" \
     "clang-tidy-$LLVM_VERSION" \
@@ -113,8 +138,22 @@ else
     echo "[dry-run] sudo update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-$LLVM_VERSION     100"
 fi
 
+# ── Step 4: Build-time GUI prerequisites ─────────────────────────────────────
+echo ""
+echo "==> Installing GUI build prerequisites..."
+run_apt \
+    libgl1-mesa-dev \
+    libx11-dev \
+    libxrandr-dev \
+    libxinerama-dev \
+    libxcursor-dev \
+    libxi-dev \
+    libxext-dev \
+    libwayland-dev \
+    libxkbcommon-dev
+
 if ! $MINIMAL; then
-    # ── Step 3: Coverage and profiling tools ─────────────────────────────────
+    # ── Step 5: Coverage and profiling tools ─────────────────────────────────
     echo ""
     echo "==> Installing coverage and profiling tools..."
     run_apt "clangd-$LLVM_VERSION"
@@ -126,30 +165,16 @@ if ! $MINIMAL; then
         echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-cov ..."
     fi
 
-    # ── Step 4: GUI/display prerequisites (headless test runs) ───────────────
+    # ── Step 6: Headless test runtime ────────────────────────────────────────
     echo ""
-    echo "==> Installing GUI prerequisites (xvfb, X11 libs)..."
-    run_apt \
-        xvfb \
-        libgl1-mesa-dev \
-        libx11-dev \
-        libxrandr-dev \
-        libxinerama-dev \
-        libxcursor-dev \
-        libxi-dev \
-        libxext-dev \
-        libwayland-dev \
-        libxkbcommon-dev
+    echo "==> Installing headless test runtime..."
+    run_apt xvfb
 
-    # ── Step 5: Optional tools (pre-commit) ──────────────────────────────────
+    # ── Step 7: Optional tools (pre-commit) ──────────────────────────────────
     echo ""
     echo "==> Installing pre-commit (optional but recommended)..."
-    if $DRY_RUN; then
-        echo "[dry-run] pip3 install --user pre-commit"
-    else
-        pip3 install --user pre-commit 2>/dev/null || pip install --user pre-commit 2>/dev/null || \
-            echo "  Note: pip install of pre-commit failed; install manually: pip3 install pre-commit"
-    fi
+    run_cmd sudo "$PYTHON_ENV/bin/python" -m pip install pre-commit
+    run_cmd sudo ln -sf "$PYTHON_ENV/bin/pre-commit" /usr/local/bin/pre-commit
 fi
 
 echo ""

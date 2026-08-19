@@ -106,6 +106,7 @@ fi
 if $VERBOSE; then
     echo "Generating clang-tidy compilation database via CMake target..."
 fi
+rm -f "$COMPILE_COMMANDS_TIDY"
 cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
 
 # If the CMake target didn't produce the file (older build dir or no CLANG_TIDY_EXE at configure

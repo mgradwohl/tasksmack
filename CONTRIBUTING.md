@@ -873,8 +873,8 @@ Key CMake options:
 | `TASKSMACK_ENABLE_WARNINGS` | `ON` | Enable extra warnings |
 | `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
 | `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` (Clang): per-TU compile-time flamegraphs |
+| `TASKSMACK_ENABLE_UNITY_BUILD` | `OFF` | Enable unity compilation for TaskSmack-owned targets |
 | `TASKSMACK_LINKER` | `lld` | Linker to use: `lld`, `mold`, or `default` |
-| `TASKSMACK_LINK_STATS` | `OFF` | Print linker memory usage (`--print-memory-usage`) |
 
 To disable warnings-as-errors for local iteration:
 

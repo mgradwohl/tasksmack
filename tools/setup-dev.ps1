@@ -22,14 +22,52 @@ param(
 $ErrorActionPreference = 'Stop'
 
 function Invoke-WinGet {
-    param([string[]]$Args)
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments)]
+        [string[]]$Arguments
+    )
     if ($DryRun) {
-        Write-Host "[dry-run] winget $($Args -join ' ')"
+        Write-Host "[dry-run] winget $($Arguments -join ' ')"
     } else {
-        winget @Args
+        winget @Arguments
         if ($LASTEXITCODE -ne 0) {
-            throw "winget failed with exit code $LASTEXITCODE: winget $($Args -join ' ')"
+            throw "winget failed with exit code ${LASTEXITCODE}: winget $($Arguments -join ' ')"
         }
+    }
+}
+
+function Resolve-Python314 {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python314\python.exe"),
+        (Join-Path $env:ProgramFiles "Python314\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command python3.14 -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    throw "Python 3.14 was installed but its executable could not be located. Restart the terminal and rerun this script."
+}
+
+function Invoke-Python {
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments)]
+        [string[]]$Arguments
+    )
+    if ($DryRun) {
+        Write-Host "[dry-run] python3.14 $($Arguments -join ' ')"
+        return
+    }
+
+    & $script:PythonExecutable @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python failed with exit code ${LASTEXITCODE}: python3.14 $($Arguments -join ' ')"
     }
 }
 
@@ -40,7 +78,7 @@ Write-Host ""
 
 # ── Verify winget is available ────────────────────────────────────────────────
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Write-Error "winget not found. Install it from the Microsoft Store or update Windows."
+    throw "winget not found. Install it from the Microsoft Store or update Windows."
 }
 
 # ── Step 1: Core build tools ─────────────────────────────────────────────────
@@ -52,6 +90,9 @@ Invoke-WinGet install --id Ninja-build.Ninja --source winget --silent --accept-p
 
 Write-Host "==> Installing Python 3..."
 Invoke-WinGet install --id Python.Python.3.14 --source winget --silent --accept-package-agreements --accept-source-agreements
+if (-not $DryRun) {
+    $script:PythonExecutable = Resolve-Python314
+}
 
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
 Write-Host ""
@@ -78,21 +119,13 @@ Invoke-WinGet install --id ccache.ccache --source winget --silent --accept-packa
 # ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
-if ($DryRun) {
-    Write-Host "[dry-run] pip install jinja2"
-} else {
-    pip install jinja2
-}
+Invoke-Python @("-m", "pip", "install", "jinja2")
 
 if (-not $Minimal) {
     # ── Step 5: pre-commit ──────────────────────────────────────────────────
     Write-Host ""
     Write-Host "==> Installing pre-commit (optional but recommended)..."
-    if ($DryRun) {
-        Write-Host "[dry-run] pip install pre-commit"
-    } else {
-        pip install pre-commit
-    }
+    Invoke-Python @("-m", "pip", "install", "pre-commit")
 }
 
 Write-Host ""

@@ -48,6 +48,7 @@ option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)
+option(TASKSMACK_ENABLE_UNITY_BUILD "Enable unity builds for TaskSmack-owned targets" OFF)
 set(TASKSMACK_FETCHCONTENT_CACHE_DIR "" CACHE PATH "Override FetchContent/CPM cache directory when caching is enabled")
 # TASKSMACK_MARCH is available for manual override via command line (e.g., -DTASKSMACK_MARCH=native)
 # Presets specify -march directly in CMAKE_CXX_FLAGS_RELEASE for self-contained configurations
@@ -58,9 +59,7 @@ option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph 
 # Linker selection on Unix (ignored on Windows, which always uses lld-link via CMAKE_LINKER_TYPE=LLD).
 # Supported values: lld (default), mold (faster incremental debug links), default (system linker).
 set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
-# Print lld's memory-region usage report after each link step (--print-memory-usage).
-# This is linker-provided diagnostic output, not a process RSS measurement.
-option(TASKSMACK_LINK_STATS "Print linker memory usage after each link (lld only)" OFF)
+set_property(CACHE TASKSMACK_LINKER PROPERTY STRINGS lld mold default)
 
 # Compiler caching (ccache/sccache) - required for development
 if(TASKSMACK_ENABLE_CCACHE)
@@ -347,7 +346,7 @@ set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
 # Early check for GLAD requirements (Python3 + jinja2)
 # GLAD generation uses jinja2 templates and fails with cryptic errors if not installed
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.14 REQUIRED COMPONENTS Interpreter)
 execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import jinja2"
     RESULT_VARIABLE JINJA2_CHECK
@@ -701,6 +700,14 @@ if(WIN32)
     message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
 endif()
 
+# Enable unity compilation only after third-party targets have been declared. Setting
+# CMAKE_UNITY_BUILD in a preset would also combine dependency sources and can trigger
+# collisions between their private macros and identifiers.
+if(TASKSMACK_ENABLE_UNITY_BUILD)
+    set(CMAKE_UNITY_BUILD ON)
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
+endif()
+
 add_executable(TaskSmack WIN32
     ${TASKSMACK_SOURCES}
     ${TASKSMACK_HEADERS}
@@ -724,14 +731,6 @@ if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     else()
         target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
     endif()
-endif()
-
-# Linker memory-region usage reporting (lld --print-memory-usage).
-# Gate on lld being selected: mold uses different diagnostics, default linker may not support it.
-if(TASKSMACK_LINK_STATS AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"
-        AND (TASKSMACK_LINKER STREQUAL "lld" OR TASKSMACK_LINKER STREQUAL ""))
-    target_link_options(TaskSmack PRIVATE "LINKER:--print-memory-usage")
-    message(STATUS "Link memory stats enabled (--print-memory-usage)")
 endif()
 
 # Precompiled headers

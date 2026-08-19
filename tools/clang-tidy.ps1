@@ -108,6 +108,7 @@ if (-not (Test-Path $CompileCommandsJson)) {
 if ($ShowDetails) {
     Write-Host "Generating sanitized clang-tidy compilation database..."
 }
+Remove-Item $CompileCommandsTidy -Force -ErrorAction SilentlyContinue
 & cmake --build $BuildDir --target generate-clang-tidy-compile-commands 2>$null
 if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
     Write-Host "Falling back to local compile_commands sanitization..."

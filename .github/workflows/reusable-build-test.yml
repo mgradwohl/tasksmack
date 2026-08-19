@@ -88,18 +88,12 @@ jobs:
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        env:
-          GTEST_SHUFFLE: '1'
-          GTEST_RANDOM_SEED: '0'
-        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset ${{ inputs.build_type }} -j $(nproc) --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          GTEST_SHUFFLE: '1'
-          GTEST_RANDOM_SEED: '0'
-        run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --output-on-failure --timeout 60 --output-junit test-results.xml
+        run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux'
@@ -118,7 +112,10 @@ jobs:
           retention-days: 30
 
       - name: Publish test results to Job Summary
-        if: always()
+        if: >-
+          always() &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
         uses: dorny/test-reporter@31a54ee7ebcacc03a09ea97a7e5465a47b84aea5 # v1.9.1
         with:
           name: Test Results (${{ inputs.os }} ${{ inputs.build_type }})
