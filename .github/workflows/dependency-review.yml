@@ -24,5 +24,5 @@ jobs:
       - name: Review dependencies for CVEs
         uses: actions/dependency-review-action@38ecb5b593bf0eb19e335c03f97670f792489a8b # v4.7.1
         with:
-          fail-on-severity: high
+          fail-on-severity: low
           comment-summary-in-pr: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'always' || 'never' }}

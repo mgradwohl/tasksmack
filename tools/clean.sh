@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./tools/clean.sh              # Remove build/ and coverage/ only (safe for incremental rebuilds)
-#   ./tools/clean.sh --all        # Also remove .cache/ (FetchContent downloads — re-fetched on next build)
+#   ./tools/clean.sh --all        # Also remove caches, release/profile output, and compilation databases
 #   ./tools/clean.sh --dry-run    # Print what would be removed without deleting anything
 #
 # Pass --yes to skip the confirmation prompt.
@@ -24,7 +24,7 @@ Usage: $(basename "$0") [OPTIONS]
 Remove TaskSmack build artifacts and caches.
 
 Options:
-  --all        Also remove .cache/ (FetchContent/CPM downloads)
+  --all        Also remove .cache/, dist/, profiles/, and compilation databases
   --dry-run    Print what would be removed without deleting anything
   --yes        Skip the confirmation prompt
   -h, --help   Show this help
@@ -45,13 +45,13 @@ done
 TARGETS=(
     "${REPO_ROOT}/build"
     "${REPO_ROOT}/coverage"
-    "${REPO_ROOT}/dist"
-    "${REPO_ROOT}/compile_commands.json"
-    "${REPO_ROOT}/compile_commands_notidy.json"
 )
 if $CLEAN_ALL; then
     TARGETS+=("${REPO_ROOT}/.cache")
+    TARGETS+=("${REPO_ROOT}/dist")
     TARGETS+=("${REPO_ROOT}/profiles")
+    TARGETS+=("${REPO_ROOT}/compile_commands.json")
+    TARGETS+=("${REPO_ROOT}/compile_commands_notidy.json")
 fi
 
 echo "The following paths will be removed:"

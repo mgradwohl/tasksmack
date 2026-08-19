@@ -246,6 +246,17 @@ if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endif()
 endif()
 
+function(tasksmack_apply_linux_toolchain target)
+    if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        if(_ts_linker_flag)
+            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
+        else()
+            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        endif()
+    endif()
+endfunction()
+
 # Security hardening flags for release builds
 # Applied only for Release-type builds to avoid impacting Debug ergonomics (e.g., ASAN stack checks).
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
@@ -727,16 +738,9 @@ endif()
 
 target_compile_features(TaskSmack PRIVATE cxx_std_23)
 
-# Ensure libc++/pthread/lld are applied across all configs on Linux when using Clang,
-# so optimized and RelWithDebInfo builds keep the same link toolchain as Debug.
-if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
-    if(_ts_linker_flag)
-        target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
-    else()
-        target_link_options(TaskSmack PRIVATE -stdlib=libc++ -pthread)
-    endif()
-endif()
+# Keep libc++, pthread, and the selected linker consistent across all
+# TaskSmack-owned executables and configurations.
+tasksmack_apply_linux_toolchain(TaskSmack)
 
 # Precompiled headers
 if(TASKSMACK_ENABLE_PCH)

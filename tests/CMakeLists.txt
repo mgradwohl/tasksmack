@@ -194,6 +194,7 @@ target_link_libraries(TaskSmackTests PRIVATE
     SDL3::SDL3
     glad_gl_core_33
 )
+tasksmack_apply_linux_toolchain(TaskSmackTests)
 
 # Platform-specific library linking
 if(UNIX AND NOT APPLE)

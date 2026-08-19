@@ -2,7 +2,7 @@
 #
 # Usage:
 #   pwsh tools/clean.ps1              # Remove build/ and coverage/ only
-#   pwsh tools/clean.ps1 -All        # Also remove .cache/ (FetchContent downloads)
+#   pwsh tools/clean.ps1 -All        # Also remove caches, release/profile output, and compilation databases
 #   pwsh tools/clean.ps1 -DryRun     # Print what would be removed without deleting
 #   pwsh tools/clean.ps1 -Yes        # Skip confirmation prompt
 
@@ -19,14 +19,14 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 $targets = @(
     (Join-Path $RepoRoot "build"),
-    (Join-Path $RepoRoot "coverage"),
-    (Join-Path $RepoRoot "dist"),
-    (Join-Path $RepoRoot "compile_commands.json"),
-    (Join-Path $RepoRoot "compile_commands_notidy.json")
+    (Join-Path $RepoRoot "coverage")
 )
 if ($All) {
     $targets += (Join-Path $RepoRoot ".cache")
+    $targets += (Join-Path $RepoRoot "dist")
     $targets += (Join-Path $RepoRoot "profiles")
+    $targets += (Join-Path $RepoRoot "compile_commands.json")
+    $targets += (Join-Path $RepoRoot "compile_commands_notidy.json")
 }
 
 Write-Host "The following paths will be removed:"

@@ -416,7 +416,9 @@ jobs:
     needs:
       - detect-docs-only
       - build-linux-debug
+      - build-linux-release
       - build-windows-debug
+      - build-windows-release
       - docs-hygiene
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -428,8 +430,11 @@ jobs:
           DOCS_ONLY:      ${{ needs.detect-docs-only.outputs.docs_only }}
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
+          EVENT_NAME:     ${{ github.event_name }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
+          LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
+          WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
         run: |
           failed=false
@@ -442,17 +447,30 @@ jobs:
             echo "❌ Documentation hygiene did not succeed: $DOCS_RESULT"
             failed=true
           fi
-          if [[ "$LINUX_RESULT" != 'success' &&
-                ! ("$LINUX_RESULT" == 'skipped' &&
-                   ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
-            echo "❌ Linux debug build did not succeed or have an intentional skip: $LINUX_RESULT"
-            failed=true
+          if [[ "$EVENT_NAME" != 'schedule' ]]; then
+            if [[ "$LINUX_RESULT" != 'success' &&
+                  ! ("$LINUX_RESULT" == 'skipped' &&
+                     ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true')) ]]; then
+              echo "❌ Linux debug build did not succeed or have an intentional skip: $LINUX_RESULT"
+              failed=true
+            fi
+            if [[ "$WINDOWS_RESULT" != 'success' &&
+                  ! ("$WINDOWS_RESULT" == 'skipped' &&
+                     ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
+              echo "❌ Windows debug build did not succeed or have an intentional skip: $WINDOWS_RESULT"
+              failed=true
+            fi
           fi
-          if [[ "$WINDOWS_RESULT" != 'success' &&
-                ! ("$WINDOWS_RESULT" == 'skipped' &&
-                   ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
-            echo "❌ Windows debug build did not succeed or have an intentional skip: $WINDOWS_RESULT"
-            failed=true
+
+          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            if [[ "$LINUX_RELEASE_RESULT" != 'success' ]]; then
+              echo "❌ Linux release build did not succeed: $LINUX_RELEASE_RESULT"
+              failed=true
+            fi
+            if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
+              echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
+              failed=true
+            fi
           fi
 
           if $failed; then

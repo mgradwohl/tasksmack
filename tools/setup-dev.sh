@@ -31,7 +31,7 @@ Install TaskSmack development prerequisites on Ubuntu.
 Options:
   --dry-run    Print apt commands without executing them
   --minimal    Install build prerequisites only; skip coverage/profiling/format tools
-  --llvm VER   LLVM major version to install (default: $LLVM_VERSION)
+  --llvm VER   LLVM major version to install (currently must be 22)
   -h, --help   Show this help
 EOF
     exit 0
@@ -41,11 +41,23 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=true; shift ;;
         --minimal) MINIMAL=true; shift ;;
-        --llvm) LLVM_VERSION="$2"; shift 2 ;;
+        --llvm)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --llvm requires a version." >&2
+                exit 2
+            fi
+            LLVM_VERSION="$2"
+            shift 2
+            ;;
         -h|--help) usage ;;
         *) echo "Unknown argument: $1" >&2; usage ;;
     esac
 done
+
+if [[ "$LLVM_VERSION" != "22" ]]; then
+    echo "Error: TaskSmack presets currently require LLVM 22; received LLVM $LLVM_VERSION." >&2
+    exit 2
+fi
 
 run_apt() {
     if $DRY_RUN; then

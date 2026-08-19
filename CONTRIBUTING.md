@@ -198,7 +198,7 @@ Remove stale build directories, FetchContent cache, and coverage output:
 
 ```bash
 ./tools/clean.sh          # Remove build/ and coverage/  (Linux)
-./tools/clean.sh --all    # Also removes .cache/, dist/, and profiles/ (triggers dependency re-download / drops PGO data)
+./tools/clean.sh --all    # Also removes .cache/, dist/, profiles/, and compilation databases
 ./tools/clean.sh --dry-run  # Preview what would be removed without deleting anything
 
 pwsh tools/clean.ps1      # Windows equivalent (same flags)
@@ -880,7 +880,7 @@ Key CMake options:
 | `TASKSMACK_WARNINGS_AS_ERRORS` | `ON` | Treat warnings as errors |
 | `TASKSMACK_ENABLE_TIME_TRACE` | `OFF` | Enable `-ftime-trace` for TaskSmack sources (Clang): per-TU compile-time flamegraphs |
 | `TASKSMACK_ENABLE_UNITY_BUILD` | `OFF` | Enable unity compilation for TaskSmack-owned targets |
-| `TASKSMACK_LINKER` | `lld` | Linker to use: `lld`, `mold`, or `default` |
+| `TASKSMACK_LINKER` | `lld` | Linker used by all TaskSmack executables: `lld`, `mold`, or `default` |
 
 To disable warnings-as-errors for local iteration:
 
