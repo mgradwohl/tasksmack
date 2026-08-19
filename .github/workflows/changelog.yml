@@ -16,6 +16,8 @@ jobs:
     name: Generate Changelog
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TAG_NAME: ${{ github.ref_name }}
     permissions:
       contents: write
       pull-requests: write
@@ -26,8 +28,8 @@ jobs:
         # Reject pre-release/4-part tags (e.g. v1.2.3-rc1, v1.2.3.4) so the
         # generated changelog always contains a proper release section.
         run: |
-          if ! [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag '${{ github.ref_name }}' is not strict semver (vMAJOR.MINOR.PATCH). Aborting changelog generation."
+          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH). Aborting changelog generation."
             exit 1
           fi
 
@@ -44,10 +46,10 @@ jobs:
         # Abort if the tag was not pushed from main to prevent generating a
         # changelog from the wrong set of commits and committing it to main.
         run: |
-          TAG_SHA=$(git rev-list -n1 "${{ github.ref_name }}")
+          TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
           MAIN_SHA=$(git rev-parse origin/main)
           if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "Tag '${{ github.ref_name }}' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting."
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting."
             exit 1
           fi
 
@@ -55,7 +57,7 @@ jobs:
         # Reset the branch before generation so reruns always start from the
         # existing changelog PR branch when it exists, or from main on first run.
         run: |
-          BRANCH="chore/changelog-${{ github.ref_name }}"
+          BRANCH="chore/changelog-$TAG_NAME"
           if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
             if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
               git push origin --delete "$BRANCH"
@@ -87,7 +89,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="chore/changelog-${{ github.ref_name }}"
+          BRANCH="chore/changelog-$TAG_NAME"
           if gh pr list --head "$BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
             PR_EXISTS=false
           else
@@ -102,7 +104,7 @@ jobs:
           fi
           # Use a non-conventional commit message so git-cliff does not
           # include this generated changelog commit in future release notes.
-          git commit -m "Update CHANGELOG.md for ${{ github.ref_name }}"
+          git commit -m "Update CHANGELOG.md for $TAG_NAME"
           git push origin "$BRANCH"
           if [ "$PR_EXISTS" = false ]; then
             PR_CREATE_ERROR_FILE=$(mktemp)
@@ -112,8 +114,8 @@ jobs:
             if ! gh pr create \
               --base main \
               --head "$BRANCH" \
-              --title "Update CHANGELOG.md for ${{ github.ref_name }}" \
-              --body "Auto-generated changelog for the ${{ github.ref_name }} release via git-cliff." \
+              --title "Update CHANGELOG.md for $TAG_NAME" \
+              --body "Auto-generated changelog for the $TAG_NAME release via git-cliff." \
               --label "documentation" 2>"$PR_CREATE_ERROR_FILE"; then
               if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible by integration|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
                 echo "Unable to create PR from workflow token."

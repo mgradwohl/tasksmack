@@ -43,8 +43,9 @@ NVMLGPUProbe::~NVMLGPUProbe()
 
 bool NVMLGPUProbe::loadNVML()
 {
-    // Try to load NVML library (nvml.dll on Windows)
-    m_NVMLHandle = LoadLibraryA("nvml.dll");
+    // NVIDIA installs NVML in System32. Restrict the search to that trusted
+    // directory so a portable installation cannot load an adjacent DLL.
+    m_NVMLHandle = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (m_NVMLHandle == nullptr)
     {
         spdlog::debug("NVMLGPUProbe: Failed to load nvml.dll (NVIDIA driver not installed)");
