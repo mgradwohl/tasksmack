@@ -32,6 +32,26 @@ TEST(NumericTest, ToDoubleFromFloat)
     EXPECT_DOUBLE_EQ(toDouble(-1.5F), -1.5);
 }
 
+// ========== counterDelta/counterRate Tests ==========
+
+TEST(NumericTest, CounterDeltaHandlesIncreaseAndReset)
+{
+    EXPECT_EQ(counterDelta(std::uint64_t{125}, std::uint64_t{100}), 25);
+    EXPECT_EQ(counterDelta(std::uint64_t{75}, std::uint64_t{100}), 0);
+}
+
+TEST(NumericTest, CounterRateUsesElapsedTime)
+{
+    EXPECT_DOUBLE_EQ(counterRate(std::uint64_t{150}, std::uint64_t{100}, 2.0), 25.0);
+}
+
+TEST(NumericTest, CounterRateReturnsZeroForResetOrInvalidElapsedTime)
+{
+    EXPECT_DOUBLE_EQ(counterRate(std::uint64_t{50}, std::uint64_t{100}, 1.0), 0.0);
+    EXPECT_DOUBLE_EQ(counterRate(std::uint64_t{150}, std::uint64_t{100}, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(counterRate(std::uint64_t{150}, std::uint64_t{100}, -1.0), 0.0);
+}
+
 // ========== clampPercentToFloat Tests ==========
 
 TEST(NumericTest, ClampPercentToFloatInRange)

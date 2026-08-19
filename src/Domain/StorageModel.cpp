@@ -1,6 +1,8 @@
 #include "StorageModel.h"
 
 #include "Domain/StorageSnapshot.h"
+#include "History.h"
+#include "Numeric.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
 
@@ -151,32 +153,19 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
         return snap;
     }
 
-    const uint64_t deltaReadSectors =
-        (current.readSectors >= state.prevCounters.readSectors) ? (current.readSectors - state.prevCounters.readSectors) : 0;
-
-    const uint64_t deltaWriteSectors =
-        (current.writeSectors >= state.prevCounters.writeSectors) ? (current.writeSectors - state.prevCounters.writeSectors) : 0;
-
-    const uint64_t deltaReadOps =
-        (current.readsCompleted >= state.prevCounters.readsCompleted) ? (current.readsCompleted - state.prevCounters.readsCompleted) : 0;
-
-    const uint64_t deltaWriteOps = (current.writesCompleted >= state.prevCounters.writesCompleted)
-                                     ? (current.writesCompleted - state.prevCounters.writesCompleted)
-                                     : 0;
-
-    const uint64_t deltaReadTime =
-        (current.readTimeMs >= state.prevCounters.readTimeMs) ? (current.readTimeMs - state.prevCounters.readTimeMs) : 0;
-
-    const uint64_t deltaWriteTime =
-        (current.writeTimeMs >= state.prevCounters.writeTimeMs) ? (current.writeTimeMs - state.prevCounters.writeTimeMs) : 0;
-
-    const uint64_t deltaIoTime = (current.ioTimeMs >= state.prevCounters.ioTimeMs) ? (current.ioTimeMs - state.prevCounters.ioTimeMs) : 0;
+    const std::uint64_t deltaReadSectors = Numeric::counterDelta(current.readSectors, state.prevCounters.readSectors);
+    const std::uint64_t deltaWriteSectors = Numeric::counterDelta(current.writeSectors, state.prevCounters.writeSectors);
+    const std::uint64_t deltaReadOps = Numeric::counterDelta(current.readsCompleted, state.prevCounters.readsCompleted);
+    const std::uint64_t deltaWriteOps = Numeric::counterDelta(current.writesCompleted, state.prevCounters.writesCompleted);
+    const std::uint64_t deltaReadTime = Numeric::counterDelta(current.readTimeMs, state.prevCounters.readTimeMs);
+    const std::uint64_t deltaWriteTime = Numeric::counterDelta(current.writeTimeMs, state.prevCounters.writeTimeMs);
+    const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
     snap.readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
     snap.writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
-    snap.readOpsPerSec = static_cast<double>(deltaReadOps) / deltaSeconds;
-    snap.writeOpsPerSec = static_cast<double>(deltaWriteOps) / deltaSeconds;
+    snap.readOpsPerSec = Numeric::toDouble(deltaReadOps) / deltaSeconds;
+    snap.writeOpsPerSec = Numeric::toDouble(deltaWriteOps) / deltaSeconds;
 
     // Compute average I/O times
     if (deltaReadOps > 0)
@@ -198,11 +187,7 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 void StorageModel::trimHistory(double nowSeconds)
 {
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    while (!m_Timestamps.empty() && (m_Timestamps.front() < cutoff))
-    {
-        m_Timestamps.pop_front();
-        m_History.pop_front();
-    }
+    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps, cutoff, m_History));
 
     // Align per-disk deques to the timestamp count so each disk series remains
     // index-aligned with m_Timestamps even when a disk is introduced later or
@@ -215,26 +200,12 @@ void StorageModel::trimHistory(double nowSeconds)
         if (auto readIt = m_DiskReadHistory.find(name); readIt != m_DiskReadHistory.end())
         {
             auto& readHist = readIt->second;
-            while (readHist.size() > targetSize)
-            {
-                readHist.pop_front();
-            }
-            while (readHist.size() < targetSize)
-            {
-                readHist.push_front({});
-            }
+            HistoryUtils::alignFrontToSize(readHist, targetSize);
         }
         if (auto writeIt = m_DiskWriteHistory.find(name); writeIt != m_DiskWriteHistory.end())
         {
             auto& writeHist = writeIt->second;
-            while (writeHist.size() > targetSize)
-            {
-                writeHist.pop_front();
-            }
-            while (writeHist.size() < targetSize)
-            {
-                writeHist.push_front({});
-            }
+            HistoryUtils::alignFrontToSize(writeHist, targetSize);
         }
     }
 }
@@ -248,7 +219,7 @@ StorageSnapshot StorageModel::latestSnapshot() const
 std::vector<StorageSnapshot> StorageModel::history() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_History.begin(), m_History.end()};
+    return HistoryUtils::toVector(m_History);
 }
 
 std::vector<double> StorageModel::totalReadHistory() const
@@ -302,7 +273,7 @@ std::vector<PerDiskHistory> StorageModel::perDiskHistory() const
 std::vector<double> StorageModel::historyTimestamps() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return {m_Timestamps.begin(), m_Timestamps.end()};
+    return HistoryUtils::toVector(m_Timestamps);
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)
