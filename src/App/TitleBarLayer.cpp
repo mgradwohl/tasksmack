@@ -107,7 +107,7 @@ template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
 // Lightweight RAII scope guard — runs a callable on scope exit.
 template<typename Fn> struct ScopeExit
 {
-    explicit ScopeExit(Fn fn) : m_fn(std::move(fn))
+    explicit ScopeExit(Fn&& fn) : m_fn(std::move(fn))
     {}
     // noexcept: exceptions must not escape destructors. The callables used here
     // (trace logging accumulations) are non-throwing; the try/catch is a safety
