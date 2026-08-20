@@ -148,8 +148,7 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
 
 TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
 {
-    // getWidth()/getHeight() must query SDL live, not a stale spec cache.
-    // We verify this by calling setSize() and checking the getters reflect the new size.
+    // Resize through SDL directly so a cached WindowSpecification cannot satisfy the assertions.
     try
     {
         Window window(WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
@@ -157,9 +156,19 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
 
-        window.setSize(512, 384);
+        if (!SDL_SetWindowSize(window.getHandle(), 512, 384) || !SDL_SyncWindow(window.getHandle()))
+        {
+            GTEST_SKIP() << "Display server could not apply the first window resize: " << SDL_GetError();
+        }
         EXPECT_EQ(window.getWidth(), 512);
         EXPECT_EQ(window.getHeight(), 384);
+
+        if (!SDL_SetWindowSize(window.getHandle(), 576, 432) || !SDL_SyncWindow(window.getHandle()))
+        {
+            GTEST_SKIP() << "Display server could not apply the second window resize: " << SDL_GetError();
+        }
+        EXPECT_EQ(window.getWidth(), 576);
+        EXPECT_EQ(window.getHeight(), 432);
     }
     catch (const std::exception& e)
     {

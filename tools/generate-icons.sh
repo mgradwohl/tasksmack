@@ -29,7 +29,7 @@ fi
 
 if ! python3 -c "import PIL" 2>/dev/null; then
     echo "Installing Pillow..."
-    pip3 install --user "pillow==12.3.0"
+    python3 -m pip install --user "pillow==12.3.0"
 fi
 
 # Sizes for icon files
