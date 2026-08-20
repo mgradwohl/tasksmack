@@ -12,7 +12,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.0'
+  LLVM_SEMVER_VERSION: '22.1.7'
 
 permissions: read-all
 
@@ -160,13 +160,11 @@ jobs:
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-sbom.spdx.json"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@3454e46d5f6a9a65ce5abe69f0d6cc52f02b6a5c # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign release artifacts with Sigstore (keyless OIDC)
         # Produces a .bundle file alongside each release artifact.
         # Verifiable with: cosign verify-blob --bundle <file>.bundle <file>
-        env:
-          COSIGN_EXPERIMENTAL: "1"
         run: |
           for f in dist/*; do
             [[ -f "$f" ]] || continue

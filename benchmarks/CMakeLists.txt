@@ -4,7 +4,7 @@ include(FetchContent)
 FetchContent_Declare(
     benchmark
     GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG 96afad55c79e02f5dfca1374e772c2be72ba631b  # v1.9.1 - pinned to SHA for supply chain security
+    GIT_TAG 192ef10025eb2c4cdd392bc502f0c852196baa48  # v1.9.5 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings
 )
 

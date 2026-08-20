@@ -47,7 +47,7 @@ source .venv/bin/activate     # Use the project-local Python environment
 ./tools/check-prereqs.sh      # Verify environment after setup
 ```
 
-The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. It installs GLAD's hash-locked build dependencies and, unless `--minimal` is used, the development dependencies from `requirements.txt`. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
 
 ### Automated Setup (Windows)
 
@@ -56,7 +56,7 @@ pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
 
-The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, and ccache.
+The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, ccache, GLAD's hash-locked build dependencies, and, unless `-Minimal` is used, the development dependencies from `requirements.txt`.
 
 ### One-Command Dev Workflow
 
@@ -129,7 +129,7 @@ Install Python + jinja2:
 
 ```powershell
 winget install Python.Python.3.14
-py -3.14 -m pip install jinja2
+py -3.14 -m pip install --require-hashes -r requirements-glad.lock
 ```
 
 ## Pre-commit Hooks (Recommended)

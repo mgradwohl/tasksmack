@@ -41,7 +41,7 @@ if (-not $python) {
 $pillowCheck = & python -c "import PIL" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing Pillow..."
-    & pip install pillow --quiet
+    & python -m pip install "pillow==12.3.0" --quiet
 }
 
 # Sizes for icons
