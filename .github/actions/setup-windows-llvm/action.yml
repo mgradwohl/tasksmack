@@ -2,9 +2,9 @@ name: 'Setup Windows LLVM'
 description: 'Install LLVM, Ninja, and ccache on Windows via Chocolatey and add to PATH'
 inputs:
   llvm-version:
-    description: 'Full LLVM semver version to install (e.g. 22.1.0)'
+    description: 'Full LLVM semver version to install (e.g. 22.1.7)'
     required: false
-    default: '22.1.0'
+    default: '22.1.7'
 
 runs:
   using: 'composite'

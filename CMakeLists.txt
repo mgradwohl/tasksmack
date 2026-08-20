@@ -316,7 +316,7 @@ FetchContent_MakeAvailable(tomlplusplus)
 FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG f1c79c02822848a9bed4315b12c8c8f3761e1296  # Pinned to specific commit for supply-chain security
+    GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20  # Pinned to specific commit for supply-chain security
 )
 FetchContent_MakeAvailable(stb)
 
@@ -324,7 +324,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG release-3.4.4
+    GIT_TAG release-3.4.14
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
 )
 
@@ -416,7 +416,7 @@ endif()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.92.7-docking
+    GIT_TAG v1.92.9b-docking
 )
 FetchContent_MakeAvailable(imgui)
 

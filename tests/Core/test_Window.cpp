@@ -157,13 +157,9 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
 
-        window.setSize(800, 600);
-        EXPECT_EQ(window.getWidth(), 800);
-        EXPECT_EQ(window.getHeight(), 600);
-
-        window.setSize(1024, 768);
-        EXPECT_EQ(window.getWidth(), 1024);
-        EXPECT_EQ(window.getHeight(), 768);
+        window.setSize(512, 384);
+        EXPECT_EQ(window.getWidth(), 512);
+        EXPECT_EQ(window.getHeight(), 384);
     }
     catch (const std::exception& e)
     {

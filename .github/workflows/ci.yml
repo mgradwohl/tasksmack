@@ -17,7 +17,7 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
-  LLVM_SEMVER_VERSION: '22.1.0'
+  LLVM_SEMVER_VERSION: '22.1.7'
 
 permissions: read-all
 
@@ -185,7 +185,7 @@ jobs:
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -231,7 +231,7 @@ jobs:
 
       - name: Cache IWYU build
         id: cache-iwyu
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/iwyu-install
           key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ runner.os }}-v1
@@ -265,7 +265,7 @@ jobs:
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -375,7 +375,7 @@ jobs:
           max-size: 500M
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/fetchcontent
           key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt') }}

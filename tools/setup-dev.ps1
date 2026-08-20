@@ -16,10 +16,11 @@
 param(
     [switch]$DryRun,
     [switch]$Minimal,
-    [string]$LlvmVersion = "22.1.0"
+    [string]$LlvmVersion = "22.1.7"
 )
 
 $ErrorActionPreference = 'Stop'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 function Invoke-WinGet {
     param(
@@ -121,13 +122,13 @@ Invoke-WinGet install --id ccache.ccache --source winget --silent --accept-packa
 # ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
-Invoke-Python @("-m", "pip", "install", "jinja2")
+Invoke-Python @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.lock"))
 
 if (-not $Minimal) {
-    # ── Step 5: pre-commit ──────────────────────────────────────────────────
+    # ── Step 5: Development Python dependencies ─────────────────────────────
     Write-Host ""
-    Write-Host "==> Installing pre-commit (optional but recommended)..."
-    Invoke-Python @("-m", "pip", "install", "pre-commit")
+    Write-Host "==> Installing development Python dependencies..."
+    Invoke-Python @("-m", "pip", "install", "-r", (Join-Path $RepoRoot "requirements.txt"))
 }
 
 Write-Host ""

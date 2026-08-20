@@ -122,7 +122,8 @@ run_apt cmake ninja-build python3.14 python3.14-venv ccache libfreetype6-dev
 
 PYTHON_ENV="${REPO_ROOT}/.venv"
 run_cmd python3.14 -m venv "$PYTHON_ENV"
-run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip jinja2
+run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
+run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.lock"
 
 # ── Step 3: LLVM / Clang toolchain ───────────────────────────────────────────
 echo ""
@@ -180,10 +181,10 @@ if ! $MINIMAL; then
     echo "==> Installing headless test runtime..."
     run_apt xvfb
 
-    # ── Step 7: Optional tools (pre-commit) ──────────────────────────────────
+    # ── Step 7: Development Python dependencies ─────────────────────────────
     echo ""
-    echo "==> Installing pre-commit (optional but recommended)..."
-    run_cmd "$PYTHON_ENV/bin/python" -m pip install pre-commit
+    echo "==> Installing development Python dependencies..."
+    run_cmd "$PYTHON_ENV/bin/python" -m pip install -r "${REPO_ROOT}/requirements.txt"
 fi
 
 echo ""
