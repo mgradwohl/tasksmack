@@ -290,7 +290,8 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     }
     m_WasInteractionActive = interactionActive;
 
-    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, interactionActive);
+    // Do not throttle the background sampler just because the user is resizing the UI.
+    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
     if (m_Sampler && m_Sampler->interval() != effectiveInterval)
     {
         m_Sampler->setInterval(effectiveInterval);

@@ -248,8 +248,8 @@ void ProcessesPanel::onAttach()
     this->m_InteractionHoldSeconds = 0.0F;
     m_ForceRefresh = false;
 
-    // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
-    // to BackgroundSampler so enumeration runs off the main thread.
+    // Create probe and transfer it to the ProcessModel. The model itself is then
+    // passed to BackgroundSampler so enumeration runs off the main thread.
     auto processProbe = Platform::makeProcessProbe();
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
@@ -259,10 +259,10 @@ void ProcessesPanel::onAttach()
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample
-    // baseline; second call — coming from the background thread — computes the delta).
+    // baseline; second call - coming from the background thread - computes the delta).
     m_ProcessModel->refresh();
 
-    // Wire sampler: owns the probe, fires callback on each interval tick.
+    // Wire sampler: polls the ProcessModel on each interval tick.
     Domain::SamplerConfig samplerCfg{m_AppliedSamplerInterval};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel.get());
