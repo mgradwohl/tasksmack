@@ -137,7 +137,7 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             {
                 break;
             }
-            
+
             try
             {
                 samplable->sample();

@@ -353,7 +353,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
     // Per-interface network - always populate metadata, compute rates only with previous data
     double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
-    
+
     // Suppress delta-based rates for implausibly short intervals to prevent
     // large startup rate spikes (e.g. from the immediate first background poll)
     constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;

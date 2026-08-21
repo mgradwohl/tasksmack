@@ -5,7 +5,6 @@
 #include "Numeric.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
-
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
