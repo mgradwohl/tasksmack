@@ -111,9 +111,6 @@ class ProcessesPanel : public Panel
     bool m_IsActiveTab = false;
     float m_InteractionHoldSeconds = 0.0F;
 
-    // Snapshot version at last tree rebuild — used to detect new data from background sampler.
-    std::uint64_t m_LastSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
-
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
 
@@ -123,13 +120,6 @@ class ProcessesPanel : public Panel
     // Tree view state
     bool m_TreeViewEnabled = false;
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
-
-    // Cached tree structure. Rebuilt when the snapshot version changes (indicating new data
-    // from BackgroundSampler) or when m_CachedTree is empty (first switch into tree view).
-    // Rebuilds are deferred while user interaction is active (m_TreeRebuildDeferred).
-    std::unordered_map<std::uint64_t, std::vector<std::size_t>> m_CachedTree;
-    bool m_TreeRebuildDeferred = false; // Rebuild deferred due to active interaction
-    bool m_TreeNeedsRebuild = false;    // Tree is stale (data changed while in list mode)
 
     // Snapshot copy cache: only re-copy from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps — this avoids 59/60 redundant copies of 50-100 ProcessSnapshot objects)
@@ -221,28 +211,17 @@ class ProcessesPanel : public Panel
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
-    /// Build parent-child process tree structure
-    /// @param snapshots The full list of process snapshots.
-    /// @return Map of parent uniqueKey to vector of child indices
-    [[nodiscard]] static std::unordered_map<std::uint64_t, std::vector<std::size_t>>
-    buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots);
-
     /// Render process rows in tree view mode
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
-    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
-    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                        const std::vector<std::size_t>& filteredIndices,
-                        const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree);
+    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
 
     /// Render a single process and its children iteratively
     /// @param snapshots The full list of process snapshots.
-    /// @param tree Mapping from parent uniqueKey to child process indices within snapshots.
     /// @param filteredSet Set of filtered indices for O(1) membership checks.
     /// @param procIdx Index of current process to render.
     /// @param depth Current depth in the tree hierarchy.
     void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                               const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree,
                                const std::unordered_set<std::size_t>& filteredSet,
                                std::size_t procIdx,
                                int depth);

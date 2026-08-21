@@ -347,7 +347,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             {
                 continue;
             }
-
             const CachedGpuSnapshotFields& cached = it->second;
             snapshot.gpuUtilPercent = cached.gpuUtilPercent;
             snapshot.gpuMemoryBytes = cached.gpuMemoryBytes;
@@ -356,6 +355,29 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             snapshot.gpuEngines = cached.gpuEngines;
             snapshot.perGpuUsage = cached.perGpuUsage;
             snapshot.gpuDevices = cached.gpuDevices;
+        }
+    }
+
+    // --- Build Process Tree Hierarchy ---
+    {
+        std::unordered_map<std::int32_t, std::size_t> pidToIndex;
+        pidToIndex.reserve(newSnapshots.size());
+        for (std::size_t i = 0; i < newSnapshots.size(); ++i)
+        {
+            pidToIndex[newSnapshots[i].pid] = i;
+        }
+
+        for (std::size_t i = 0; i < newSnapshots.size(); ++i)
+        {
+            const std::int32_t parentPid = newSnapshots[i].parentPid;
+            if (parentPid > 0)
+            {
+                auto parentIt = pidToIndex.find(parentPid);
+                if (parentIt != pidToIndex.end())
+                {
+                    newSnapshots[parentIt->second].childrenIndices.push_back(i);
+                }
+            }
         }
     }
 
