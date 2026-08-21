@@ -163,7 +163,7 @@ TEST(BackgroundSamplerTest, SampleInvokedOnInterval)
     Domain::BackgroundSampler sampler(config);
     sampler.addSamplable(&samplable1);
     sampler.addSamplable(&samplable2);
-    
+
     sampler.start();
 
     // Wait for samples
@@ -185,7 +185,7 @@ TEST(BackgroundSamplerTest, SampleInvokedMultipleTimes)
 
     Domain::BackgroundSampler sampler(config);
     sampler.addSamplable(&samplable);
-    
+
     sampler.start();
 
     // Wait for multiple callbacks

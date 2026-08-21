@@ -31,7 +31,10 @@ class SystemModel : public ISamplable
     SystemModel& operator=(SystemModel&&) = delete;
 
     /// Perform one sampling iteration (ISamplable implementation).
-    void sample() override { refresh(); }
+    void sample() override
+    {
+        refresh();
+    }
 
     /// Refresh system data from the probe and compute new snapshot.
     /// Thread-safe.

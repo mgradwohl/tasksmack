@@ -294,7 +294,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             shouldMergeGpuData = true;
         }
     }
-}
 
 // GPU aggregation can be expensive (PDH queries/string work). Keep it outside
 // the ProcessModel write lock so UI readers are not blocked during resize.
@@ -370,7 +369,6 @@ else if (!cachedGpuByUniqueKey.empty())
         m_LastGpuMergeTime = std::chrono::steady_clock::now();
         m_HasLastGpuMergeTime = true;
     }
-}
 }
 
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
