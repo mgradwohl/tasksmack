@@ -937,15 +937,15 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, and weekly. It detects docs-only changes to skip C++ builds. It runs Linux and Windows builds (Debug/Release), checks markdown links, runs IWYU (include analysis), and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, weekly, and via manual dispatch. It detects docs-only changes to skip C++ builds. It runs Linux and Windows Debug builds on push/PR, Release builds on schedule/dispatch, checks markdown links, runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
-- **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main).
+- **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
-- **`dependency-review.yml`**: Scans PRs for vulnerable dependencies or incompatible licenses in package manifests/lockfiles.
+- **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
@@ -957,7 +957,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
 - **`changelog.yml`**: Automates changelog generation using `git-cliff` for strict `vMAJOR.MINOR.PATCH` tags.
-- **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on the branch name or files modified.
+- **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
@@ -965,8 +965,7 @@ PR optimization: docs-only pull requests skip compile/test and environment-valid
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
 (via Syft SBOM generated from `CMakeLists.txt`) and both Python dependency manifests against the
-[OSV vulnerability database](https://osv.dev) on pushes to `main`, pull requests targeting
-`main`, and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+[OSV vulnerability database](https://osv.dev) on pushes to `main` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
