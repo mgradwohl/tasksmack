@@ -70,6 +70,7 @@ class StorageModel : public ISamplable
         Platform::DiskCounters prevCounters;
         std::chrono::steady_clock::time_point prevTime;
         bool hasPrev = false;
+        bool isSeedTransition = false;
     };
 
     static DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);

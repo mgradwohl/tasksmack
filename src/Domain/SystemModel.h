@@ -6,6 +6,7 @@
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <shared_mutex>
@@ -47,6 +48,18 @@ class SystemModel : public ISamplable
 
     /// Get latest computed snapshot (copy for thread safety).
     [[nodiscard]] SystemSnapshot snapshot() const;
+
+    /// Checks if a new snapshot has been computed since the last time this flag was cleared.
+    [[nodiscard]] bool hasNewSnapshot() const
+    {
+        return m_HasNewSnapshot.load(std::memory_order_acquire);
+    }
+    
+    /// Clears the new snapshot flag.
+    void clearNewSnapshotFlag()
+    {
+        m_HasNewSnapshot.store(false, std::memory_order_release);
+    }
 
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
@@ -111,6 +124,8 @@ class SystemModel : public ISamplable
     std::vector<std::deque<float>> m_PerCoreHistory;
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
+
+    std::atomic<bool> m_HasNewSnapshot{false};
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

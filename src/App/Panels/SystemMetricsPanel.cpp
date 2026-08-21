@@ -306,14 +306,19 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
-    m_TimestampsCache = m_Model->timestamps();
-    if (!m_TimestampsCache.empty())
+    if (m_Model->hasNewSnapshot())
     {
-        m_CurrentNowSeconds = m_TimestampsCache.back();
-    }
-    else
-    {
-        m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        m_TimestampsCache = m_Model->timestamps();
+        if (!m_TimestampsCache.empty())
+        {
+            m_CurrentNowSeconds = m_TimestampsCache.back();
+        }
+        else
+        {
+            m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        
+        m_Model->clearNewSnapshotFlag();
     }
 
     const auto snap = m_Model->snapshot();

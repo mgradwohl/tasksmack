@@ -64,6 +64,18 @@ void StorageModel::sample()
         // Update state for next sample
         state.prevCounters = diskCounters;
         state.prevTime = now;
+        
+        // If this is the very first time we've seen this disk (the seed read),
+        // mark the next sample as a seed transition to prevent rate spikes.
+        if (!state.hasPrev)
+        {
+            state.isSeedTransition = true;
+        }
+        else
+        {
+            state.isSeedTransition = false;
+        }
+        
         state.hasPrev = true;
     }
 
@@ -139,9 +151,9 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     snap.totalReadOps = current.readsCompleted;
     snap.totalWriteOps = current.writesCompleted;
 
-    if (!state.hasPrev)
+    if (!state.hasPrev || state.isSeedTransition)
     {
-        // First sample, can't compute rates yet
+        // First sample or seed transition, can't compute rates reliably yet
         return snap;
     }
 
@@ -149,9 +161,8 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     const auto deltaTime = std::chrono::steady_clock::now() - state.prevTime;
     const double deltaSeconds = std::chrono::duration<double>(deltaTime).count();
 
-    // On the very first transition from seed (t=0) to first sample, or if the time delta
-    // is truly zero, skip rate calculations and just store the baseline.
-    if (state.prevTime == std::chrono::steady_clock::time_point() || deltaSeconds <= 0.0)
+    // If the time delta is truly zero, skip rate calculations to avoid division by zero.
+    if (deltaSeconds <= 0.0)
     {
         return snap;
     }

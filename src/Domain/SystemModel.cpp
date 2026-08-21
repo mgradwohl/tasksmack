@@ -169,6 +169,7 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
     computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
+    m_HasNewSnapshot.store(true, std::memory_order_release);
 }
 
 SystemSnapshot SystemModel::snapshot() const
