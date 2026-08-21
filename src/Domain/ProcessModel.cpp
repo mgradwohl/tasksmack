@@ -370,380 +370,382 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             m_HasLastGpuMergeTime = true;
         }
     }
+}
 
-    std::vector<ProcessSnapshot> ProcessModel::snapshots() const
+std::vector<ProcessSnapshot> ProcessModel::snapshots() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_Snapshots;
+}
+
+std::uint64_t ProcessModel::snapshotVersion() const
+{
+    return m_PublishedSnapshotVersion.load(std::memory_order_acquire);
+}
+
+bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
+                                           std::vector<ProcessSnapshot>& outSnapshots,
+                                           std::uint64_t& outVersion) const
+{
+    // Fast path: avoid the shared lock on the common case where no new snapshot exists.
+    // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
+    // under the mutex), so this atomic load is sufficient to short-circuit without locking.
+    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
     {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return m_Snapshots;
+        return false;
     }
 
-    std::uint64_t ProcessModel::snapshotVersion() const
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    if (m_SnapshotVersion == lastSeenVersion)
     {
-        return m_PublishedSnapshotVersion.load(std::memory_order_acquire);
+        return false;
     }
 
-    bool ProcessModel::tryCopySnapshotsIfNewer(
-        std::uint64_t lastSeenVersion, std::vector<ProcessSnapshot>& outSnapshots, std::uint64_t& outVersion) const
+    outSnapshots = m_Snapshots;
+    outVersion = m_SnapshotVersion;
+    return true;
+}
+
+std::vector<double> ProcessModel::systemNetSentHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemNetSentHistory);
+}
+
+std::vector<double> ProcessModel::systemNetRecvHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemNetRecvHistory);
+}
+
+std::vector<double> ProcessModel::systemPageFaultsHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemPageFaultsHistory);
+}
+
+std::vector<double> ProcessModel::systemThreadCountHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemThreadCountHistory);
+}
+
+std::vector<double> ProcessModel::systemHandleCountHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemHandleCountHistory);
+}
+
+std::vector<double> ProcessModel::systemPowerHistory() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_SystemPowerHistory);
+}
+
+std::vector<double> ProcessModel::historyTimestamps() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return HistoryUtils::toVector(m_Timestamps);
+}
+
+void ProcessModel::setMaxHistorySeconds(double seconds)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    m_MaxHistorySeconds = std::max(0.0, seconds);
+    trimHistory();
+}
+
+std::size_t ProcessModel::processCount() const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_Snapshots.size();
+}
+
+const Platform::ProcessCapabilities& ProcessModel::capabilities() const
+{
+    return m_Capabilities;
+}
+
+void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    m_GPUModel = std::move(gpuModel);
+}
+
+void ProcessModel::setInteractionActive(const bool active) noexcept
+{
+    m_InteractionActive.store(active, std::memory_order_release);
+}
+
+void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+{
+    if (gpuModel == nullptr)
     {
-        // Fast path: avoid the shared lock on the common case where no new snapshot exists.
-        // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
-        // under the mutex), so this atomic load is sufficient to short-circuit without locking.
-        if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+        return;
+    }
+
+    // Query per-process GPU counters from GPUModel
+    auto gpuCounters = gpuModel->readProcessGPUCounters();
+    if (gpuCounters.empty())
+    {
+        return;
+    }
+
+    // Build lookup maps: GPU ID -> friendly name
+    // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
+    // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
+    std::unordered_map<std::string, std::string> gpuIdToName;
+    auto gpuSnaps = gpuModel->snapshots();
+    for (const auto& gpuSnap : gpuSnaps)
+    {
+        // Map both ID formats to the same name
+        gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
+        if (!gpuSnap.luidId.empty())
         {
-            return false;
+            gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
+        }
+    }
+
+    // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
+    // A process may use multiple GPUs, so we aggregate
+    struct AggregatedGPU
+    {
+        double totalUtilPercent = 0.0;
+        std::uint64_t totalMemoryBytes = 0;
+        double totalEncoderUtil = 0.0;
+        double totalDecoderUtil = 0.0;
+        std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
+        std::vector<std::string> allEngines;
+        std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
+    };
+    std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
+
+    for (const auto& gc : gpuCounters)
+    {
+        auto& agg = pidToGPU[gc.pid];
+
+        // Look up friendly name for this GPU
+        std::string gpuName = gc.gpuId; // Default to ID if name not found
+        if (auto nameIt = gpuIdToName.find(gc.gpuId); nameIt != gpuIdToName.end())
+        {
+            gpuName = nameIt->second;
         }
 
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        if (m_SnapshotVersion == lastSeenVersion)
+        // Add per-GPU breakdown
+        ProcessSnapshot::PerGPUUsage perGpu;
+        perGpu.gpuId = gc.gpuId;
+        perGpu.gpuName = gpuName; // Store friendly name
+        perGpu.memoryBytes = gc.gpuMemoryBytes;
+        perGpu.utilPercent = gc.gpuUtilPercent;
+        perGpu.engines = gc.activeEngines;
+        agg.perGpuBreakdown.push_back(std::move(perGpu));
+
+        // Aggregate totals
+        agg.totalUtilPercent += gc.gpuUtilPercent;
+        agg.totalMemoryBytes += gc.gpuMemoryBytes;
+        agg.totalEncoderUtil += gc.encoderUtilPercent;
+        agg.totalDecoderUtil += gc.decoderUtilPercent;
+
+        // Collect unique GPU names (not IDs)
+        if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
         {
-            return false;
+            agg.gpuNames.push_back(gpuName);
         }
 
-        outSnapshots = m_Snapshots;
-        outVersion = m_SnapshotVersion;
-        return true;
-    }
-
-    std::vector<double> ProcessModel::systemNetSentHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemNetSentHistory);
-    }
-
-    std::vector<double> ProcessModel::systemNetRecvHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemNetRecvHistory);
-    }
-
-    std::vector<double> ProcessModel::systemPageFaultsHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemPageFaultsHistory);
-    }
-
-    std::vector<double> ProcessModel::systemThreadCountHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemThreadCountHistory);
-    }
-
-    std::vector<double> ProcessModel::systemHandleCountHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemHandleCountHistory);
-    }
-
-    std::vector<double> ProcessModel::systemPowerHistory() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_SystemPowerHistory);
-    }
-
-    std::vector<double> ProcessModel::historyTimestamps() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return HistoryUtils::toVector(m_Timestamps);
-    }
-
-    void ProcessModel::setMaxHistorySeconds(double seconds)
-    {
-        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        m_MaxHistorySeconds = std::max(0.0, seconds);
-        trimHistory();
-    }
-
-    std::size_t ProcessModel::processCount() const
-    {
-        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        return m_Snapshots.size();
-    }
-
-    const Platform::ProcessCapabilities& ProcessModel::capabilities() const
-    {
-        return m_Capabilities;
-    }
-
-    void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
-    {
-        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        m_GPUModel = std::move(gpuModel);
-    }
-
-    void ProcessModel::setInteractionActive(const bool active) noexcept
-    {
-        m_InteractionActive.store(active, std::memory_order_release);
-    }
-
-    void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot> & snapshots, const std::shared_ptr<GPUModel>& gpuModel)
-    {
-        if (gpuModel == nullptr)
+        // Collect unique engines
+        for (const auto& engine : gc.activeEngines)
         {
-            return;
-        }
-
-        // Query per-process GPU counters from GPUModel
-        auto gpuCounters = gpuModel->readProcessGPUCounters();
-        if (gpuCounters.empty())
-        {
-            return;
-        }
-
-        // Build lookup maps: GPU ID -> friendly name
-        // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
-        // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
-        std::unordered_map<std::string, std::string> gpuIdToName;
-        auto gpuSnaps = gpuModel->snapshots();
-        for (const auto& gpuSnap : gpuSnaps)
-        {
-            // Map both ID formats to the same name
-            gpuIdToName[gpuSnap.gpuId] = gpuSnap.name;
-            if (!gpuSnap.luidId.empty())
+            if (std::ranges::find(agg.allEngines, engine) == agg.allEngines.end())
             {
-                gpuIdToName[gpuSnap.luidId] = gpuSnap.name;
+                agg.allEngines.push_back(engine);
             }
         }
+    }
 
-        // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
-        // A process may use multiple GPUs, so we aggregate
-        struct AggregatedGPU
+    // Merge into snapshots
+    int mergedCount = 0;
+    for (auto& snapshot : snapshots)
+    {
+        auto it = pidToGPU.find(snapshot.pid);
+        if (it != pidToGPU.end())
         {
-            double totalUtilPercent = 0.0;
-            std::uint64_t totalMemoryBytes = 0;
-            double totalEncoderUtil = 0.0;
-            double totalDecoderUtil = 0.0;
-            std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
-            std::vector<std::string> allEngines;
-            std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
-        };
-        std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
+            ++mergedCount;
+            const auto& agg = it->second;
+            // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs).
+            // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute.
+            snapshot.gpuUtilPercent = agg.totalUtilPercent;
+            snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
+            snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
+            snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
+            snapshot.gpuEngines = agg.allEngines;
+            snapshot.perGpuUsage = agg.perGpuBreakdown;
 
-        for (const auto& gc : gpuCounters)
-        {
-            auto& agg = pidToGPU[gc.pid];
-
-            // Look up friendly name for this GPU
-            std::string gpuName = gc.gpuId; // Default to ID if name not found
-            if (auto nameIt = gpuIdToName.find(gc.gpuId); nameIt != gpuIdToName.end())
+            // Build comma-separated GPU device string (friendly names)
+            // Pre-allocate to avoid multiple reallocations
+            std::string gpuDevices;
+            if (!agg.gpuNames.empty())
             {
-                gpuName = nameIt->second;
-            }
-
-            // Add per-GPU breakdown
-            ProcessSnapshot::PerGPUUsage perGpu;
-            perGpu.gpuId = gc.gpuId;
-            perGpu.gpuName = gpuName; // Store friendly name
-            perGpu.memoryBytes = gc.gpuMemoryBytes;
-            perGpu.utilPercent = gc.gpuUtilPercent;
-            perGpu.engines = gc.activeEngines;
-            agg.perGpuBreakdown.push_back(std::move(perGpu));
-
-            // Aggregate totals
-            agg.totalUtilPercent += gc.gpuUtilPercent;
-            agg.totalMemoryBytes += gc.gpuMemoryBytes;
-            agg.totalEncoderUtil += gc.encoderUtilPercent;
-            agg.totalDecoderUtil += gc.decoderUtilPercent;
-
-            // Collect unique GPU names (not IDs)
-            if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
-            {
-                agg.gpuNames.push_back(gpuName);
-            }
-
-            // Collect unique engines
-            for (const auto& engine : gc.activeEngines)
-            {
-                if (std::ranges::find(agg.allEngines, engine) == agg.allEngines.end())
+                size_t totalLength = 0;
+                for (const auto& name : agg.gpuNames)
                 {
-                    agg.allEngines.push_back(engine);
+                    totalLength += name.length() + 2; // +2 for ", "
+                }
+                gpuDevices.reserve(totalLength);
+
+                for (size_t i = 0; i < agg.gpuNames.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        gpuDevices += ", ";
+                    }
+                    gpuDevices += agg.gpuNames[i];
                 }
             }
+            snapshot.gpuDevices = std::move(gpuDevices);
         }
-
-        // Merge into snapshots
-        int mergedCount = 0;
-        for (auto& snapshot : snapshots)
-        {
-            auto it = pidToGPU.find(snapshot.pid);
-            if (it != pidToGPU.end())
-            {
-                ++mergedCount;
-                const auto& agg = it->second;
-                // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs).
-                // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute.
-                snapshot.gpuUtilPercent = agg.totalUtilPercent;
-                snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
-                snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
-                snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
-                snapshot.gpuEngines = agg.allEngines;
-                snapshot.perGpuUsage = agg.perGpuBreakdown;
-
-                // Build comma-separated GPU device string (friendly names)
-                // Pre-allocate to avoid multiple reallocations
-                std::string gpuDevices;
-                if (!agg.gpuNames.empty())
-                {
-                    size_t totalLength = 0;
-                    for (const auto& name : agg.gpuNames)
-                    {
-                        totalLength += name.length() + 2; // +2 for ", "
-                    }
-                    gpuDevices.reserve(totalLength);
-
-                    for (size_t i = 0; i < agg.gpuNames.size(); ++i)
-                    {
-                        if (i > 0)
-                        {
-                            gpuDevices += ", ";
-                        }
-                        gpuDevices += agg.gpuNames[i];
-                    }
-                }
-                snapshot.gpuDevices = std::move(gpuDevices);
-            }
-        }
-
-        spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
     }
 
-    ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
-                                                  const Platform::ProcessCounters* previous,
-                                                  std::uint64_t totalCpuDelta,
-                                                  std::uint64_t systemTotalMemory,
-                                                  long ticksPerSecond,
-                                                  double elapsedSeconds,
-                                                  std::uint64_t timeDeltaUs)
+    spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
+}
+
+ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
+                                              const Platform::ProcessCounters* previous,
+                                              std::uint64_t totalCpuDelta,
+                                              std::uint64_t systemTotalMemory,
+                                              long ticksPerSecond,
+                                              double elapsedSeconds,
+                                              std::uint64_t timeDeltaUs)
+{
+    ProcessSnapshot snapshot;
+    snapshot.pid = current.pid;
+    snapshot.parentPid = current.parentPid;
+    snapshot.name = current.name;
+    snapshot.command = current.command;
+    snapshot.user = current.user;
+    snapshot.displayState = translateState(current.state);
+    snapshot.status = current.status;                 // Pass through status from platform probe
+    snapshot.publisher = current.publisher;           // Pass through publisher from platform probe
+    snapshot.processType = current.processType;       // Pass through process type from platform probe
+    snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
+    snapshot.memoryBytes = current.rssBytes;
+    snapshot.virtualBytes = current.virtualBytes;
+    snapshot.sharedBytes = current.sharedBytes;
+    snapshot.threadCount = current.threadCount;
+    snapshot.handleCount = current.handleCount;
+    snapshot.nice = current.nice;
+    snapshot.pageFaults = current.pageFaultCount;
+    snapshot.cpuAffinityMask = current.cpuAffinityMask;
+    snapshot.startTimeEpoch = current.startTimeEpoch;
+    snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
+
+    if (systemTotalMemory > 0)
     {
-        ProcessSnapshot snapshot;
-        snapshot.pid = current.pid;
-        snapshot.parentPid = current.parentPid;
-        snapshot.name = current.name;
-        snapshot.command = current.command;
-        snapshot.user = current.user;
-        snapshot.displayState = translateState(current.state);
-        snapshot.status = current.status;                 // Pass through status from platform probe
-        snapshot.publisher = current.publisher;           // Pass through publisher from platform probe
-        snapshot.processType = current.processType;       // Pass through process type from platform probe
-        snapshot.gdiObjectCount = current.gdiObjectCount; // Pass through GDI object count from platform probe
-        snapshot.memoryBytes = current.rssBytes;
-        snapshot.virtualBytes = current.virtualBytes;
-        snapshot.sharedBytes = current.sharedBytes;
-        snapshot.threadCount = current.threadCount;
-        snapshot.handleCount = current.handleCount;
-        snapshot.nice = current.nice;
-        snapshot.pageFaults = current.pageFaultCount;
-        snapshot.cpuAffinityMask = current.cpuAffinityMask;
-        snapshot.startTimeEpoch = current.startTimeEpoch;
-        snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
-
-        if (systemTotalMemory > 0)
-        {
-            snapshot.memoryPercent = (Numeric::toDouble(current.rssBytes) / Numeric::toDouble(systemTotalMemory)) * 100.0;
-        }
-
-        if (ticksPerSecond > 0)
-        {
-            const std::uint64_t totalTicks = current.userTime + current.systemTime;
-            snapshot.cpuTimeSeconds = Numeric::toDouble(totalTicks) / Numeric::toDouble(ticksPerSecond);
-        }
-
-        if (previous != nullptr && totalCpuDelta > 0)
-        {
-            const std::uint64_t prevUser = previous->userTime;
-            const std::uint64_t prevSystem = previous->systemTime;
-            const std::uint64_t currUser = current.userTime;
-            const std::uint64_t currSystem = current.systemTime;
-
-            if (currUser >= prevUser && currSystem >= prevSystem)
-            {
-                const std::uint64_t userDelta = currUser - prevUser;
-                const std::uint64_t systemDelta = currSystem - prevSystem;
-                const std::uint64_t processDelta = userDelta + systemDelta;
-
-                const double totalCpuDeltaD = Numeric::toDouble(totalCpuDelta);
-                snapshot.cpuPercent = (Numeric::toDouble(processDelta) / totalCpuDeltaD) * 100.0;
-                snapshot.cpuUserPercent = (Numeric::toDouble(userDelta) / totalCpuDeltaD) * 100.0;
-                snapshot.cpuSystemPercent = (Numeric::toDouble(systemDelta) / totalCpuDeltaD) * 100.0;
-            }
-        }
-
-        if (previous != nullptr && elapsedSeconds > 0.0)
-        {
-            // I/O and page fault rates use delta-based calculation:
-            //   rate = (currentCounter - previousCounter) / elapsedSeconds
-            //
-            // This works correctly for I/O because GetProcessIoCounters returns per-process
-            // cumulative counters that are stable and monotonically increasing (not affected
-            // by file handle churn the way network counters are affected by TCP connection churn).
-            //
-            // Network rates are computed separately in computeSnapshots() using the baseline
-            // approach - see comments there and in ProcessModel.h for details.
-            snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
-            snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
-            snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
-        }
-
-        if (previous != nullptr && timeDeltaUs > 0)
-        {
-            if (current.energyMicrojoules >= previous->energyMicrojoules)
-            {
-                const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
-                snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
-            }
-        }
-
-        return snapshot;
+        snapshot.memoryPercent = (Numeric::toDouble(current.rssBytes) / Numeric::toDouble(systemTotalMemory)) * 100.0;
     }
 
-    std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startTime)
+    if (ticksPerSecond > 0)
     {
-        std::size_t hash = std::hash<std::int32_t>{}(pid);
-        hash ^= std::hash<std::uint64_t>{}(startTime) + 0x9e3779b9U + (hash << 6) + (hash >> 2);
-        return hash;
+        const std::uint64_t totalTicks = current.userTime + current.systemTime;
+        snapshot.cpuTimeSeconds = Numeric::toDouble(totalTicks) / Numeric::toDouble(ticksPerSecond);
     }
 
-    void ProcessModel::trimHistory()
+    if (previous != nullptr && totalCpuDelta > 0)
     {
-        if (m_Timestamps.empty())
+        const std::uint64_t prevUser = previous->userTime;
+        const std::uint64_t prevSystem = previous->systemTime;
+        const std::uint64_t currUser = current.userTime;
+        const std::uint64_t currSystem = current.systemTime;
+
+        if (currUser >= prevUser && currSystem >= prevSystem)
         {
-            return;
-        }
+            const std::uint64_t userDelta = currUser - prevUser;
+            const std::uint64_t systemDelta = currSystem - prevSystem;
+            const std::uint64_t processDelta = userDelta + systemDelta;
 
-        const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
-
-        static_cast<void>(HistoryUtils::trimBefore(m_Timestamps,
-                                                   cutoff,
-                                                   m_SystemNetSentHistory,
-                                                   m_SystemNetRecvHistory,
-                                                   m_SystemPageFaultsHistory,
-                                                   m_SystemThreadCountHistory,
-                                                   m_SystemHandleCountHistory,
-                                                   m_SystemPowerHistory));
-    }
-
-    std::string ProcessModel::translateState(char rawState)
-    {
-        switch (rawState)
-        {
-        case 'R':
-            return "Running";
-        case 'S':
-            return "Sleeping";
-        case 'D':
-            return "Disk Sleep";
-        case 'Z':
-            return "Zombie";
-        case 'T':
-            return "Stopped";
-        case 't':
-            return "Tracing";
-        case 'X':
-            return "Dead";
-        case 'I':
-            return "Idle";
-        default:
-            return "Unknown";
+            const double totalCpuDeltaD = Numeric::toDouble(totalCpuDelta);
+            snapshot.cpuPercent = (Numeric::toDouble(processDelta) / totalCpuDeltaD) * 100.0;
+            snapshot.cpuUserPercent = (Numeric::toDouble(userDelta) / totalCpuDeltaD) * 100.0;
+            snapshot.cpuSystemPercent = (Numeric::toDouble(systemDelta) / totalCpuDeltaD) * 100.0;
         }
     }
+
+    if (previous != nullptr && elapsedSeconds > 0.0)
+    {
+        // I/O and page fault rates use delta-based calculation:
+        //   rate = (currentCounter - previousCounter) / elapsedSeconds
+        //
+        // This works correctly for I/O because GetProcessIoCounters returns per-process
+        // cumulative counters that are stable and monotonically increasing (not affected
+        // by file handle churn the way network counters are affected by TCP connection churn).
+        //
+        // Network rates are computed separately in computeSnapshots() using the baseline
+        // approach - see comments there and in ProcessModel.h for details.
+        snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
+        snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
+        snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
+    }
+
+    if (previous != nullptr && timeDeltaUs > 0)
+    {
+        if (current.energyMicrojoules >= previous->energyMicrojoules)
+        {
+            const std::uint64_t energyDelta = current.energyMicrojoules - previous->energyMicrojoules;
+            snapshot.powerWatts = Numeric::toDouble(energyDelta) / Numeric::toDouble(timeDeltaUs);
+        }
+    }
+
+    return snapshot;
+}
+
+std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startTime)
+{
+    std::size_t hash = std::hash<std::int32_t>{}(pid);
+    hash ^= std::hash<std::uint64_t>{}(startTime) + 0x9e3779b9U + (hash << 6) + (hash >> 2);
+    return hash;
+}
+
+void ProcessModel::trimHistory()
+{
+    if (m_Timestamps.empty())
+    {
+        return;
+    }
+
+    const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
+
+    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps,
+                                               cutoff,
+                                               m_SystemNetSentHistory,
+                                               m_SystemNetRecvHistory,
+                                               m_SystemPageFaultsHistory,
+                                               m_SystemThreadCountHistory,
+                                               m_SystemHandleCountHistory,
+                                               m_SystemPowerHistory));
+}
+
+std::string ProcessModel::translateState(char rawState)
+{
+    switch (rawState)
+    {
+    case 'R':
+        return "Running";
+    case 'S':
+        return "Sleeping";
+    case 'D':
+        return "Disk Sleep";
+    case 'Z':
+        return "Zombie";
+    case 'T':
+        return "Stopped";
+    case 't':
+        return "Tracing";
+    case 'X':
+        return "Dead";
+    case 'I':
+        return "Idle";
+    default:
+        return "Unknown";
+    }
+}
 
 } // namespace Domain
