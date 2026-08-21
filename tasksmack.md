@@ -32,8 +32,7 @@ flowchart TD
 ```
 
 - Platform probes are stateless readers of OS counters.
-- Process enumeration runs asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read) to maintain UI responsiveness even with thousands of processes.
-- System metrics (CPU, Memory, Network, Storage) are currently polled synchronously on the main thread via `onUpdate()`.
+- Process enumeration and heavy system metrics (System, Storage, GPU) run asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read). This decoupled polling ensures UI responsiveness under heavy load.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
