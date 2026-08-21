@@ -72,6 +72,11 @@ void ProcessModel::refresh()
     computeSnapshots(currentCounters, currentTotalCpuTime);
 }
 
+void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
+{
+    computeSnapshots(counters, totalCpuTime);
+}
+
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
     struct CachedGpuSnapshotFields

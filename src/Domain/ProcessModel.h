@@ -44,6 +44,10 @@ class ProcessModel : public ISamplable
     /// Thread-safe.
     void refresh();
 
+    /// Update with externally-provided counters (for background sampler).
+    /// Thread-safe.
+    void updateFromCounters(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
+
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
 

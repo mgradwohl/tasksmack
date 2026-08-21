@@ -226,6 +226,7 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
     }
     m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
+    requestRefresh(); // Consume flag semantics for older calls
 }
 
 void SystemMetricsPanel::requestRefresh()
@@ -234,7 +235,7 @@ void SystemMetricsPanel::requestRefresh()
     {
         m_Sampler->requestRefresh();
     }
-    m_ForceRefresh = true;
+    m_ForceRefresh = false; // Consumed since sampler will refresh
 }
 
 void SystemMetricsPanel::onEvent(Core::Event& event)

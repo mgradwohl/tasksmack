@@ -255,8 +255,6 @@ void ProcessesPanel::onAttach()
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
-    const Platform::ProcessCapabilities caps = processProbe->capabilities();
-
     m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
 
     // Seed with one synchronous read so the first background callback produces valid CPU
