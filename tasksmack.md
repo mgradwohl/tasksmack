@@ -175,11 +175,12 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 
 > **Note:** Process enumeration was moved to the `BackgroundSampler` thread to guarantee 60fps UI responsiveness on systems with thousands of processes.
 
-## Process Scalability Guidance
+## Process Scalability
 
-- Maintain a stable cache keyed by PID + start time to cope with PID reuse.
-- Build hierarchical process trees incrementally or during sampling, not every frame on the UI thread.
-- Perform sorting and filtering off the UI thread and publish ready-to-render view models.
+To maintain 60fps UI responsiveness even with thousands of processes, TaskSmack applies the following constraints:
+- **Stable Identity**: Uses a stable cache keyed by PID + start time to cleanly cope with PID reuse.
+- **Background Tree Building**: Hierarchical process trees are built in the Domain layer during background sampling (`ProcessModel`), not on the UI thread. The `ProcessSnapshot` natively carries pre-computed `childrenIndices`.
+- **Cached Filtering/Sorting**: Filtering and sorting indices are cached and only rebuilt when the data version or filter string changes, keeping the per-frame render loop strictly $O(V)$ where $V$ is the number of visible rows.
 
 ## OpenGL + SDL3 Integration Details
 
