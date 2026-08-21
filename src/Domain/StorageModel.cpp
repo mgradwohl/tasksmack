@@ -151,7 +151,7 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 
     // On the very first transition from seed (t=0) to first sample, or if the time delta
     // is truly zero, skip rate calculations and just store the baseline.
-    if (state.prevSampleTime == std::chrono::steady_clock::time_point() || deltaSeconds <= 0.0)
+    if (state.prevTime == std::chrono::steady_clock::time_point() || deltaSeconds <= 0.0)
     {
         return snap;
     }
