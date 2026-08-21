@@ -6,6 +6,8 @@
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
 
+#include "SamplingConfig.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -148,7 +150,8 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     const auto deltaTime = std::chrono::steady_clock::now() - state.prevTime;
     const double deltaSeconds = std::chrono::duration<double>(deltaTime).count();
 
-    if (deltaSeconds <= 0.0)
+    constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+    if (deltaSeconds < MIN_ELAPSED_FOR_RATES)
     {
         return snap;
     }

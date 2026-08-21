@@ -129,28 +129,35 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
     while (!stopToken.stop_requested())
     {
         auto startTime = std::chrono::steady_clock::now();
+        bool hadException = false;
 
-        try
+        for (auto* samplable : m_Samplables)
         {
-            for (auto* samplable : m_Samplables)
+            if (stopToken.stop_requested())
             {
-                if (stopToken.stop_requested())
-                {
-                    break;
-                }
+                break;
+            }
+            
+            try
+            {
                 samplable->sample();
             }
+            catch (const std::exception& ex)
+            {
+                logSamplerLoopException(ex.what(), startTime, nextExceptionLogTime, suppressedExceptionCount);
+                hadException = true;
+            }
+            catch (...)
+            {
+                logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
+                hadException = true;
+            }
+        }
 
+        if (!hadException)
+        {
             nextExceptionLogTime = std::chrono::steady_clock::time_point::min();
             suppressedExceptionCount = 0;
-        }
-        catch (const std::exception& ex)
-        {
-            logSamplerLoopException(ex.what(), startTime, nextExceptionLogTime, suppressedExceptionCount);
-        }
-        catch (...)
-        {
-            logSamplerLoopException("unknown exception", startTime, nextExceptionLogTime, suppressedExceptionCount);
         }
 
         // Get current interval

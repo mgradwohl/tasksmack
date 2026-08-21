@@ -352,7 +352,16 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     snap.cpuFreqMHz = counters.cpuFreqMHz;
 
     // Per-interface network - always populate metadata, compute rates only with previous data
-    const double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
+    double timeDelta = m_HasPrevious ? (nowSeconds - m_PrevTimestamp) : 0.0;
+    
+    // Suppress delta-based rates for implausibly short intervals to prevent
+    // large startup rate spikes (e.g. from the immediate first background poll)
+    constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+    if (m_HasPrevious && timeDelta < MIN_ELAPSED_FOR_RATES)
+    {
+        timeDelta = 0.0;
+    }
+
     snap.networkInterfaces.reserve(counters.networkInterfaces.size());
     for (const auto& iface : counters.networkInterfaces)
     {
