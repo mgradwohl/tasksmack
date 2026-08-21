@@ -31,6 +31,18 @@ flowchart TD
     Platform -. path provider only .-> Core
 ```
 
+- Platform probes are stateless readers of OS counters.
+- Process enumeration runs asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read) to maintain UI responsiveness even with thousands of processes.
+- System metrics (CPU, Memory, Network, Storage) are currently polled synchronously on the main thread via `onUpdate()`.
+- Domain code transforms counters into snapshots and maintains history.
+- UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
+- OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
+- CPU percentage uses process CPU delta divided by total system CPU delta.
+- Disk I/O and page-fault rates use consecutive sample deltas.
+- Per-process network rates are lifetime averages from the first observed baseline.
+- System and interface network rates use consecutive sample deltas.
+- GPU data is merged into process snapshots when the platform can attribute usage.
+
 The diagram shows runtime data flow. Compile-time dependencies are constrained more tightly: Domain depends on Platform interfaces, App is the composition root, and UI never depends on Platform.
 
 ### `src/Platform`
@@ -102,11 +114,81 @@ The default interval is 1 second and can be configured from 100 ms to 5 seconds.
 
 Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
 
-- CPU percentage uses process CPU delta divided by total system CPU delta.
-- Disk I/O and page-fault rates use consecutive sample deltas.
-- Per-process network rates are lifetime averages from the first observed baseline.
-- System and interface network rates use consecutive sample deltas.
-- GPU data is merged into process snapshots when the platform can attribute usage.
+## Dependency Direction
+
+```
+App/UI
+  ↓
+Core
+  ↓
+Domain
+  ↑
+Platform
+  ↑
+OS APIs
+```
+
+Rules:
+- Domain depends on nothing else.
+- UI never calls platform APIs directly; use `Core::Application::get().paths()` for path resolution.
+- Platform never depends on UI or renderer.
+- OpenGL usage is confined to Core/UI only.
+
+## Composition Root and Allowed Dependency Matrix
+
+App panels serve as the **composition root**: they are the only place where Platform probes are
+instantiated and injected into Domain models. This is intentional and correct—only App panels
+have enough context to pair the right Platform implementation with the right Domain model.
+
+The key distinction is **construction-time wiring** (allowed in App panels) vs **runtime calls**
+(which must respect the layering rules):
+
+| Layer | May call at construction / `onAttach` | May call at runtime |
+|---|---|---|
+| Platform | OS APIs | OS APIs |
+| Domain | *(none — receives probes via constructor)* | injected probe interface methods (e.g. `enumerate()`, `totalCpuTime()`); never `Platform::make*()` factories |
+| Core | `Platform::makePathProvider()` via `PathService` | `PathService`, SDL3, OpenGL |
+| App / Panels | `Platform::make*Probe()`, `Platform::makeProcessActions()` | Core, Domain snapshots, UI widgets |
+| UI | *(none)* | ImGui, ImPlot, `Core::Application::get().paths()` |
+
+**Rules derived from the matrix:**
+
+- `Platform::makePathProvider()` is called **only** inside `Core::PathService` (owned by `Application`).
+  All path resolution elsewhere goes through `Core::Application::get().paths()`.
+- `Platform::make*Probe()` and `Platform::makeProcessActions()` are called **only** from App panel
+  `onAttach` / constructors (the composition root), never from UI rendering code or Domain.
+- No new `#include "Platform/Factory.h"` should appear in `UI/` or non-panel `App/` code.
+
+## UI Layer Model
+
+- **ShellLayer:** docking root, main menu bar, global settings (refresh cadence, theme, column visibility), shared selection state.
+- **ProcessesPanel:** process list with sorting and details selection.
+- **ProcessDetailsPanel:** detailed view for the currently selected process.
+- **SystemMetricsPanel:** plots and timelines backed by domain history.
+
+## Sampling and Snapshot Pipeline
+
+1. **System Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals.
+2. **Processes Panel** receives data from `BackgroundSampler`, which runs process enumeration on a dedicated background thread.
+3. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
+4. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
+
+> **Note:** Process enumeration was moved to the `BackgroundSampler` thread to guarantee 60fps UI responsiveness on systems with thousands of processes.
+
+## Process Scalability
+
+To maintain 60fps UI responsiveness even with thousands of processes, TaskSmack applies the following constraints:
+- **Stable Identity**: Uses a stable cache keyed by PID + start time to cleanly cope with PID reuse.
+- **Background Tree Building**: Hierarchical process trees are built in the Domain layer during background sampling (`ProcessModel`), not on the UI thread. The `ProcessSnapshot` natively carries pre-computed `childrenIndices`.
+- **Cached Filtering/Sorting**: Filtering and sorting indices are cached and only rebuilt when the data version or filter string changes, keeping the per-frame render loop strictly $O(V)$ where $V$ is the number of visible rows.
+
+## OpenGL + SDL3 Integration Details
+
+- SDL3 handles window creation, input, DPI, framebuffer scaling, and multi-viewport support.
+- OpenGL core profile (3.3+); only the renderer and ImGui backend issue GL calls.
+- GLAD provides the OpenGL function loader (generated at build time via Python + jinja2).
+- ImGui integrations: `imgui_impl_sdl3` for events and `imgui_impl_opengl3` for rendering.
+- SDL3 events are polled each frame; input is handled via ImGui input state.
 
 ### Capability Reporting
 

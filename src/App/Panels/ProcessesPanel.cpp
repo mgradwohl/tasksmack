@@ -277,7 +277,13 @@ void ProcessesPanel::onAttach()
         { model->updateFromCounters(counters, totalCpuTime); });
     m_Sampler->start();
 
-    m_LastSnapshotVersion = m_ProcessModel->snapshotVersion();
+    // Ensure the initial seed snapshots are loaded into the render cache so the UI
+    // isn't empty before the first background sample arrives.
+    std::uint64_t newVersion = m_CachedSnapshotVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    {
+        m_CachedSnapshotVersion = newVersion;
+    }
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", intervalMs);
 }
@@ -379,43 +385,10 @@ void ProcessesPanel::onUpdate(float deltaTime)
     }
 
     // Detect and copy new data in a single lock acquisition.
-    std::uint64_t newVersion = m_LastSnapshotVersion;
-    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_LastSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    std::uint64_t newVersion = m_CachedSnapshotVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
     {
-        m_LastSnapshotVersion = newVersion;
         m_CachedSnapshotVersion = newVersion;
-
-        // Only rebuild tree if tree view is currently active (avoid CPU waste when showing list).
-        // If in list mode, mark tree as stale; will rebuild on-demand when switching to tree view.
-        if (m_TreeViewEnabled)
-        {
-            if (Core::Application::get().isInteractionRedrawActive())
-            {
-                // Defer rebuild during active resize/move interactions for UI responsiveness
-                m_TreeRebuildDeferred = true;
-            }
-            else
-            {
-                // Rebuild immediately when not in interaction
-                m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
-                m_TreeRebuildDeferred = false;
-                m_TreeNeedsRebuild = false;
-            }
-        }
-        else
-        {
-            // In list mode: mark tree as needing rebuild, don't do expensive work now
-            m_TreeNeedsRebuild = true;
-            m_TreeRebuildDeferred = false;
-        }
-    }
-
-    // Process deferred tree rebuild when interaction ends and tree view is still active
-    if (m_TreeViewEnabled && m_TreeRebuildDeferred && !Core::Application::get().isInteractionRedrawActive())
-    {
-        m_CachedTree = buildProcessTree(m_CachedRenderSnapshots);
-        m_TreeRebuildDeferred = false;
-        m_TreeNeedsRebuild = false;
     }
 }
 
@@ -649,25 +622,10 @@ void ProcessesPanel::renderContent()
         m_TreeViewEnabled = !m_TreeViewEnabled;
         if (m_TreeViewEnabled)
         {
-            // Build tree immediately when enabling tree view. Rebuild if the tree is stale
-            // (new data arrived while in list mode) or if it has never been built yet
-            // (m_CachedTree is empty on first toggle after startup).
-            if (m_TreeNeedsRebuild || m_CachedTree.empty())
-            {
-                m_CachedTree = buildProcessTree(currentSnapshots);
-                m_TreeNeedsRebuild = false;
-            }
-            m_TreeRebuildDeferred = false; // Clear any pending deferred rebuild
             spdlog::debug("ProcessesPanel: Switched to tree view");
         }
         else
         {
-            // Switching to list view: if a deferred rebuild was pending (new data arrived
-            // but tree was not rebuilt yet), carry the staleness forward so that switching
-            // back to tree view forces a rebuild even if no new snapshot arrives in the
-            // interim. Always mark stale here — the rebuild is cheap and ensures correctness.
-            m_TreeNeedsRebuild = m_TreeNeedsRebuild || m_TreeRebuildDeferred;
-            m_TreeRebuildDeferred = false;
             spdlog::debug("ProcessesPanel: Switched to flat list view");
         }
     }
@@ -895,7 +853,7 @@ void ProcessesPanel::renderContent()
         if (m_TreeViewEnabled)
         {
             // Render tree view (tree is rebuilt in onUpdate on refresh timer)
-            renderTreeView(currentSnapshots, m_CachedFilteredIndices, m_CachedTree);
+            renderTreeView(currentSnapshots, m_CachedFilteredIndices);
         }
         else
         {
@@ -972,37 +930,6 @@ std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t
         }
     }
     return std::nullopt;
-}
-
-std::unordered_map<std::uint64_t, std::vector<std::size_t>>
-ProcessesPanel::buildProcessTree(const std::vector<Domain::ProcessSnapshot>& snapshots)
-{
-    std::unordered_map<std::uint64_t, std::vector<std::size_t>> tree;
-
-    // First pass: build uniqueKey lookup for parent resolution
-    std::unordered_map<std::int32_t, std::uint64_t> pidToUniqueKey;
-    for (const auto& proc : snapshots)
-    {
-        pidToUniqueKey[proc.pid] = proc.uniqueKey;
-    }
-
-    // Second pass: build parent uniqueKey -> children mapping
-    for (std::size_t i = 0; i < snapshots.size(); ++i)
-    {
-        const auto& proc = snapshots[i];
-        if (proc.parentPid > 0)
-        {
-            // Find parent's uniqueKey
-            auto parentIt = pidToUniqueKey.find(proc.parentPid);
-            if (parentIt != pidToUniqueKey.end())
-            {
-                const std::uint64_t parentKey = parentIt->second;
-                tree[parentKey].push_back(i);
-            }
-        }
-    }
-
-    return tree;
 }
 
 void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)
@@ -1362,7 +1289,6 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 }
 
 void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                           const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree,
                                            const std::unordered_set<std::size_t>& filteredSet,
                                            std::size_t procIdx,
                                            int depth)
@@ -1393,15 +1319,14 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
         const auto& proc = snapshots[frame.procIdx];
 
         // Check if this process has children (in the filtered set)
-        auto childrenIt = tree.find(proc.uniqueKey);
         bool hasChildren = false;
         std::vector<std::size_t> filteredChildren;
 
-        if (childrenIt != tree.end())
+        if (!proc.childrenIndices.empty())
         {
-            filteredChildren.reserve(childrenIt->second.size());
+            filteredChildren.reserve(proc.childrenIndices.size());
             // Only count children that are in the filtered set
-            for (const std::size_t childIdx : childrenIt->second)
+            for (const std::size_t childIdx : proc.childrenIndices)
             {
                 if (filteredSet.contains(childIdx))
                 {
@@ -1427,35 +1352,24 @@ void ProcessesPanel::renderProcessTreeNode(const std::vector<Domain::ProcessSnap
     }
 }
 
-void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                    const std::vector<std::size_t>& filteredIndices,
-                                    const std::unordered_map<std::uint64_t, std::vector<std::size_t>>& tree)
+void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
 {
     // Convert filtered indices to a set for O(1) lookups
     const std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
 
-    // Build a uniqueKey-to-index map for O(1) parent lookups within the filtered set
-    std::unordered_map<std::uint64_t, std::size_t> keyToIndex;
-    for (const std::size_t idx : filteredIndices)
-    {
-        keyToIndex[snapshots[idx].uniqueKey] = idx;
-    }
+    // Check if each process is a top-level root (either has no parent, or its parent isn't in the filtered set).
+    // Because snapshots[idx].childrenIndices already forms the hierarchy edges, we just need to avoid double-rendering
+    // children by only initiating a tree descent from the roots.
 
-    // Build parent uniqueKey lookup for filtering roots
-    std::unordered_set<std::uint64_t> parentKeys;
+    // First, find all processes that appear as a child in the filtered set.
+    std::unordered_set<std::size_t> isChildInFilteredSet;
     for (const std::size_t idx : filteredIndices)
     {
-        const auto& proc = snapshots[idx];
-        if (proc.parentPid > 0)
+        for (const std::size_t childIdx : snapshots[idx].childrenIndices)
         {
-            // Try to find parent in filtered snapshots by PID
-            for (const auto& [parentKey, parentIdx] : keyToIndex)
+            if (filteredSet.contains(childIdx))
             {
-                if (snapshots[parentIdx].pid == proc.parentPid)
-                {
-                    parentKeys.insert(parentKey);
-                    break;
-                }
+                isChildInFilteredSet.insert(childIdx);
             }
         }
     }
@@ -1463,26 +1377,10 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // Render root processes and their descendants (in the order of filteredIndices to respect PID/natural order)
     for (const std::size_t idx : filteredIndices)
     {
-        const auto& proc = snapshots[idx];
-
-        // Check if this process's parent is in the filtered set by checking if parent's uniqueKey exists
-        bool parentInFilteredSet = false;
-        if (proc.parentPid > 0)
+        // Only render if this is a root process (not listed as a child of any other filtered process)
+        if (!isChildInFilteredSet.contains(idx))
         {
-            for (const auto& p : snapshots)
-            {
-                if (p.pid == proc.parentPid && keyToIndex.contains(p.uniqueKey))
-                {
-                    parentInFilteredSet = true;
-                    break;
-                }
-            }
-        }
-
-        // Only render if this is a root process (parent not in filtered set)
-        if (!parentInFilteredSet)
-        {
-            renderProcessTreeNode(snapshots, tree, filteredSet, idx, 0);
+            renderProcessTreeNode(snapshots, filteredSet, idx, 0);
         }
     }
 }

@@ -66,6 +66,9 @@ struct ProcessSnapshot
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
 
+    // Tree hierarchy (computed once per snapshot)
+    std::vector<std::size_t> childrenIndices; // Indices of children within the same snapshot vector
+
     // GPU engines (union of active engines across all GPUs)
     std::vector<std::string> gpuEngines; // ["3D", "Compute"]
 
