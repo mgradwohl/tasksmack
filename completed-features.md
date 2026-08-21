@@ -1,64 +1,74 @@
-# Completed Features
+# Implemented Features
 
-This file lists features that are already implemented in TaskSmack.
+This is the canonical inventory of user-visible and engineering features currently implemented in TaskSmack. Partial capabilities are called out explicitly; planned work belongs in [tasksmack.md](tasksmack.md).
 
-## Application Features
+## Process Monitoring and Control
 
-| Feature | Source | Notes |
-|---------|--------|-------|
-| **MEM% Column** | htop | Memory as percentage of total system RAM |
-| **TIME+ Column** | htop | CPU time formatted as H:MM:SS.cc |
-| **Command Column** | htop | Full command line from `/proc/[pid]/cmdline` |
-| **Task Summary** | htop | "N processes, M running" in panel header |
-| **VIRT Column** | htop | Virtual memory size |
-| **NI (Nice) Column** | htop | Process nice value (-20 to 19) |
-| **Thread Count Column** | htop | Number of threads per process |
-| **PPID Column** | htop | Parent process ID |
-| **SHR Column** | htop | Shared memory size |
-| **State Color Coding** | htop | Color-code process states based on theme |
-| **Status Column** | Task Manager | Display process status (Suspended, Efficiency Mode) |
-| **Column Visibility Toggles** | btop++ | Right-click table header to show/hide columns; persisted to config |
-| **Process Tree View** | btop++, htop | Hierarchical view showing parent-child relationships with collapsible nodes |
-| **Peak Working Set** | Task Manager | Horizontal reference line on memory graph showing historical peak RSS; OS-provided on Windows, tracked on Linux |
-| **CPU Affinity Column** | Task Manager | Shows which CPU cores a process can run on (e.g., "0-3", "0,2,4") |
-| **Power Usage Column** | Task Manager | Process power consumption (infrastructure ready, platform implementations pending) |
-| **Signal Sending / Process Actions** | btop++ | Send signals to processes: SIGTERM (terminate), SIGKILL (kill), SIGSTOP (stop), SIGCONT (resume); Linux uses `kill()`, Windows uses `TerminateProcess` (stop/resume not supported on Windows) |
-| **Priority Adjustment** | Task Manager, htop | Change process nice value (-20 to 19) via slider in Process Details; Linux uses `setpriority()`, Windows uses `SetPriorityClass()` |
-| **Per-Process Network Usage** | Task Manager | Network rate display (sent/received) in Process Details Overview tab; Linux implementation uses Netlink INET_DIAG to query TCP/UDP socket byte counters (requires Linux 4.2+); Windows implementation pending |
-| **Per-Process I/O Rates** | btop++, Task Manager | Disk read/write rates (bytes/sec) for each process; requires elevated privileges on Linux |
-| **Power/Battery Stats** | btop++ | Battery charge, power consumption, time remaining, health%; shown in System Overview tab when battery detected |
-| **GPU Monitoring** | Task Manager, btop++ | Complete GPU infrastructure and UI; Platform layer with NVIDIA (NVML), Intel (DRM), AMD (ROCm) probes on Linux; Windows NVML + PDH per-process GPU memory and utilization; Domain GPUModel with history; ProcessModel merges per-process GPU data; UI surfaces include SystemMetricsPanel GPU section, ProcessesPanel GPU columns, and ProcessDetailsPanel GPU tab (conditionally shown when process uses GPU) |
-| **Network Monitoring** | btop++, Task Manager | Complete network monitoring implementation with system-wide and per-process tracking |
-| **System-Wide Network Stats** | btop++ | Total RX/TX bytes and rates in System Overview; Linux via `/proc/net/dev`, Windows via `GetIfTable`/`GetIfTable2` |
-| **Per-Interface Network Breakdown** | btop++ | Interface selector dropdown showing individual interface throughput, status, and link speed |
-| **Network Panel** | btop++ | Dedicated panel with per-interface throughput graphs, current rates with auto-scaling units (B/s to GB/s), cumulative transfer totals, interface status and link speed |
-| **Per-Process Network Tracking** | Task Manager | Network sent/received rates per process; Linux via Netlink INET_DIAG socket stats, Windows via `GetPerTcpConnectionEStats` |
-| **Linux Interface Caching** | — | Link speed cached with 60s TTL to reduce sysfs I/O; thread-safe implementation |
+| Feature | Current behavior |
+|---------|------------------|
+| Process table | Sortable, filterable list with PID, PPID, name, command, user, state/status, CPU, memory, CPU time, priority, thread/handle counts, affinity, page faults, I/O, network, and GPU columns where supported |
+| Process tree | Collapsible parent/child hierarchy with cached rebuilds |
+| Process details | Overview and capability-driven detail sections for CPU, memory, I/O, network, and GPU data |
+| Column configuration | Header context menu controls visibility; settings persist in `config.toml` |
+| Stable process identity | PID and process start time prevent counter reuse when an operating system recycles a PID |
+| Process actions | Terminate, force terminate, and priority changes on Linux and Windows; stop/resume on Linux |
+| Disk I/O rates | Per-process read/write rates; Linux access may require root or `CAP_DAC_READ_SEARCH` |
+| Network rates | Lifetime-average per-process sent/received rates; Linux uses Netlink, Windows uses TCP EStats when running as administrator |
+| GPU attribution | Per-process utilization, memory, device, and engine data when supported by the active GPU backend |
 
-## Developer Tooling / Infrastructure
+## System Monitoring
 
-| Item | Notes |
-|------|-------|
-| **PGO (Profile-Guided Optimization) workflow** | `pgo-generate`/`pgo-use` CMake presets (Linux); `win-pgo-generate`/`win-pgo-use` (Windows); `tools/pgo.sh` / `tools/pgo.ps1` automate the full instrumented-build → run → merge → optimized-build pipeline using Clang's `llvm-profdata` |
-| **Google Benchmark suite** | `benchmarks/` – History, ProcessModel, SystemModel, Format, StorageModel, GPUModel, Numeric benchmarks (Linux + Windows); NetlinkSocketStats benchmarks (Linux only); memory-growth tracking via `/proc/self/status` (Linux only — Windows benchmarks run without this metric); `benchmark` and `win-benchmark` CMake presets |
-| **SBOM generation** | SPDX-JSON Software Bill of Materials generated from source tree via `anchore/sbom-action` (Syft); attached to every GitHub release as `tasksmack-<label>-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) for supply-chain transparency |
-| **Automatic CHANGELOG.md** | Auto-generated by [git-cliff](https://git-cliff.org/) on every strict `vMAJOR.MINOR.PATCH` tag; follows Keep a Changelog format with conventional-commit grouping; committed back to `main` via the `changelog` workflow |
-| **CMake presets** | Presets for Debug/Release and platform variants |
-| **Legacy scripts deprecated** | Consolidated tooling scripts |
-| **VS Code integration** | Tasks and launch configs |
-| **Precompiled headers (PCH)** | Faster builds |
-| **Compiler caching support** | ccache/sccache |
-| **clang-tidy workflow** | Helper scripts, curated config with rationale comments, 0-warning baseline |
-| **CI on Linux + Windows** | Build, tests, format check, clang-tidy, coverage |
-| **CI clangd provisioning** | `setup-llvm` action provisions unversioned `clangd` symlink for all CI jobs |
-| **Coverage reporting** | llvm-cov HTML reports |
-| **CPack packaging** | ZIP/installer generation via CPack |
-| **Version header generation** | Auto-generate `version.h` during configure |
-| **Sanitizer presets** | ASan+UBSan, TSan on Linux |
-| **Compiler warning configuration** | Tuned warnings and warnings-as-errors |
-| **`std::print` adoption** | Type-safe, format-string-based output |
-| **FreeType font rendering** | Sharper text rendering at small sizes using FreeType with LightHinting |
-| **pre-commit clang-format pin** | `mirrors-clang-format` pinned to v22.1.4 matching project Clang version |
-| **iwyu version gate** | `tools/iwyu.sh` warns and continues for local dry runs when iwyu is built against the wrong Clang version, but fails hard in CI or with `--fix` |
-| **Dependency vulnerability scanning** | [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies (detected from `CMakeLists.txt` via Syft's cmake cataloger) and Python `requirements.txt` against the [OSV database](https://osv.dev) on pushes to `main`, pull requests targeting `main`, and a weekly schedule; SARIF results appear in the Security tab (`osv-scanner` workflow) |
-| **Resize rendering pipeline** | Event-driven `glViewport` update via `WindowResizedEvent` (SDL `PIXEL_SIZE_CHANGED`); batch-and-render loop drains all events before a single `renderFrame()` call to avoid one vsync stall per queued resize event; idle throttle (~20 fps via `SDL_WaitEventTimeout`) and minimized throttle (~5 fps); `Window::setSize()` calls `SDL_SyncWindow()` for synchronous programmatic resize (off hot-path only); per-frame `SDL_GetWindowSizeInPixels()` query eliminated via `m_CachedPixelW/H` |
+| Feature | Current behavior |
+|---------|------------------|
+| CPU | Total and per-core utilization, breakdowns, and bounded history |
+| Memory and swap | Current usage, availability, cache data, swap, and bounded history |
+| Storage | System and per-device throughput and history |
+| Network | System-wide and per-interface throughput, totals, status, and link speed in the System Overview |
+| GPU | Per-device utilization, memory, temperature, power, clocks, fan, encoder/decoder data when exposed by the backend |
+| Battery and power | Charge, power flow, time remaining/time to full, and health when a battery is present |
+| Linux-only metrics | Load averages, I/O wait, steal time, and shared process memory |
+
+## User Experience and Configuration
+
+| Feature | Current behavior |
+|---------|------------------|
+| Three-tab shell | System Overview, Processes, and Process Details |
+| Docking and viewports | Dear ImGui docking with multi-viewport support |
+| Themes | 20 bundled TOML themes plus user themes |
+| Persistent settings | Theme, font size, process columns, sampling, history, window state, and advanced metric/UI settings |
+| Sampling controls | Refresh interval from 100 ms to 5 seconds; default 1 second |
+| History controls | Retention from 10 seconds to 30 minutes; default 5 minutes |
+| Capability-aware UI | Unsupported metrics and actions are hidden; reduced privileges can trigger an elevation notice |
+| Responsive sampling | Process enumeration uses `BackgroundSampler`; GPU refresh uses a dedicated worker; snapshot versions avoid redundant process-list copies |
+| Resize pipeline | Batched SDL3 event handling, event-driven viewport updates, idle throttling, and minimized throttling |
+
+## Platform Backends
+
+| Capability | Linux | Windows |
+|------------|-------|---------|
+| Process/system metrics | `/proc`, sysfs, Netlink, POSIX APIs | Native system and process APIs |
+| Process I/O | `/proc/[pid]/io`, permission-dependent | `GetProcessIoCounters` |
+| Per-process network | Netlink `INET_DIAG`, Linux 4.2+ | TCP EStats, administrator privileges required |
+| NVIDIA GPU | NVML | NVML |
+| AMD GPU | ROCm SMI | DXGI/PDH capability-dependent data |
+| Intel/generic GPU | DRM/sysfs | DXGI/PDH |
+| Stop/resume | `SIGSTOP` / `SIGCONT` | Not supported |
+| Minimum supported OS | Supported Linux distributions with required runtime libraries | Windows 10 |
+
+## Engineering Infrastructure
+
+| Item | Current behavior |
+|------|------------------|
+| Build system | CMake 3.29+, Ninja, C++23, Clang/LLVM 22, Linux libc++, Windows MSVC STL |
+| Workflow presets | One-command development, coverage, sanitizer, and benchmark workflows |
+| Automated setup | `tools/setup-dev.sh` and `tools/setup-dev.ps1` |
+| Cleanup | Cross-platform clean scripts with dry-run and extended cleanup modes |
+| Tests | Google Test suites across Platform, Domain, Core, UI, App, and integration boundaries |
+| Benchmarks | Google Benchmark coverage for models, history, formatting, numeric helpers, and Linux Netlink |
+| Static quality | clang-format, clang-tidy, pre-commit, IWYU guidance, warnings-as-errors |
+| Runtime analysis | ASan/UBSan, TSan, MSan preset, coverage, perf/heaptrack, ETW, resize tracing |
+| Build analysis | Clang time-trace collection and unity-build presets |
+| Optimization | PCH, compiler caching, IPO/LTO, CPU compatibility presets, PGO workflows |
+| Packaging | Linux `.deb`/`.tar.gz`, Windows `.zip`, generated version resources, SPDX-JSON SBOM |
+| CI and security | Linux/Windows builds, coverage thresholds, CodeQL, OSV, dependency review, Scorecard, sanitizer and static-analysis workflows |
+| Releases | Strict SemVer tags drive packaging and a git-cliff changelog pull request |

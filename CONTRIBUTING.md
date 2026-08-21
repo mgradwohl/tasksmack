@@ -2,17 +2,25 @@
 
 Thanks for contributing!
 
-This document is the single source of truth for developer setup and workflows (build/test/format/lint/packaging).
+This document is the single source of truth for developer setup and workflows (build, test, format, lint, profiling, and packaging).
 
 ## Documentation
 
 To avoid duplication and doc drift, these are the canonical docs:
 
-- [README.md](README.md): user-facing features (with a small contributor pointer to this file)
+- [README.md](README.md): project landing page and documentation index
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
-- [tasksmack.md](tasksmack.md): architecture + engineering notes (including process/metrics implementation notes)
-- [completed-features.md](completed-features.md): canonical shipped-features list
+- [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
+- [completed-features.md](completed-features.md): canonical implemented-feature inventory
+- [docs/guide/](docs/guide/): user guide and troubleshooting
+- [docs/dev/](docs/dev/): concise docs-site navigation back to these canonical developer sources
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
+
+Avoid copying contributor commands or architecture diagrams into additional Markdown files. Link to the relevant canonical section instead.
+
+### C++ API Documentation
+
+JSDoc and language-level docstrings are not C++ conventions. When declaration-level API documentation is useful, use Doxygen-compatible `///` or `/** ... */` comments in headers. Document contracts, ownership, units, thread safety, and platform limitations; do not narrate self-explanatory accessors or repeat implementation details. Repository-level design and workflow guidance belongs in the Markdown sources above.
 
 ## Quick Start
 
@@ -39,7 +47,7 @@ source .venv/bin/activate     # Use the project-local Python environment
 ./tools/check-prereqs.sh      # Verify environment after setup
 ```
 
-The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. It installs GLAD's hash-locked build dependencies and, unless `--minimal` is used, the development dependencies from `requirements.txt`. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
 
 ### Automated Setup (Windows)
 
@@ -48,7 +56,7 @@ pwsh tools/setup-dev.ps1      # Install all prerequisites via winget
 pwsh tools/check-prereqs.ps1  # Verify environment
 ```
 
-The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, and ccache.
+The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, ccache, GLAD's hash-locked build dependencies, and, unless `-Minimal` is used, the development dependencies from `requirements.txt`.
 
 ### One-Command Dev Workflow
 
@@ -71,13 +79,10 @@ If you just want a quick check of your environment, run:
 .\tools\check-prereqs.ps1   # Windows
 ```
 
-# Configure + build (Windows)
-```cmake --preset win-debug
-cmake --build --preset win-debug
-```
-
-# Run tests
 ```bash
+# Manual Windows configure, build, and test
+cmake --preset win-debug
+cmake --build --preset win-debug
 ctest --preset win-debug
 ```
 
@@ -117,14 +122,14 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - CMake 3.29+
 - Ninja
 - ccache 4.9.1+ (optional but recommended)
-- Python 3 + jinja2 (required for GLAD OpenGL loader generation)
+- Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
 
 Install Python + jinja2:
 
 ```powershell
 winget install Python.Python.3.14
-py -3.14 -m pip install jinja2
+py -3.14 -m pip install --require-hashes -r requirements-glad.lock
 ```
 
 ## Pre-commit Hooks (Recommended)
@@ -362,9 +367,6 @@ IWYU analyzes `#include` directives and suggests additions/removals for cleaner 
 ```bash
 # Ubuntu/Debian
 sudo apt install iwyu
-
-# macOS
-brew install include-what-you-use
 ```
 
 **Notes:**
@@ -454,6 +456,23 @@ caller-provided `suppressions=` will override the project's — add entries to
 
 This suppression filters known ThreadSanitizer false positives in third-party
 pthread barrier paths, while preserving any caller-provided TSAN flags.
+
+## Fuzzing (Linux only)
+
+ClusterFuzzLite continuously exercises the allocation-free `/proc` numeric
+parsers with libFuzzer and AddressSanitizer. Pull requests that change the
+parser or fuzzing configuration run a short code-change fuzzing job; `main`
+also produces a baseline build. Separate weekly jobs perform a longer batch
+run and prune the resulting corpus.
+
+To run the current target locally with Clang:
+
+```bash
+mkdir -p build/fuzz
+clang++-22 -std=c++23 -Isrc -fsanitize=fuzzer,address \
+  tests/fuzz/fuzz_proc_parsing.cpp -o build/fuzz/fuzz_proc_parsing
+./build/fuzz/fuzz_proc_parsing -max_total_time=60
+```
 
 ## Benchmarks
 
@@ -602,20 +621,6 @@ heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
 
 # Headless analysis (CI-friendly)
 heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
-```
-
-### macOS (Instruments)
-
-```bash
-# Build with profile preset
-cmake --preset profile
-cmake --build --preset profile
-
-# Open in Instruments
-open -a Instruments ./build/profile/bin/TaskSmack
-
-# Or use command line
-xcrun xctrace record --template 'Time Profiler' --launch -- ./build/profile/bin/TaskSmack
 ```
 
 ### Windows — CPU profiling (ETW)
@@ -942,6 +947,10 @@ GitHub Actions runs:
   - Sanitizers (Linux: ASan+UBSan, TSan)
 - `pre-commit.yml`:
   - pre-commit hooks (includes formatting and hygiene checks)
+- `codeql.yml`:
+  - CodeQL security-and-quality analysis on pushes to `main`, pull requests, and a weekly schedule
+- `cflite_pr.yml`, `cflite_build.yml`, `cflite_batch.yml`, and `cflite_prune.yml`:
+  - ClusterFuzzLite parser fuzzing on relevant pull requests, baseline builds on `main`, and weekly batch/pruning jobs
 - `osv-scanner.yml`:
   - Dependency vulnerability scan (Syft SBOM + OSV database)
 

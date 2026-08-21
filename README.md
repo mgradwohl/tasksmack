@@ -12,68 +12,55 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue?style=flat-square)](https://mgradwohl.github.io/tasksmack/)
 
-TaskSmack is a cross-platform system monitor & task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3.
+TaskSmack is a C++23 system monitor and task manager for Linux and Windows, built with Dear ImGui, ImPlot, SDL3, and OpenGL.
 
-## Build Matrix Status
+## Highlights
 
-Main-branch build badges are shown below; the CI badge above reflects PR validation.
+- Sortable, filterable process table with tree view, configurable columns, and process details
+- CPU, memory, swap, storage, network, GPU, and battery histories
+- Per-process CPU, memory, disk I/O, network, and GPU metrics when the platform exposes them
+- Process termination, forced termination, priority changes, and Linux stop/resume actions
+- TOML configuration, 20 bundled themes, user themes, configurable sampling, and bounded history
+- Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
-| Platform | Debug | Release |
-|----------|-------|---------|
-| Linux | [![Linux Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-debug.yml?branch=main&style=flat-square&label=Linux%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-debug.yml) | [![Linux Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-linux-release.yml?branch=main&style=flat-square&label=Linux%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-linux-release.yml) |
-| Windows | [![Windows Debug](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-debug.yml?branch=main&style=flat-square&label=Windows%20Debug)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-debug.yml) | [![Windows Release](https://img.shields.io/github/actions/workflow/status/mgradwohl/tasksmack/build-windows-release.yml?branch=main&style=flat-square&label=Windows%20Release)](https://github.com/mgradwohl/tasksmack/actions/workflows/build-windows-release.yml) |
+See [Implemented Features](completed-features.md) for the detailed shipped-feature inventory.
+
+## Supported Platforms
+
+| Platform | Support |
+|----------|---------|
+| Linux | Supported |
+| Windows 10 or later | Supported |
+| macOS and other operating systems | Not currently supported |
+
+Some metrics require optional drivers, vendor libraries, kernel support, or elevated privileges. The [User Guide](docs/guide/user-guide.md) documents those differences.
 
 ## Download
 
-**[→ Latest Release](https://github.com/mgradwohl/tasksmack/releases/latest)**
+**[Latest release](https://github.com/mgradwohl/tasksmack/releases/latest)**
 
 | Platform | Package | Install |
 |----------|---------|---------|
-| Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
-| Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
+| Debian/Ubuntu | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
+| Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
-## System Requirements
+Optimized packages target x86-64-v3 and require AVX2. Use a compatible x86-64-v2 package on older CPUs; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
-### CPU Requirements
+## Documentation
 
-TaskSmack provides multiple build configurations optimized for different CPU generations:
+| Document | Scope |
+|----------|-------|
+| [User Guide](docs/guide/user-guide.md) | Installation, usage, platform differences, and configuration |
+| [FAQ](docs/guide/faq.md) | Troubleshooting and capability limitations |
+| [Implemented Features](completed-features.md) | Canonical shipped-feature inventory |
+| [Contributing](CONTRIBUTING.md) | Canonical setup, build, test, tooling, and contribution workflow |
+| [Architecture](tasksmack.md) | Canonical layer boundaries, sampling pipeline, and engineering direction |
+| [Security Policy](SECURITY.md) | Private vulnerability reporting |
+| [Documentation site](https://mgradwohl.github.io/tasksmack/) | Web navigation for the same documentation |
 
-- **Standard builds** (`release`, `win-release`): Use default compiler optimizations, compatible with most x86-64 CPUs
-- **Compatible builds** (`release-compatible`, `win-release-compatible`): Target x86-64-v2 microarchitecture (2009+, Core i3/i5/i7, Athlon II)
-- **Optimized builds** (`optimized`, `win-optimized`): Target x86-64-v3 microarchitecture (2013+, Haswell/Excavator), requires AVX2 support
-
-**Note:** If you encounter "Illegal instruction" errors when running binaries built with the `optimized` preset, your CPU may not support AVX2. Use the `release-compatible` preset instead for broader compatibility.
-
-## Features
-
-- Cross-platform (Windows + Linux)
-- ImGui-based UI with docking and multi-viewport support
-- Process table with htop-inspired columns (CPU%, MEM%, RES, VIRT, SHR, TIME+, PPID, NI, threads, command, I/O rates)
-- Per-process disk I/O rates (read/write bytes per second)
-  - Windows: Available via `GetProcessIoCounters` (no special privileges required)
-  - Linux: Requires root or `CAP_DAC_READ_SEARCH` capability to read `/proc/[pid]/io`
-- Process state color-coding
-- Process actions: terminate (SIGTERM), kill (SIGKILL), stop/resume (SIGSTOP/SIGCONT on Linux)
-- Column visibility toggles (persisted)
-- System metrics with history graphs (CPU, memory, swap, per-core)
-- Network monitoring with per-interface breakdown and dedicated Network Panel
-  - System-wide and per-interface throughput graphs
-  - Per-process network tracking (sent/received bytes per second)
-  - Interface selector with status and link speed display
-- Battery/power monitoring (charge %, power consumption, time remaining, health)
-- Configurable themes (TOML-based) and user themes: drop .toml files in your user config themes folder (Windows: %APPDATA%/TaskSmack/themes, Linux: ~/.config/tasksmack/themes)
-- Strict layered architecture (Platform → Domain → UI) for testable metrics math and clean OS boundaries
-
-## For Developers
-
-**[→ Documentation site](https://mgradwohl.github.io/tasksmack/)** — user guide, architecture, build instructions, and metrics pipeline.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
-- Security issues should be reported per [SECURITY.md](SECURITY.md)
-- Architecture overview: [tasksmack.md](tasksmack.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
+`CHANGELOG.md` is generated by the release workflow and should not be edited manually.
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) file.
+[MIT](LICENSE)

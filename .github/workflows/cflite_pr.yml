@@ -1,0 +1,41 @@
+name: ClusterFuzzLite PR Fuzzing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.clusterfuzzlite/**'
+      - '.github/workflows/cflite_*.yml'
+      - 'src/Platform/Linux/ProcParsing.h'
+      - 'tests/fuzz/**'
+
+concurrency:
+  group: cflite-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  fuzz:
+    name: Fuzz changed parsers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: c++
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 120
+          mode: code-change
+          sanitizer: address
+          output-sarif: false

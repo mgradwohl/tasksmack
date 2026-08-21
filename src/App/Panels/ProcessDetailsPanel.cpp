@@ -941,6 +941,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
         return;
     }
 
+    // Align the independently sampled histories to their newest shared window so
+    // every plotted value and tooltip lookup refers to the same point in time.
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const size_t alignedCount = std::min({m_Timestamps.size(), m_ThreadHistory.size(), m_HandleHistory.size(), m_PageFaultHistory.size()});
     if (alignedCount == 0)
@@ -958,7 +960,8 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-    // Use smoothed values for NowBars
+    // Scale each NowBar against the larger of its historical peak and smoothed
+    // current value, preventing a fresh spike from overflowing the bar.
     const double threadMax = seriesMax(threadData, m_SmoothedUsage.threadCount);
     const double handleMax = seriesMax(handleData, m_SmoothedUsage.handleCount);
     const double faultMax = seriesMax(faultData, m_SmoothedUsage.pageFaultsPerSec);
@@ -1120,6 +1123,7 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
         return;
     }
 
+    // Align both rate histories to the newest timestamps shared by every series.
     const size_t alignedCount = std::min({m_Timestamps.size(), m_IoReadHistory.size(), m_IoWriteHistory.size()});
     if (alignedCount == 0)
     {
@@ -1136,7 +1140,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-    // Use smoothed values for NowBars
+    // Compare the smoothed current rates with history when scaling the NowBars,
+    // so either a historical or newly observed peak remains representable.
     const double readMax = seriesMax(readData, m_SmoothedUsage.ioReadBytesPerSec);
     const double writeMax = seriesMax(writeData, m_SmoothedUsage.ioWriteBytesPerSec);
 
@@ -1157,6 +1162,8 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
         .value01 = (writeMax > 0.0) ? std::clamp(m_SmoothedUsage.ioWriteBytesPerSec / writeMax, 0.0, 1.0) : 0.0,
         .color = theme.scheme().chartIoWrite};
 
+    // Keep the plot and its hover tooltip together: both consume the same aligned
+    // vectors, and the lambda is rendered alongside the matching NowBars below.
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
@@ -1224,6 +1231,7 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
         return;
     }
 
+    // Align transmitted and received histories to the newest common timestamps.
     const size_t alignedCount = std::min({m_Timestamps.size(), m_NetSentHistory.size(), m_NetRecvHistory.size()});
     if (alignedCount == 0)
     {
@@ -1240,7 +1248,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, 0.0);
     std::vector<double> timeData = buildTimeAxisDoubles(timestamps, alignedCount, nowSeconds);
 
-    // Use smoothed values for NowBars
+    // Scale the NowBars against both the historical peak and smoothed current
+    // value so a new traffic burst cannot exceed the normalized range.
     const double sentMax = seriesMax(sentData, m_SmoothedUsage.netSentBytesPerSec);
     const double recvMax = seriesMax(recvData, m_SmoothedUsage.netRecvBytesPerSec);
 
@@ -1261,6 +1270,8 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                          .value01 = (recvMax > 0.0) ? std::clamp(m_SmoothedUsage.netRecvBytesPerSec / recvMax, 0.0, 1.0) : 0.0,
                          .color = theme.scheme().chartNetRx};
 
+    // The plot lambda owns rendering and hover lookup over the same aligned
+    // buffers; renderHistoryWithNowBars composes it with the summary bars.
     auto plot = [&]()
     {
         const UI::Widgets::PlotFontGuard fontGuard;
