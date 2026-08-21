@@ -161,7 +161,6 @@ void SystemMetricsPanel::onAttach()
     m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
     m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
     m_HistoryScrollSeconds = 0.0;
-    m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
 
     m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
@@ -203,10 +202,10 @@ void SystemMetricsPanel::onAttach()
     }
     m_ForceRefresh = false;
 
-    const auto initialSnap = m_Model->snapshot();
+    m_CachedSnapshot = m_Model->snapshot();
     // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
     // UI code (e.g., tab labels) is responsible for adding icons when rendering.
-    m_Hostname = initialSnap.hostname.empty() ? "System" : initialSnap.hostname;
+    m_Hostname = m_CachedSnapshot.hostname.empty() ? "System" : m_CachedSnapshot.hostname;
 }
 
 void SystemMetricsPanel::onDetach()
@@ -224,7 +223,6 @@ void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
     {
         m_Sampler->setInterval(interval);
     }
-    m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
     requestRefresh(); // Consume flag semantics for older calls
 }
@@ -279,17 +277,6 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
 
     const bool interactionActive = Core::Application::get().isInteractionRedrawActive();
 
-    // On the frame the interaction ends, queue an immediate refresh so the
-    // display shows fresh data as soon as the user releases the mouse/resize handle.
-    if (m_WasInteractionActive && !interactionActive)
-    {
-        if (m_Sampler)
-        {
-            m_Sampler->requestRefresh();
-        }
-    }
-    m_WasInteractionActive = interactionActive;
-
     // Do not throttle the background sampler just because the user is resizing the UI.
     const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
     if (m_Sampler && m_Sampler->interval() != effectiveInterval)
@@ -317,14 +304,14 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         {
             m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         }
-        
-        m_Model->clearNewSnapshotFlag();
-    }
 
-    const auto snap = m_Model->snapshot();
-    if (!snap.hostname.empty())
-    {
-        m_Hostname = snap.hostname;
+        m_CachedSnapshot = m_Model->snapshot();
+        if (!m_CachedSnapshot.hostname.empty())
+        {
+            m_Hostname = m_CachedSnapshot.hostname;
+        }
+
+        m_Model->clearNewSnapshotFlag();
     }
 }
 
@@ -363,7 +350,8 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = true;
     }
 
-    auto snap = m_Model->snapshot();
+    auto snap = m_CachedSnapshot;
+
     const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
     {
@@ -460,7 +448,7 @@ void SystemMetricsPanel::renderContent()
 
 void SystemMetricsPanel::renderOverview()
 {
-    auto snap = m_Model->snapshot();
+    auto snap = m_CachedSnapshot;
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);

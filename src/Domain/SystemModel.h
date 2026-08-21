@@ -54,7 +54,7 @@ class SystemModel : public ISamplable
     {
         return m_HasNewSnapshot.load(std::memory_order_acquire);
     }
-    
+
     /// Clears the new snapshot flag.
     void clearNewSnapshotFlag()
     {

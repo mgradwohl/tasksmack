@@ -101,14 +101,9 @@ class SystemMetricsPanel : public Panel
     std::vector<float> m_CpuStackYIowait;
 
     std::chrono::milliseconds m_RefreshInterval{1000};
-    float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
-    /// Tracks whether interaction was active last frame. When the flag transitions
-    /// from true to false, a force-refresh is queued so data updates immediately
-    /// after the user releases the mouse.
-    bool m_WasInteractionActive = false;
 
     struct SmoothedCpu
     {
@@ -175,8 +170,9 @@ class SystemMetricsPanel : public Panel
     int m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
 
-    // Cached hostname for window title
+    // Cached hostname and snapshot for UI
     std::string m_Hostname = "System";
+    Domain::SystemSnapshot m_CachedSnapshot;
 
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

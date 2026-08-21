@@ -64,7 +64,7 @@ void StorageModel::sample()
         // Update state for next sample
         state.prevCounters = diskCounters;
         state.prevTime = now;
-        
+
         // If this is the very first time we've seen this disk (the seed read),
         // mark the next sample as a seed transition to prevent rate spikes.
         if (!state.hasPrev)
@@ -75,7 +75,7 @@ void StorageModel::sample()
         {
             state.isSeedTransition = false;
         }
-        
+
         state.hasPrev = true;
     }
 
