@@ -277,7 +277,13 @@ void ProcessesPanel::onAttach()
         { model->updateFromCounters(counters, totalCpuTime); });
     m_Sampler->start();
 
-    m_CachedSnapshotVersion = m_ProcessModel->snapshotVersion();
+    // Ensure the initial seed snapshots are loaded into the render cache so the UI
+    // isn't empty before the first background sample arrives.
+    std::uint64_t newVersion = m_CachedSnapshotVersion;
+    if (m_ProcessModel->tryCopySnapshotsIfNewer(m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion))
+    {
+        m_CachedSnapshotVersion = newVersion;
+    }
 
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", intervalMs);
 }
@@ -1351,28 +1357,19 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // Convert filtered indices to a set for O(1) lookups
     const std::unordered_set<std::size_t> filteredSet(filteredIndices.begin(), filteredIndices.end());
 
-    // Build a uniqueKey-to-index map for O(1) parent lookups within the filtered set
-    std::unordered_map<std::uint64_t, std::size_t> keyToIndex;
-    for (const std::size_t idx : filteredIndices)
-    {
-        keyToIndex[snapshots[idx].uniqueKey] = idx;
-    }
+    // Check if each process is a top-level root (either has no parent, or its parent isn't in the filtered set).
+    // Because snapshots[idx].childrenIndices already forms the hierarchy edges, we just need to avoid double-rendering
+    // children by only initiating a tree descent from the roots.
 
-    // Build parent uniqueKey lookup for filtering roots
-    std::unordered_set<std::uint64_t> parentKeys;
+    // First, find all processes that appear as a child in the filtered set.
+    std::unordered_set<std::size_t> isChildInFilteredSet;
     for (const std::size_t idx : filteredIndices)
     {
-        const auto& proc = snapshots[idx];
-        if (proc.parentPid > 0)
+        for (const std::size_t childIdx : snapshots[idx].childrenIndices)
         {
-            // Try to find parent in filtered snapshots by PID
-            for (const auto& [parentKey, parentIdx] : keyToIndex)
+            if (filteredSet.contains(childIdx))
             {
-                if (snapshots[parentIdx].pid == proc.parentPid)
-                {
-                    parentKeys.insert(parentKey);
-                    break;
-                }
+                isChildInFilteredSet.insert(childIdx);
             }
         }
     }
@@ -1380,24 +1377,8 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // Render root processes and their descendants (in the order of filteredIndices to respect PID/natural order)
     for (const std::size_t idx : filteredIndices)
     {
-        const auto& proc = snapshots[idx];
-
-        // Check if this process's parent is in the filtered set by checking if parent's uniqueKey exists
-        bool parentInFilteredSet = false;
-        if (proc.parentPid > 0)
-        {
-            for (const auto& p : snapshots)
-            {
-                if (p.pid == proc.parentPid && keyToIndex.contains(p.uniqueKey))
-                {
-                    parentInFilteredSet = true;
-                    break;
-                }
-            }
-        }
-
-        // Only render if this is a root process (parent not in filtered set)
-        if (!parentInFilteredSet)
+        // Only render if this is a root process (not listed as a child of any other filtered process)
+        if (!isChildInFilteredSet.contains(idx))
         {
             renderProcessTreeNode(snapshots, filteredSet, idx, 0);
         }
