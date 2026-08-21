@@ -1,17 +1,11 @@
 #include "BackgroundSampler.h"
 
-#include "Platform/IProcessProbe.h"
-#include "Platform/ProcessTypes.h"
-
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <exception>
-#include <memory>
-#include <mutex>
 #include <stop_token>
 #include <string_view>
 #include <thread>
@@ -52,8 +46,7 @@ void logSamplerLoopException(std::string_view message,
 
 } // namespace
 
-BackgroundSampler::BackgroundSampler(std::unique_ptr<Platform::IProcessProbe> probe, SamplerConfig config)
-    : m_Probe(std::move(probe)), m_Capabilities(m_Probe->capabilities()), m_Config(config)
+BackgroundSampler::BackgroundSampler(SamplerConfig config) : m_Config(config)
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -62,6 +55,14 @@ BackgroundSampler::BackgroundSampler(std::unique_ptr<Platform::IProcessProbe> pr
 BackgroundSampler::~BackgroundSampler()
 {
     stop();
+}
+
+void BackgroundSampler::addSamplable(ISamplable* samplable)
+{
+    if (samplable != nullptr)
+    {
+        m_Samplables.push_back(samplable);
+    }
 }
 
 void BackgroundSampler::start()
@@ -101,22 +102,6 @@ bool BackgroundSampler::isRunning() const
     return m_Running.load();
 }
 
-void BackgroundSampler::setCallback(SnapshotCallback callback)
-{
-    const std::scoped_lock lock(m_CallbackMutex);
-    m_Callback = std::move(callback);
-}
-
-const Platform::ProcessCapabilities& BackgroundSampler::capabilities() const
-{
-    return m_Capabilities;
-}
-
-long BackgroundSampler::ticksPerSecond() const
-{
-    return m_Probe->ticksPerSecond();
-}
-
 void BackgroundSampler::requestRefresh()
 {
     m_RefreshRequested.store(true);
@@ -147,17 +132,13 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 
         try
         {
-            // Enumerate processes
-            auto counters = m_Probe->enumerate();
-            const std::uint64_t totalCpuTime = m_Probe->totalCpuTime();
-
-            // Invoke callback
+            for (auto* samplable : m_Samplables)
             {
-                const std::scoped_lock lock(m_CallbackMutex);
-                if (m_Callback)
+                if (stopToken.stop_requested())
                 {
-                    m_Callback(counters, totalCpuTime);
+                    break;
                 }
+                samplable->sample();
             }
 
             nextExceptionLogTime = std::chrono::steady_clock::time_point::min();

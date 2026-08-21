@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "SamplingConfig.h"
@@ -18,11 +19,11 @@ namespace Domain
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshot() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
-class SystemModel
+class SystemModel : public ISamplable
 {
   public:
     explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
-    ~SystemModel() = default;
+    ~SystemModel() override = default;
 
     SystemModel(const SystemModel&) = delete;
     SystemModel& operator=(const SystemModel&) = delete;

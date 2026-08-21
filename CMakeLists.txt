@@ -581,6 +581,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessTypes.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
+    src/Domain/ISamplable.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
 )
