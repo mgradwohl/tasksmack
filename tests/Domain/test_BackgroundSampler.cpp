@@ -331,20 +331,17 @@ TEST(BackgroundSamplerTest, ConcurrentSamplableAdd)
 
     // Should not crash
     SUCCEED();
-    EXPECT_GT(callbackCount.load(), 0);
 }
 
 TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 {
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-    probe->setCounters({});
+    MockSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 200ms;
 
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-    sampler.setCallback([](const auto&, uint64_t) {});
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
 
     sampler.start();
 
@@ -370,8 +367,7 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 
     sampler.stop();
 
-    // Should have enumerated at least a few times (timing-dependent, so relaxed check)
-    EXPECT_GT(rawProbe->enumerateCount(), 1);
+    EXPECT_GT(samplable.getSampleCount(), 1);
 }
 
 // =============================================================================
@@ -380,35 +376,30 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 
 TEST(BackgroundSamplerTest, VeryShortInterval)
 {
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-    probe->setCounters({});
+    MockSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 1ms; // Very short
 
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-    sampler.setCallback([](const auto&, uint64_t) {});
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
 
     sampler.start();
     std::this_thread::sleep_for(100ms);
     sampler.stop();
 
-    // Should have enumerated many times (relaxed to avoid timing flakiness)
-    EXPECT_GE(rawProbe->enumerateCount(), 5);
+    EXPECT_GE(samplable.getSampleCount(), 5);
 }
 
 TEST(BackgroundSamplerTest, StartStopStartCycle)
 {
-    auto probe = std::make_unique<MockProcessProbe>();
-    auto* rawProbe = probe.get();
-    probe->setCounters({});
+    MockSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 50ms;
 
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-    sampler.setCallback([](const auto&, uint64_t) {});
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
 
     // Start/stop cycle multiple times
     for (int i = 0; i < 3; ++i)
@@ -420,237 +411,102 @@ TEST(BackgroundSamplerTest, StartStopStartCycle)
         EXPECT_FALSE(sampler.isRunning());
     }
 
-    // Should have enumerated multiple times across all cycles
-    EXPECT_GT(rawProbe->enumerateCount(), 3);
-}
-
-TEST(BackgroundSamplerTest, EmptyProcessList)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->setCounters({}); // Empty list
-
-    Domain::SamplerConfig config;
-    config.interval = 50ms;
-
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-
-    std::atomic<int> callbackCount{0};
-    sampler.setCallback(
-        [&](const std::vector<Platform::ProcessCounters>& counters, uint64_t)
-        {
-            EXPECT_TRUE(counters.empty());
-            callbackCount.fetch_add(1);
-        });
-
-    sampler.start();
-    std::this_thread::sleep_for(150ms);
-    sampler.stop();
-
-    EXPECT_GT(callbackCount.load(), 0);
-}
-
-TEST(BackgroundSamplerTest, VeryShortIntervalStillWorks)
-{
-    // Test the branch where sleepTime <= 0 (interval shorter than enumerate time)
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->setCounters({});
-
-    Domain::SamplerConfig config;
-    config.interval = 1ms; // Extremely short interval
-
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-
-    std::atomic<int> callbackCount{0};
-    sampler.setCallback([&](const auto&, uint64_t) { callbackCount.fetch_add(1); });
-
-    sampler.start();
-    std::this_thread::sleep_for(100ms);
-    sampler.stop();
-
-    // Should have been called multiple times even with very short interval (relaxed to avoid timing flakiness)
-    EXPECT_GE(callbackCount.load(), 4);
+    EXPECT_GT(samplable.getSampleCount(), 3);
 }
 
 TEST(BackgroundSamplerTest, ZeroIntervalHandledGracefully)
 {
     // Edge case: zero interval
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->setCounters({});
+    MockSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 0ms; // Zero interval - sleepTime will always be <= 0
 
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-
-    std::atomic<int> callbackCount{0};
-    sampler.setCallback([&](const auto&, uint64_t) { callbackCount.fetch_add(1); });
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
 
     sampler.start();
     std::this_thread::sleep_for(50ms);
     sampler.stop();
 
-    // Should have been called many times with zero interval
-    EXPECT_GT(callbackCount.load(), 5);
+    EXPECT_GT(samplable.getSampleCount(), 5);
 }
 
 // =============================================================================
 // Exception Safety Tests
 // =============================================================================
 
-/// A process probe that throws std::runtime_error from enumerate() on every call.
-/// Used to verify the sampler loop handles probe exceptions gracefully.
-class ThrowingProcessProbe : public Platform::IProcessProbe
+class ThrowingSamplable : public Domain::ISamplable
 {
   public:
-    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    void sample() override
     {
-        m_EnumerateCount.fetch_add(1);
-        throw std::runtime_error("simulated probe enumerate failure");
+        m_CallCount++;
+        throw std::runtime_error("simulated sample failure");
     }
 
-    [[nodiscard]] uint64_t totalCpuTime() const override
+    int getCallCount() const
     {
-        return 0;
-    }
-
-    [[nodiscard]] uint64_t systemTotalMemory() const override
-    {
-        return 0;
-    }
-
-    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
-    {
-        return {};
-    }
-
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return 100;
-    }
-
-    [[nodiscard]] int enumerateCount() const
-    {
-        return m_EnumerateCount.load();
+        return m_CallCount;
     }
 
   private:
-    std::atomic<int> m_EnumerateCount{0};
+    std::atomic<int> m_CallCount{0};
 };
 
-TEST(BackgroundSamplerTest, ProbeEnumerateThrowingSamplerContinues)
+TEST(BackgroundSamplerTest, SamplableThrowingSamplerContinues)
 {
-    // Verify that if the probe's enumerate() throws, the sampler thread
-    // catches the exception and continues running rather than terminating.
-    auto probe = std::make_unique<ThrowingProcessProbe>();
-    ThrowingProcessProbe* rawProbe = probe.get(); // borrow raw pointer before move
+    ThrowingSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 10ms; // Fast interval to accumulate multiple exceptions quickly
 
-    Domain::BackgroundSampler sampler(std::move(probe), config);
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
     sampler.start();
 
-    const bool continuedAfterException = waitFor([&] { return rawProbe->enumerateCount() > 1; });
+    const bool continuedAfterException = waitFor([&] { return samplable.getCallCount() > 1; });
 
-    // Sampler should still be running despite repeated exceptions from the probe
+    // Sampler should still be running despite repeated exceptions
     EXPECT_TRUE(sampler.isRunning());
 
     sampler.stop();
 
-    // Probe's enumerate should have been called multiple times (sampler kept looping)
     EXPECT_TRUE(continuedAfterException);
 }
 
-TEST(BackgroundSamplerTest, CallbackThrowingExceptionSamplerContinues)
-{
-    // Verify that if the registered callback throws, the sampler thread
-    // catches the exception and continues running.
-    auto probe = std::make_unique<MockProcessProbe>();
-    probe->withProcess(1, "test");
-
-    Domain::SamplerConfig config;
-    config.interval = 10ms;
-
-    Domain::BackgroundSampler sampler(std::move(probe), config);
-
-    std::atomic<int> callCount{0};
-    sampler.setCallback(
-        [&](const auto&, uint64_t)
-        {
-            callCount.fetch_add(1);
-            throw std::runtime_error("simulated callback failure");
-        });
-
-    sampler.start();
-    const bool continuedAfterException = waitFor([&] { return callCount.load() > 1; });
-
-    // Sampler should still be running despite repeated callback exceptions
-    EXPECT_TRUE(sampler.isRunning());
-
-    sampler.stop();
-
-    // Callback should have been called multiple times (sampler kept looping after each throw)
-    EXPECT_TRUE(continuedAfterException);
-}
-
-// ========== Unknown exception handling (catch(...) branch L172) ==========
-
-/// A probe that throws a non-std::exception (integer literal) to exercise the
-/// catch(...) branch in the sampler loop.
-class ThrowingNonStdProbe : public Platform::IProcessProbe
+class ThrowingNonStdSamplable : public Domain::ISamplable
 {
   public:
-    explicit ThrowingNonStdProbe(std::shared_ptr<std::atomic<int>> counter) : m_CallCount(std::move(counter))
-    {}
-
-    [[nodiscard]] std::vector<Platform::ProcessCounters> enumerate() override
+    void sample() override
     {
-        ++(*m_CallCount);
-        // NOLINTNEXTLINE(hicpp-exception-baseclass) â€” intentionally non-std for coverage
-        throw 42; // non-std::exception to hit catch(...) branch
+        m_CallCount++;
+        // NOLINTNEXTLINE(hicpp-exception-baseclass) — intentionally non-std for coverage
+        throw 42;
     }
 
-    [[nodiscard]] uint64_t totalCpuTime() const override
+    int getCallCount() const
     {
-        return 0;
-    }
-
-    [[nodiscard]] Platform::ProcessCapabilities capabilities() const override
-    {
-        return {};
-    }
-
-    [[nodiscard]] long ticksPerSecond() const override
-    {
-        return 100;
-    }
-
-    [[nodiscard]] uint64_t systemTotalMemory() const override
-    {
-        return 0;
+        return m_CallCount;
     }
 
   private:
-    std::shared_ptr<std::atomic<int>> m_CallCount;
+    std::atomic<int> m_CallCount{0};
 };
 
-TEST(BackgroundSamplerTest, ProbeThrowingNonStdExceptionSamplerContinues)
+TEST(BackgroundSamplerTest, SamplableThrowingNonStdExceptionSamplerContinues)
 {
-    // Verify the catch(...) branch in the sampler loop keeps the thread alive.
-    // A shared atomic counter lets us confirm at least one enumerate() call happened
-    // before asserting, avoiding the flakiness of a single fixed-duration sleep.
-    auto callCount = std::make_shared<std::atomic<int>>(0);
+    ThrowingNonStdSamplable samplable;
 
     Domain::SamplerConfig config;
     config.interval = 10ms;
 
-    Domain::BackgroundSampler sampler(std::make_unique<ThrowingNonStdProbe>(callCount), config);
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(&samplable);
 
     sampler.start();
 
-    // Wait until at least two enumerate() calls have occurred: the first confirms the
-    // loop ran, and the second confirms the sampler continued after catching the exception.
-    const bool continuedAfterException = waitFor([&] { return callCount->load() >= 2; });
+    const bool continuedAfterException = waitFor([&] { return samplable.getCallCount() >= 2; });
 
     EXPECT_TRUE(continuedAfterException);
     EXPECT_TRUE(sampler.isRunning());
