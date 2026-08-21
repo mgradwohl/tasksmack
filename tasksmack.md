@@ -34,7 +34,8 @@ TaskSmack is a cross-platform system monitor and task manager that delivers a fa
 ```
 
 - Platform probes are stateless readers of OS counters.
-- Panels poll probes synchronously on the main thread via `onUpdate()`; `BackgroundSampler` is implemented but not yet active.
+- Process enumeration runs asynchronously on a background thread via `BackgroundSampler` to maintain UI responsiveness even with thousands of processes.
+- System metrics (CPU, Memory, Network, Storage) are currently polled synchronously on the main thread via `onUpdate()`.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
@@ -170,11 +171,12 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 
 ## Sampling and Snapshot Pipeline
 
-1. **Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals (default 1 second).
-2. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
-3. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
+1. **System Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals.
+2. **Processes Panel** receives data from `BackgroundSampler`, which runs process enumeration on a dedicated background thread.
+3. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
+4. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
 
-> **Note:** `BackgroundSampler` (`src/Domain/BackgroundSampler.{h,cpp}`) is implemented and tested but not yet used. It is a future option to move probe enumeration off the main thread if UI responsiveness becomes a concern on systems with thousands of processes.
+> **Note:** Process enumeration was moved to the `BackgroundSampler` thread to guarantee 60fps UI responsiveness on systems with thousands of processes.
 
 ## Process Scalability Guidance
 
