@@ -1123,7 +1123,6 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
         return;
     }
 
-    // Align both rate histories to the newest timestamps shared by every series.
     const size_t alignedCount = std::min({m_Timestamps.size(), m_IoReadHistory.size(), m_IoWriteHistory.size()});
     if (alignedCount == 0)
     {
@@ -1231,7 +1230,6 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
         return;
     }
 
-    // Align transmitted and received histories to the newest common timestamps.
     const size_t alignedCount = std::min({m_Timestamps.size(), m_NetSentHistory.size(), m_NetRecvHistory.size()});
     if (alignedCount == 0)
     {
