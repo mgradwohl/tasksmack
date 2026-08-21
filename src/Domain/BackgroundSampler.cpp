@@ -61,6 +61,7 @@ void BackgroundSampler::addSamplable(ISamplable* samplable)
 {
     if (samplable != nullptr)
     {
+        std::lock_guard lock(m_SamplablesMutex);
         m_Samplables.push_back(samplable);
     }
 }
@@ -131,7 +132,13 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         auto startTime = std::chrono::steady_clock::now();
         bool hadException = false;
 
-        for (auto* samplable : m_Samplables)
+        std::vector<ISamplable*> currentSamplables;
+        {
+            std::lock_guard lock(m_SamplablesMutex);
+            currentSamplables = m_Samplables;
+        }
+
+        for (auto* samplable : currentSamplables)
         {
             if (stopToken.stop_requested())
             {

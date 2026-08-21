@@ -62,6 +62,7 @@ class BackgroundSampler
     std::atomic<bool> m_RefreshRequested{false};
 
     mutable std::mutex m_ConfigMutex;
+    mutable std::mutex m_SamplablesMutex;
 };
 
 } // namespace Domain

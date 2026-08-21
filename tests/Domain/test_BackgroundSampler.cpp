@@ -47,7 +47,10 @@ class MockSamplable : public Domain::ISamplable
     void waitForSamples(int targetCount)
     {
         std::unique_lock lock(mtx);
-        cv.wait(lock, [this, targetCount] { return sampleCount >= targetCount; });
+        const bool success = cv.wait_for(lock, 2000ms, [this, targetCount] { return sampleCount >= targetCount; });
+        if (!success) {
+            ADD_FAILURE() << "Timeout waiting for " << targetCount << " samples. Actual: " << sampleCount;
+        }
     }
 
   private:
@@ -481,7 +484,7 @@ class ThrowingNonStdSamplable : public Domain::ISamplable
     void sample() override
     {
         m_CallCount++;
-        // NOLINTNEXTLINE(hicpp-exception-baseclass) — intentionally non-std for coverage
+        // NOLINTNEXTLINE(hicpp-exception-baseclass) ï¿½ intentionally non-std for coverage
         throw 42;
     }
 
