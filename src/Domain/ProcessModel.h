@@ -175,6 +175,7 @@ class ProcessModel : public ISamplable
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
+    std::mutex m_SamplingMutex;
 
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);

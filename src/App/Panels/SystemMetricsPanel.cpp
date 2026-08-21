@@ -296,6 +296,15 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_Sampler->setInterval(effectiveInterval);
     }
 
+    if (m_ForceRefresh)
+    {
+        if (m_Sampler)
+        {
+            m_Sampler->requestRefresh();
+        }
+        m_ForceRefresh = false;
+    }
+
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
     {

@@ -79,6 +79,8 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
+    std::lock_guard samplingLock(m_SamplingMutex);
+
     struct CachedGpuSnapshotFields
     {
         double gpuUtilPercent = 0.0;
