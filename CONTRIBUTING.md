@@ -934,33 +934,38 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 
 ## CI/CD
 
-GitHub Actions runs:
+We use GitHub Actions for our CI workflows. They are categorized as follows:
 
-- `ci.yml` (fast path for push/PR):
-  - Build + tests (debug and release) on Linux and Windows via reusable matrix workflow
-  - clang-tidy (`static-analysis` job)
-  - Markdown link audit (`docs-hygiene` job)
-  - Include analysis (`include-analysis` job — manual-only via workflow_dispatch)
-- `heavy-checks.yml` (heavy path):
-  - Weekly on `main` + manual dispatch
-  - Coverage (`coverage` job)
-  - Sanitizers (Linux: ASan+UBSan, TSan)
-- `pre-commit.yml`:
-  - pre-commit hooks (includes formatting and hygiene checks)
-- `codeql.yml`:
-  - CodeQL security-and-quality analysis on pushes to `main`, pull requests, and a weekly schedule
-- `cflite_pr.yml`, `cflite_build.yml`, `cflite_batch.yml`, and `cflite_prune.yml`:
-  - ClusterFuzzLite parser fuzzing on relevant pull requests, baseline builds on `main`, and weekly batch/pruning jobs
-- `osv-scanner.yml`:
-  - Dependency vulnerability scan (Syft SBOM + OSV database)
+### Core Build & Test
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, weekly, and via manual dispatch. It detects docs-only changes to skip C++ builds. It runs Linux and Windows Debug builds on push/PR, Release builds on schedule/dispatch, checks markdown links, runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
+- **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
+
+### Security & Fuzzing
+- **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
+- **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
+- **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
+- **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
+- **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
+
+### Code Quality & Hygiene
+- **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
+- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase (pushes to main, manual dispatch).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
+
+### Release & Operations
+- **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
+- **`changelog.yml`**: Automates changelog generation using `git-cliff` for strict `vMAJOR.MINOR.PATCH` tags.
+- **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
+- **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
 (via Syft SBOM generated from `CMakeLists.txt`) and both Python dependency manifests against the
-[OSV vulnerability database](https://osv.dev) on pushes to `main`, pull requests targeting
-`main`, and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+[OSV vulnerability database](https://osv.dev) on pushes to `main` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
