@@ -151,9 +151,9 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     snap.totalReadOps = current.readsCompleted;
     snap.totalWriteOps = current.writesCompleted;
 
-    if (!state.hasPrev || state.isSeedTransition)
+    if (!state.hasPrev)
     {
-        // First sample or seed transition, can't compute rates reliably yet
+        // First sample, can't compute rates yet.
         return snap;
     }
 
@@ -161,8 +161,11 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     const auto deltaTime = std::chrono::steady_clock::now() - state.prevTime;
     const double deltaSeconds = std::chrono::duration<double>(deltaTime).count();
 
-    // If the time delta is truly zero, skip rate calculations to avoid division by zero.
-    if (deltaSeconds <= 0.0)
+    // The sampler's first callback can immediately follow the synchronous seed read.
+    // Suppress only that implausibly short seed transition; normal second samples
+    // should produce rates without requiring a third observation.
+    constexpr double MIN_SEED_ELAPSED_SECONDS = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+    if (deltaSeconds <= 0.0 || (state.isSeedTransition && deltaSeconds < MIN_SEED_ELAPSED_SECONDS))
     {
         return snap;
     }

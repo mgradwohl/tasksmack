@@ -6,7 +6,6 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
-#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
@@ -274,8 +273,6 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     {
         return;
     }
-
-    const bool interactionActive = Core::Application::get().isInteractionRedrawActive();
 
     // Do not throttle the background sampler just because the user is resizing the UI.
     const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
