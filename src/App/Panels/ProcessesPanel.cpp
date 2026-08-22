@@ -248,33 +248,24 @@ void ProcessesPanel::onAttach()
     this->m_InteractionHoldSeconds = 0.0F;
     m_ForceRefresh = false;
 
-    // Create probe, extract capabilities/ticks/systemMemory, then transfer probe ownership
-    // to BackgroundSampler so enumeration runs off the main thread.
+    // Create probe and transfer it to the ProcessModel. The model itself is then
+    // passed to BackgroundSampler so enumeration runs off the main thread.
     auto processProbe = Platform::makeProcessProbe();
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
-    const Platform::ProcessCapabilities caps = processProbe->capabilities();
-    const long ticks = processProbe->ticksPerSecond();
-    const std::uint64_t systemMem = processProbe->systemTotalMemory();
-
-    // Build ProcessModel in background-sampler mode: no probe, data arrives via callback.
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(caps, ticks, systemMem);
+    m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample
-    // baseline; second call — coming from the background thread — computes the delta).
-    const auto seedCounters = processProbe->enumerate();
-    const std::uint64_t seedCpuTime = processProbe->totalCpuTime();
-    m_ProcessModel->updateFromCounters(seedCounters, seedCpuTime);
+    // baseline; second call - coming from the background thread - computes the delta).
+    m_ProcessModel->refresh();
 
-    // Wire sampler: owns the probe, fires callback on each interval tick.
+    // Wire sampler: polls the ProcessModel on each interval tick.
     Domain::SamplerConfig samplerCfg{m_AppliedSamplerInterval};
-    m_Sampler = std::make_unique<Domain::BackgroundSampler>(std::move(processProbe), samplerCfg);
-    m_Sampler->setCallback(
-        [model = m_ProcessModel.get()](const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
-        { model->updateFromCounters(counters, totalCpuTime); });
+    m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
+    m_Sampler->addSamplable(m_ProcessModel.get());
     m_Sampler->start();
 
     // Ensure the initial seed snapshots are loaded into the render cache so the UI

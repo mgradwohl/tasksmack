@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/StorageSnapshot.h"
+#include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
 
 #include <chrono>
@@ -24,11 +25,11 @@ struct PerDiskHistory
 
 /// Manages disk/storage metrics: samples probe, computes rates, maintains history.
 /// Thread-safe (allows background sampling + UI reads).
-class StorageModel
+class StorageModel : public ISamplable
 {
   public:
     explicit StorageModel(std::unique_ptr<Platform::IDiskProbe> probe);
-    ~StorageModel() = default;
+    ~StorageModel() override = default;
 
     StorageModel(const StorageModel&) = delete;
     StorageModel& operator=(const StorageModel&) = delete;
@@ -36,7 +37,7 @@ class StorageModel
     StorageModel& operator=(StorageModel&&) = delete;
 
     /// Sample the probe and compute new snapshot (call from background thread).
-    void sample();
+    void sample() override;
 
     /// Get the latest snapshot (thread-safe, called from UI thread).
     [[nodiscard]] StorageSnapshot latestSnapshot() const;
@@ -69,6 +70,7 @@ class StorageModel
         Platform::DiskCounters prevCounters;
         std::chrono::steady_clock::time_point prevTime;
         bool hasPrev = false;
+        bool isSeedTransition = false;
     };
 
     static DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);

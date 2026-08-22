@@ -6,7 +6,6 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/UserConfig.h"
-#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
@@ -151,58 +150,16 @@ SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 
 SystemMetricsPanel::~SystemMetricsPanel()
 {
-    stopGpuRefreshSampler();
+    m_Sampler.reset();
     m_Model.reset();
-}
-
-void SystemMetricsPanel::startGpuRefreshSampler()
-{
-    stopGpuRefreshSampler();
-    if (!m_GPUModel)
-    {
-        return;
-    }
-
-    auto gpuModel = m_GPUModel;
-    m_GpuRefreshThread = std::jthread(
-        [this, gpuModel](const std::stop_token& stopToken)
-        {
-            while (!stopToken.stop_requested())
-            {
-                const auto start = std::chrono::steady_clock::now();
-                gpuModel->refresh();
-
-                const int intervalMs = std::max(m_GpuRefreshIntervalMs.load(std::memory_order_acquire), 1);
-                auto sleepRemaining = std::chrono::milliseconds(intervalMs) -
-                                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
-                while ((sleepRemaining > std::chrono::milliseconds::zero()) && !stopToken.stop_requested())
-                {
-                    constexpr auto sleepChunk = std::chrono::milliseconds(50);
-                    const auto nap = std::min(sleepChunk, sleepRemaining);
-                    std::this_thread::sleep_for(nap);
-                    sleepRemaining -= nap;
-                }
-            }
-        });
-}
-
-void SystemMetricsPanel::stopGpuRefreshSampler()
-{
-    if (m_GpuRefreshThread.joinable())
-    {
-        m_GpuRefreshThread.request_stop();
-        m_GpuRefreshThread.join();
-    }
 }
 
 void SystemMetricsPanel::onAttach()
 {
     auto& settings = UserConfig::get().settings();
     m_RefreshInterval = std::chrono::milliseconds(settings.refreshIntervalMs);
-    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(m_RefreshInterval.count(), 1000), std::memory_order_release);
     m_MaxHistorySeconds = Domain::Numeric::toDouble(settings.maxHistorySeconds);
     m_HistoryScrollSeconds = 0.0;
-    m_RefreshAccumulatorSec = 0.0F;
     m_ForceRefresh = true;
 
     m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
@@ -220,8 +177,18 @@ void SystemMetricsPanel::onAttach()
     if (m_GPUModel)
     {
         m_GPUModel->refresh();
-        startGpuRefreshSampler();
     }
+
+    Domain::SamplerConfig samplerCfg;
+    samplerCfg.interval = m_RefreshInterval;
+    m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
+    m_Sampler->addSamplable(m_Model.get());
+    m_Sampler->addSamplable(m_StorageModel.get());
+    if (m_GPUModel)
+    {
+        m_Sampler->addSamplable(m_GPUModel.get());
+    }
+    m_Sampler->start();
 
     m_TimestampsCache = m_Model->timestamps();
     if (!m_TimestampsCache.empty())
@@ -234,15 +201,15 @@ void SystemMetricsPanel::onAttach()
     }
     m_ForceRefresh = false;
 
-    const auto initialSnap = m_Model->snapshot();
+    m_CachedSnapshot = m_Model->snapshot();
     // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
     // UI code (e.g., tab labels) is responsible for adding icons when rendering.
-    m_Hostname = initialSnap.hostname.empty() ? "System" : initialSnap.hostname;
+    m_Hostname = m_CachedSnapshot.hostname.empty() ? "System" : m_CachedSnapshot.hostname;
 }
 
 void SystemMetricsPanel::onDetach()
 {
-    stopGpuRefreshSampler();
+    m_Sampler.reset();
     m_GPUModel.reset();
     m_StorageModel.reset();
     m_Model.reset();
@@ -251,14 +218,21 @@ void SystemMetricsPanel::onDetach()
 void SystemMetricsPanel::setSamplingInterval(std::chrono::milliseconds interval)
 {
     m_RefreshInterval = interval;
-    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(interval.count(), 1LL), 1000), std::memory_order_release);
-    m_RefreshAccumulatorSec = 0.0F;
+    if (m_Sampler)
+    {
+        m_Sampler->setInterval(interval);
+    }
     m_ForceRefresh = true;
+    requestRefresh(); // Consume flag semantics for older calls
 }
 
 void SystemMetricsPanel::requestRefresh()
 {
-    m_ForceRefresh = true;
+    if (m_Sampler)
+    {
+        m_Sampler->requestRefresh();
+    }
+    m_ForceRefresh = false; // Consumed since sampler will refresh
 }
 
 void SystemMetricsPanel::onEvent(Core::Event& event)
@@ -300,42 +274,24 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         return;
     }
 
-    m_RefreshAccumulatorSec += deltaTime;
-    using SecondsF = std::chrono::duration<float>;
-    const bool interactionActive = Core::Application::get().isInteractionRedrawActive();
-
-    // On the frame the interaction ends, queue an immediate refresh so the
-    // display shows fresh data as soon as the user releases the mouse/resize handle.
-    if (m_WasInteractionActive && !interactionActive)
+    // Do not throttle the background sampler just because the user is resizing the UI.
+    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
+    if (m_Sampler && m_Sampler->interval() != effectiveInterval)
     {
-        m_ForceRefresh = true;
-    }
-    m_WasInteractionActive = interactionActive;
-
-    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, interactionActive);
-    m_GpuRefreshIntervalMs.store(Domain::Numeric::narrowOr<int>(std::max(effectiveInterval.count(), 1LL), 1000), std::memory_order_release);
-    const float intervalSec = std::chrono::duration_cast<SecondsF>(effectiveInterval).count();
-    const bool intervalElapsed = (intervalSec > 0.0F) && (m_RefreshAccumulatorSec >= intervalSec);
-
-    // Hard-suppress synchronous probe reads during active interaction.
-    // The accumulator keeps advancing so the next refresh fires on schedule after
-    // release (or immediately via the force-refresh queued above).
-    if (interactionActive && !m_ForceRefresh)
-    {
-        return;
+        m_Sampler->setInterval(effectiveInterval);
     }
 
-    if (m_ForceRefresh || intervalElapsed)
+    if (m_ForceRefresh)
     {
-        m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
-        m_Model->refresh();
-
-        if (m_StorageModel)
+        if (m_Sampler)
         {
-            m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
-            m_StorageModel->sample();
+            m_Sampler->requestRefresh();
         }
+        m_ForceRefresh = false;
+    }
 
+    if (m_Model->hasNewSnapshot())
+    {
         m_TimestampsCache = m_Model->timestamps();
         if (!m_TimestampsCache.empty())
         {
@@ -346,25 +302,13 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         }
 
-        m_ForceRefresh = false;
-
-        const auto snap = m_Model->snapshot();
-        if (!snap.hostname.empty())
+        m_CachedSnapshot = m_Model->snapshot();
+        if (!m_CachedSnapshot.hostname.empty())
         {
-            m_Hostname = snap.hostname;
+            m_Hostname = m_CachedSnapshot.hostname;
         }
 
-        if (intervalSec > 0.0F)
-        {
-            while (m_RefreshAccumulatorSec >= intervalSec)
-            {
-                m_RefreshAccumulatorSec -= intervalSec;
-            }
-        }
-        else
-        {
-            m_RefreshAccumulatorSec = 0.0F;
-        }
+        m_Model->clearNewSnapshotFlag();
     }
 }
 
@@ -403,7 +347,8 @@ void SystemMetricsPanel::renderContent()
         m_LayoutDirty = true;
     }
 
-    auto snap = m_Model->snapshot();
+    auto snap = m_CachedSnapshot;
+
     const int coreCount = snap.coreCount;
     if (coreCount != m_LastCoreCount)
     {
@@ -500,7 +445,7 @@ void SystemMetricsPanel::renderContent()
 
 void SystemMetricsPanel::renderOverview()
 {
-    auto snap = m_Model->snapshot();
+    auto snap = m_CachedSnapshot;
 
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);

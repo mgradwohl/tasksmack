@@ -786,7 +786,7 @@ TEST(StorageModelTest, AverageIoTimesCalculatedFromDeltas)
     counters.disks.push_back(disk);
     mockProbe->setNextCounters(counters);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
     auto snap = model.latestSnapshot();
@@ -879,7 +879,7 @@ TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
     }
     mockProbe->setNextCounters(counters);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
     model.sample();
 
     auto snap = model.latestSnapshot();

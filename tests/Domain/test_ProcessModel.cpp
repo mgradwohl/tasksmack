@@ -1984,3 +1984,49 @@ TEST(ProcessModelTest, ProcessTreeHandlesPidReuseCorrectly)
     EXPECT_EQ(snaps[0].childrenIndices.size(), 1);
     EXPECT_EQ(snaps[0].childrenIndices[0], 1);
 }
+
+// =============================================================================
+// Thread Safety Tests
+// =============================================================================
+
+TEST(ProcessModelTest, ConcurrentRefreshAndReadDoesNotCrash)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(1, "proc1", 'R', 100, 100, 1000, 1024, 0), makeCounter(2, "proc2", 'S', 200, 200, 1000, 2048, 1)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+
+    std::atomic<bool> keepRunning{true};
+
+    // Writer thread rapidly refreshes the model
+    std::thread writer(
+        [&]()
+        {
+            while (keepRunning)
+            {
+                model.refresh();
+            }
+        });
+
+    // Reader thread rapidly copies snapshots
+    std::thread reader(
+        [&]()
+        {
+            while (keepRunning)
+            {
+                auto snaps = model.snapshots();
+                if (!snaps.empty())
+                {
+                    EXPECT_EQ(snaps[0].pid, 1);
+                }
+            }
+        });
+
+    // Let them fight for 100ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    keepRunning = false;
+
+    writer.join();
+    reader.join();
+}

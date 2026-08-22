@@ -59,33 +59,6 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_P
     }
 }
 
-ProcessModel::ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory)
-    : m_Capabilities(caps), m_SystemTotalMemory(systemTotalMemory), m_TicksPerSecond(ticksPerSec)
-{
-    // Reserve capacity upfront to avoid rehashing as processes are discovered on the
-    // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
-    m_PerProcessState.reserve(512);
-
-    spdlog::info("ProcessModel initialized (background-sampler mode): hasIoCounters={}, hasThreadCount={}, "
-                 "hasUserSystemTime={}, hasStartTime={}, hasUser={}, hasCommand={}, hasNice={}, hasPageFaults={}, "
-                 "hasPeakRss={}, hasCpuAffinity={}, hasNetworkCounters={}, hasPowerUsage={}",
-                 m_Capabilities.hasIoCounters,
-                 m_Capabilities.hasThreadCount,
-                 m_Capabilities.hasUserSystemTime,
-                 m_Capabilities.hasStartTime,
-                 m_Capabilities.hasUser,
-                 m_Capabilities.hasCommand,
-                 m_Capabilities.hasNice,
-                 m_Capabilities.hasPageFaults,
-                 m_Capabilities.hasPeakRss,
-                 m_Capabilities.hasCpuAffinity,
-                 m_Capabilities.hasNetworkCounters,
-                 m_Capabilities.hasPowerUsage);
-    spdlog::debug("ProcessModel: ticksPerSecond={}, systemMemory={:.1f} GB",
-                  m_TicksPerSecond,
-                  Numeric::toDouble(m_SystemTotalMemory) / (1024.0 * 1024.0 * 1024.0));
-}
-
 void ProcessModel::refresh()
 {
     if (!m_Probe)
@@ -106,6 +79,8 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
+    std::lock_guard samplingLock(m_SamplingMutex);
+
     struct CachedGpuSnapshotFields
     {
         double gpuUtilPercent = 0.0;
@@ -123,54 +98,15 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
     std::shared_ptr<GPUModel> gpuModel;
     bool shouldMergeGpuData = false;
+    std::size_t reserveSize = 0;
+
+    const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
 
     {
-        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+        std::shared_lock lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
+        gpuModel = m_GPUModel;
+        reserveSize = std::max(counters.size(), m_Snapshots.size());
 
-        const auto currentSampleTime = std::chrono::steady_clock::now();
-        const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
-        if (!m_HasStartTime)
-        {
-            m_StartTime = currentSampleTime;
-            m_HasStartTime = true;
-        }
-        double elapsedSeconds = 0.0;
-        std::uint64_t timeDeltaUs = 0;
-        if (m_HasPrevSampleTime)
-        {
-            const auto delta = currentSampleTime - m_PrevSampleTime;
-            elapsedSeconds = std::chrono::duration<double>(delta).count();
-            timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(delta).count());
-
-            // Suppress delta-based rates for implausibly short intervals. The seed call
-            // in onAttach() fires just before the BackgroundSampler thread starts; the
-            // thread's first callback may arrive only a few ms later (thread-startup
-            // latency), making elapsedSeconds tiny and producing enormous byte/sec and
-            // pageFaults/sec spikes. Any elapsed time below half the minimum configurable
-            // refresh interval is treated as "no previous data" for rate purposes.
-            // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
-            // rates; we do NOT prevent the history push below (handle counts etc. don't
-            // depend on elapsed time and must still be recorded every cycle).
-            constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
-            if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
-            {
-                elapsedSeconds = 0.0;
-                timeDeltaUs = 0;
-            }
-        }
-        const bool hasElapsedForHistory = m_HasPrevSampleTime;
-        m_PrevSampleTime = currentSampleTime;
-        m_HasPrevSampleTime = true;
-
-        std::uint64_t totalCpuDelta = 0;
-        if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
-        {
-            totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
-        }
-
-        // Keep m_Snapshots published and readable until the replacement snapshot vector
-        // is fully prepared and ready to publish.
-        newSnapshots.reserve(std::max(counters.size(), m_Snapshots.size()));
         if (interactionActive)
         {
             cachedGpuByUniqueKey.reserve(m_Snapshots.size());
@@ -192,143 +128,172 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
                                                                      previousSnapshot.gpuDevices});
             }
         }
-        newSnapshots.clear();
+    }
 
-        // Bump the generation counter once per refresh.  At the end of the loop we
-        // prune any PerProcessState entry that was NOT touched this refresh (i.e.
-        // its generation is still the previous value) in a single erase_if pass.
-        ++m_CurrentGeneration;
+    const auto currentSampleTime = std::chrono::steady_clock::now();
+    if (!m_HasStartTime)
+    {
+        m_StartTime = currentSampleTime;
+        m_HasStartTime = true;
+    }
+    double elapsedSeconds = 0.0;
+    std::uint64_t timeDeltaUs = 0;
+    if (m_HasPrevSampleTime)
+    {
+        const auto delta = currentSampleTime - m_PrevSampleTime;
+        elapsedSeconds = std::chrono::duration<double>(delta).count();
+        timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(delta).count());
 
-        double aggNetSent = 0.0;
-        double aggNetRecv = 0.0;
-        double aggPageFaults = 0.0;
-        double aggThreads = 0.0;
-        double aggHandles = 0.0;
-        double aggPower = 0.0;
-
-        for (const auto& current : counters)
+        // Suppress delta-based rates for implausibly short intervals. The seed call
+        // in onAttach() fires just before the BackgroundSampler thread starts; the
+        // thread's first callback may arrive only a few ms later (thread-startup
+        // latency), making elapsedSeconds tiny and producing enormous byte/sec and
+        // pageFaults/sec spikes. Any elapsed time below half the minimum configurable
+        // refresh interval is treated as "no previous data" for rate purposes.
+        // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
+        // rates; we do NOT prevent the history push below (handle counts etc. don't
+        // depend on elapsed time and must still be recorded every cycle).
+        constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+        if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
         {
-            const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
+            elapsedSeconds = 0.0;
+            timeDeltaUs = 0;
+        }
+    }
+    const bool hasElapsedForHistory = m_HasPrevSampleTime;
+    m_PrevSampleTime = currentSampleTime;
+    m_HasPrevSampleTime = true;
 
-            // Single map operation replaces three separate find/insert calls for
-            // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.
-            // try_emplace returns {iterator, inserted}: inserted==true means a brand-new
-            // process; inserted==false means we have state from the previous refresh.
-            auto [it, inserted] = m_PerProcessState.try_emplace(key);
-            PerProcessState& state = it->second;
-            state.generation = m_CurrentGeneration;
+    std::uint64_t totalCpuDelta = 0;
+    if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
+    {
+        totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
+    }
 
-            // --- previous CPU counters (for delta calculation) ---
-            const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
+    // Keep m_Snapshots published and readable until the replacement snapshot vector
+    // is fully prepared and ready to publish.
+    newSnapshots.reserve(reserveSize);
+    newSnapshots.clear();
 
-            // --- network baseline ---
-            // For new processes: initialise to current counters so the very first rate
-            // is 0 rather than a spike from pre-existing cumulative TCP counters.
-            // For existing processes: keep the original baseline untouched.
-            if (inserted)
-            {
-                state.networkBaseline.netSentBytes = current.netSentBytes;
-                state.networkBaseline.netReceivedBytes = current.netReceivedBytes;
-                state.networkBaseline.firstSeenTime = currentSampleTime;
-            }
+    // Bump the generation counter once per refresh.  At the end of the loop we
+    // prune any PerProcessState entry that was NOT touched this refresh (i.e.
+    // its generation is still the previous value) in a single erase_if pass.
+    ++m_CurrentGeneration;
 
-            // --- peak RSS ---
-            if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
-            {
-                state.peakRss = current.peakRssBytes;
-            }
-            else
-            {
-                state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
-            }
+    double aggNetSent = 0.0;
+    double aggNetRecv = 0.0;
+    double aggPageFaults = 0.0;
+    double aggThreads = 0.0;
+    double aggHandles = 0.0;
+    double aggPower = 0.0;
 
-            auto snapshot =
-                computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
-            snapshot.peakMemoryBytes = state.peakRss;
+    for (const auto& current : counters)
+    {
+        const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
 
-            // =======================================================================
-            // Network Rate Calculation (Baseline Approach)
-            // =======================================================================
-            // Formula: rate = (currentCounters - baselineCounters) / timeSinceFirstSeen
-            //
-            // This gives us average bytes/sec since we started monitoring this process.
-            // See ProcessModel.h for detailed explanation of why we use this approach
-            // instead of delta-based rates (TL;DR: Windows TCP EStats connection churn).
-            //
-            // We require a minimum time elapsed (0.5s) before computing rates to avoid
-            // division by tiny time values on first sample causing huge rate spikes.
-            // We also apply a sanity check ceiling (100 Gbps) as a safety net.
-            //
-            // Note: A more accurate approach (ETW, eBPF, etc.) could enable instantaneous
-            // rate calculation similar to I/O rates below. See ProcessModel.h for details.
-            // =======================================================================
-            constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
-            constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
-            const double timeSinceFirstSeen =
-                std::chrono::duration<double>(currentSampleTime - state.networkBaseline.firstSeenTime).count();
-            if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
-            {
-                // Only compute rate if current >= baseline (counter should never decrease
-                // for the same process, but handle it gracefully if it does)
-                if (current.netSentBytes >= state.networkBaseline.netSentBytes)
-                {
-                    const std::uint64_t sentDelta = current.netSentBytes - state.networkBaseline.netSentBytes;
-                    const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
-                    snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
-                }
-                if (current.netReceivedBytes >= state.networkBaseline.netReceivedBytes)
-                {
-                    const std::uint64_t recvDelta = current.netReceivedBytes - state.networkBaseline.netReceivedBytes;
-                    const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
-                    snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
-                }
-            }
+        // Single map operation replaces three separate find/insert calls for
+        // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.
+        // try_emplace returns {iterator, inserted}: inserted==true means a brand-new
+        // process; inserted==false means we have state from the previous refresh.
+        auto [it, inserted] = m_PerProcessState.try_emplace(key);
+        PerProcessState& state = it->second;
+        state.generation = m_CurrentGeneration;
 
-            newSnapshots.push_back(std::move(snapshot));
+        // --- previous CPU counters (for delta calculation) ---
+        const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
 
-            const ProcessSnapshot& snapRef = newSnapshots.back();
-            aggNetSent += snapRef.netSentBytesPerSec;
-            aggNetRecv += snapRef.netReceivedBytesPerSec;
-            aggPageFaults += snapRef.pageFaultsPerSec;
-            aggThreads += static_cast<double>(snapRef.threadCount);
-            aggHandles += static_cast<double>(snapRef.handleCount);
-            aggPower += snapRef.powerWatts;
-
-            // Store current counters so next refresh can compute deltas.
-            state.counters = current;
+        // --- network baseline ---
+        // For new processes: initialise to current counters so the very first rate
+        // is 0 rather than a spike from pre-existing cumulative TCP counters.
+        // For existing processes: keep the original baseline untouched.
+        if (inserted)
+        {
+            state.networkBaseline.netSentBytes = current.netSentBytes;
+            state.networkBaseline.netReceivedBytes = current.netReceivedBytes;
+            state.networkBaseline.firstSeenTime = currentSampleTime;
         }
 
-        // Prune dead processes: a single erase_if on one map instead of the previous
-        // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
-        // rebuild of m_NetworkBaselines.
-        std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
-
-        m_PrevTotalCpuTime = totalCpuTime;
-        gpuModel = m_GPUModel;
-        if (gpuModel != nullptr)
+        // --- peak RSS ---
+        if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            if (!interactionActive)
+            state.peakRss = current.peakRssBytes;
+        }
+        else
+        {
+            state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
+        }
+
+        auto snapshot =
+            computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
+        snapshot.peakMemoryBytes = state.peakRss;
+
+        // =======================================================================
+        // Network Rate Calculation (Baseline Approach)
+        // =======================================================================
+        // Formula: rate = (currentCounters - baselineCounters) / timeSinceFirstSeen
+        //
+        // This gives us average bytes/sec since we started monitoring this process.
+        // See ProcessModel.h for detailed explanation of why we use this approach
+        // instead of delta-based rates (TL;DR: Windows TCP EStats connection churn).
+        //
+        // We require a minimum time elapsed (0.5s) before computing rates to avoid
+        // division by tiny time values on first sample causing huge rate spikes.
+        // We also apply a sanity check ceiling (100 Gbps) as a safety net.
+        //
+        // Note: A more accurate approach (ETW, eBPF, etc.) could enable instantaneous
+        // rate calculation similar to I/O rates below. See ProcessModel.h for details.
+        // =======================================================================
+        constexpr double MIN_TIME_FOR_RATE = 0.5;          // seconds
+        constexpr double MAX_SANE_RATE = 12'500'000'000.0; // 100 Gbps in bytes/sec
+        const double timeSinceFirstSeen = std::chrono::duration<double>(currentSampleTime - state.networkBaseline.firstSeenTime).count();
+        if (timeSinceFirstSeen >= MIN_TIME_FOR_RATE)
+        {
+            // Only compute rate if current >= baseline (counter should never decrease
+            // for the same process, but handle it gracefully if it does)
+            if (current.netSentBytes >= state.networkBaseline.netSentBytes)
             {
-                shouldMergeGpuData = true;
+                const std::uint64_t sentDelta = current.netSentBytes - state.networkBaseline.netSentBytes;
+                const double rate = Numeric::toDouble(sentDelta) / timeSinceFirstSeen;
+                snapshot.netSentBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
-            else if (!m_HasLastGpuMergeTime || ((currentSampleTime - m_LastGpuMergeTime) >= INTERACTION_GPU_MERGE_MIN_INTERVAL))
+            if (current.netReceivedBytes >= state.networkBaseline.netReceivedBytes)
             {
-                shouldMergeGpuData = true;
+                const std::uint64_t recvDelta = current.netReceivedBytes - state.networkBaseline.netReceivedBytes;
+                const double rate = Numeric::toDouble(recvDelta) / timeSinceFirstSeen;
+                snapshot.netReceivedBytesPerSec = (rate <= MAX_SANE_RATE) ? rate : 0.0;
             }
         }
 
-        if (hasElapsedForHistory)
+        newSnapshots.push_back(std::move(snapshot));
+
+        const ProcessSnapshot& snapRef = newSnapshots.back();
+        aggNetSent += snapRef.netSentBytesPerSec;
+        aggNetRecv += snapRef.netReceivedBytesPerSec;
+        aggPageFaults += snapRef.pageFaultsPerSec;
+        aggThreads += static_cast<double>(snapRef.threadCount);
+        aggHandles += static_cast<double>(snapRef.handleCount);
+        aggPower += snapRef.powerWatts;
+
+        // Store current counters so next refresh can compute deltas.
+        state.counters = current;
+    }
+
+    // Prune dead processes: a single erase_if on one map instead of the previous
+    // two separate erase_if calls on m_PrevCounters and m_PeakRss plus the full
+    // rebuild of m_NetworkBaselines.
+    std::erase_if(m_PerProcessState, [gen = m_CurrentGeneration](const auto& entry) { return entry.second.generation != gen; });
+
+    m_PrevTotalCpuTime = totalCpuTime;
+
+    if (gpuModel != nullptr)
+    {
+        if (!interactionActive)
         {
-            // Use absolute time (since epoch) to match SystemModel's timestamp format
-            const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
-            m_Timestamps.push_back(nowSeconds);
-            m_SystemNetSentHistory.push_back(aggNetSent);
-            m_SystemNetRecvHistory.push_back(aggNetRecv);
-            m_SystemPageFaultsHistory.push_back(aggPageFaults);
-            m_SystemThreadCountHistory.push_back(aggThreads);
-            m_SystemHandleCountHistory.push_back(aggHandles);
-            m_SystemPowerHistory.push_back(aggPower);
-            trimHistory();
+            shouldMergeGpuData = true;
+        }
+        else if (!m_HasLastGpuMergeTime || ((currentSampleTime - m_LastGpuMergeTime) >= INTERACTION_GPU_MERGE_MIN_INTERVAL))
+        {
+            shouldMergeGpuData = true;
         }
     }
 
@@ -383,6 +348,21 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+
+        if (hasElapsedForHistory)
+        {
+            // Use absolute time (since epoch) to match SystemModel's timestamp format
+            const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
+            m_Timestamps.push_back(nowSeconds);
+            m_SystemNetSentHistory.push_back(aggNetSent);
+            m_SystemNetRecvHistory.push_back(aggNetRecv);
+            m_SystemPageFaultsHistory.push_back(aggPageFaults);
+            m_SystemThreadCountHistory.push_back(aggThreads);
+            m_SystemHandleCountHistory.push_back(aggHandles);
+            m_SystemPowerHistory.push_back(aggPower);
+            trimHistory();
+        }
+
         m_Snapshots = std::move(newSnapshots);
         ++m_SnapshotVersion;
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);

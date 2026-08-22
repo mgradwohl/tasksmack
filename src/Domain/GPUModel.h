@@ -2,6 +2,7 @@
 
 #include "Domain/GPUSnapshot.h"
 #include "Domain/History.h"
+#include "ISamplable.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
@@ -43,16 +44,22 @@ struct TransparentStringEqual
     }
 };
 
-class GPUModel
+class GPUModel : public ISamplable
 {
   public:
     explicit GPUModel(std::unique_ptr<Platform::IGPUProbe> probe);
-    ~GPUModel() = default;
+    ~GPUModel() override = default;
 
     GPUModel(const GPUModel&) = delete;
     GPUModel& operator=(const GPUModel&) = delete;
     GPUModel(GPUModel&&) = delete;
     GPUModel& operator=(GPUModel&&) = delete;
+
+    /// Perform one sampling iteration (ISamplable implementation).
+    void sample() override
+    {
+        refresh();
+    }
 
     // Refresh metrics (called by sampler thread)
     void refresh();

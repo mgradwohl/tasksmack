@@ -1,10 +1,12 @@
 #pragma once
 
+#include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <shared_mutex>
@@ -18,16 +20,22 @@ namespace Domain
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshot() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
-class SystemModel
+class SystemModel : public ISamplable
 {
   public:
     explicit SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
-    ~SystemModel() = default;
+    ~SystemModel() override = default;
 
     SystemModel(const SystemModel&) = delete;
     SystemModel& operator=(const SystemModel&) = delete;
     SystemModel(SystemModel&&) = delete;
     SystemModel& operator=(SystemModel&&) = delete;
+
+    /// Perform one sampling iteration (ISamplable implementation).
+    void sample() override
+    {
+        refresh();
+    }
 
     /// Refresh system data from the probe and compute new snapshot.
     /// Thread-safe.
@@ -40,6 +48,18 @@ class SystemModel
 
     /// Get latest computed snapshot (copy for thread safety).
     [[nodiscard]] SystemSnapshot snapshot() const;
+
+    /// Checks if a new snapshot has been computed since the last time this flag was cleared.
+    [[nodiscard]] bool hasNewSnapshot() const
+    {
+        return m_HasNewSnapshot.load(std::memory_order_acquire);
+    }
+
+    /// Clears the new snapshot flag.
+    void clearNewSnapshotFlag()
+    {
+        m_HasNewSnapshot.store(false, std::memory_order_release);
+    }
 
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
@@ -104,6 +124,8 @@ class SystemModel
     std::vector<std::deque<float>> m_PerCoreHistory;
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
+
+    std::atomic<bool> m_HasNewSnapshot{false};
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

@@ -5,6 +5,7 @@
 #include "Numeric.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
+#include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
@@ -63,6 +64,18 @@ void StorageModel::sample()
         // Update state for next sample
         state.prevCounters = diskCounters;
         state.prevTime = now;
+
+        // If this is the very first time we've seen this disk (the seed read),
+        // mark the next sample as a seed transition to prevent rate spikes.
+        if (!state.hasPrev)
+        {
+            state.isSeedTransition = true;
+        }
+        else
+        {
+            state.isSeedTransition = false;
+        }
+
         state.hasPrev = true;
     }
 
@@ -140,7 +153,7 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 
     if (!state.hasPrev)
     {
-        // First sample, can't compute rates yet
+        // First sample, can't compute rates yet.
         return snap;
     }
 
@@ -148,7 +161,11 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     const auto deltaTime = std::chrono::steady_clock::now() - state.prevTime;
     const double deltaSeconds = std::chrono::duration<double>(deltaTime).count();
 
-    if (deltaSeconds <= 0.0)
+    // The sampler's first callback can immediately follow the synchronous seed read.
+    // Suppress only that implausibly short seed transition; normal second samples
+    // should produce rates without requiring a third observation.
+    constexpr double MIN_SEED_ELAPSED_SECONDS = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+    if (deltaSeconds <= 0.0 || (state.isSeedTransition && deltaSeconds < MIN_SEED_ELAPSED_SECONDS))
     {
         return snap;
     }

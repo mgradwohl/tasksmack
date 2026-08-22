@@ -32,8 +32,7 @@ flowchart TD
 ```
 
 - Platform probes are stateless readers of OS counters.
-- Process enumeration runs asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read) to maintain UI responsiveness even with thousands of processes.
-- System metrics (CPU, Memory, Network, Storage) are currently polled synchronously on the main thread via `onUpdate()`.
+- Process enumeration and heavy system metrics (System, Storage, GPU) run asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read). This decoupled polling ensures UI responsiveness under heavy load.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
@@ -100,13 +99,12 @@ Hard rules:
 
 Sampling is deliberately mixed according to workload:
 
-1. `ProcessesPanel::onAttach()` creates a process probe, performs one synchronous seed read, and transfers probe ownership to `Domain::BackgroundSampler`.
-2. `BackgroundSampler` uses `std::jthread` and `std::stop_token` to enumerate processes at the configured interval.
-3. Its callback calls `ProcessModel::updateFromCounters()`, which computes process snapshots under synchronization and increments a snapshot version.
-4. `ProcessesPanel` copies snapshots only when that version changes, avoiding render-frame deep copies.
-5. `SystemMetricsPanel` refreshes system and storage models from its main-thread `onUpdate()` cadence.
-6. GPU refresh runs on a dedicated `std::jthread`; the panel reads the latest GPU model state.
-7. App rendering consumes cached snapshots and histories through ImGui/ImPlot.
+1. `ProcessesPanel::onAttach()` creates a process probe and `ProcessModel`, performs one synchronous seed read, and adds the model to a `BackgroundSampler`.
+2. `SystemMetricsPanel::onAttach()` creates System, Storage, and GPU models, seeds them, and adds them to its own `BackgroundSampler`.
+3. Each `BackgroundSampler` uses `std::jthread` and `std::stop_token` to call `refresh()` on its targets at the configured interval.
+4. Domain models compute deltas under a sampling lock, producing snapshots keyed by PID/time and updating histories.
+5. Panels copy snapshots only when their version changes, avoiding render-frame deep copies.
+6. App rendering consumes cached snapshots and histories through ImGui/ImPlot.
 
 The default interval is 1 second and can be configured from 100 ms to 5 seconds. History defaults to 5 minutes and is bounded from 10 seconds to 30 minutes. Shared defaults and clamps live in `src/Domain/SamplingConfig.h`.
 
@@ -168,12 +166,12 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 
 ## Sampling and Snapshot Pipeline
 
-1. **System Panels** call `model->refresh()` on the main thread via `onUpdate()` at configurable intervals.
-2. **Processes Panel** receives data from `BackgroundSampler`, which runs process enumeration on a dedicated background thread.
-3. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories.
+1. **Panels** (Processes, System Metrics) create their respective Domain models (Process, System, Storage, GPU).
+2. **Background Samplers** are spun up per panel to call `model->refresh()` on dedicated background threads.
+3. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories under a lock.
 4. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
 
-> **Note:** Process enumeration was moved to the `BackgroundSampler` thread to guarantee 60fps UI responsiveness on systems with thousands of processes.
+> **Note:** Enumeration and sampling was moved to `BackgroundSampler` threads to guarantee 60fps UI responsiveness on systems with thousands of processes or heavy IO operations.
 
 ## Process Scalability
 

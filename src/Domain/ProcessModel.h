@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
 
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
@@ -22,20 +24,22 @@ class GPUModel;
 /// Owns a process probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshots() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
-class ProcessModel
+class ProcessModel : public ISamplable
 {
   public:
     explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe);
-
-    /// Background-sampler mode: probe is owned by BackgroundSampler; capabilities are
-    /// injected here so ProcessModel never needs to call the probe directly.
-    ProcessModel(Platform::ProcessCapabilities caps, long ticksPerSec, std::uint64_t systemTotalMemory);
-    ~ProcessModel() = default;
+    ~ProcessModel() override = default;
 
     ProcessModel(const ProcessModel&) = delete;
     ProcessModel& operator=(const ProcessModel&) = delete;
     ProcessModel(ProcessModel&&) = delete;
     ProcessModel& operator=(ProcessModel&&) = delete;
+
+    /// Perform one sampling iteration (ISamplable implementation).
+    void sample() override
+    {
+        refresh();
+    }
 
     /// Refresh process data from the probe and compute new snapshots.
     /// Thread-safe.
@@ -172,6 +176,7 @@ class ProcessModel
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
+    std::mutex m_SamplingMutex;
 
     // Helpers
     void computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);

@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
@@ -79,12 +80,10 @@ class SystemMetricsPanel : public Panel
     }
 
   private:
-    void startGpuRefreshSampler();
-    void stopGpuRefreshSampler();
-
     void renderOverview();
     void renderCpuSection();
 
+    std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     std::unique_ptr<Domain::SystemModel> m_Model;
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
     std::shared_ptr<Domain::GPUModel> m_GPUModel;
@@ -102,16 +101,9 @@ class SystemMetricsPanel : public Panel
     std::vector<float> m_CpuStackYIowait;
 
     std::chrono::milliseconds m_RefreshInterval{1000};
-    float m_RefreshAccumulatorSec = 0.0F;
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = true; // System Overview is default tab
-    /// Tracks whether interaction was active last frame. When the flag transitions
-    /// from true to false, a force-refresh is queued so data updates immediately
-    /// after the user releases the mouse.
-    bool m_WasInteractionActive = false;
-    std::atomic<int> m_GpuRefreshIntervalMs{1000};
-    std::jthread m_GpuRefreshThread;
 
     struct SmoothedCpu
     {
@@ -178,8 +170,9 @@ class SystemMetricsPanel : public Panel
     int m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
 
-    // Cached hostname for window title
+    // Cached hostname and snapshot for UI
     std::string m_Hostname = "System";
+    Domain::SystemSnapshot m_CachedSnapshot;
 
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

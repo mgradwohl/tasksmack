@@ -128,6 +128,7 @@ TEST(ProcessStatusTest, MultipleProcessesWithDifferentStatuses)
 TEST(ProcessStatusTest, StatusPersistsAcrossRefreshes)
 {
     auto probe = std::make_unique<MockProcessProbe>();
+    auto* probeRaw = probe.get();
 
     Platform::ProcessCounters counter = makeProcessCounters(100, "test_proc");
     counter.status = "Suspended";
@@ -148,7 +149,9 @@ TEST(ProcessStatusTest, StatusPersistsAcrossRefreshes)
     // Second refresh with updated times but same status
     counter.userTime = 1100;
     counter.systemTime = 550;
-    model.updateFromCounters({counter}, 110000);
+    probeRaw->setCounters({counter});
+    probeRaw->setTotalCpuTime(110000);
+    model.refresh();
     auto snaps2 = model.snapshots();
     ASSERT_EQ(snaps2.size(), 1);
     EXPECT_EQ(snaps2[0].status, "Suspended");
@@ -157,6 +160,7 @@ TEST(ProcessStatusTest, StatusPersistsAcrossRefreshes)
 TEST(ProcessStatusTest, StatusChangesAreDetected)
 {
     auto probe = std::make_unique<MockProcessProbe>();
+    auto* probeRaw = probe.get();
 
     Platform::ProcessCounters counter = makeProcessCounters(100, "test_proc");
     counter.status = "Suspended";
@@ -174,14 +178,18 @@ TEST(ProcessStatusTest, StatusChangesAreDetected)
 
     // Second refresh: status changed to empty
     counter.status = "";
-    model.updateFromCounters({counter}, 110000);
+    probeRaw->setCounters({counter});
+    probeRaw->setTotalCpuTime(110000);
+    model.refresh();
     auto snaps2 = model.snapshots();
     ASSERT_EQ(snaps2.size(), 1);
     EXPECT_TRUE(snaps2[0].status.empty());
 
     // Third refresh: status changed to Efficiency Mode
     counter.status = "Efficiency Mode";
-    model.updateFromCounters({counter}, 120000);
+    probeRaw->setCounters({counter});
+    probeRaw->setTotalCpuTime(120000);
+    model.refresh();
     auto snaps3 = model.snapshots();
     ASSERT_EQ(snaps3.size(), 1);
     EXPECT_EQ(snaps3[0].status, "Efficiency Mode");
