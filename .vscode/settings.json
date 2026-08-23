@@ -1,27 +1,4 @@
 {
-    "terminal.integrated.profiles.linux": {
-        "bash-copilot": {
-            "path": "/bin/bash",
-            "args": [
-                "--rcfile",
-                "/home/mattg/.bashrc.copilot"
-            ]
-        }
-    },
-    "terminal.integrated.defaultProfile.linux": "bash-copilot",
-    "terminal.integrated.profiles.windows": {
-        "pwsh-copilot": {
-            "path": "pwsh.exe",
-            "args": [
-                "-NoProfile",
-                "-NoExit",
-                "-Command",
-                ". 'C:\\Users\\mattg\\OneDrive\\Documents\\PowerShell\\Microsoft.PowerShell_profile_copilot.ps1'"
-            ]
-        }
-    },
-    "terminal.integrated.defaultProfile.windows": "pwsh-copilot",
-    "github.copilot.chat.terminal.profile": "bash-copilot",
     // Terminal colors - ensure readable text
     "workbench.colorCustomizations": {
         "terminal.foreground": "#CCCCCC",
@@ -35,13 +12,12 @@
             "-NonInteractive"
         ]
     },
-    // Ensure Linux tasks also use Copilot bash rcfile
-    // Note: Update ~/.bashrc.copilot path for your system
+    // Ensure Linux tasks use a clean, deterministic shell
     "terminal.integrated.automationProfile.linux": {
         "path": "/bin/bash",
         "args": [
-            "--rcfile",
-            "${userHome}/.bashrc.copilot"
+            "--noprofile",
+            "--norc"
         ]
     },
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
@@ -119,10 +95,6 @@
     "markdown.validate.enabled": false,
     // Disable CMake Tools test discovery - use CTest preset tasks instead
     "cmake.ctest.testExplorerIntegrationEnabled": false,
-    "chat.tools.terminal.autoApprove": {
-        "cmake": true,
-        "gh": true
-    },
     // Shell Integration: Enable advanced terminal features (command decorations, run recent, command history)
     "terminal.integrated.shellIntegration.enabled": true,
     // Preserve environment variables when launching terminals
