@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,7 +26,6 @@ namespace
 
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
-using UI::Widgets::cropFrontToSize;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisPercent;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
@@ -89,15 +89,15 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
 void renderGpuSection(RenderContext& ctx)
 {
-    if (ctx.gpuModel == nullptr)
+    if (ctx.publication == nullptr)
     {
         ImGui::Text("GPU monitoring not available");
         return;
     }
 
-    const auto gpuSnapshots = ctx.gpuModel->snapshots();
-    const auto gpuInfos = ctx.gpuModel->gpuInfo();
-    const auto caps = ctx.gpuModel->capabilities();
+    const auto& gpuSnapshots = ctx.publication->snapshots;
+    const auto& gpuInfos = ctx.publication->gpuInfo;
+    const auto& caps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     if (gpuSnapshots.empty())
@@ -165,31 +165,28 @@ void renderGpuSection(RenderContext& ctx)
         ImGui::Indent();
 
         // Get history data for this GPU
-        auto utilHist = ctx.gpuModel->utilizationHistory(snap.gpuId);
-        auto memHist = ctx.gpuModel->memoryPercentHistory(snap.gpuId);
-        auto clockHist = ctx.gpuModel->gpuClockHistory(snap.gpuId);
-        auto encoderHist = ctx.gpuModel->encoderHistory(snap.gpuId);
-        auto decoderHist = ctx.gpuModel->decoderHistory(snap.gpuId);
-        auto tempHist = ctx.gpuModel->temperatureHistory(snap.gpuId);
-        auto powerHist = ctx.gpuModel->powerHistory(snap.gpuId);
-        auto fanHist = ctx.gpuModel->fanSpeedHistory(snap.gpuId);
+        const auto historyIt = ctx.publication->histories.find(snap.gpuId);
+        if (historyIt == ctx.publication->histories.end())
+        {
+            ImGui::Unindent();
+            continue;
+        }
+        const auto& history = historyIt->second;
+        const auto& utilHist = history.utilization;
+        const auto& memHist = history.memoryPercent;
+        const auto& clockHist = history.gpuClock;
+        const auto& encoderHist = history.encoder;
+        const auto& decoderHist = history.decoder;
+        const auto& tempHist = history.temperature;
+        const auto& powerHist = history.power;
+        const auto& fanHist = history.fanSpeed;
 
         // Per-GPU timestamps: only includes samples when this GPU was present,
         // so they stay aligned with the per-GPU history vectors even when the GPU
         // was intermittently absent (global timestamps include samples this GPU never recorded).
-        auto perGpuTimestamps = ctx.gpuModel->historyTimestamps(snap.gpuId);
+        const auto& perGpuTimestamps = history.timestamps;
 
         const size_t alignedCount = std::min({utilHist.size(), memHist.size(), perGpuTimestamps.size()});
-
-        // Crop histories to aligned size using existing helper
-        cropFrontToSize(utilHist, alignedCount);
-        cropFrontToSize(memHist, alignedCount);
-        cropFrontToSize(encoderHist, alignedCount);
-        cropFrontToSize(decoderHist, alignedCount);
-        cropFrontToSize(clockHist, alignedCount);
-        cropFrontToSize(tempHist, alignedCount);
-        cropFrontToSize(powerHist, alignedCount);
-        cropFrontToSize(fanHist, alignedCount);
 
         std::vector<float> timeData = buildTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
@@ -302,7 +299,7 @@ void renderGpuSection(RenderContext& ctx)
                         // snapshotAt() avoids copying the full history vector (unlike GPUModel::history()).
                         // perGpuTimestamps and the GPU history are always the same length and aligned
                         // sample-for-sample, so *idxVal maps directly to the correct history entry.
-                        const auto histSnap = ctx.gpuModel->snapshotAt(snap.gpuId, *idxVal);
+                        const auto* histSnap = *idxVal < history.snapshots.size() ? &history.snapshots[*idxVal] : nullptr;
 
                         ImGui::BeginTooltip();
                         const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
@@ -316,7 +313,7 @@ void renderGpuSection(RenderContext& ctx)
                         if (*idxVal < memHist.size())
                         {
                             const double pct = static_cast<double>(memHist[*idxVal]);
-                            if (histSnap.has_value() && histSnap->memoryTotalBytes > 0)
+                            if (histSnap != nullptr && histSnap->memoryTotalBytes > 0)
                             {
                                 ImGui::TextColored(
                                     theme.scheme().gpuMemory,

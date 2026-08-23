@@ -112,9 +112,9 @@ struct ProcessCapabilities {
 
 ### Data Refresh (Current Architecture)
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
-- `SystemMetricsPanel` refreshes system and storage models from its main-thread `onUpdate()` cadence
-- GPU refresh uses a dedicated `std::jthread`
-- UI code uses snapshot versions and caches to avoid redundant process-list copies between samples
+- `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
+- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations
+- UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
 
 ### Panel Lifecycle

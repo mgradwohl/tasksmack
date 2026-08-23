@@ -1786,6 +1786,25 @@ TEST(ProcessModelTest, WhenRefreshedOnce_ThenSnapshotVersionIsOne)
     EXPECT_EQ(model.snapshotVersion(), 1);
 }
 
+TEST(ProcessModelTest, CopiesSystemHistoriesOnlyForNewerVersion)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "proc", 'R', 1000, 500)});
+    probe->setTotalCpuTime(10000);
+    Domain::ProcessModel model(std::move(probe));
+
+    Domain::ProcessSystemHistories histories;
+    EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(0, histories));
+
+    model.refresh();
+
+    ASSERT_TRUE(model.tryCopySystemHistoriesIfNewer(0, histories));
+    EXPECT_EQ(histories.version, 1);
+    EXPECT_EQ(histories.timestamps.size(), histories.power.size());
+    EXPECT_EQ(histories.timestamps.size(), histories.pageFaults.size());
+    EXPECT_FALSE(model.tryCopySystemHistoriesIfNewer(histories.version, histories));
+}
+
 TEST(ProcessModelTest, WhenRefreshedMultipleTimes_ThenSnapshotVersionMonotonicallyIncreases)
 {
     auto probe = std::make_unique<MockProcessProbe>();

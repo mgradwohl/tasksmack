@@ -1,8 +1,9 @@
 #include "BackgroundSampler.h"
 
+#include "SamplingConfig.h"
+
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -46,7 +47,8 @@ void logSamplerLoopException(std::string_view message,
 
 } // namespace
 
-BackgroundSampler::BackgroundSampler(SamplerConfig config) : m_Config(config)
+BackgroundSampler::BackgroundSampler(SamplerConfig config)
+    : m_Config{std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count()))}
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -92,6 +94,7 @@ void BackgroundSampler::stop()
     if (m_SamplerThread.joinable())
     {
         m_SamplerThread.request_stop();
+        m_WakeCondition.notify_all();
         m_SamplerThread.join();
     }
 
@@ -105,7 +108,11 @@ bool BackgroundSampler::isRunning() const
 
 void BackgroundSampler::requestRefresh()
 {
-    m_RefreshRequested.store(true);
+    {
+        const std::lock_guard lock(m_WakeMutex);
+        m_RefreshRequested = true;
+    }
+    m_WakeCondition.notify_all();
 }
 
 std::chrono::milliseconds BackgroundSampler::interval() const
@@ -116,9 +123,13 @@ std::chrono::milliseconds BackgroundSampler::interval() const
 
 void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
 {
-    const std::scoped_lock lock(m_ConfigMutex);
-    m_Config.interval = newInterval;
-    spdlog::info("BackgroundSampler: interval changed to {}ms", newInterval.count());
+    const auto clampedInterval = std::chrono::milliseconds(Sampling::clampRefreshInterval(newInterval.count()));
+    {
+        const std::scoped_lock lock(m_ConfigMutex);
+        m_Config.interval = clampedInterval;
+    }
+    spdlog::info("BackgroundSampler: interval changed to {}ms", clampedInterval.count());
+    requestRefresh();
 }
 
 void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
@@ -174,22 +185,16 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             currentInterval = m_Config.interval;
         }
 
-        // Calculate sleep time
-        auto elapsed = std::chrono::steady_clock::now() - startTime;
-        auto sleepTime = currentInterval - std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
-
-        // Sleep in small increments to check for stop/refresh requests.
-        // Consume a pending request with exchange(false) so a request issued while
-        // sampling is not lost before we enter the sleep phase.
-        constexpr auto checkInterval = std::chrono::milliseconds(50);
-        bool refreshRequested = m_RefreshRequested.exchange(false);
-        while (sleepTime > std::chrono::milliseconds(0) && !stopToken.stop_requested() && !refreshRequested)
+        const auto nextSampleTime = startTime + currentInterval;
+        std::unique_lock wakeLock(m_WakeMutex);
+        if (m_RefreshRequested)
         {
-            auto sleepChunk = std::min(sleepTime, checkInterval);
-            std::this_thread::sleep_for(sleepChunk);
-            sleepTime -= sleepChunk;
-            refreshRequested = m_RefreshRequested.exchange(false);
+            m_RefreshRequested = false;
+            continue;
         }
+
+        m_WakeCondition.wait_until(wakeLock, stopToken, nextSampleTime, [this] { return m_RefreshRequested; });
+        m_RefreshRequested = false;
     }
 
     spdlog::debug("BackgroundSampler: thread exiting");

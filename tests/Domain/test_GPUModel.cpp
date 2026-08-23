@@ -97,6 +97,26 @@ TEST(GPUModelTest, FirstRefreshPopulatesSnapshot)
     EXPECT_EQ(snap.memoryTotalBytes, 8ULL * 1024 * 1024 * 1024);
 }
 
+TEST(GPUModelTest, PublishesCoherentVersionedState)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 75.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    const auto first = model.publication();
+    model.refresh();
+    const auto second = model.publication();
+
+    EXPECT_EQ(first->version, 1);
+    EXPECT_EQ(second->version, 2);
+    ASSERT_EQ(second->snapshots.size(), 1);
+    const auto historyIt = second->histories.find("GPU0");
+    ASSERT_NE(historyIt, second->histories.end());
+    EXPECT_EQ(historyIt->second.timestamps.size(), historyIt->second.utilization.size());
+    EXPECT_EQ(historyIt->second.snapshots.size(), historyIt->second.timestamps.size());
+}
+
 TEST(GPUModelTest, MemoryUtilizationPercentIsComputed)
 {
     auto probe = std::make_unique<MockGPUProbe>();

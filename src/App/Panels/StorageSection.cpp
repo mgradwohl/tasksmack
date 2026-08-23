@@ -154,14 +154,14 @@ void renderStorageSection(RenderContext& ctx)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    if (ctx.storageModel == nullptr)
+    if (ctx.publication == nullptr)
     {
         ImGui::TextUnformatted("Storage model not available.");
         return;
     }
 
-    const auto& diskSnap = ctx.storageModel->latestSnapshot();
-    const auto diskTimestamps = ctx.storageModel->historyTimestamps();
+    const auto& diskSnap = ctx.publication->snapshot;
+    const auto& diskTimestamps = ctx.publication->timestamps;
     const size_t historySize = diskTimestamps.size();
 
     const auto diskAxis = historySize > 0 ? makeTimeAxisConfig(diskTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
@@ -180,7 +180,7 @@ void renderStorageSection(RenderContext& ctx)
     const double smoothedRead = ctx.smoothedReadBytesPerSec != nullptr ? *ctx.smoothedReadBytesPerSec : diskSnap.totalReadBytesPerSec;
     const double smoothedWrite = ctx.smoothedWriteBytesPerSec != nullptr ? *ctx.smoothedWriteBytesPerSec : diskSnap.totalWriteBytesPerSec;
 
-    const auto perDisk = ctx.storageModel->perDiskHistory();
+    const auto& perDisk = ctx.publication->perDiskHistory;
     const size_t diskCount = perDisk.size();
 
     if (diskCount > 1)
@@ -274,8 +274,8 @@ void renderStorageSection(RenderContext& ctx)
     else
     {
         // ── Single disk (or no data yet): aggregate chart ─────────────────────
-        const auto diskReadHist = ctx.storageModel->totalReadHistory();
-        const auto diskWriteHist = ctx.storageModel->totalWriteHistory();
+        const auto& diskReadHist = ctx.publication->totalReadHistory;
+        const auto& diskWriteHist = ctx.publication->totalWriteHistory;
         const size_t alignedDisk = std::min({historySize, diskReadHist.size(), diskWriteHist.size()});
 
         std::vector<float> readData;

@@ -120,7 +120,7 @@ struct ProcessDetailsPanel::PrioritySliderContext
     ImVec4 priorityLowColor;    // Theme color for low-priority end
 };
 
-void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime)
+void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, std::uint64_t snapshotVersion, float deltaTime)
 {
     m_LastDeltaSeconds = deltaTime;
 
@@ -141,11 +141,10 @@ void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snap
 
         updateSmoothedUsage(*snapshot, deltaTime);
 
-        // Sample history at fixed interval
-        m_HistoryTimer += deltaTime;
-        if (m_HistoryTimer >= HISTORY_SAMPLE_INTERVAL)
+        // Record history only when the background sampler publishes a new process generation.
+        if (snapshotVersion != m_LastHistorySnapshotVersion)
         {
-            m_HistoryTimer = 0.0F;
+            m_LastHistorySnapshotVersion = snapshotVersion;
             const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
             // Store as double to avoid narrowing; convert only at ImPlot boundary.
             m_CpuHistory.push_back(snapshot->cpuPercent);
@@ -383,7 +382,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid)
         m_GpuMemHistory.clear();
         m_GdiHistory.clear();
         m_Timestamps.clear();
-        m_HistoryTimer = 0.0F;
+        m_LastHistorySnapshotVersion = 0;
         m_HasSnapshot = false;
         m_ShowConfirmDialog = false;
         m_LastActionResult.clear();

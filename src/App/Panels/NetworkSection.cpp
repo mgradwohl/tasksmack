@@ -63,7 +63,7 @@ void renderDiskIOSection(RenderContext& ctx)
 {
     // Delegate to StorageSection - this wrapper maintains API compatibility
     StorageSection::RenderContext storageCtx{
-        .storageModel = ctx.storageModel,
+        .publication = ctx.storagePublication,
         .maxHistorySeconds = ctx.maxHistorySeconds,
         .historyScrollSeconds = ctx.historyScrollSeconds,
         .lastDeltaSeconds = ctx.lastDeltaSeconds,
@@ -85,13 +85,13 @@ void renderNetworkSection(RenderContext& ctx)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    if (ctx.systemModel == nullptr || !ctx.systemModel->capabilities().hasNetworkCounters)
+    if (ctx.systemPublication == nullptr)
     {
         ImGui::TextUnformatted("Network monitoring not available on this platform.");
         return;
     }
 
-    const auto netSnap = ctx.systemModel->snapshot();
+    const auto& netSnap = ctx.systemPublication->snapshot;
     const auto& interfaces = netSnap.networkInterfaces;
 
     // Build interface selector dropdown
@@ -216,16 +216,21 @@ void renderNetworkSection(RenderContext& ctx)
         targetRecv = selectedIface.rxBytesPerSec;
     }
 
-    const auto netTimestamps = ctx.systemModel->timestamps();
-    const auto netTxHist = ctx.systemModel->netTxHistory();
-    const auto netRxHist = ctx.systemModel->netRxHistory();
+    const auto& netTimestamps = ctx.systemPublication->timestamps;
+    const auto& netTxHist = ctx.systemPublication->netTxHistory;
+    const auto& netRxHist = ctx.systemPublication->netRxHistory;
     const size_t aligned = std::min({netTimestamps.size(), netTxHist.size(), netRxHist.size()});
 
     // Get per-interface history if an interface is selected
     const bool showingInterface = selectedInterface >= 0 && hasValidSelection;
     const std::string ifaceName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : "";
-    const auto ifaceTxHist = showingInterface ? ctx.systemModel->netTxHistoryForInterface(ifaceName) : std::vector<float>{};
-    const auto ifaceRxHist = showingInterface ? ctx.systemModel->netRxHistoryForInterface(ifaceName) : std::vector<float>{};
+    const auto ifaceTxIt = ctx.systemPublication->perInterfaceTxHistory.find(ifaceName);
+    const auto ifaceRxIt = ctx.systemPublication->perInterfaceRxHistory.find(ifaceName);
+    const std::vector<float> emptyHistory;
+    const auto& ifaceTxHist =
+        showingInterface && ifaceTxIt != ctx.systemPublication->perInterfaceTxHistory.end() ? ifaceTxIt->second : emptyHistory;
+    const auto& ifaceRxHist =
+        showingInterface && ifaceRxIt != ctx.systemPublication->perInterfaceRxHistory.end() ? ifaceRxIt->second : emptyHistory;
 
     // Always use default axis config even with no data
     const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)

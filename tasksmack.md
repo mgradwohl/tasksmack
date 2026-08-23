@@ -101,10 +101,11 @@ Sampling is deliberately mixed according to workload:
 
 1. `ProcessesPanel::onAttach()` creates a process probe and `ProcessModel`, performs one synchronous seed read, and adds the model to a `BackgroundSampler`.
 2. `SystemMetricsPanel::onAttach()` creates System, Storage, and GPU models, seeds them, and adds them to its own `BackgroundSampler`.
-3. Each `BackgroundSampler` uses `std::jthread` and `std::stop_token` to call `refresh()` on its targets at the configured interval.
+3. Each `BackgroundSampler` uses `std::jthread`, `std::stop_token`, and a condition variable to call `sample()` at the configured interval and wake immediately for refresh, interval, or stop requests.
 4. Domain models compute deltas under a sampling lock, producing snapshots keyed by PID/time and updating histories.
-5. Panels copy snapshots only when their version changes, avoiding render-frame deep copies.
-6. App rendering consumes cached snapshots and histories through ImGui/ImPlot.
+5. System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations; ProcessModel publishes a monotonic snapshot version.
+6. Panels retain those generations and rebuild process filter/sort caches only when versions change, avoiding render-frame locks and deep copies.
+7. Process Details records history once per ProcessModel publication rather than once per UI timer tick, so adaptive sampling cannot duplicate stale values.
 
 The default interval is 1 second and can be configured from 100 ms to 5 seconds. History defaults to 5 minutes and is bounded from 10 seconds to 30 minutes. Shared defaults and clamps live in `src/Domain/SamplingConfig.h`.
 
@@ -167,9 +168,10 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 ## Sampling and Snapshot Pipeline
 
 1. **Panels** (Processes, System Metrics) create their respective Domain models (Process, System, Storage, GPU).
-2. **Background Samplers** are spun up per panel to call `model->refresh()` on dedicated background threads.
+2. **Background Samplers** are spun up per panel: process enumeration has one worker, while System, Storage, and GPU share a second worker and failure domain.
 3. **Domain models** compute deltas and derived rates (CPU%, IO/s, etc), producing snapshots keyed by PID + start time and updating histories under a lock.
-4. **UI render** reads the latest snapshots (version-cached to avoid redundant deep copies at ~60 fps) and renders via ImGui/ImPlot.
+4. **Publication** atomically exposes immutable, versioned snapshot-and-history generations after a complete sample.
+5. **UI render** retains the latest publication (or process snapshot version) and renders it via ImGui/ImPlot without per-frame model locks or history copies.
 
 > **Note:** Enumeration and sampling was moved to `BackgroundSampler` threads to guarantee 60fps UI responsiveness on systems with thousands of processes or heavy IO operations.
 

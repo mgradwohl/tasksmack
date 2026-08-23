@@ -4,8 +4,9 @@
 
 #include <atomic>
 #include <chrono>
-#include <memory>
+#include <condition_variable>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -59,10 +60,12 @@ class BackgroundSampler
 
     std::jthread m_SamplerThread;
     std::atomic<bool> m_Running{false};
-    std::atomic<bool> m_RefreshRequested{false};
 
     mutable std::mutex m_ConfigMutex;
     mutable std::mutex m_SamplablesMutex;
+    std::mutex m_WakeMutex;
+    std::condition_variable_any m_WakeCondition;
+    bool m_RefreshRequested = false;
 };
 
 } // namespace Domain

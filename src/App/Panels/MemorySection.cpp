@@ -13,7 +13,9 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <format>
+#include <optional>
 #include <vector>
 
 namespace App::MemorySection
@@ -24,7 +26,6 @@ namespace
 
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
-using UI::Widgets::cropFrontToSize;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
@@ -61,19 +62,19 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 
 void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns)
 {
-    if (ctx.systemModel == nullptr)
+    if (ctx.publication == nullptr)
     {
         return;
     }
 
     const auto& theme = UI::Theme::get();
-    const auto snap = ctx.systemModel->snapshot();
+    const auto& snap = ctx.publication->snapshot;
     const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     // Get history data
-    auto memHist = ctx.systemModel->memoryHistory();
-    auto cachedHist = ctx.systemModel->memoryCachedHistory();
-    auto swapHist = ctx.systemModel->swapHistory();
+    const auto& memHist = ctx.publication->memoryHistory;
+    const auto& cachedHist = ctx.publication->memoryCachedHistory;
+    const auto& swapHist = ctx.publication->swapHistory;
     double peakMemPercent = 0.0;
 
     ImGui::TextColored(
@@ -94,9 +95,6 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         alignedCount = std::min(alignedCount, swapCount);
     }
 
-    cropFrontToSize(memHist, alignedCount);
-    cropFrontToSize(cachedHist, std::min(cachedCount, alignedCount));
-    cropFrontToSize(swapHist, std::min(swapCount, alignedCount));
     std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
 
     auto memoryPlot = [&]()

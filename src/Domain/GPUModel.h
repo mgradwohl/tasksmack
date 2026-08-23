@@ -6,12 +6,16 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -21,6 +25,29 @@ namespace Domain
 
 // GPU history capacity: 5 minutes at 1 second intervals = 300 samples
 inline constexpr size_t GPU_HISTORY_CAPACITY = 300;
+
+struct GPUPublishedHistory
+{
+    std::vector<GPUSnapshot> snapshots;
+    std::vector<double> timestamps;
+    std::vector<float> utilization;
+    std::vector<float> memoryPercent;
+    std::vector<float> gpuClock;
+    std::vector<float> encoder;
+    std::vector<float> decoder;
+    std::vector<float> temperature;
+    std::vector<float> power;
+    std::vector<float> fanSpeed;
+};
+
+struct GPUPublication
+{
+    std::uint64_t version = 0;
+    std::vector<GPUSnapshot> snapshots;
+    std::vector<Platform::GPUInfo> gpuInfo;
+    Platform::GPUCapabilities capabilities;
+    std::unordered_map<std::string, GPUPublishedHistory> histories;
+};
 
 struct TransparentStringHash
 {
@@ -97,6 +124,7 @@ class GPUModel : public ISamplable
 
     // Capabilities
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
+    [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
 
     // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
@@ -129,6 +157,8 @@ class GPUModel : public ISamplable
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
+    std::atomic<std::shared_ptr<const GPUPublication>> m_Publication{std::make_shared<const GPUPublication>()};
+    std::uint64_t m_PublicationVersion = 0;
 
     // Helper: compute snapshot from current/previous counters
     [[nodiscard]] GPUSnapshot
@@ -136,6 +166,7 @@ class GPUModel : public ISamplable
 
     // Helper template: extract a field from GPU history and return as float vector
     template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(std::string_view gpuId, FieldPtr field) const;
+    void publish();
 };
 
 } // namespace Domain

@@ -2,6 +2,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
 
 #include <chrono>
 #include <vector>
@@ -15,11 +16,9 @@ namespace App::CpuCoresSection
 struct RenderContext
 {
     // Model (non-owning pointer)
-    Domain::SystemModel* systemModel = nullptr;
+    const Domain::SystemPublication* publication = nullptr;
 
     // Cached timestamps from model (for efficiency)
-    const std::vector<double>* timestampsCache = nullptr;
-
     // History configuration
     double maxHistorySeconds = 300.0;
     double historyScrollSeconds = 0.0;

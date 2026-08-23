@@ -3,20 +3,22 @@
 #include "App/Panel.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
+#include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/StorageModel.h"
+#include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
 #include "UI/Theme.h"
 
-#include <implot.h>
-
-#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
-#include <thread>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace App
 {
@@ -88,6 +90,15 @@ class SystemMetricsPanel : public Panel
     std::unique_ptr<Domain::StorageModel> m_StorageModel;
     std::shared_ptr<Domain::GPUModel> m_GPUModel;
     Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
+    std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
+    std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
+    std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;
+    std::uint64_t m_ProcessHistoryVersion = 0;
+    std::vector<double> m_ProcessHistoryTimestamps;
+    std::vector<double> m_ProcessPowerHistory;
+    std::vector<double> m_ProcessPageFaultsHistory;
+    std::vector<double> m_ProcessThreadCountHistory;
+    std::vector<double> m_ProcessHandleCountHistory;
 
     double m_MaxHistorySeconds = 300.0;
     double m_HistoryScrollSeconds = 0.0;

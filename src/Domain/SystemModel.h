@@ -17,6 +17,28 @@
 namespace Domain
 {
 
+struct SystemPublication
+{
+    std::uint64_t version = 0;
+    SystemSnapshot snapshot;
+    std::vector<double> timestamps;
+    std::vector<float> cpuHistory;
+    std::vector<float> cpuUserHistory;
+    std::vector<float> cpuSystemHistory;
+    std::vector<float> cpuIowaitHistory;
+    std::vector<float> cpuIdleHistory;
+    std::vector<float> memoryHistory;
+    std::vector<float> memoryCachedHistory;
+    std::vector<float> swapHistory;
+    std::vector<float> powerHistory;
+    std::vector<float> batteryChargeHistory;
+    std::vector<float> netRxHistory;
+    std::vector<float> netTxHistory;
+    std::unordered_map<std::string, std::vector<float>> perInterfaceRxHistory;
+    std::unordered_map<std::string, std::vector<float>> perInterfaceTxHistory;
+    std::vector<std::vector<float>> perCoreHistory;
+};
+
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshot() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
@@ -49,17 +71,7 @@ class SystemModel : public ISamplable
     /// Get latest computed snapshot (copy for thread safety).
     [[nodiscard]] SystemSnapshot snapshot() const;
 
-    /// Checks if a new snapshot has been computed since the last time this flag was cleared.
-    [[nodiscard]] bool hasNewSnapshot() const
-    {
-        return m_HasNewSnapshot.load(std::memory_order_acquire);
-    }
-
-    /// Clears the new snapshot flag.
-    void clearNewSnapshotFlag()
-    {
-        m_HasNewSnapshot.store(false, std::memory_order_release);
-    }
+    [[nodiscard]] std::shared_ptr<const SystemPublication> publication() const noexcept;
 
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
@@ -125,13 +137,15 @@ class SystemModel : public ISamplable
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 
-    std::atomic<bool> m_HasNewSnapshot{false};
+    std::atomic<std::shared_ptr<const SystemPublication>> m_Publication{std::make_shared<const SystemPublication>()};
+    std::uint64_t m_PublicationVersion = 0;
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
 
     // Helpers
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
+    void publish();
     void trimHistory(double nowSeconds);
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;

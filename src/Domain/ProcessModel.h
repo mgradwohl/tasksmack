@@ -21,6 +21,16 @@ namespace Domain
 // Forward declaration
 class GPUModel;
 
+struct ProcessSystemHistories
+{
+    std::uint64_t version = 0;
+    std::vector<double> timestamps;
+    std::vector<double> power;
+    std::vector<double> pageFaults;
+    std::vector<double> threadCount;
+    std::vector<double> handleCount;
+};
+
 /// Owns a process probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshots() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
@@ -60,6 +70,7 @@ class ProcessModel : public ISamplable
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
     [[nodiscard]] std::uint64_t snapshotVersion() const;
+    [[nodiscard]] bool tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const;
 
     // Aggregated system-level histories derived from per-process data
     [[nodiscard]] std::vector<double> systemNetSentHistory() const;

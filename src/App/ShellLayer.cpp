@@ -174,7 +174,7 @@ void ShellLayer::onUpdate(float deltaTime)
             }
         }
     }
-    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, deltaTime);
+    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, m_ProcessesPanel.cachedSnapshotVersion(), deltaTime);
 
     // Update the cached details tab label only when the selected process changes.
     // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.
