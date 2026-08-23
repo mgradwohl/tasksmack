@@ -94,10 +94,10 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     cmake --preset "$BUILD_TYPE"
 fi
 
-# Ensure compile_commands.json exists
+# Ensure compile_commands.json exists (emitted by CMake at generate time)
 if [[ ! -f "$COMPILE_COMMANDS" ]]; then
-    echo "Building to generate compile_commands.json..."
-    cmake --build "$BUILD_DIR" --target copy-compile-commands
+    echo "compile_commands.json missing. Re-running cmake --preset $BUILD_TYPE..."
+    cmake --preset "$BUILD_TYPE"
 fi
 
 # Build the clean tidy database on every invocation so it stays in sync with the active build.

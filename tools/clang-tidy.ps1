@@ -92,10 +92,10 @@ if (-not (Test-Path $NinjaFile)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# Ensure compile_commands.json exists
+# Ensure compile_commands.json exists (emitted by CMake at generate time)
 if (-not (Test-Path $CompileCommandsJson)) {
-    Write-Host "Building to generate compile_commands.json..."
-    & cmake --build $BuildDir --target copy-compile-commands
+    Write-Host "compile_commands.json missing. Re-running cmake --preset win-$BuildType..."
+    & cmake --preset "win-$BuildType"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
