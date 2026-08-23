@@ -85,7 +85,7 @@ void renderNetworkSection(RenderContext& ctx)
     const auto& theme = UI::Theme::get();
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    if (ctx.systemPublication == nullptr)
+    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
     {
         ImGui::TextUnformatted("Network monitoring not available on this platform.");
         return;

@@ -16,6 +16,7 @@ struct RenderContext
     // Models (non-owning pointers)
     const Domain::SystemPublication* systemPublication = nullptr;
     const Domain::StoragePublication* storagePublication = nullptr;
+    bool hasNetworkCounters = false;
 
     // History configuration
     double maxHistorySeconds = 300.0;

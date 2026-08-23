@@ -137,6 +137,7 @@ class GPUModel : public ISamplable
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
     std::vector<Platform::GPUInfo> m_GPUInfo;
+    Platform::GPUCapabilities m_Capabilities;
 
     // Current snapshots per GPU
     using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;

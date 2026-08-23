@@ -16,7 +16,6 @@
 #include <cstdio>
 #include <format>
 #include <functional>
-#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -634,32 +633,6 @@ inline void renderHistoryWithNowBars(const char* tableId,
     if (pushedVars > 0)
     {
         ImGui::PopStyleVar(pushedVars);
-    }
-}
-
-// ============================================================================
-// Chart Data Utilities
-// ============================================================================
-
-/// Crop the front of a vector to reach a target size.
-/// Used to align history buffers when they have different lengths for charting.
-/// @param data The vector to crop (modified in place)
-/// @param targetSize The desired size after cropping
-template<typename T> void cropFrontToSize(std::vector<T>& data, std::size_t targetSize)
-{
-    if (data.size() > targetSize)
-    {
-        const std::size_t removeCount = data.size() - targetSize;
-        using Diff = std::vector<T>::difference_type;
-        constexpr Diff maxDiff = std::numeric_limits<Diff>::max();
-        const Diff removeCountDiff = Domain::Numeric::narrowOr<Diff>(removeCount, maxDiff);
-        if (removeCountDiff == maxDiff)
-        {
-            data.clear();
-            return;
-        }
-
-        data.erase(data.begin(), data.begin() + removeCountDiff);
     }
 }
 

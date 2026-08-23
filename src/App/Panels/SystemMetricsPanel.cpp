@@ -442,6 +442,7 @@ void SystemMetricsPanel::renderContent()
                 NetworkSection::RenderContext netCtx{
                     .systemPublication = m_SystemPublication.get(),
                     .storagePublication = m_StoragePublication.get(),
+                    .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,

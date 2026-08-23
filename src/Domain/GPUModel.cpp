@@ -37,6 +37,15 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         return;
     }
 
+    try
+    {
+        m_Capabilities = m_Probe->capabilities();
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::error("GPUModel: Failed to read capabilities: {}", e.what());
+    }
+
     // Enumerate GPUs once at construction
     try
     {
@@ -154,10 +163,7 @@ void GPUModel::publish()
     auto publication = std::make_shared<GPUPublication>();
     publication->version = ++m_PublicationVersion;
     publication->gpuInfo = m_GPUInfo;
-    {
-        const std::scoped_lock probeLock(m_ProbeMutex);
-        publication->capabilities = m_Probe->capabilities();
-    }
+    publication->capabilities = m_Capabilities;
     publication->snapshots.reserve(m_Snapshots.size());
     for (const auto& [gpuId, snapshot] : m_Snapshots)
     {
@@ -244,12 +250,7 @@ std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
 
 Platform::GPUCapabilities GPUModel::capabilities() const
 {
-    if (!m_Probe)
-    {
-        return Platform::GPUCapabilities{};
-    }
-    const std::scoped_lock probeLock(m_ProbeMutex);
-    return m_Probe->capabilities();
+    return m_Capabilities;
 }
 
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
