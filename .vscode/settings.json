@@ -54,7 +54,6 @@
         "CMAKE_CXX_STANDARD_REQUIRED": "ON",
         "CMAKE_CXX_EXTENSIONS": "OFF"
     },
-    "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
     // Fully disable Microsoft C/C++ IntelliSense - we use clangd exclusively
     "C_Cpp.intelliSenseEngine": "disabled",
     "C_Cpp.autocomplete": "disabled",

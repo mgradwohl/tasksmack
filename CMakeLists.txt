@@ -27,8 +27,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
-# Keep clangd fed regardless of config: copy compile_commands.json to source root on build.
-if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+# Keep clangd fed during local development: optionally copy compile_commands.json to the
+# source root on build. Opt-in (ON in the debug/win-debug dev presets) so default configures
+# keep the source tree clean (#599).
+option(TASKSMACK_COPY_COMPILE_COMMANDS "Copy compile_commands.json to the source root for clangd" OFF)
+if(TASKSMACK_COPY_COMPILE_COMMANDS AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     add_custom_target(copy-compile-commands ALL
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_BINARY_DIR}/compile_commands.json"
@@ -657,9 +660,12 @@ if(CLANG_TIDY_EXE)
     )
     # Dependencies:
     # - generate-clang-tidy-compile-commands: strips C++20 module flags from compile_commands.json
-    # - copy-compile-commands: ensures compile_commands.json is in source root
     # - glad_gl_core_33: ensures GLAD headers are generated before clang-tidy runs
-    add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands copy-compile-commands glad_gl_core_33)
+    # - copy-compile-commands (optional): keeps the source-root copy fresh when enabled
+    add_dependencies(run-clang-tidy generate-clang-tidy-compile-commands glad_gl_core_33)
+    if(TARGET copy-compile-commands)
+        add_dependencies(run-clang-tidy copy-compile-commands)
+    endif()
 endif()
 
 if(CLANG_FORMAT_EXE)
