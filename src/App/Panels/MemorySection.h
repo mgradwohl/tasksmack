@@ -21,7 +21,7 @@ struct SmoothedMemory
 /// Context required to render the memory section
 struct RenderContext
 {
-    Domain::SystemModel* systemModel = nullptr;
+    const Domain::SystemPublication* publication = nullptr;
     double maxHistorySeconds = 60.0;
     double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;

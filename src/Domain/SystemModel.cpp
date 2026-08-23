@@ -169,13 +169,59 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
     computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
-    m_HasNewSnapshot.store(true, std::memory_order_release);
+    publish();
 }
 
 SystemSnapshot SystemModel::snapshot() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshot;
+}
+
+std::shared_ptr<const SystemPublication> SystemModel::publication() const noexcept
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_Publication;
+}
+
+std::uint64_t SystemModel::publicationVersion() const noexcept
+{
+    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+}
+
+void SystemModel::publish()
+{
+    auto publication = std::make_shared<SystemPublication>();
+    publication->version = ++m_PublicationVersion;
+    publication->snapshot = m_Snapshot;
+    publication->timestamps = HistoryUtils::toVector(m_Timestamps);
+    publication->cpuHistory = HistoryUtils::toVector(m_CpuHistory);
+    publication->cpuUserHistory = HistoryUtils::toVector(m_CpuUserHistory);
+    publication->cpuSystemHistory = HistoryUtils::toVector(m_CpuSystemHistory);
+    publication->cpuIowaitHistory = HistoryUtils::toVector(m_CpuIowaitHistory);
+    publication->cpuIdleHistory = HistoryUtils::toVector(m_CpuIdleHistory);
+    publication->memoryHistory = HistoryUtils::toVector(m_MemoryHistory);
+    publication->memoryCachedHistory = HistoryUtils::toVector(m_MemoryCachedHistory);
+    publication->swapHistory = HistoryUtils::toVector(m_SwapHistory);
+    publication->powerHistory = HistoryUtils::toVector(m_PowerHistory);
+    publication->batteryChargeHistory = HistoryUtils::toVector(m_BatteryChargeHistory);
+    publication->netRxHistory = HistoryUtils::toVector(m_NetRxHistory);
+    publication->netTxHistory = HistoryUtils::toVector(m_NetTxHistory);
+    publication->perCoreHistory.reserve(m_PerCoreHistory.size());
+    for (const auto& history : m_PerCoreHistory)
+    {
+        publication->perCoreHistory.push_back(HistoryUtils::toVector(history));
+    }
+    for (const auto& [name, history] : m_PerInterfaceRxHistory)
+    {
+        publication->perInterfaceRxHistory.emplace(name, HistoryUtils::toVector(history));
+    }
+    for (const auto& [name, history] : m_PerInterfaceTxHistory)
+    {
+        publication->perInterfaceTxHistory.emplace(name, HistoryUtils::toVector(history));
+    }
+    m_Publication = std::move(publication);
+    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
 const Platform::SystemCapabilities& SystemModel::capabilities() const

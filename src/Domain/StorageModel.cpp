@@ -129,6 +129,7 @@ void StorageModel::sample()
         }
 
         trimHistory(nowSeconds);
+        publish();
         m_HasPrevSample = true;
         m_PrevSampleTime = now;
     }
@@ -137,6 +138,43 @@ void StorageModel::sample()
                   snapshot.disks.size(),
                   snapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
                   snapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
+}
+
+std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_Publication;
+}
+
+std::uint64_t StorageModel::publicationVersion() const noexcept
+{
+    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+}
+
+void StorageModel::publish()
+{
+    auto publication = std::make_shared<StoragePublication>();
+    publication->version = ++m_PublicationVersion;
+    publication->snapshot = m_LatestSnapshot;
+    publication->timestamps = HistoryUtils::toVector(m_Timestamps);
+    publication->totalReadHistory.reserve(m_History.size());
+    publication->totalWriteHistory.reserve(m_History.size());
+    for (const auto& snapshot : m_History)
+    {
+        publication->totalReadHistory.push_back(snapshot.totalReadBytesPerSec);
+        publication->totalWriteHistory.push_back(snapshot.totalWriteBytesPerSec);
+    }
+    publication->perDiskHistory.reserve(m_DiskOrder.size());
+    for (const auto& name : m_DiskOrder)
+    {
+        publication->perDiskHistory.push_back({
+            .deviceName = name,
+            .readBytesPerSec = HistoryUtils::toVector(m_DiskReadHistory.at(name)),
+            .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
+        });
+    }
+    m_Publication = std::move(publication);
+    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
 DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state)

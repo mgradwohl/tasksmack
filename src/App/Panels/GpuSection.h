@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/GPUModel.h"
+#include "Domain/GPUSnapshot.h"
 
 #include <chrono>
 #include <string>
@@ -26,7 +27,7 @@ struct SmoothedGPU
 struct RenderContext
 {
     // Model (non-owning pointer)
-    Domain::GPUModel* gpuModel = nullptr;
+    const Domain::GPUPublication* publication = nullptr;
 
     // History configuration
     double maxHistorySeconds = 300.0;

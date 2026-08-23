@@ -13,7 +13,7 @@ namespace App::StorageSection
 struct RenderContext
 {
     // Models (non-owning pointer)
-    Domain::StorageModel* storageModel = nullptr;
+    const Domain::StoragePublication* publication = nullptr;
 
     // History configuration
     double maxHistorySeconds = 300.0;

@@ -43,14 +43,14 @@ using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 void renderCpuCoresSection(RenderContext& ctx)
 {
-    if (ctx.systemModel == nullptr)
+    if (ctx.publication == nullptr)
     {
         ImGui::TextUnformatted("System model not available");
         return;
     }
 
-    auto snap = ctx.systemModel->snapshot();
-    auto perCoreHist = ctx.systemModel->perCoreHistory();
+    const auto& snap = ctx.publication->snapshot;
+    const auto& perCoreHist = ctx.publication->perCoreHistory;
     auto& theme = UI::Theme::get();
 
     // CPU model header
@@ -78,7 +78,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     updateSmoothedPerCore(snap, ctx);
 
     // Get timestamps from cache or model
-    const auto& timestamps = (ctx.timestampsCache != nullptr) ? *ctx.timestampsCache : ctx.systemModel->timestamps();
+    const auto& timestamps = ctx.publication->timestamps;
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 

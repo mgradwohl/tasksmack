@@ -30,7 +30,7 @@ class ProcessDetailsPanel : public Panel
 
     /// Update with current process data.
     /// Call each frame with the snapshot for the selected process (or nullptr if none).
-    void updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, float deltaTime);
+    void updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, std::uint64_t snapshotVersion, float deltaTime);
 
     /// Render the panel (with ImGui window wrapper).
     /// @param open Pointer to visibility flag (for window close button).
@@ -75,12 +75,11 @@ class ProcessDetailsPanel : public Panel
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
 
     std::int32_t m_SelectedPid = -1;
-    float m_HistoryTimer = 0.0F;
+    std::uint64_t m_LastHistorySnapshotVersion = 0;
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
     // History buffers (trimmed by time window)
-    static constexpr float HISTORY_SAMPLE_INTERVAL = 1.0F;
     std::deque<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
     std::deque<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
     std::deque<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)

@@ -81,6 +81,26 @@ TEST(StorageModelTest, SampleUpdatesSnapshot)
     EXPECT_EQ(snap.disks[0].deviceName, "sda");
 }
 
+TEST(StorageModelTest, PublishesCoherentVersionedState)
+{
+    auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
+    Platform::SystemDiskCounters counters;
+    counters.disks.push_back({.deviceName = "sda"});
+    mockProbe->setNextCounters(counters);
+
+    StorageModel model(std::move(mockProbe));
+    model.sample();
+    const auto first = model.publication();
+    model.sample();
+    const auto second = model.publication();
+
+    EXPECT_EQ(first->version, 1);
+    EXPECT_EQ(second->version, 2);
+    EXPECT_EQ(second->timestamps.size(), second->totalReadHistory.size());
+    ASSERT_EQ(second->perDiskHistory.size(), 1);
+    EXPECT_EQ(second->perDiskHistory[0].readBytesPerSec.size(), second->timestamps.size());
+}
+
 TEST(StorageModelTest, SecondSampleComputesRates)
 {
     // This test would need a different structure since we can't easily

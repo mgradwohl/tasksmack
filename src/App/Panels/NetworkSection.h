@@ -14,8 +14,9 @@ namespace App::NetworkSection
 struct RenderContext
 {
     // Models (non-owning pointers)
-    Domain::SystemModel* systemModel = nullptr;
-    Domain::StorageModel* storageModel = nullptr;
+    const Domain::SystemPublication* systemPublication = nullptr;
+    const Domain::StoragePublication* storagePublication = nullptr;
+    bool hasNetworkCounters = false;
 
     // History configuration
     double maxHistorySeconds = 300.0;

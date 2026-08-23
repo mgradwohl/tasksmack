@@ -4,6 +4,7 @@
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -21,6 +22,16 @@ struct PerDiskHistory
     std::string deviceName;
     std::vector<double> readBytesPerSec;  ///< Aligned to StorageModel::historyTimestamps()
     std::vector<double> writeBytesPerSec; ///< Aligned to StorageModel::historyTimestamps()
+};
+
+struct StoragePublication
+{
+    std::uint64_t version = 0;
+    StorageSnapshot snapshot;
+    std::vector<double> timestamps;
+    std::vector<double> totalReadHistory;
+    std::vector<double> totalWriteHistory;
+    std::vector<PerDiskHistory> perDiskHistory;
 };
 
 /// Manages disk/storage metrics: samples probe, computes rates, maintains history.
@@ -56,6 +67,8 @@ class StorageModel : public ISamplable
     /// vector has the same length as historyTimestamps(). Samples where a disk
     /// was absent (disappeared or not yet seen) are represented as 0.0.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
+    [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
+    [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
     /// Configure history retention.
     void setMaxHistorySeconds(double seconds);
@@ -93,8 +106,13 @@ class StorageModel : public ISamplable
     std::unordered_map<std::string, std::deque<double>> m_DiskReadHistory;
     std::unordered_map<std::string, std::deque<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
+    std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
+    std::uint64_t m_PublicationVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
 
     double m_MaxHistorySeconds = 300.0; // 5 minutes default
+
+    void publish();
 };
 
 } // namespace Domain

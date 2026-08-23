@@ -13,7 +13,9 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <format>
+#include <optional>
 #include <vector>
 
 namespace App::MemorySection
@@ -24,7 +26,6 @@ namespace
 
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
-using UI::Widgets::cropFrontToSize;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
@@ -61,19 +62,19 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 
 void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns)
 {
-    if (ctx.systemModel == nullptr)
+    if (ctx.publication == nullptr)
     {
         return;
     }
 
     const auto& theme = UI::Theme::get();
-    const auto snap = ctx.systemModel->snapshot();
+    const auto& snap = ctx.publication->snapshot;
     const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
 
     // Get history data
-    auto memHist = ctx.systemModel->memoryHistory();
-    auto cachedHist = ctx.systemModel->memoryCachedHistory();
-    auto swapHist = ctx.systemModel->swapHistory();
+    const auto& memHist = ctx.publication->memoryHistory;
+    const auto& cachedHist = ctx.publication->memoryCachedHistory;
+    const auto& swapHist = ctx.publication->swapHistory;
     double peakMemPercent = 0.0;
 
     ImGui::TextColored(
@@ -94,10 +95,10 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
         alignedCount = std::min(alignedCount, swapCount);
     }
 
-    cropFrontToSize(memHist, alignedCount);
-    cropFrontToSize(cachedHist, std::min(cachedCount, alignedCount));
-    cropFrontToSize(swapHist, std::min(swapCount, alignedCount));
     std::vector<float> timeData = buildTimeAxis(timestamps, alignedCount, nowSeconds);
+    const auto memData = UI::Widgets::tailAlignedSpan(memHist, alignedCount).values;
+    const auto cachedData = UI::Widgets::tailAlignedSpan(cachedHist, alignedCount).values;
+    const auto swapData = UI::Widgets::tailAlignedSpan(swapHist, alignedCount).values;
 
     auto memoryPlot = [&]()
     {
@@ -110,26 +111,26 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            if (!memHist.empty())
+            if (!memData.empty())
             {
                 plotLineWithFill("Used",
                                  timeData.data(),
-                                 memHist.data(),
-                                 UI::Format::checkedCount(memHist.size()),
+                                 memData.data(),
+                                 UI::Format::checkedCount(memData.size()),
                                  theme.scheme().chartMemory,
                                  std::nullopt,
                                  2.0F,
                                  true,
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                peakMemPercent = static_cast<double>(*std::ranges::max_element(memHist));
+                peakMemPercent = static_cast<double>(*std::ranges::max_element(memData));
             }
 
-            if (!cachedHist.empty())
+            if (!cachedData.empty())
             {
                 plotLineWithFill("Cached",
                                  timeData.data(),
-                                 cachedHist.data(),
-                                 UI::Format::checkedCount(cachedHist.size()),
+                                 cachedData.data(),
+                                 UI::Format::checkedCount(cachedData.size()),
                                  theme.scheme().chartCpu,
                                  std::nullopt,
                                  2.0F,
@@ -137,12 +138,12 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                                  UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
             }
 
-            if (!swapHist.empty())
+            if (!swapData.empty())
             {
                 plotLineWithFill("Swap",
                                  timeData.data(),
-                                 swapHist.data(),
-                                 UI::Format::checkedCount(swapHist.size()),
+                                 swapData.data(),
+                                 UI::Format::checkedCount(swapData.size()),
                                  theme.scheme().chartIo,
                                  std::nullopt,
                                  2.0F,
@@ -174,9 +175,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     ImGui::TextUnformatted(ageText.c_str());
                     ImGui::Separator();
 
-                    if (*idxVal < memHist.size())
+                    if (*idxVal < memData.size())
                     {
-                        const double pct = static_cast<double>(memHist[*idxVal]);
+                        const double pct = static_cast<double>(memData[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
                             // Physical RAM total is constant (hardware), so back-calculating bytes from
@@ -191,9 +192,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                             ImGui::TextColored(theme.scheme().chartMemory, "Used: %s", UI::Format::percentCompact(pct).c_str());
                         }
                     }
-                    if (*idxVal < cachedHist.size())
+                    if (*idxVal < cachedData.size())
                     {
-                        const double pct = static_cast<double>(cachedHist[*idxVal]);
+                        const double pct = static_cast<double>(cachedData[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
                             const auto cachedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
@@ -206,9 +207,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                             ImGui::TextColored(theme.scheme().chartCpu, "Cached: %s", UI::Format::percentCompact(pct).c_str());
                         }
                     }
-                    if (*idxVal < swapHist.size())
+                    if (*idxVal < swapData.size())
                     {
-                        const double pct = static_cast<double>(swapHist[*idxVal]);
+                        const double pct = static_cast<double>(swapData[*idxVal]);
                         // Swap/page-file size can change at runtime; show percent only to avoid
                         // stale byte calculations using a total that may have changed
                         ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(pct).c_str());

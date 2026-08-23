@@ -107,6 +107,24 @@ TEST(SystemModelTest, ConstructWithNullProbeDoesNotCrash)
     EXPECT_EQ(snap.coreCount, 0);
 }
 
+TEST(SystemModelTest, PublishesCoherentVersionedState)
+{
+    Domain::SystemModel model(nullptr);
+    const auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1000, 400));
+
+    model.updateFromCounters(counters, 1.0);
+    const auto first = model.publication();
+    model.updateFromCounters(counters, 2.0);
+    const auto second = model.publication();
+
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(first->version, 1);
+    EXPECT_EQ(second->version, 2);
+    EXPECT_EQ(first->timestamps.size(), first->cpuHistory.size());
+    EXPECT_EQ(second->timestamps.size(), second->memoryHistory.size());
+}
+
 TEST(SystemModelTest, CapabilitiesAreExposedFromProbe)
 {
     auto probe = std::make_unique<MockSystemProbe>();

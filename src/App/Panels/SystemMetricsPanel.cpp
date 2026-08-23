@@ -97,9 +97,6 @@ using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
     return ICON_FA_BATTERY_EMPTY;
 }
 
-// Use shared implementation from ChartWidgets
-using UI::Widgets::cropFrontToSize;
-
 struct HistoryRange
 {
     size_t start = 0;
@@ -190,7 +187,10 @@ void SystemMetricsPanel::onAttach()
     }
     m_Sampler->start();
 
-    m_TimestampsCache = m_Model->timestamps();
+    m_SystemPublication = m_Model->publication();
+    m_StoragePublication = m_StorageModel->publication();
+    m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
+    m_TimestampsCache = m_SystemPublication->timestamps;
     if (!m_TimestampsCache.empty())
     {
         m_CurrentNowSeconds = m_TimestampsCache.back();
@@ -201,7 +201,7 @@ void SystemMetricsPanel::onAttach()
     }
     m_ForceRefresh = false;
 
-    m_CachedSnapshot = m_Model->snapshot();
+    m_CachedSnapshot = m_SystemPublication->snapshot;
     // NOTE: m_Hostname intentionally stores the raw hostname without any icon prefix.
     // UI code (e.g., tab labels) is responsible for adding icons when rendering.
     m_Hostname = m_CachedSnapshot.hostname.empty() ? "System" : m_CachedSnapshot.hostname;
@@ -210,6 +210,9 @@ void SystemMetricsPanel::onAttach()
 void SystemMetricsPanel::onDetach()
 {
     m_Sampler.reset();
+    m_GPUPublication.reset();
+    m_StoragePublication.reset();
+    m_SystemPublication.reset();
     m_GPUModel.reset();
     m_StorageModel.reset();
     m_Model.reset();
@@ -290,9 +293,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
-    if (m_Model->hasNewSnapshot())
+    if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
     {
-        m_TimestampsCache = m_Model->timestamps();
+        m_SystemPublication = m_Model->publication();
+        m_TimestampsCache = m_SystemPublication->timestamps;
         if (!m_TimestampsCache.empty())
         {
             m_CurrentNowSeconds = m_TimestampsCache.back();
@@ -302,13 +306,32 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         }
 
-        m_CachedSnapshot = m_Model->snapshot();
+        m_CachedSnapshot = m_SystemPublication->snapshot;
         if (!m_CachedSnapshot.hostname.empty())
         {
             m_Hostname = m_CachedSnapshot.hostname;
         }
-
-        m_Model->clearNewSnapshotFlag();
+    }
+    if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
+    {
+        m_StoragePublication = m_StorageModel->publication();
+    }
+    if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
+    {
+        m_GPUPublication = m_GPUModel->publication();
+    }
+    if (m_ProcessModel != nullptr)
+    {
+        Domain::ProcessSystemHistories histories;
+        if (m_ProcessModel->tryCopySystemHistoriesIfNewer(m_ProcessHistoryVersion, histories))
+        {
+            m_ProcessHistoryVersion = histories.version;
+            m_ProcessHistoryTimestamps = std::move(histories.timestamps);
+            m_ProcessPowerHistory = std::move(histories.power);
+            m_ProcessPageFaultsHistory = std::move(histories.pageFaults);
+            m_ProcessThreadCountHistory = std::move(histories.threadCount);
+            m_ProcessHandleCountHistory = std::move(histories.handleCount);
+        }
     }
 }
 
@@ -379,8 +402,7 @@ void SystemMetricsPanel::renderContent()
             {
                 // Build context for CpuCoresSection render function
                 CpuCoresSection::RenderContext cpuCtx{
-                    .systemModel = m_Model.get(),
-                    .timestampsCache = &m_TimestampsCache,
+                    .publication = m_SystemPublication.get(),
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -399,7 +421,7 @@ void SystemMetricsPanel::renderContent()
             {
                 // Build context for GpuSection render function
                 GpuSection::RenderContext gpuCtx{
-                    .gpuModel = m_GPUModel.get(),
+                    .publication = m_GPUPublication.get(),
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -418,8 +440,9 @@ void SystemMetricsPanel::renderContent()
             {
                 // Build context for NetworkSection render functions
                 NetworkSection::RenderContext netCtx{
-                    .systemModel = m_Model.get(),
-                    .storageModel = m_StorageModel.get(),
+                    .systemPublication = m_SystemPublication.get(),
+                    .storagePublication = m_StoragePublication.get(),
+                    .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
                     .maxHistorySeconds = m_MaxHistorySeconds,
                     .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -453,8 +476,10 @@ void SystemMetricsPanel::renderOverview()
     // Update smoothed disk I/O if storage model is available
     if (m_StorageModel)
     {
-        auto storageSnap = m_StorageModel->latestSnapshot();
-        updateSmoothedDiskIO(storageSnap, m_LastDeltaSeconds);
+        if (m_StoragePublication)
+        {
+            updateSmoothedDiskIO(m_StoragePublication->snapshot, m_LastDeltaSeconds);
+        }
     }
 
     // Header line: CPU Model | Cores | Freq | Uptime (right-aligned)
@@ -485,10 +510,9 @@ void SystemMetricsPanel::renderOverview()
 
     // Calculate total GPU VRAM across all GPUs (for discrete GPUs with dedicated memory)
     std::uint64_t totalVramBytes = 0;
-    if (m_GPUModel)
+    if (m_GPUPublication)
     {
-        const auto gpuSnapshots = m_GPUModel->snapshots();
-        for (const auto& gpuSnap : gpuSnapshots)
+        for (const auto& gpuSnap : m_GPUPublication->snapshots)
         {
             totalVramBytes += gpuSnap.memoryTotalBytes;
         }
@@ -537,28 +561,28 @@ void SystemMetricsPanel::renderOverview()
     // Get theme for colored progress bars
     auto& theme = UI::Theme::get();
 
-    auto cpuHist = m_Model->cpuHistory();
-    auto cpuUserHist = m_Model->cpuUserHistory();
-    auto cpuSystemHist = m_Model->cpuSystemHistory();
-    auto cpuIowaitHist = m_Model->cpuIowaitHistory();
-    auto cpuIdleHist = m_Model->cpuIdleHistory();
+    const auto& cpuHist = m_SystemPublication->cpuHistory;
+    const auto& cpuUserHist = m_SystemPublication->cpuUserHistory;
+    const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
+    const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
+    const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
     const auto& timestamps = m_TimestampsCache;
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
+    const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, cpuCount).values;
     // CPU history with vertical now bars (total + breakdown)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
-    cropFrontToSize(cpuHist, cpuCount);
     std::vector<float> cpuTimeData = buildTimeAxis(timestamps, cpuCount, nowSeconds);
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
-    cropFrontToSize(cpuUserHist, breakdownCount);
-    cropFrontToSize(cpuSystemHist, breakdownCount);
-    cropFrontToSize(cpuIowaitHist, breakdownCount);
-    cropFrontToSize(cpuIdleHist, breakdownCount);
+    const auto cpuUserData = UI::Widgets::tailAlignedSpan(cpuUserHist, breakdownCount).values;
+    const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
+    const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
+    const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
     std::vector<float> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
 
     auto cpuPlot = [&]()
@@ -585,9 +609,9 @@ void SystemMetricsPanel::renderOverview()
 
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
-                    yUserTop[i] = cpuUserHist[i];
-                    ySystemTop[i] = cpuUserHist[i] + cpuSystemHist[i];
-                    yIowaitTop[i] = ySystemTop[i] + cpuIowaitHist[i];
+                    yUserTop[i] = cpuUserData[i];
+                    ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
+                    yIowaitTop[i] = ySystemTop[i] + cpuIowaitData[i];
                 }
 
                 ImPlot::PlotShaded("User",
@@ -619,26 +643,26 @@ void SystemMetricsPanel::renderOverview()
                         showCpuBreakdownTooltip(theme.scheme(),
                                                 true,
                                                 checkedRoundSeconds(static_cast<double>(breakdownTimeData[*si])),
-                                                cpuUserHist[*si],
-                                                cpuSystemHist[*si],
-                                                cpuIowaitHist[*si],
-                                                cpuIdleHist[*si]);
+                                                cpuUserData[*si],
+                                                cpuSystemData[*si],
+                                                cpuIowaitData[*si],
+                                                cpuIdleData[*si]);
                     }
                 }
             }
-            else if (!cpuHist.empty())
+            else if (!cpuData.empty())
             {
                 ImPlot::PlotShaded("##CPUShaded",
                                    cpuTimeData.data(),
-                                   cpuHist.data(),
-                                   UI::Format::checkedCount(cpuHist.size()),
+                                   cpuData.data(),
+                                   UI::Format::checkedCount(cpuData.size()),
                                    0.0,
                                    {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
                 ImPlot::PlotLine("CPU",
                                  cpuTimeData.data(),
-                                 cpuHist.data(),
-                                 UI::Format::checkedCount(cpuHist.size()),
+                                 cpuData.data(),
+                                 UI::Format::checkedCount(cpuData.size()),
                                  {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
@@ -650,7 +674,7 @@ void SystemMetricsPanel::renderOverview()
                         const auto ageText = formatAgeSeconds(static_cast<double>(cpuTimeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::Separator();
-                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
+                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -694,7 +718,7 @@ void SystemMetricsPanel::renderOverview()
     // Memory & Swap history section
     {
         MemorySection::RenderContext memCtx{
-            .systemModel = m_Model.get(),
+            .publication = m_SystemPublication.get(),
             .maxHistorySeconds = m_MaxHistorySeconds,
             .historyScrollSeconds = m_HistoryScrollSeconds,
             .lastDeltaSeconds = m_LastDeltaSeconds,
@@ -709,20 +733,12 @@ void SystemMetricsPanel::renderOverview()
     if (m_ProcessModel != nullptr || snap.power.hasBattery)
     {
         // Get power history from ProcessModel (aggregated per-process power)
-        std::vector<double> procTimestamps;
-        std::vector<double> powerHistDouble;
-        if (m_ProcessModel != nullptr)
-        {
-            procTimestamps = m_ProcessModel->historyTimestamps();
-            powerHistDouble = m_ProcessModel->systemPowerHistory();
-        }
-
         // Get battery charge history from SystemModel
-        const auto batteryHistFloat = m_Model->batteryChargeHistory();
+        const auto& batteryHistFloat = m_SystemPublication->batteryChargeHistory;
 
         // Align to timestamps - use process timestamps as primary if available, else system timestamps
-        const auto& alignTimestamps = !procTimestamps.empty() ? procTimestamps : timestamps;
-        const size_t powerCount = std::min(powerHistDouble.size(), alignTimestamps.size());
+        const auto& alignTimestamps = !m_ProcessHistoryTimestamps.empty() ? m_ProcessHistoryTimestamps : timestamps;
+        const size_t powerCount = std::min(m_ProcessPowerHistory.size(), alignTimestamps.size());
         const size_t batteryCount = std::min(batteryHistFloat.size(), alignTimestamps.size());
         const size_t alignedCount = std::max(powerCount, batteryCount);
 
@@ -733,8 +749,8 @@ void SystemMetricsPanel::renderOverview()
             if (powerCount > 0)
             {
                 powerHist.reserve(powerCount);
-                const auto startIt = powerHistDouble.end() - static_cast<std::ptrdiff_t>(powerCount);
-                for (auto it = startIt; it != powerHistDouble.end(); ++it)
+                const auto startIt = m_ProcessPowerHistory.end() - static_cast<std::ptrdiff_t>(powerCount);
+                for (auto it = startIt; it != m_ProcessPowerHistory.end(); ++it)
                 {
                     powerHist.push_back(static_cast<float>(*it));
                 }
@@ -971,10 +987,10 @@ void SystemMetricsPanel::renderOverview()
     // Threads, Page Faults, and Handles/FDs combined (aggregated from processes)
     if (m_ProcessModel != nullptr)
     {
-        const auto procTimestamps = m_ProcessModel->historyTimestamps();
-        const auto pageFaultHist = m_ProcessModel->systemPageFaultsHistory();
-        const auto threadHist = m_ProcessModel->systemThreadCountHistory();
-        const auto handleHist = m_ProcessModel->systemHandleCountHistory();
+        const auto& procTimestamps = m_ProcessHistoryTimestamps;
+        const auto& pageFaultHist = m_ProcessPageFaultsHistory;
+        const auto& threadHist = m_ProcessThreadCountHistory;
+        const auto& handleHist = m_ProcessHandleCountHistory;
         const size_t alignedCount = std::min({procTimestamps.size(), pageFaultHist.size(), threadHist.size(), handleHist.size()});
 
         // Always use default axis config even with no data
@@ -1116,12 +1132,11 @@ void SystemMetricsPanel::renderOverview()
 void SystemMetricsPanel::renderCpuSection()
 {
     const auto& theme = UI::Theme::get();
-    auto snap = m_Model->snapshot();
-    auto cpuHist = m_Model->cpuHistory();
-    auto cpuUserHist = m_Model->cpuUserHistory();
-    auto cpuSystemHist = m_Model->cpuSystemHistory();
-    auto cpuIowaitHist = m_Model->cpuIowaitHistory();
-    auto cpuIdleHist = m_Model->cpuIdleHistory();
+    const auto& cpuHist = m_SystemPublication->cpuHistory;
+    const auto& cpuUserHist = m_SystemPublication->cpuUserHistory;
+    const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
+    const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
+    const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
     const auto& timestamps = m_TimestampsCache;
     const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
@@ -1130,15 +1145,15 @@ void SystemMetricsPanel::renderCpuSection()
     ImGui::Spacing();
 
     const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
-    cropFrontToSize(cpuHist, timeCount);
+    const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, timeCount).values;
     std::vector<float> timeData = buildTimeAxis(timestamps, timeCount, nowSeconds);
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
-    cropFrontToSize(cpuUserHist, breakdownCount);
-    cropFrontToSize(cpuSystemHist, breakdownCount);
-    cropFrontToSize(cpuIowaitHist, breakdownCount);
-    cropFrontToSize(cpuIdleHist, breakdownCount);
+    const auto cpuUserData = UI::Widgets::tailAlignedSpan(cpuUserHist, breakdownCount).values;
+    const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
+    const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
+    const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
 
     // CPU Usage Plot
     {
@@ -1150,25 +1165,25 @@ void SystemMetricsPanel::renderCpuSection()
             ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            if (!cpuHist.empty())
+            if (!cpuData.empty())
             {
                 ImPlot::PlotShaded("##CPUShaded",
                                    timeData.data(),
-                                   cpuHist.data(),
-                                   UI::Format::checkedCount(cpuHist.size()),
+                                   cpuData.data(),
+                                   UI::Format::checkedCount(cpuData.size()),
                                    0.0,
                                    {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
                 // Draw the line on top of the shaded region.
                 ImPlot::PlotLine("##CPU",
                                  timeData.data(),
-                                 cpuHist.data(),
-                                 UI::Format::checkedCount(cpuHist.size()),
+                                 cpuData.data(),
+                                 UI::Format::checkedCount(cpuData.size()),
                                  {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
                 {
-                    const size_t n = cpuHist.size();
+                    const size_t n = cpuData.size();
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
@@ -1179,10 +1194,10 @@ void SystemMetricsPanel::renderCpuSection()
                             showCpuBreakdownTooltip(theme.scheme(),
                                                     true,
                                                     checkedRoundSeconds(timeSec),
-                                                    cpuUserHist[si],
-                                                    cpuSystemHist[si],
-                                                    cpuIowaitHist[si],
-                                                    cpuIdleHist[si]);
+                                                    cpuUserData[si],
+                                                    cpuSystemData[si],
+                                                    cpuIowaitData[si],
+                                                    cpuIdleData[si]);
                         }
                         else
                         {
@@ -1190,7 +1205,7 @@ void SystemMetricsPanel::renderCpuSection()
                             const auto ageText = formatAgeSeconds(timeSec);
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
-                            ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
+                            ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuData[*idxVal]).c_str());
                             ImGui::EndTooltip();
                         }
                     }

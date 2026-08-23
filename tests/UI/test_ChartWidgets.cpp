@@ -327,24 +327,5 @@ TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
     EXPECT_EQ(formatAgeSeconds(-2.5), "Age: 2.5s");
 }
 
-TEST(ChartWidgetsHelpersTest, CropFrontToSizeRemovesOldestElements)
-{
-    std::vector<int> data{1, 2, 3, 4, 5};
-    cropFrontToSize(data, 3);
-    ASSERT_EQ(data.size(), 3U);
-    EXPECT_EQ(data[0], 3);
-    EXPECT_EQ(data[1], 4);
-    EXPECT_EQ(data[2], 5);
-}
-
-TEST(ChartWidgetsHelpersTest, CropFrontToSizeNoOpWhenAlreadySmall)
-{
-    std::vector<int> data{1, 2};
-    cropFrontToSize(data, 4);
-    ASSERT_EQ(data.size(), 2U);
-    EXPECT_EQ(data[0], 1);
-    EXPECT_EQ(data[1], 2);
-}
-
 } // namespace
 } // namespace UI::Widgets

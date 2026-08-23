@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -34,6 +35,15 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     {
         spdlog::warn("GPUModel: No GPU probe provided");
         return;
+    }
+
+    try
+    {
+        m_Capabilities = m_Probe->capabilities();
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::error("GPUModel: Failed to read capabilities: {}", e.what());
     }
 
     // Enumerate GPUs once at construction
@@ -66,7 +76,7 @@ void GPUModel::refresh()
         // Read current counters
         std::vector<Platform::GPUCounters> currentCounters;
         {
-            const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
+            const std::scoped_lock probeLock(m_ProbeMutex);
             currentCounters = m_Probe->readGPUCounters();
         }
         auto currentTime = std::chrono::steady_clock::now();
@@ -114,18 +124,17 @@ void GPUModel::refresh()
             for (auto& [gpuId, snapshot] : m_Snapshots)
             {
                 snapshot.captureTimeSec = nowSec;
-                auto histIt = m_Histories.find(gpuId);
-                if (histIt != m_Histories.end())
-                {
-                    histIt->second.push(snapshot);
-                }
+                auto histIt = m_Histories.try_emplace(gpuId).first;
+                histIt->second.push(snapshot);
             }
+            publish();
 
             m_PrevCounters.clear();
             for (const auto& counter : currentCounters)
             {
                 m_PrevCounters[counter.gpuId] = counter;
             }
+
             m_PrevSampleTime = currentTime;
         }
     }
@@ -133,6 +142,60 @@ void GPUModel::refresh()
     {
         spdlog::error("GPUModel::refresh: {}", e.what());
     }
+}
+
+std::shared_ptr<const GPUPublication> GPUModel::publication() const noexcept
+{
+    const std::shared_lock lock(m_Mutex);
+    return m_Publication;
+}
+
+std::uint64_t GPUModel::publicationVersion() const noexcept
+{
+    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+}
+
+void GPUModel::publish()
+{
+    auto publication = std::make_shared<GPUPublication>();
+    publication->version = ++m_PublicationVersion;
+    publication->gpuInfo = m_GPUInfo;
+    publication->capabilities = m_Capabilities;
+    publication->snapshots.reserve(m_Snapshots.size());
+    for (const auto& [gpuId, snapshot] : m_Snapshots)
+    {
+        publication->snapshots.push_back(snapshot);
+    }
+    for (const auto& [gpuId, history] : m_Histories)
+    {
+        auto& publishedHistory = publication->histories[gpuId];
+        publishedHistory.snapshots.reserve(history.size());
+        publishedHistory.timestamps.reserve(history.size());
+        publishedHistory.utilization.reserve(history.size());
+        publishedHistory.memoryPercent.reserve(history.size());
+        publishedHistory.gpuClock.reserve(history.size());
+        publishedHistory.encoder.reserve(history.size());
+        publishedHistory.decoder.reserve(history.size());
+        publishedHistory.temperature.reserve(history.size());
+        publishedHistory.power.reserve(history.size());
+        publishedHistory.fanSpeed.reserve(history.size());
+        for (std::size_t index = 0; index < history.size(); ++index)
+        {
+            const auto sample = history[index];
+            publishedHistory.snapshots.push_back(sample);
+            publishedHistory.timestamps.push_back(sample.captureTimeSec);
+            publishedHistory.utilization.push_back(static_cast<float>(sample.utilizationPercent));
+            publishedHistory.memoryPercent.push_back(static_cast<float>(sample.memoryUsedPercent));
+            publishedHistory.gpuClock.push_back(static_cast<float>(sample.gpuClockMHz));
+            publishedHistory.encoder.push_back(static_cast<float>(sample.encoderUtilPercent));
+            publishedHistory.decoder.push_back(static_cast<float>(sample.decoderUtilPercent));
+            publishedHistory.temperature.push_back(static_cast<float>(sample.temperatureC));
+            publishedHistory.power.push_back(static_cast<float>(sample.powerDrawWatts));
+            publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedRPMPercent));
+        }
+    }
+    m_Publication = std::move(publication);
+    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
 std::vector<GPUSnapshot> GPUModel::snapshots() const
@@ -184,12 +247,7 @@ std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
 
 Platform::GPUCapabilities GPUModel::capabilities() const
 {
-    if (!m_Probe)
-    {
-        return Platform::GPUCapabilities{};
-    }
-    const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
-    return m_Probe->capabilities();
+    return m_Capabilities;
 }
 
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
@@ -198,7 +256,7 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     {
         return {};
     }
-    const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
+    const std::scoped_lock probeLock(m_ProbeMutex);
     return m_Probe->readProcessGPUCounters();
 }
 
@@ -343,7 +401,7 @@ void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)
 {
     if (m_Probe)
     {
-        const std::lock_guard<std::mutex> probeLock(m_ProbeMutex);
+        const std::scoped_lock probeLock(m_ProbeMutex);
         m_Probe->setInstanceRefreshInterval(interval);
     }
 }

@@ -11,6 +11,7 @@
 
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
+#include "Domain/SamplingConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -245,6 +246,22 @@ TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
     EXPECT_EQ(sampler.interval(), 250ms);
 }
 
+TEST(BackgroundSamplerTest, SetIntervalBeforeStartDoesNotScheduleDuplicateSample)
+{
+    MockSamplable samplable;
+    Domain::BackgroundSampler sampler;
+    sampler.addSamplable(&samplable);
+
+    sampler.setInterval(5000ms);
+    sampler.start();
+    samplable.waitForSamples(1);
+
+    EXPECT_FALSE(waitFor([&] { return samplable.getSampleCount() > 1; }, 100ms));
+
+    sampler.stop();
+    EXPECT_EQ(samplable.getSampleCount(), 1);
+}
+
 // =============================================================================
 // Refresh Request Tests
 // =============================================================================
@@ -378,7 +395,7 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 // Edge Cases
 // =============================================================================
 
-TEST(BackgroundSamplerTest, VeryShortInterval)
+TEST(BackgroundSamplerTest, VeryShortIntervalIsClamped)
 {
     MockSamplable samplable;
 
@@ -386,13 +403,14 @@ TEST(BackgroundSamplerTest, VeryShortInterval)
     config.interval = 1ms; // Very short
 
     Domain::BackgroundSampler sampler(config);
+    EXPECT_EQ(sampler.interval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
     sampler.addSamplable(&samplable);
 
     sampler.start();
     std::this_thread::sleep_for(100ms);
     sampler.stop();
 
-    EXPECT_GE(samplable.getSampleCount(), 5);
+    EXPECT_GE(samplable.getSampleCount(), 1);
 }
 
 TEST(BackgroundSamplerTest, StartStopStartCycle)
@@ -415,10 +433,10 @@ TEST(BackgroundSamplerTest, StartStopStartCycle)
         EXPECT_FALSE(sampler.isRunning());
     }
 
-    EXPECT_GT(samplable.getSampleCount(), 3);
+    EXPECT_GE(samplable.getSampleCount(), 3);
 }
 
-TEST(BackgroundSamplerTest, ZeroIntervalHandledGracefully)
+TEST(BackgroundSamplerTest, ZeroIntervalIsClamped)
 {
     // Edge case: zero interval
     MockSamplable samplable;
@@ -427,13 +445,14 @@ TEST(BackgroundSamplerTest, ZeroIntervalHandledGracefully)
     config.interval = 0ms; // Zero interval - sleepTime will always be <= 0
 
     Domain::BackgroundSampler sampler(config);
+    EXPECT_EQ(sampler.interval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
     sampler.addSamplable(&samplable);
 
     sampler.start();
     std::this_thread::sleep_for(50ms);
     sampler.stop();
 
-    EXPECT_GT(samplable.getSampleCount(), 5);
+    EXPECT_GE(samplable.getSampleCount(), 1);
 }
 
 // =============================================================================

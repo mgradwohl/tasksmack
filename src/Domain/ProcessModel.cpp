@@ -385,6 +385,28 @@ std::uint64_t ProcessModel::snapshotVersion() const
     return m_PublishedSnapshotVersion.load(std::memory_order_acquire);
 }
 
+bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const
+{
+    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    {
+        return false;
+    }
+
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    if (m_SnapshotVersion == lastSeenVersion)
+    {
+        return false;
+    }
+
+    outHistories.version = m_SnapshotVersion;
+    outHistories.timestamps = HistoryUtils::toVector(m_Timestamps);
+    outHistories.power = HistoryUtils::toVector(m_SystemPowerHistory);
+    outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
+    outHistories.threadCount = HistoryUtils::toVector(m_SystemThreadCountHistory);
+    outHistories.handleCount = HistoryUtils::toVector(m_SystemHandleCountHistory);
+    return true;
+}
+
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::vector<ProcessSnapshot>& outSnapshots,
                                            std::uint64_t& outVersion) const

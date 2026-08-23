@@ -62,6 +62,11 @@ class ProcessesPanel : public Panel
         return m_SelectedPid;
     }
 
+    [[nodiscard]] std::uint64_t cachedSnapshotVersion() const noexcept
+    {
+        return m_CachedSnapshotVersion;
+    }
+
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
