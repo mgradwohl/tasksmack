@@ -4,7 +4,7 @@ include(FetchContent)
 FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.18.0
+    GIT_TAG 063de7e9578f82b369302001269680b4b1553359  # v1.18.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from gtest
 )
 
