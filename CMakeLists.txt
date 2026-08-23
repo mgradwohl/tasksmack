@@ -281,7 +281,7 @@ set(SPDLOG_HEADER_ONLY ON CACHE BOOL "Build spdlog in header-only mode" FORCE)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.17.0
+    GIT_TAG 79524ddd08a4ec981b7fea76afd08ee05f83755d  # v1.17.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from spdlog
 )
 
@@ -305,7 +305,7 @@ endif()
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG v3.4.0
+    GIT_TAG 30172438cee64926dc41fdd9c11fb3ba5b2ba9de  # v3.4.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings
 )
 FetchContent_MakeAvailable(tomlplusplus)
@@ -324,7 +324,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG release-3.4.14
+    GIT_TAG 147a8ee32dbf9ac02f3794964490687b6bbda1bc  # release-3.4.14 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
 )
 
@@ -368,7 +368,7 @@ endif()
 FetchContent_Declare(
     glad
     GIT_REPOSITORY https://github.com/Dav1dde/glad.git
-    GIT_TAG v2.0.8
+    GIT_TAG 73db193f853e2ee079bf3ca8a64aa2eaf6459043  # v2.0.8 - pinned to SHA for supply chain security
 )
 FetchContent_MakeAvailable(glad)
 add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
@@ -388,7 +388,7 @@ endif()
 FetchContent_Declare(
     freetype
     GIT_REPOSITORY https://github.com/freetype/freetype.git
-    GIT_TAG VER-2-14-3
+    GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7  # VER-2-14-3 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
 )
 
@@ -416,7 +416,8 @@ endif()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.92.9b-docking
+    GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23  # v1.92.9b-docking - pinned to SHA for supply chain security
+    SYSTEM  # Treat as system headers to suppress warnings from ImGui
 )
 FetchContent_MakeAvailable(imgui)
 
@@ -449,7 +450,8 @@ set_target_properties(imgui_lib PROPERTIES FOLDER "third_party")
 FetchContent_Declare(
     implot
     GIT_REPOSITORY https://github.com/epezent/implot.git
-    GIT_TAG v1.0
+    GIT_TAG 524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39  # v1.0 - pinned to SHA for supply chain security
+    SYSTEM  # Treat as system headers to suppress warnings from ImPlot
 )
 FetchContent_MakeAvailable(implot)
 
