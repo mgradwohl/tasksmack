@@ -293,11 +293,10 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
         m_ForceRefresh = false;
     }
 
-    const auto systemPublication = m_Model->publication();
-    if (!m_SystemPublication || systemPublication->version != m_SystemPublication->version)
+    if (!m_SystemPublication || m_Model->publicationVersion() != m_SystemPublication->version)
     {
-        m_SystemPublication = systemPublication;
-        m_TimestampsCache = systemPublication->timestamps;
+        m_SystemPublication = m_Model->publication();
+        m_TimestampsCache = m_SystemPublication->timestamps;
         if (!m_TimestampsCache.empty())
         {
             m_CurrentNowSeconds = m_TimestampsCache.back();
@@ -307,14 +306,20 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
             m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         }
 
-        m_CachedSnapshot = systemPublication->snapshot;
+        m_CachedSnapshot = m_SystemPublication->snapshot;
         if (!m_CachedSnapshot.hostname.empty())
         {
             m_Hostname = m_CachedSnapshot.hostname;
         }
     }
-    m_StoragePublication = m_StorageModel ? m_StorageModel->publication() : nullptr;
-    m_GPUPublication = m_GPUModel ? m_GPUModel->publication() : nullptr;
+    if (m_StorageModel && (!m_StoragePublication || m_StorageModel->publicationVersion() != m_StoragePublication->version))
+    {
+        m_StoragePublication = m_StorageModel->publication();
+    }
+    if (m_GPUModel && (!m_GPUPublication || m_GPUModel->publicationVersion() != m_GPUPublication->version))
+    {
+        m_GPUPublication = m_GPUModel->publication();
+    }
     if (m_ProcessModel != nullptr)
     {
         Domain::ProcessSystemHistories histories;
@@ -565,6 +570,7 @@ void SystemMetricsPanel::renderOverview()
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
+    const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, cpuCount).values;
     // CPU history with vertical now bars (total + breakdown)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
 
@@ -572,6 +578,10 @@ void SystemMetricsPanel::renderOverview()
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
+    const auto cpuUserData = UI::Widgets::tailAlignedSpan(cpuUserHist, breakdownCount).values;
+    const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
+    const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
+    const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
     std::vector<float> breakdownTimeData = buildTimeAxis(timestamps, breakdownCount, nowSeconds);
 
     auto cpuPlot = [&]()
@@ -598,9 +608,9 @@ void SystemMetricsPanel::renderOverview()
 
                 for (size_t i = 0; i < breakdownCount; ++i)
                 {
-                    yUserTop[i] = cpuUserHist[i];
-                    ySystemTop[i] = cpuUserHist[i] + cpuSystemHist[i];
-                    yIowaitTop[i] = ySystemTop[i] + cpuIowaitHist[i];
+                    yUserTop[i] = cpuUserData[i];
+                    ySystemTop[i] = cpuUserData[i] + cpuSystemData[i];
+                    yIowaitTop[i] = ySystemTop[i] + cpuIowaitData[i];
                 }
 
                 ImPlot::PlotShaded("User",
@@ -632,26 +642,26 @@ void SystemMetricsPanel::renderOverview()
                         showCpuBreakdownTooltip(theme.scheme(),
                                                 true,
                                                 checkedRoundSeconds(static_cast<double>(breakdownTimeData[*si])),
-                                                cpuUserHist[*si],
-                                                cpuSystemHist[*si],
-                                                cpuIowaitHist[*si],
-                                                cpuIdleHist[*si]);
+                                                cpuUserData[*si],
+                                                cpuSystemData[*si],
+                                                cpuIowaitData[*si],
+                                                cpuIdleData[*si]);
                     }
                 }
             }
-            else if (!cpuHist.empty())
+            else if (!cpuData.empty())
             {
                 ImPlot::PlotShaded("##CPUShaded",
                                    cpuTimeData.data(),
-                                   cpuHist.data(),
-                                   UI::Format::checkedCount(cpuHist.size()),
+                                   cpuData.data(),
+                                   UI::Format::checkedCount(cpuData.size()),
                                    0.0,
                                    {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
                 ImPlot::PlotLine("CPU",
                                  cpuTimeData.data(),
-                                 cpuHist.data(),
-                                 UI::Format::checkedCount(cpuHist.size()),
+                                 cpuData.data(),
+                                 UI::Format::checkedCount(cpuData.size()),
                                  {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
@@ -663,7 +673,7 @@ void SystemMetricsPanel::renderOverview()
                         const auto ageText = formatAgeSeconds(static_cast<double>(cpuTimeData[*idxVal]));
                         ImGui::TextUnformatted(ageText.c_str());
                         ImGui::Separator();
-                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
+                        ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuData[*idxVal]).c_str());
                         ImGui::EndTooltip();
                     }
                 }
@@ -1134,10 +1144,15 @@ void SystemMetricsPanel::renderCpuSection()
     ImGui::Spacing();
 
     const size_t timeCount = std::min(cpuHist.size(), timestamps.size());
+    const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, timeCount).values;
     std::vector<float> timeData = buildTimeAxis(timestamps, timeCount, nowSeconds);
 
     const size_t breakdownCount =
         std::min({cpuUserHist.size(), cpuSystemHist.size(), cpuIowaitHist.size(), cpuIdleHist.size(), timestamps.size()});
+    const auto cpuUserData = UI::Widgets::tailAlignedSpan(cpuUserHist, breakdownCount).values;
+    const auto cpuSystemData = UI::Widgets::tailAlignedSpan(cpuSystemHist, breakdownCount).values;
+    const auto cpuIowaitData = UI::Widgets::tailAlignedSpan(cpuIowaitHist, breakdownCount).values;
+    const auto cpuIdleData = UI::Widgets::tailAlignedSpan(cpuIdleHist, breakdownCount).values;
 
     // CPU Usage Plot
     {
@@ -1149,25 +1164,25 @@ void SystemMetricsPanel::renderCpuSection()
             ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
             ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
 
-            if (!cpuHist.empty())
+            if (!cpuData.empty())
             {
                 ImPlot::PlotShaded("##CPUShaded",
                                    timeData.data(),
-                                   cpuHist.data(),
-                                   UI::Format::checkedCount(cpuHist.size()),
+                                   cpuData.data(),
+                                   UI::Format::checkedCount(cpuData.size()),
                                    0.0,
                                    {ImPlotProp_FillColor, theme.scheme().chartCpuFill});
 
                 // Draw the line on top of the shaded region.
                 ImPlot::PlotLine("##CPU",
                                  timeData.data(),
-                                 cpuHist.data(),
-                                 UI::Format::checkedCount(cpuHist.size()),
+                                 cpuData.data(),
+                                 UI::Format::checkedCount(cpuData.size()),
                                  {ImPlotProp_LineColor, theme.scheme().chartCpu, ImPlotProp_LineWeight, 2.0F});
 
                 if (ImPlot::IsPlotHovered())
                 {
-                    const size_t n = cpuHist.size();
+                    const size_t n = cpuData.size();
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
@@ -1178,10 +1193,10 @@ void SystemMetricsPanel::renderCpuSection()
                             showCpuBreakdownTooltip(theme.scheme(),
                                                     true,
                                                     checkedRoundSeconds(timeSec),
-                                                    cpuUserHist[si],
-                                                    cpuSystemHist[si],
-                                                    cpuIowaitHist[si],
-                                                    cpuIdleHist[si]);
+                                                    cpuUserData[si],
+                                                    cpuSystemData[si],
+                                                    cpuIowaitData[si],
+                                                    cpuIdleData[si]);
                         }
                         else
                         {
@@ -1189,7 +1204,7 @@ void SystemMetricsPanel::renderCpuSection()
                             const auto ageText = formatAgeSeconds(timeSec);
                             ImGui::TextUnformatted(ageText.c_str());
                             ImGui::Separator();
-                            ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuHist[*idxVal]).c_str());
+                            ImGui::Text("CPU: %s", UI::Format::percentCompact(cpuData[*idxVal]).c_str());
                             ImGui::EndTooltip();
                         }
                     }

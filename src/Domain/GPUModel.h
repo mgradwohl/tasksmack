@@ -125,6 +125,7 @@ class GPUModel : public ISamplable
     // Capabilities
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
+    [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
     // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
@@ -157,8 +158,9 @@ class GPUModel : public ISamplable
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;
-    std::atomic<std::shared_ptr<const GPUPublication>> m_Publication{std::make_shared<const GPUPublication>()};
+    std::shared_ptr<const GPUPublication> m_Publication = std::make_shared<const GPUPublication>();
     std::uint64_t m_PublicationVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
 
     // Helper: compute snapshot from current/previous counters
     [[nodiscard]] GPUSnapshot

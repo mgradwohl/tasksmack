@@ -72,6 +72,7 @@ class SystemModel : public ISamplable
     [[nodiscard]] SystemSnapshot snapshot() const;
 
     [[nodiscard]] std::shared_ptr<const SystemPublication> publication() const noexcept;
+    [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
     /// What the underlying probe supports.
     [[nodiscard]] const Platform::SystemCapabilities& capabilities() const;
@@ -137,8 +138,9 @@ class SystemModel : public ISamplable
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 
-    std::atomic<std::shared_ptr<const SystemPublication>> m_Publication{std::make_shared<const SystemPublication>()};
+    std::shared_ptr<const SystemPublication> m_Publication = std::make_shared<const SystemPublication>();
     std::uint64_t m_PublicationVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
 
     // Thread safety
     mutable std::shared_mutex m_Mutex;

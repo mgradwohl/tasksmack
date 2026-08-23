@@ -140,7 +140,13 @@ void GPUModel::refresh()
 
 std::shared_ptr<const GPUPublication> GPUModel::publication() const noexcept
 {
-    return m_Publication.load(std::memory_order_acquire);
+    const std::shared_lock lock(m_Mutex);
+    return m_Publication;
+}
+
+std::uint64_t GPUModel::publicationVersion() const noexcept
+{
+    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
 }
 
 void GPUModel::publish()
@@ -185,7 +191,8 @@ void GPUModel::publish()
             publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedRPMPercent));
         }
     }
-    m_Publication.store(std::move(publication), std::memory_order_release);
+    m_Publication = std::move(publication);
+    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
 std::vector<GPUSnapshot> GPUModel::snapshots() const

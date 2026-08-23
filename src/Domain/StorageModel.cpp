@@ -142,7 +142,13 @@ void StorageModel::sample()
 
 std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept
 {
-    return m_Publication.load(std::memory_order_acquire);
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_Publication;
+}
+
+std::uint64_t StorageModel::publicationVersion() const noexcept
+{
+    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
 }
 
 void StorageModel::publish()
@@ -167,7 +173,8 @@ void StorageModel::publish()
             .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
         });
     }
-    m_Publication.store(std::move(publication), std::memory_order_release);
+    m_Publication = std::move(publication);
+    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
 DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state)

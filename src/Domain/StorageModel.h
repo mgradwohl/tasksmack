@@ -68,6 +68,7 @@ class StorageModel : public ISamplable
     /// was absent (disappeared or not yet seen) are represented as 0.0.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
+    [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
     /// Configure history retention.
     void setMaxHistorySeconds(double seconds);
@@ -105,8 +106,9 @@ class StorageModel : public ISamplable
     std::unordered_map<std::string, std::deque<double>> m_DiskReadHistory;
     std::unordered_map<std::string, std::deque<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
-    std::atomic<std::shared_ptr<const StoragePublication>> m_Publication{std::make_shared<const StoragePublication>()};
+    std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
     std::uint64_t m_PublicationVersion = 0;
+    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
 
     double m_MaxHistorySeconds = 300.0; // 5 minutes default
 
