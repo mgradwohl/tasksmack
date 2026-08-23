@@ -5,6 +5,14 @@ inputs:
     description: 'Full LLVM semver version to install (e.g. 22.1.7)'
     required: false
     default: '22.1.7'
+  ninja-version:
+    description: 'Ninja version to install (pinned for deterministic CI)'
+    required: false
+    default: '1.13.2'
+  ccache-version:
+    description: 'ccache version to install (pinned for deterministic CI)'
+    required: false
+    default: '4.14.0'
 
 runs:
   using: 'composite'
@@ -13,7 +21,8 @@ runs:
       shell: pwsh
       run: |
         choco install llvm --version ${{ inputs.llvm-version }} -y
-        choco install ninja ccache -y
+        choco install ninja --version ${{ inputs.ninja-version }} -y
+        choco install ccache --version ${{ inputs.ccache-version }} -y
         # Refresh PATH so subsequent steps find clang, ninja, ccache without a new shell
         $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
         echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

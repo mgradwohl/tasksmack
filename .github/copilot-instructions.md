@@ -278,7 +278,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ `EXPECT_EQ` on floats (use `EXPECT_DOUBLE_EQ`)
 - ❌ Mocks inside anonymous namespace with `make_unique`
 - ❌ Using `using namespace std` in headers
-- ❌ Ignoring clang-tidy warnings (CI will fail)
+- ❌ Ignoring clang-tidy warnings (the Static Analysis workflow on `main` will fail post-merge — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
 - ❌ Committing without running clang-format
 - ❌ Adding dependencies without `SYSTEM` keyword in FetchContent
 - ❌ Violating Rule of 5 (custom destructor without handling copy/move)

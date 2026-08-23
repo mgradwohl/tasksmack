@@ -54,7 +54,8 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
         with:
-          key: ${{ runner.os }}-${{ inputs.build_type }}
+          # Include the LLVM version so caches from different toolchains don't mix.
+          key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
           max-size: 500M
 
       - name: Cache FetchContent dependencies
