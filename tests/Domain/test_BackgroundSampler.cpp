@@ -246,6 +246,22 @@ TEST(BackgroundSamplerTest, SetIntervalWhileStopped)
     EXPECT_EQ(sampler.interval(), 250ms);
 }
 
+TEST(BackgroundSamplerTest, SetIntervalBeforeStartDoesNotScheduleDuplicateSample)
+{
+    MockSamplable samplable;
+    Domain::BackgroundSampler sampler;
+    sampler.addSamplable(&samplable);
+
+    sampler.setInterval(5000ms);
+    sampler.start();
+    samplable.waitForSamples(1);
+
+    EXPECT_FALSE(waitFor([&] { return samplable.getSampleCount() > 1; }, 100ms));
+
+    sampler.stop();
+    EXPECT_EQ(samplable.getSampleCount(), 1);
+}
+
 // =============================================================================
 // Refresh Request Tests
 // =============================================================================

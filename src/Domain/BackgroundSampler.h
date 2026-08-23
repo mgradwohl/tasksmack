@@ -66,6 +66,7 @@ class BackgroundSampler
     std::mutex m_WakeMutex;
     std::condition_variable_any m_WakeCondition;
     bool m_RefreshRequested = false;
+    bool m_IntervalChanged = false;
 };
 
 } // namespace Domain

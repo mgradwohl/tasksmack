@@ -129,7 +129,11 @@ void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
         m_Config.interval = clampedInterval;
     }
     spdlog::info("BackgroundSampler: interval changed to {}ms", clampedInterval.count());
-    requestRefresh();
+    {
+        const std::lock_guard lock(m_WakeMutex);
+        m_IntervalChanged = true;
+    }
+    m_WakeCondition.notify_all();
 }
 
 void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
@@ -187,14 +191,34 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 
         const auto nextSampleTime = startTime + currentInterval;
         std::unique_lock wakeLock(m_WakeMutex);
-        if (m_RefreshRequested)
+        auto deadline = nextSampleTime;
+        while (!stopToken.stop_requested())
         {
-            m_RefreshRequested = false;
-            continue;
-        }
+            m_WakeCondition.wait_until(wakeLock, stopToken, deadline, [this] { return m_RefreshRequested || m_IntervalChanged; });
 
-        m_WakeCondition.wait_until(wakeLock, stopToken, nextSampleTime, [this] { return m_RefreshRequested; });
-        m_RefreshRequested = false;
+            if (stopToken.stop_requested())
+            {
+                break;
+            }
+
+            if (m_RefreshRequested)
+            {
+                m_RefreshRequested = false;
+                break;
+            }
+
+            if (!m_IntervalChanged)
+            {
+                break;
+            }
+
+            m_IntervalChanged = false;
+            {
+                const std::scoped_lock lock(m_ConfigMutex);
+                currentInterval = m_Config.interval;
+            }
+            deadline = std::chrono::steady_clock::now() + currentInterval;
+        }
     }
 
     spdlog::debug("BackgroundSampler: thread exiting");
