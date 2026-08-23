@@ -74,7 +74,8 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern"
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern",
+                "TASKSMACK_COPY_COMPILE_COMMANDS": "ON"
             }
         },
         {
@@ -257,7 +258,8 @@
             "binaryDir": "${sourceDir}/build/win-debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern"
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern",
+                "TASKSMACK_COPY_COMPILE_COMMANDS": "ON"
             }
         },
         {

@@ -313,6 +313,8 @@ pwsh tools/check-prereqs.ps1  # Windows
 
 If this check passes, `clangd`/`clang-format` should be auto-discovered by the workspace settings.
 
+clangd reads `compile_commands.json` from the repository root. The `debug` and `win-debug` presets copy it there automatically after each build via the opt-in `TASKSMACK_COPY_COMPILE_COMMANDS` CMake option; other presets leave the source tree untouched. To get the copy behavior with a different preset, configure with `-DTASKSMACK_COPY_COMPILE_COMMANDS=ON`.
+
 Linux note (durable PATH setup): if only versioned LLVM binaries exist (for example `clang-format-22`), register unversioned commands system-wide with `update-alternatives`:
 
 ```bash
