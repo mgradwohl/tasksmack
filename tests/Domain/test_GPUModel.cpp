@@ -117,6 +117,28 @@ TEST(GPUModelTest, PublishesCoherentVersionedState)
     EXPECT_EQ(historyIt->second.snapshots.size(), historyIt->second.timestamps.size());
 }
 
+TEST(GPUModelTest, PublishesHistoryForGpuDiscoveredAfterConstruction)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto counters = makeGPUCounters("GPU-late");
+    counters.utilizationPercent = 67.0;
+    probe->withGPUCounters("GPU-late", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_EQ(publication->snapshots.size(), 1);
+    EXPECT_EQ(publication->snapshots[0].gpuId, "GPU-late");
+
+    const auto historyIt = publication->histories.find("GPU-late");
+    ASSERT_NE(historyIt, publication->histories.end());
+    ASSERT_EQ(historyIt->second.snapshots.size(), 1);
+    EXPECT_DOUBLE_EQ(historyIt->second.snapshots[0].utilizationPercent, 67.0);
+    EXPECT_EQ(historyIt->second.timestamps.size(), 1);
+    EXPECT_EQ(historyIt->second.utilization.size(), 1);
+}
+
 TEST(GPUModelTest, MemoryUtilizationPercentIsComputed)
 {
     auto probe = std::make_unique<MockGPUProbe>();

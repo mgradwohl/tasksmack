@@ -124,11 +124,8 @@ void GPUModel::refresh()
             for (auto& [gpuId, snapshot] : m_Snapshots)
             {
                 snapshot.captureTimeSec = nowSec;
-                auto histIt = m_Histories.find(gpuId);
-                if (histIt != m_Histories.end())
-                {
-                    histIt->second.push(snapshot);
-                }
+                auto histIt = m_Histories.try_emplace(gpuId).first;
+                histIt->second.push(snapshot);
             }
             publish();
 
