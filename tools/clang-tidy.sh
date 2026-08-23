@@ -107,7 +107,12 @@ if $VERBOSE; then
     echo "Generating clang-tidy compilation database via CMake target..."
 fi
 rm -f "$COMPILE_COMMANDS_TIDY"
-cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>/dev/null || true
+# Don't hard-fail here: older build dirs may lack the target, and the sed fallback below
+# still produces a usable database. But surface the failure instead of discarding it.
+if ! TIDY_COMPDB_OUTPUT=$(cmake --build "$BUILD_DIR" --target generate-clang-tidy-compile-commands 2>&1); then
+    echo "Warning: generate-clang-tidy-compile-commands target failed; falling back to sed-sanitized database." >&2
+    echo "$TIDY_COMPDB_OUTPUT" | tail -n 20 >&2
+fi
 
 # If the CMake target didn't produce the file (older build dir or no CLANG_TIDY_EXE at configure
 # time), fall back to generating it here from the live database.
