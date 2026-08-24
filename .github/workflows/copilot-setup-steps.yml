@@ -14,7 +14,7 @@ on:
 env:
     LLVM_VERSION: '22'
 
-permissions: read-all
+permissions: {}
 
 jobs:
     # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.

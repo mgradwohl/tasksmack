@@ -9,7 +9,7 @@ concurrency:
   group: changelog-${{ github.ref }}
   cancel-in-progress: false
 
-permissions: read-all
+permissions: {}
 
 jobs:
   changelog:

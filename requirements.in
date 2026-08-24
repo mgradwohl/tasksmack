@@ -1,0 +1,5 @@
+# Top-level Python dependencies. requirements.txt is generated from this file:
+#   pip-compile --generate-hashes --output-file=requirements.txt requirements.in
+filelock==3.32.3
+jinja2==3.1.6
+pre-commit==4.6.2

@@ -28,8 +28,9 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if ! python3 -c "import PIL" 2>/dev/null; then
-    echo "Installing Pillow..."
-    python3 -m pip install --user "pillow==12.3.0"
+    echo "Error: Pillow not found. Install it yourself (pinned) with:"
+    echo "  python3 -m pip install --user pillow==12.3.0"
+    exit 1
 fi
 
 # Sizes for icon files

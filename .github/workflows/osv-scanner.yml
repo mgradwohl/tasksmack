@@ -23,7 +23,7 @@ concurrency:
   group: osv-${{ github.ref }}
   cancel-in-progress: true
 
-permissions: read-all
+permissions: {}
 
 jobs:
   # Generate an SPDX-JSON SBOM from the source tree so the scanner can see
