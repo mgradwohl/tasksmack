@@ -1,5 +1,7 @@
 #include "Window.h"
 
+#include "Core/WindowConstants.h"
+
 #include <SDL3/SDL.h>
 #include <glad/gl.h>
 #include <spdlog/spdlog.h>

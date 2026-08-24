@@ -3,6 +3,8 @@
     Generate code coverage report using llvm-cov (Windows).
 .DESCRIPTION
     Builds with coverage instrumentation, runs tests, and generates HTML report.
+.PARAMETER Preset
+    CMake preset to use for the coverage build (default: win-coverage)
 .PARAMETER ShowDetails
     Show verbose output
 .PARAMETER OpenReport
@@ -14,6 +16,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$Preset = "win-coverage",
     [switch]$ShowDetails,
     [switch]$OpenReport
 )
@@ -25,7 +28,7 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 . (Join-Path $ScriptDir "common.ps1")
 # CMake presets derive compiler paths from LLVM_ROOT; ensure it is set.
 Initialize-LlvmRoot
-$BuildDir = Join-Path $ProjectRoot "build\win-coverage"
+$BuildDir = Join-Path $ProjectRoot "build\$Preset"
 $CoverageDir = Join-Path $ProjectRoot "coverage"
 
 # Find llvm tools
@@ -44,11 +47,11 @@ if ($ShowDetails) {
 
 # Step 1: Configure and build with coverage
 Write-Host "==> Configuring coverage build..."
-& cmake --preset win-coverage
+& cmake --preset $Preset
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "==> Building..."
-& cmake --build --preset win-coverage
+& cmake --build --preset $Preset
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Step 2: Run tests to generate profraw data

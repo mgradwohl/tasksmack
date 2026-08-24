@@ -182,7 +182,7 @@ class ProcessModel : public ISamplable
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
     std::atomic<bool> m_InteractionActive{false};
-    std::chrono::steady_clock::time_point m_LastGpuMergeTime{};
+    std::chrono::steady_clock::time_point m_LastGpuMergeTime;
     bool m_HasLastGpuMergeTime = false;
 
     // Thread safety

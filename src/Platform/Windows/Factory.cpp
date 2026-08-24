@@ -1,5 +1,12 @@
 #include "Platform/Factory.h"
 
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
+#include "Platform/IPathProvider.h"
+#include "Platform/IPowerProbe.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IProcessProbe.h"
+#include "Platform/ISystemProbe.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsGPUProbe.h"
 #include "WindowsPathProvider.h"

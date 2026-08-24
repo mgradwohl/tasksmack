@@ -12,6 +12,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -79,7 +80,7 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 
 void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
-    std::lock_guard samplingLock(m_SamplingMutex);
+    std::scoped_lock const samplingLock(m_SamplingMutex);
 
     struct CachedGpuSnapshotFields
     {
@@ -103,7 +104,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
 
     {
-        std::shared_lock lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
+        std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
         gpuModel = m_GPUModel;
         reserveSize = std::max(counters.size(), m_Snapshots.size());
 
@@ -119,13 +120,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
                 }
 
                 cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
-                                             CachedGpuSnapshotFields{previousSnapshot.gpuUtilPercent,
-                                                                     previousSnapshot.gpuMemoryBytes,
-                                                                     previousSnapshot.gpuEncoderUtil,
-                                                                     previousSnapshot.gpuDecoderUtil,
-                                                                     previousSnapshot.gpuEngines,
-                                                                     previousSnapshot.perGpuUsage,
-                                                                     previousSnapshot.gpuDevices});
+                                             CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
+                                                                     .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
+                                                                     .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
+                                                                     .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
+                                                                     .gpuEngines = previousSnapshot.gpuEngines,
+                                                                     .perGpuUsage = previousSnapshot.perGpuUsage,
+                                                                     .gpuDevices = previousSnapshot.gpuDevices});
             }
         }
     }
@@ -287,11 +288,10 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     if (gpuModel != nullptr)
     {
-        if (!interactionActive)
-        {
-            shouldMergeGpuData = true;
-        }
-        else if (!m_HasLastGpuMergeTime || ((currentSampleTime - m_LastGpuMergeTime) >= INTERACTION_GPU_MERGE_MIN_INTERVAL))
+        // Merge immediately when idle; during interaction, throttle merges to the
+        // minimum interval to keep resize/drag responsive.
+        if (!interactionActive || !m_HasLastGpuMergeTime ||
+            ((currentSampleTime - m_LastGpuMergeTime) >= INTERACTION_GPU_MERGE_MIN_INTERVAL))
         {
             shouldMergeGpuData = true;
         }

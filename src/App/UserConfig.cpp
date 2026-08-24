@@ -1,7 +1,7 @@
 #include "UserConfig.h"
 
 #include "App/UserConfigHelpers.h"
-#include "Core/Window.h"
+#include "Core/WindowConstants.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "ProcessColumnConfig.h"
@@ -10,7 +10,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -36,6 +35,8 @@
 #include <shlobj.h>
 // clang-format on
 #else
+#include <array>
+
 #include <pwd.h>
 #include <unistd.h>
 #endif
