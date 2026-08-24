@@ -28,7 +28,7 @@ Copilot is particularly effective for these types of tasks in our C++23/ImGui pr
 | **New Probes** | Add new metrics (disk I/O, network stats) | Follows established Platform → Domain → UI pattern |
 | **UI Enhancements** | New ImGui panels, table columns, charts | Copilot knows ImGui/ImPlot patterns |
 | **Refactoring** | Extract methods, rename variables, simplify logic | Limited to single-file or small scope |
-| **Dependencies** | Update CMakeLists.txt, add new libraries | Must use FetchContent with SYSTEM keyword |
+| **Dependencies** | Update `cmake/Dependencies.cmake`, add new libraries | Must use FetchContent with SYSTEM keyword |
 
 ### Tasks Requiring Human Review
 

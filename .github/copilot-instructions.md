@@ -271,6 +271,8 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`)
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
 
+**CMake layout:** the root `CMakeLists.txt` is declarative; build logic lives in focused modules under `cmake/` — `Options.cmake` (cache options), `CompilerOptions.cmake` (toolchain/warnings/hardening, must precede dependencies), `Dependencies.cmake` (FetchContent + third-party targets), `StaticAnalysis.cmake` (clang-tidy/format targets, included before the Windows `.rc` is appended to sources), `InstallRules.cmake`, and `Packaging.cmake` (CPack). New dependencies go in `cmake/Dependencies.cmake`; new tooling targets in `cmake/StaticAnalysis.cmake`.
+
 ## Common Pitfalls
 
 - ❌ Computing CPU% in Platform probes (belongs in Domain)
