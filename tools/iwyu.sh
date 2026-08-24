@@ -469,8 +469,10 @@ if selected_cmd is not None:
     if command:
         # Extract flags: remove compiler name and output-related flags
         # Keep: -I, -D, -std, -f flags, -W flags, --sysroot, etc.
-        # Note: PCH flags are filtered as a safety measure, though CMake/Ninja
-        # no longer includes them in compile_commands.json
+        # Note: CMake/Ninja emits PCH flags into compile_commands.json when the
+        # preset builds with precompiled headers. The sed pass earlier in this
+        # script strips them, and the whitelist below also excludes them as a
+        # safety measure, because IWYU cannot handle PCH.
         tokens = shlex.split(command)
         flags = []
         skip_next = False
