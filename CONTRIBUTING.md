@@ -914,6 +914,21 @@ Some choices are intentional (to keep the build predictable across Windows/Linux
 - FetchContent is used for dependencies (prefer `SYSTEM` to reduce third-party warning noise)
 - Presets use libc++ on Linux and the MSVC STL on Windows
 
+The root `CMakeLists.txt` is intentionally declarative and delegates to focused modules under `cmake/` (include order matters — options first, then compiler setup, then dependencies):
+
+| Module | Responsibility |
+| --- | --- |
+| `cmake/Options.cmake` | All `option()`/cache variable declarations (`TASKSMACK_*`) |
+| `cmake/CompilerOptions.cmake` | Language standards, warnings, hardening, ccache/sccache, IPO, linker selection, `tasksmack_apply_default_warnings()`, `tasksmack_apply_linux_toolchain()` |
+| `cmake/Dependencies.cmake` | FetchContent cache + all third-party dependencies and their target wiring (`imgui_lib`, `implot_lib`, GLAD, etc.) |
+| `cmake/StaticAnalysis.cmake` | clang-tidy/clang-format discovery, stripped clang-tidy compile database, `run-clang-tidy`, `run-clang-format`, `copy-compile-commands` targets |
+| `cmake/PrecompiledHeaders.cmake` | PCH header list for the app target |
+| `cmake/TestPrecompiledHeaders.cmake` | PCH header list for the test target |
+| `cmake/InstallRules.cmake` | `install()` rules for binaries, libs, and assets |
+| `cmake/Packaging.cmake` | CPack configuration (ZIP/TGZ/NSIS/DEB/RPM) |
+
+The root file keeps project setup, the version header, source/header lists, the `TaskSmack` target definition, and `tests`/`benchmarks` subdirectory wiring. Note that `CompilerOptions.cmake` must stay included before `Dependencies.cmake` so global flags (coverage, hardening, compiler launcher) apply to third-party builds, and `StaticAnalysis.cmake` is included before the Windows `.rc` file is appended to `TASKSMACK_SOURCES` so analysis targets only see real C++ sources.
+
 Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the current list of disabled checks. Work to re-enable selected checks is tracked in GitHub issues (#60, #61, #62, #63, #64).
 
 ## Adding Dependencies
