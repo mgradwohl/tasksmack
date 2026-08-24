@@ -23,6 +23,8 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 . (Join-Path $ScriptDir "common.ps1")
+# CMake presets derive compiler paths from LLVM_ROOT; ensure it is set.
+Initialize-LlvmRoot
 $BuildDir = Join-Path $ProjectRoot "build\win-coverage"
 $CoverageDir = Join-Path $ProjectRoot "coverage"
 

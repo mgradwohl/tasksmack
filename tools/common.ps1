@@ -55,3 +55,28 @@ function Get-LlvmToolMajorVersion {
     }
     return $null
 }
+
+# Ensure $env:LLVM_ROOT is set for CMake presets (windows-base derives the
+# compiler paths from it). If unset, derive it from a discovered LLVM tool
+# located in a conventional <root>\bin layout.
+function Initialize-LlvmRoot {
+    [CmdletBinding()]
+    param()
+
+    if ($env:LLVM_ROOT) {
+        return
+    }
+
+    $clang = Find-LlvmTool -Name "clang++"
+    if ($clang) {
+        $binDir = Split-Path -Parent $clang
+        if ((Split-Path -Leaf $binDir) -eq 'bin') {
+            $env:LLVM_ROOT = Split-Path -Parent $binDir
+            Write-Host "LLVM_ROOT not set; derived '$env:LLVM_ROOT' from $clang"
+            return
+        }
+    }
+
+    Write-Error "LLVM_ROOT is not set and could not be derived. CMake presets require it; set LLVM_ROOT to your LLVM install directory."
+    exit 1
+}

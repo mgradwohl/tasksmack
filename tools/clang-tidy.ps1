@@ -43,6 +43,9 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 . (Join-Path $ScriptDir "common.ps1")
+# CMake presets derive compiler paths from LLVM_ROOT; ensure it is set
+# before any cmake --preset recovery path below runs.
+Initialize-LlvmRoot
 
 # Limit header diagnostics to project headers.
 # Note: clang-tidy requires --header-filter to be set when using --exclude-header-filter.
