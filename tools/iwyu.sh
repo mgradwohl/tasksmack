@@ -266,24 +266,26 @@ if [[ ! -f "$BUILD_DIR/build.ninja" ]]; then
     exit 1
 fi
 
-# Strip C++20 module flags from compile_commands.json (IWYU doesn't support them)
-# Note: PCH flags are no longer included in compile_commands.json by CMake/Ninja
+# Strip C++20 module and PCH flags from compile_commands.json (IWYU supports neither;
+# a single "-include-pch" flag makes IWYU abort every translation unit).
+# These are the same patterns CMakeLists.txt strips for the clang-tidy compile database.
 if $VERBOSE; then
-    echo "Stripping module flags from compile_commands.json..."
+    echo "Stripping module and PCH flags from compile_commands.json..."
 fi
+SED_EXPRS=(
+    -e 's/@[^ ]*\.modmap//g'
+    -e 's/-fmodule-output=[^ ]*//g'
+    -e 's/-Xclang -include-pch -Xclang [^ ]*//g'
+    -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g'
+    -e 's/-Xclang -fno-pch-timestamp//g'
+)
 # Use portable sed in-place editing that works on both GNU sed (Linux) and BSD sed (macOS)
 if [[ "$(uname)" == "Darwin" ]]; then
     # BSD sed requires a separate argument for backup extension
-    sed -i '' \
-        -e 's/@[^ ]*\.modmap//g' \
-        -e 's/-fmodule-output=[^ ]*//g' \
-        "$COMPILE_COMMANDS"
+    sed -i '' "${SED_EXPRS[@]}" "$COMPILE_COMMANDS"
 else
     # GNU sed: -i with no argument for in-place without backup
-    sed -i \
-        -e 's/@[^ ]*\.modmap//g' \
-        -e 's/-fmodule-output=[^ ]*//g' \
-        "$COMPILE_COMMANDS"
+    sed -i "${SED_EXPRS[@]}" "$COMPILE_COMMANDS"
 fi
 
 # Verify IWYU mapping file exists
