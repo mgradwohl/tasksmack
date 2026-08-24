@@ -12,7 +12,7 @@ concurrency:
 env:
   LLVM_VERSION: '22'
 
-permissions: read-all
+permissions: {}
 
 jobs:
   validate-environment:

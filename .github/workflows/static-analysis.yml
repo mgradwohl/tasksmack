@@ -11,8 +11,9 @@ concurrency:
 
 env:
   LLVM_VERSION: '22'
+  LLVM_SEMVER_VERSION: '22.1.7'
 
-permissions: read-all
+permissions: {}
 
 jobs:
   static-analysis:
@@ -63,4 +64,61 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
+          retention-days: 14
+
+  # Advisory-only: surfaces Windows-specific findings (src/Platform/Windows/)
+  # without gating merges. Failures appear in the job log and artifact.
+  static-analysis-windows:
+    name: Static Analysis (Windows, advisory)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      LLVM_ROOT: C:\Program Files\LLVM
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+        with:
+          key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/fetchcontent
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build GLAD
+        shell: pwsh
+        run: cmake --build --preset win-debug --target glad_gl_core_33
+
+      - name: Run clang-tidy (Windows)
+        shell: pwsh
+        run: |
+          pwsh -File tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          exit $LASTEXITCODE
+
+      - name: Upload clang-tidy results (Windows)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: clang-tidy-results-windows
+          path: clang-tidy-windows-output.txt
           retention-days: 14

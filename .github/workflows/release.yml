@@ -14,7 +14,7 @@ env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
 
-permissions: read-all
+permissions: {}
 
 jobs:
   build-linux:
