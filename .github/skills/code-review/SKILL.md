@@ -19,7 +19,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 ## 2. C++23 compliance
 
-- Flag legacy patterns with modern replacements: `find()` → `contains()`/`starts_with()`, raw loops → `std::ranges`/`std::views`, `fmt::format` → `std::format`, raw threads → `std::jthread`, C-style arrays → `std::array`/`std::span`.
+- Suggest modern replacements for legacy patterns **only when the replacement preserves behavior and improves clarity**: `find()` used purely as a containment/prefix check → `contains()`/`starts_with()` (not when the position is needed, e.g., for `substr` parsing); raw loops → `std::ranges`/`std::views` when the loop has no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns); `fmt::format` → `std::format`; raw threads → `std::jthread`; C-style arrays → `std::array`/`std::span`.
 - Flag C-style casts; require the narrowest named cast with a comment explaining why it is safe.
 - Flag `using namespace` in headers.
 - Prefer `enum class` over plain `enum`, with an explicit underlying type (e.g., `: std::uint8_t`) when size matters. Do not flag C-style enums that intentionally mirror an external ABI (e.g., `src/Platform/NVMLTypes.h`), especially when marked with NOLINT and a rationale.
