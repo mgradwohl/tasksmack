@@ -20,12 +20,16 @@
   # suggest granular impl headers.
   { include: ["@<toml\\+\\+/impl/.*>", "private", "<toml++/toml.hpp>", "public"] },
 
-  # libstdc++ implementation artifacts: <chrono>/<string> comparisons surface
-  # <compare>/<ratio> symbols (e.g. _CmpUnspecifiedParam, std::ratio); treat the
-  # owning headers as re-exporting them instead of suggesting direct includes.
+  # libstdc++ comparison artifacts: operator<=> on chrono/string types surfaces
+  # <compare> symbols (e.g. _CmpUnspecifiedParam). C++20 mandates that <chrono>
+  # and <string> include <compare> ([compare.syn]), so these mappings mirror the
+  # standard rather than suppressing a real missing include.
   { include: ["<compare>", "public", "<chrono>", "public"] },
   { include: ["<compare>", "public", "<string>", "public"] },
-  { include: ["<ratio>", "public", "<chrono>", "public"] },
+  # std::ratio is only used via chrono duration aliases in this codebase; map
+  # the symbol (not the whole header) so a genuine direct use of other <ratio>
+  # contents would still be reported.
+  { symbol: ["std::ratio", "private", "<chrono>", "public"] },
 
   # Note: C-to-C++ header mappings (e.g. <stdint.h> -> <cstdint>) are handled
   # by IWYU's built-in mappings in version 0.22+ and do not need to be listed
