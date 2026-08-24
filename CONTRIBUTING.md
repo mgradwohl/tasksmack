@@ -412,9 +412,11 @@ CI heavy checks also publish a coverage summary and may emit a warning if covera
 # Linux
 ./tools/coverage.sh
 ./tools/coverage.sh --open
+./tools/coverage.sh --preset coverage   # optional; defaults to "coverage"
 # Windows
 pwsh tools/coverage.ps1
 pwsh tools/coverage.ps1 -OpenReport
+pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-coverage"
 ```
 
 > **Note (Linux GPU mock tests):** The Linux GPU probe tests depend on mock shared libraries

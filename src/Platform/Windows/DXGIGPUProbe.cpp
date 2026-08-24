@@ -1,6 +1,13 @@
 #include "DXGIGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
+
 #include <spdlog/spdlog.h>
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN

@@ -1,6 +1,13 @@
 #include "WindowsSystemProbe.h"
 
+#include "Platform/SystemTypes.h"
+
 #include <spdlog/spdlog.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <utility>
 
 // clang-format off
 // Windows headers - version macros set via CMake compile definitions
@@ -59,10 +66,10 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value)
 }
 
 // NtQuerySystemInformation function pointer type
-using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG SystemInformationClass,
-                                                     PVOID SystemInformation,
-                                                     ULONG SystemInformationLength,
-                                                     PULONG ReturnLength);
+using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
+                                                     PVOID systemInformation,
+                                                     ULONG systemInformationLength,
+                                                     PULONG returnLength);
 
 // System information class for per-processor performance
 constexpr ULONG SystemProcessorPerformanceInformation = 8;

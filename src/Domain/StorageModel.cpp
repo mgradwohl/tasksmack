@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -67,14 +68,7 @@ void StorageModel::sample()
 
         // If this is the very first time we've seen this disk (the seed read),
         // mark the next sample as a seed transition to prevent rate spikes.
-        if (!state.hasPrev)
-        {
-            state.isSeedTransition = true;
-        }
-        else
-        {
-            state.isSeedTransition = false;
-        }
+        state.isSeedTransition = !state.hasPrev;
 
         state.hasPrev = true;
     }

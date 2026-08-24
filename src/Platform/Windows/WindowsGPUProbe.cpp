@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -289,7 +288,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 
     // Check if we need PDH at all - if all GPUs already have NVML utilization, skip
     // (0% at idle is a valid NVML reading, not a sentinel)
-    bool allHaveNvmlUtilization =
+    bool const allHaveNvmlUtilization =
         !dxgiCounters.empty() &&
         std::ranges::all_of(dxgiCounters, [&nvmlSourcedIds](const auto& counter) { return nvmlSourcedIds.contains(counter.gpuId); });
     // Skip PDH if all GPUs already have NVML utilization data

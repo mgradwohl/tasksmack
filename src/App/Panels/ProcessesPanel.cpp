@@ -6,8 +6,10 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -263,7 +265,7 @@ void ProcessesPanel::onAttach()
     m_ProcessModel->refresh();
 
     // Wire sampler: polls the ProcessModel on each interval tick.
-    Domain::SamplerConfig samplerCfg{m_AppliedSamplerInterval};
+    Domain::SamplerConfig const samplerCfg{m_AppliedSamplerInterval};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel.get());
     m_Sampler->start();

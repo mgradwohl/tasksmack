@@ -6,15 +6,15 @@
 
 #include <spdlog/spdlog.h>
 
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <string_view>
-#include <system_error>
 
 // NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
 #ifdef __linux__
 #include <cerrno>
+#include <cstdlib>
+#include <system_error>
 
 #include <sys/types.h>
 #include <sys/wait.h>

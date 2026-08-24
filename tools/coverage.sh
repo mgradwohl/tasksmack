@@ -15,32 +15,41 @@ validate_coverage_prereqs || exit 1
 
 VERBOSE=false
 OPEN_REPORT=false
+PRESET="coverage"
 
 usage() {
+    local exit_code="${1:-0}"
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
 Build with coverage, run tests, and generate HTML coverage report.
 
 Options:
+  -p, --preset NAME  CMake preset to use (default: coverage)
   -v, --verbose      Show verbose output
   -o, --open         Open HTML report in browser after generation
   -h, --help         Show this help
 EOF
-    exit 0
+    exit "$exit_code"
 }
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -p|--preset)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: $1 requires a value" >&2
+                usage 1
+            fi
+            PRESET="$2"; shift 2 ;;
         -v|--verbose) VERBOSE=true; shift ;;
         -o|--open) OPEN_REPORT=true; shift ;;
         -h|--help) usage ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
-BUILD_DIR="${PROJECT_ROOT}/build/coverage"
+BUILD_DIR="${PROJECT_ROOT}/build/${PRESET}"
 COVERAGE_DIR="${PROJECT_ROOT}/coverage"
 
 # Find llvm tools using common.sh functions
@@ -68,10 +77,10 @@ PYTHON_EXE="$(find_python)" || {
     echo "Error: Python 3.14 or newer not found in PATH. Install Python 3.14 or newer." >&2
     exit 1
 }
-cmake --preset coverage -DPython3_EXECUTABLE="$PYTHON_EXE"
+cmake --preset "$PRESET" -DPython3_EXECUTABLE="$PYTHON_EXE"
 
 echo "==> Building..."
-cmake --build --preset coverage
+cmake --build --preset "$PRESET"
 
 # Step 2: Run tests to generate profraw data
 echo "==> Running tests..."

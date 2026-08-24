@@ -47,11 +47,15 @@ HeaderFilterRegex: '^(?!.*(/|^)(build|_deps|vcpkg|llvm|dist|coverage|assets|\.ca
 
 FormatStyle: file
 
-# Ignore external libs in include-cleaner
+# Ignore external libs in include-cleaner.
+# Patterns use [/\\] so they match on both Linux and Windows paths.
+# Windows Kits / SDL3 / toml++ are ignored because the project intentionally
+# includes their umbrella headers (<windows.h> with documented ordering,
+# <SDL3/SDL.h>, <toml++/toml.hpp>) instead of granular internal headers.
 CheckOptions:
   - key: misc-include-cleaner.IgnoreHeaders
     value: >-
-      (.*/build/.*|.*/_deps/.*|.*/dist/.*|.*/coverage/.*|.*/spdlog/.*|.*/vcpkg/.*|.*/gtest/.*|.*/gmock/.*|.*/assets/.*|.*/\.cache/.*|.*/tools/.*)
+      (.*[/\\]build[/\\].*|.*[/\\]_deps[/\\].*|.*[/\\]dist[/\\].*|.*[/\\]coverage[/\\].*|.*[/\\]spdlog[/\\].*|.*[/\\]vcpkg[/\\].*|.*[/\\]gtest[/\\].*|.*[/\\]gmock[/\\].*|.*[/\\]assets[/\\].*|.*[/\\]\.cache[/\\].*|.*[/\\]tools[/\\].*|.*[/\\]Windows Kits[/\\].*|.*[/\\]SDL3[/\\].*|.*[/\\]toml\+\+[/\\].*)
   - key: readability-implicit-bool-conversion.AllowPointerConditions
     value: true
   - key: readability-implicit-bool-conversion.AllowIntegerConditions

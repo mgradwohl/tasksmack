@@ -1,6 +1,7 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"

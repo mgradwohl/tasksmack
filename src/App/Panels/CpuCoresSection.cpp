@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <format>
+#include <optional>
 #include <string>
 #include <vector>
 

@@ -1,5 +1,6 @@
 #include "BackgroundSampler.h"
 
+#include "Domain/ISamplable.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -7,10 +8,11 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <mutex>
 #include <stop_token>
 #include <string_view>
 #include <thread>
-#include <utility>
+#include <vector>
 
 namespace Domain
 {
@@ -63,7 +65,7 @@ void BackgroundSampler::addSamplable(ISamplable* samplable)
 {
     if (samplable != nullptr)
     {
-        std::lock_guard lock(m_SamplablesMutex);
+        std::scoped_lock const lock(m_SamplablesMutex);
         m_Samplables.push_back(samplable);
     }
 }
@@ -109,7 +111,7 @@ bool BackgroundSampler::isRunning() const
 void BackgroundSampler::requestRefresh()
 {
     {
-        const std::lock_guard lock(m_WakeMutex);
+        const std::scoped_lock lock(m_WakeMutex);
         m_RefreshRequested = true;
     }
     m_WakeCondition.notify_all();
@@ -130,7 +132,7 @@ void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
     }
     spdlog::info("BackgroundSampler: interval changed to {}ms", clampedInterval.count());
     {
-        const std::lock_guard lock(m_WakeMutex);
+        const std::scoped_lock lock(m_WakeMutex);
         m_IntervalChanged = true;
     }
     m_WakeCondition.notify_all();
@@ -149,7 +151,7 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 
         std::vector<ISamplable*> currentSamplables;
         {
-            std::lock_guard lock(m_SamplablesMutex);
+            std::scoped_lock const lock(m_SamplablesMutex);
             currentSamplables = m_Samplables;
         }
 

@@ -1,5 +1,6 @@
 #include "TitleBarLayer.h"
 
+#include "App/TitleBarGeometry.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
@@ -16,6 +17,8 @@
 
 #include <cctype>
 #include <chrono>
+#include <cstddef>
+#include <ratio>
 #include <string_view>
 #include <utility>
 
@@ -107,7 +110,7 @@ template<typename Fn> void timedOp(bool traceEnabled, double& accumMs, Fn&& fn)
 // Lightweight RAII scope guard — runs a callable on scope exit.
 template<typename Fn> struct ScopeExit
 {
-    explicit ScopeExit(Fn&& fn) : m_fn(std::move(fn))
+    explicit ScopeExit(Fn&& fn) : m_Fn(std::move(fn))
     {}
     // noexcept: exceptions must not escape destructors. The callables used here
     // (trace logging accumulations) are non-throwing; the try/catch is a safety
@@ -116,7 +119,7 @@ template<typename Fn> struct ScopeExit
     {
         try
         {
-            m_fn();
+            m_Fn();
         }
         catch (...) // NOLINT(bugprone-empty-catch) -- intentional: keep destructor noexcept
         {}
@@ -127,7 +130,7 @@ template<typename Fn> struct ScopeExit
     ScopeExit& operator=(ScopeExit&&) = delete;
 
   private:
-    Fn m_fn;
+    Fn m_Fn;
 };
 
 // Hit-test callback:
@@ -642,7 +645,15 @@ void TitleBarLayer::updateWindowInteraction()
             {
                 return;
             }
-            const char* mode = startedDrag ? "drag" : (startedResize ? "resize" : "none");
+            const char* mode = "none";
+            if (startedDrag)
+            {
+                mode = "drag";
+            }
+            else if (startedResize)
+            {
+                mode = "resize";
+            }
             spdlog::info("ResizePerfTitleBarSlowUpdate: mode={} edge={} total={:.3f} ms mouse={:.3f} ms restore={:.3f} ms setPos={:.3f} ms "
                          "setSize={:.3f} ms raiseResizeEvent={:.3f} ms",
                          mode,
@@ -857,7 +868,7 @@ void TitleBarLayer::destroySystemCursors()
 
 void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 {
-    SDL_Cursor* cursor = m_DefaultCursor;
+    SDL_Cursor* cursor = nullptr;
 
     switch (edge)
     {
@@ -895,7 +906,7 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 void TitleBarLayer::updateResizeCursor()
 {
     auto& window = Core::Application::get().getWindow();
-    SDL_Window* sdlWindow = window.getHandle();
+    SDL_Window const* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
         return;
@@ -1037,7 +1048,7 @@ void TitleBarLayer::renderTitleBar()
 #ifdef _WIN32
             // Show native Windows system menu
             auto* sdlWindow = Core::Application::get().getWindow().getHandle();
-            SDL_PropertiesID props = SDL_GetWindowProperties(sdlWindow);
+            SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
             auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 
             if (hwnd != nullptr)
@@ -1050,7 +1061,7 @@ void TitleBarLayer::renderTitleBar()
                     GetCursorPos(&pt);
 
                     // Track the menu command
-                    int cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+                    int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
                     if (cmd != 0)
                     {
                         PostMessage(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);

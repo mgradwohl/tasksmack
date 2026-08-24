@@ -1,5 +1,7 @@
 #include "WindowsPowerProbe.h"
 
+#include "Platform/PowerTypes.h"
+
 #include <spdlog/spdlog.h>
 
 // clang-format off

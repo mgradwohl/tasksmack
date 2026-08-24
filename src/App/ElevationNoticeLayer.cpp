@@ -10,6 +10,7 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cassert>
 #include <string_view>
 
@@ -120,7 +121,7 @@ void ElevationNoticeLayer::renderDialog()
                                               "Some per-process data may be unavailable.";
 #endif
 
-        ImGui::TextUnformatted(bodyText.data());
+        ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
 
         ImGui::Spacing();
         ImGui::Spacing();

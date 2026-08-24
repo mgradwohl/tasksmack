@@ -1,8 +1,16 @@
 #include "Platform/Windows/PDHGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
 #include "Platform/Windows/WinString.h"
 
 #include <spdlog/spdlog.h>
+
+#include <cstddef>
+#include <cwchar>
+#include <exception>
+#include <memory>
+#include <system_error>
+#include <utility>
 
 // Windows headers
 // clang-format off
@@ -29,27 +37,6 @@
 
 namespace
 {
-
-// Engine type names from GPU Engine counter
-// These match the engtype_ suffix in instance names
-struct EngineTypeInfo
-{
-    std::string suffix;
-    std::string displayName;
-};
-
-// Known GPU engine types from Windows GPU Engine counters
-const std::vector<EngineTypeInfo> KNOWN_ENGINE_TYPES = {
-    EngineTypeInfo{.suffix = "3D", .displayName = "3D"},
-    EngineTypeInfo{.suffix = "Copy", .displayName = "Copy"},
-    EngineTypeInfo{.suffix = "VideoDecode", .displayName = "VideoDecode"},
-    EngineTypeInfo{.suffix = "VideoEncode", .displayName = "VideoEncode"},
-    EngineTypeInfo{.suffix = "VideoProcessing", .displayName = "VideoProcessing"},
-    EngineTypeInfo{.suffix = "Compute_0", .displayName = "Compute"},
-    EngineTypeInfo{.suffix = "Compute_1", .displayName = "Compute"},
-    EngineTypeInfo{.suffix = "Graphics_0", .displayName = "3D"},
-    EngineTypeInfo{.suffix = "Graphics_1", .displayName = "3D"},
-};
 
 /// @brief Convert wstring to UTF-8 string using WinString helper
 /// Note: PDH counter instance names are typically ASCII-safe (PIDs, engine types),

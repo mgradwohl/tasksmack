@@ -17,6 +17,7 @@ LOGFILE="$LOGDIR/build-${PRESET}-${TIMESTAMP}.log"
 
 # Track build status (will be written to temp file from subshell)
 BUILD_STATUS_FILE=$(mktemp)
+trap 'rm -f "$BUILD_STATUS_FILE"' EXIT
 echo "0" > "$BUILD_STATUS_FILE"
 
 # Create log directory if it doesn't exist

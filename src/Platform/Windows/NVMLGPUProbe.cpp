@@ -1,8 +1,12 @@
 #include "NVMLGPUProbe.h"
 
+#include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 
 #include <spdlog/spdlog.h>
+
+#include <string>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN

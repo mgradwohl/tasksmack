@@ -239,6 +239,12 @@ jobs:
       - name: Build include-what-you-use from source
         if: steps.cache-iwyu.outputs.cache-hit != 'true'
         run: |
+          # IWYU links against the static clang/LLVM libraries, which the
+          # base clang packages do not ship; install the -dev packages.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libclang-${{ env.LLVM_VERSION }}-dev
           git clone --branch clang_${{ env.LLVM_VERSION }} --depth 1 \
             https://github.com/include-what-you-use/include-what-you-use.git /tmp/iwyu-src
           cmake -G "Ninja" \

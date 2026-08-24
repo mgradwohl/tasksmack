@@ -377,7 +377,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     std::ranges::transform(
         cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
     {
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        std::scoped_lock const lock(s_cacheMutex);
         if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
         {
             return it->second;
@@ -390,7 +390,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.c_str(), &unused);
     if (infoSize == 0)
     {
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        std::scoped_lock const lock(s_cacheMutex);
         s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
@@ -398,7 +398,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     std::vector<BYTE> buffer(infoSize);
     if (GetFileVersionInfoW(imagePath.c_str(), 0, infoSize, buffer.data()) == 0)
     {
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        std::scoped_lock const lock(s_cacheMutex);
         s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
@@ -453,7 +453,7 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     }
 
     {
-        std::lock_guard<std::mutex> lock(s_cacheMutex);
+        std::scoped_lock const lock(s_cacheMutex);
         s_cache.try_emplace(cacheKey, result);
     }
     return result;
@@ -689,7 +689,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     const bool canCache = (counters.startTimeTicks != 0);
 
     DetailCacheEntry dummyCache{};
-    const WindowsProcessProbe::DetailCacheKey detailKey{pid, counters.startTimeTicks};
+    const WindowsProcessProbe::DetailCacheKey detailKey{.pid = pid, .startTimeTicks = counters.startTimeTicks};
     auto [cacheIt, inserted] = canCache ? m_DetailCache.try_emplace(detailKey) : std::make_pair(m_DetailCache.end(), true);
     DetailCacheEntry& cache = canCache ? cacheIt->second : dummyCache;
     if (canCache)

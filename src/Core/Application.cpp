@@ -10,23 +10,24 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
-#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <ratio>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #ifndef _WIN32
+#include <cerrno>
+#include <filesystem>
+#include <format>
+
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -590,12 +591,12 @@ void Application::run()
         // grace period expires) so idle frames remain tear-free.
         if (!wasInteracting && isInteracting && m_Spec.VSync)
         {
-            m_Window->setVSync(false);
+            Window::setVSync(false);
             m_VsyncDisabledForInteraction = true;
         }
         else if (wasInteracting && !isInteracting && m_VsyncDisabledForInteraction)
         {
-            m_Window->setVSync(true);
+            Window::setVSync(true);
             m_VsyncDisabledForInteraction = false;
         }
 

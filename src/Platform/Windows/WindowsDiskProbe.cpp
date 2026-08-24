@@ -1,6 +1,11 @@
 #include "WindowsDiskProbe.h"
 
+#include "Platform/StorageTypes.h"
+
 #include <spdlog/spdlog.h>
+
+#include <cstdint>
+#include <memory>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
