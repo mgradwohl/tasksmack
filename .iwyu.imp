@@ -12,6 +12,25 @@
   # SDL3/GLAD - platform-specific handling
   { include: ["<GL/gl.h>", "private", "<glad/gl.h>", "public"] },
 
+  # SDL3 - project standard is the <SDL3/SDL.h> umbrella header; don't suggest
+  # granular <SDL3/SDL_*.h> headers.
+  { include: ["@<SDL3/SDL_.*\\.h>", "private", "<SDL3/SDL.h>", "public"] },
+
+  # toml++ - project standard is the <toml++/toml.hpp> umbrella header; don't
+  # suggest granular impl headers.
+  { include: ["@<toml\\+\\+/impl/.*>", "private", "<toml++/toml.hpp>", "public"] },
+
+  # libstdc++ comparison artifacts: operator<=> on chrono/string types surfaces
+  # <compare> symbols (e.g. _CmpUnspecifiedParam). C++20 mandates that <chrono>
+  # and <string> include <compare> ([compare.syn]), so these mappings mirror the
+  # standard rather than suppressing a real missing include.
+  { include: ["<compare>", "public", "<chrono>", "public"] },
+  { include: ["<compare>", "public", "<string>", "public"] },
+  # std::ratio is only used via chrono duration aliases in this codebase; map
+  # the symbol (not the whole header) so a genuine direct use of other <ratio>
+  # contents would still be reported.
+  { symbol: ["std::ratio", "private", "<chrono>", "public"] },
+
   # Note: C-to-C++ header mappings (e.g. <stdint.h> -> <cstdint>) are handled
   # by IWYU's built-in mappings in version 0.22+ and do not need to be listed
   # here. Defining them as "private" in this file conflicts with IWYU's internal
