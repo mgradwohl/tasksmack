@@ -275,6 +275,11 @@ fi
 SED_EXPRS=(
     -e 's/@[^ ]*\.modmap//g'
     -e 's/-fmodule-output=[^ ]*//g'
+    # Quoted PCH operands first: paths with spaces are emitted as JSON-escaped
+    # quoted strings (\"...\"), which the unquoted [^ ]* patterns would only
+    # partially strip, leaving path fragments for IWYU to parse as inputs.
+    -e 's/-Xclang -include-pch -Xclang \\"[^"]*\\"//g'
+    -e 's/-Xclang -include -Xclang \\"[^"]*cmake_pch[^"]*\\"//g'
     -e 's/-Xclang -include-pch -Xclang [^ ]*//g'
     -e 's/-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*//g'
     -e 's/-Xclang -fno-pch-timestamp//g'
