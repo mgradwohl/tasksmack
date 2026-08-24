@@ -9,6 +9,8 @@
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
+// NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
+#include "Core/EnvUtils.h"
 #include "Core/WindowConstants.h"
 #include "UI/UILayer.h"
 #include "version.h"
