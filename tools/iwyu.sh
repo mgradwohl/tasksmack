@@ -268,7 +268,7 @@ fi
 
 # Strip C++20 module and PCH flags from compile_commands.json (IWYU supports neither;
 # a single "-include-pch" flag makes IWYU abort every translation unit).
-# These are the same patterns CMakeLists.txt strips for the clang-tidy compile database.
+# These are the same patterns cmake/StaticAnalysis.cmake strips for the clang-tidy compile database.
 if $VERBOSE; then
     echo "Stripping module and PCH flags from compile_commands.json..."
 fi

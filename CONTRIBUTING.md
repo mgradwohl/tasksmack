@@ -933,7 +933,7 @@ Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the 
 
 ## Adding Dependencies
 
-Use CMake’s `FetchContent` for dependencies. Always use `SYSTEM` to suppress third-party warnings:
+Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, and always use `SYSTEM` to suppress third-party warnings:
 
 ```cmake
 FetchContent_Declare(
