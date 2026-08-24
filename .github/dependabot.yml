@@ -2,9 +2,10 @@
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
 #
 # Note: Dependabot covers GitHub Actions and pip only. C++ dependencies are
-# fetched via CMake FetchContent (SHA-pinned in cmake/Dependencies.cmake) and
-# are monitored by the scheduled osv-scanner workflow instead; keeping them
-# current is tracked in issue #89.
+# fetched via CMake FetchContent (SHA-pinned in CMakeLists.txt, plus
+# tests/CMakeLists.txt and benchmarks/CMakeLists.txt) and are monitored by
+# the scheduled osv-scanner workflow instead; keeping them current is
+# tracked in issue #89.
 version: 2
 updates:
   # GitHub Actions

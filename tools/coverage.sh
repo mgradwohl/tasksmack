@@ -18,6 +18,7 @@ OPEN_REPORT=false
 PRESET="coverage"
 
 usage() {
+    local exit_code="${1:-0}"
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
@@ -29,17 +30,22 @@ Options:
   -o, --open         Open HTML report in browser after generation
   -h, --help         Show this help
 EOF
-    exit 0
+    exit "$exit_code"
 }
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -p|--preset) PRESET="$2"; shift 2 ;;
+        -p|--preset)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: $1 requires a value" >&2
+                usage 1
+            fi
+            PRESET="$2"; shift 2 ;;
         -v|--verbose) VERBOSE=true; shift ;;
         -o|--open) OPEN_REPORT=true; shift ;;
         -h|--help) usage ;;
-        *) echo "Error: Unknown argument: $1" >&2; usage ;;
+        *) echo "Error: Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
