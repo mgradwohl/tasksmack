@@ -304,6 +304,8 @@ Recommended extensions:
 
 Workspace settings resolve `clangd` and `clang-format` from `PATH` so the same `.vscode/settings.json` works across Linux/WSL/Windows. Ensure LLVM tools are on `PATH` (the prerequisite scripts validate this). Only use user-level VS Code overrides if your local install path is nonstandard.
 
+Personal preferences - custom terminal profiles (for example a profile that sources your own rcfile), default terminal selection, and chat/agent tool auto-approval - belong in your user-level `settings.json` (`Preferences: Open User Settings (JSON)`), not in the repo's workspace settings.
+
 Before troubleshooting VS Code diagnostics, run the prerequisite check to confirm required tools are installed and discoverable on `PATH`:
 
 ```bash

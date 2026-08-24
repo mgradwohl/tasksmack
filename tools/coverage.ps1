@@ -22,26 +22,15 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
+. (Join-Path $ScriptDir "common.ps1")
+# CMake presets derive compiler paths from LLVM_ROOT; ensure it is set.
+Initialize-LlvmRoot
 $BuildDir = Join-Path $ProjectRoot "build\win-coverage"
 $CoverageDir = Join-Path $ProjectRoot "coverage"
 
 # Find llvm tools
-$LlvmProfdata = $null
-$LlvmCov = $null
-
-if ($env:LLVM_ROOT) {
-    $LlvmProfdata = Join-Path $env:LLVM_ROOT "bin\llvm-profdata.exe"
-    $LlvmCov = Join-Path $env:LLVM_ROOT "bin\llvm-cov.exe"
-    if (-not (Test-Path $LlvmProfdata)) {
-        $LlvmProfdata = $null
-        $LlvmCov = $null
-    }
-}
-
-if (-not $LlvmProfdata) {
-    $LlvmProfdata = Get-Command llvm-profdata -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    $LlvmCov = Get-Command llvm-cov -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-}
+$LlvmProfdata = Find-LlvmTool -Name "llvm-profdata"
+$LlvmCov = Find-LlvmTool -Name "llvm-cov"
 
 if (-not $LlvmProfdata) {
     Write-Error "llvm-profdata not found. Set LLVM_ROOT or add LLVM bin to PATH."

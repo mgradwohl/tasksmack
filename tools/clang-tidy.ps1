@@ -42,6 +42,10 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
+. (Join-Path $ScriptDir "common.ps1")
+# CMake presets derive compiler paths from LLVM_ROOT; ensure it is set
+# before any cmake --preset recovery path below runs.
+Initialize-LlvmRoot
 
 # Limit header diagnostics to project headers.
 # Note: clang-tidy requires --header-filter to be set when using --exclude-header-filter.
@@ -59,22 +63,7 @@ $TidyCompdbDir = Join-Path $BuildDir "clang-tidy-compdb"
 $CompileCommandsTidy = Join-Path $TidyCompdbDir "compile_commands.json"
 
 # Find clang-tidy
-$ClangTidy = $null
-$SearchPaths = @(
-    "$env:LLVM_ROOT\bin\clang-tidy.exe",
-    "$env:ProgramFiles\LLVM\bin\clang-tidy.exe",
-    "C:\Program Files\LLVM\bin\clang-tidy.exe"
-)
-foreach ($path in $SearchPaths) {
-    if (Test-Path $path) {
-        $ClangTidy = $path
-        break
-    }
-}
-# Try PATH as fallback
-if (-not $ClangTidy) {
-    $ClangTidy = Get-Command clang-tidy -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-}
+$ClangTidy = Find-LlvmTool -Name "clang-tidy"
 if (-not $ClangTidy) {
     Write-Error "clang-tidy not found. Please install LLVM or set LLVM_ROOT." -ErrorAction Continue
     exit 1

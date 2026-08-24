@@ -26,18 +26,12 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
+. (Join-Path $ScriptDir "common.ps1")
 
 Write-Host "Applying clang-format to source files..."
 
 # Find clang-format
-$ClangFormat = $null
-if ($env:LLVM_ROOT) {
-    $ClangFormat = Join-Path $env:LLVM_ROOT "bin\clang-format.exe"
-    if (-not (Test-Path $ClangFormat)) { $ClangFormat = $null }
-}
-if (-not $ClangFormat) {
-    $ClangFormat = Get-Command clang-format -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-}
+$ClangFormat = Find-LlvmTool -Name "clang-format"
 if (-not $ClangFormat) {
     Write-Error "clang-format not found. Set LLVM_ROOT or add clang-format to PATH."
     exit 1
