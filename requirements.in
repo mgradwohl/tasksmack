@@ -1,4 +1,6 @@
-# Top-level Python dependencies. requirements.txt is generated from this file:
+# Top-level Python dependencies. requirements.txt is generated from this file
+# (pin pip-tools so the lockfile generator itself is reproducible):
+#   python -m pip install pip-tools==7.6.1
 #   pip-compile --generate-hashes --output-file=requirements.txt requirements.in
 filelock==3.32.3
 jinja2==3.1.6

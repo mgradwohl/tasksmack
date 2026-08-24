@@ -157,7 +157,7 @@ pre-commit install
 `requirements.txt` is a hash-locked file generated from `requirements.in`. To change or upgrade Python dependencies, edit `requirements.in` and regenerate:
 
 ```bash
-python -m pip install pip-tools
+python -m pip install pip-tools==7.6.1
 pip-compile --generate-hashes --output-file=requirements.txt requirements.in
 ```
 
