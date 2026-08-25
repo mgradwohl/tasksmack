@@ -77,16 +77,6 @@ inline constexpr int INODE_PID_CACHE_TTL_MS = 3000;
 // main refresh interval because discovery operations are often more expensive
 // than updating known entities.
 
-// PDH GPU instance refresh interval (seconds) - Windows only
-// Controls how often we re-enumerate GPU instances to detect new GPU-using processes.
-// This is separate from ProcessModel's process enumeration (which discovers all processes).
-// PDH specifically discovers which processes actively use GPU via Windows Performance Counters.
-// Shorter intervals = faster detection but more CPU overhead from PdhEnumObjectItems calls.
-// Configurable via [sampling] pdh_instance_refresh_seconds in config.toml.
-inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_DEFAULT = 5;
-inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MIN = 1;
-inline constexpr int PDH_INSTANCE_REFRESH_SECONDS_MAX = 60;
-
 // Socket stats cache TTL (milliseconds) - Linux only
 // Controls how long per-process network stats (via Netlink INET_DIAG) are cached.
 // This is an optimization cache: if multiple calls happen within the TTL, the
@@ -201,11 +191,6 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
-}
-
-template<typename T> [[nodiscard]] constexpr T clampPdhInstanceRefreshSeconds(T value) noexcept
-{
-    return std::clamp(value, static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MIN), static_cast<T>(PDH_INSTANCE_REFRESH_SECONDS_MAX));
 }
 
 template<typename T> [[nodiscard]] constexpr T clampSocketStatsCacheTtlMs(T value) noexcept

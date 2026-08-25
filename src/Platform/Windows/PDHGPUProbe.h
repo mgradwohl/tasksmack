@@ -2,7 +2,6 @@
 
 #include "Platform/GPUTypes.h"
 
-#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -17,6 +16,10 @@ namespace Platform
 /// Counter category: "GPU Engine"
 /// Counter: "Utilization Percentage"
 /// Instance format: pid_<PID>_luid_<LUID>_phys_<N>_eng_<N>_engtype_<Type>
+///
+/// Uses persistent wildcard counters ("GPU Engine(*)"), which PDH re-expands on
+/// every collection, so new GPU-using processes are discovered automatically each
+/// sample without expensive instance re-enumeration.
 class PDHGPUProbe
 {
   public:
@@ -38,11 +41,6 @@ class PDHGPUProbe
 
     /// @brief Get capabilities of this probe
     [[nodiscard]] GPUCapabilities capabilities() const;
-
-    /// @brief Set the interval for refreshing the PDH counter instance list
-    /// This controls how often we re-enumerate GPU instances to detect new processes
-    /// @param interval The refresh interval (default 5 seconds)
-    void setInstanceRefreshInterval(std::chrono::seconds interval);
 
   private:
     struct Impl;

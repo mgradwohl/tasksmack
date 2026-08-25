@@ -398,13 +398,4 @@ std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
     return result;
 }
 
-void GPUModel::setInstanceRefreshInterval(std::chrono::seconds interval)
-{
-    if (m_Probe)
-    {
-        const std::scoped_lock probeLock(m_ProbeMutex);
-        m_Probe->setInstanceRefreshInterval(interval);
-    }
-}
-
 } // namespace Domain

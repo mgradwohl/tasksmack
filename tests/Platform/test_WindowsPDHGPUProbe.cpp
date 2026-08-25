@@ -4,8 +4,6 @@
 
 #include <gtest/gtest.h>
 
-#include <chrono>
-
 namespace Platform
 {
 namespace
@@ -27,7 +25,6 @@ TEST(WindowsPDHGPUProbeTest, BasicOperationsDoNotThrow)
     EXPECT_NO_THROW([[maybe_unused]] auto available = probe.isAvailable());
     EXPECT_NO_THROW([[maybe_unused]] auto process = probe.readProcessGPUCounters());
     EXPECT_NO_THROW([[maybe_unused]] auto caps = probe.capabilities());
-    EXPECT_NO_THROW(probe.setInstanceRefreshInterval(std::chrono::seconds(5)));
 }
 
 // ==========================================================================

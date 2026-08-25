@@ -2,7 +2,6 @@
 
 #include "GPUTypes.h"
 
-#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -32,12 +31,6 @@ class IGPUProbe
 
     // Capability reporting
     [[nodiscard]] virtual GPUCapabilities capabilities() const = 0;
-
-    // Optional configuration: Set PDH instance refresh interval (Windows-only)
-    // This controls how often PDH refreshes the list of GPU-using processes.
-    // Has no effect on Linux or other platforms.
-    virtual void setInstanceRefreshInterval([[maybe_unused]] std::chrono::seconds interval)
-    {}
 };
 
 } // namespace Platform

@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -418,14 +417,6 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
     }
 
     return caps;
-}
-
-void WindowsGPUProbe::setInstanceRefreshInterval(std::chrono::seconds interval)
-{
-    if (m_PDHProbe)
-    {
-        m_PDHProbe->setInstanceRefreshInterval(interval);
-    }
 }
 
 } // namespace Platform

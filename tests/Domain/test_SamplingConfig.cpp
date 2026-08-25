@@ -156,43 +156,6 @@ TEST(SamplingConfigTest, ClampHistorySecondsBoundaryValues)
     EXPECT_EQ(clampHistorySeconds(HISTORY_SECONDS_MAX + 1), HISTORY_SECONDS_MAX);
 }
 
-// ========== clampPdhInstanceRefreshSeconds Tests (Windows GPU PDH) ==========
-
-TEST(SamplingConfigTest, PdhInstanceRefreshSecondsDefaultInRange)
-{
-    EXPECT_GE(PDH_INSTANCE_REFRESH_SECONDS_DEFAULT, PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_LE(PDH_INSTANCE_REFRESH_SECONDS_DEFAULT, PDH_INSTANCE_REFRESH_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampPdhInstanceRefreshSecondsInRange)
-{
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(5), 5);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MIN), PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MAX), PDH_INSTANCE_REFRESH_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampPdhInstanceRefreshSecondsBelowMin)
-{
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(0), PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(-10), PDH_INSTANCE_REFRESH_SECONDS_MIN);
-}
-
-TEST(SamplingConfigTest, ClampPdhInstanceRefreshSecondsAboveMax)
-{
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MAX + 1), PDH_INSTANCE_REFRESH_SECONDS_MAX);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(1000), PDH_INSTANCE_REFRESH_SECONDS_MAX);
-}
-
-TEST(SamplingConfigTest, ClampPdhInstanceRefreshSecondsBoundary)
-{
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MIN - 1), PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MIN), PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MIN + 1), PDH_INSTANCE_REFRESH_SECONDS_MIN + 1);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MAX - 1), PDH_INSTANCE_REFRESH_SECONDS_MAX - 1);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MAX), PDH_INSTANCE_REFRESH_SECONDS_MAX);
-    EXPECT_EQ(clampPdhInstanceRefreshSeconds(PDH_INSTANCE_REFRESH_SECONDS_MAX + 1), PDH_INSTANCE_REFRESH_SECONDS_MAX);
-}
-
 // ========== clampSocketStatsCacheTtlMs Tests (Linux Netlink) ==========
 
 TEST(SamplingConfigTest, SocketStatsCacheTtlMsDefaultInRange)
@@ -531,9 +494,6 @@ TEST(SamplingConfigTest, ClampProgressColorHighThresholdBoundary)
 TEST(SamplingConfigTest, AllDefaultsAreWithinBounds)
 {
     // Verify all defaults satisfy their respective min/max constraints
-    EXPECT_GE(PDH_INSTANCE_REFRESH_SECONDS_DEFAULT, PDH_INSTANCE_REFRESH_SECONDS_MIN);
-    EXPECT_LE(PDH_INSTANCE_REFRESH_SECONDS_DEFAULT, PDH_INSTANCE_REFRESH_SECONDS_MAX);
-
     EXPECT_GE(SOCKET_STATS_CACHE_TTL_MS_DEFAULT, SOCKET_STATS_CACHE_TTL_MS_MIN);
     EXPECT_LE(SOCKET_STATS_CACHE_TTL_MS_DEFAULT, SOCKET_STATS_CACHE_TTL_MS_MAX);
 
