@@ -177,6 +177,11 @@ struct PDHGPUProbe::Impl
     /// Guard against unbounded instance-name cache growth from PID churn over long sessions.
     static constexpr std::size_t MAX_INSTANCE_CACHE_ENTRIES = 16384;
 
+    // Wildcard counter paths. PDH expands the '*' instance wildcard on every collect.
+    static constexpr const wchar_t* UTILIZATION_COUNTER_PATH = L"\\GPU Engine(*)\\Utilization Percentage";
+    static constexpr const wchar_t* DEDICATED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Dedicated Usage";
+    static constexpr const wchar_t* SHARED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Shared Usage";
+
     HMODULE pdhModule = nullptr;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
     PdhCloseQueryFn pdhCloseQuery = nullptr;
@@ -283,9 +288,9 @@ struct PDHGPUProbe::Impl
 
         // Wildcard counters expand to all current instances on every collect, so
         // per-process discovery is automatic and no re-enumeration is ever needed.
-        addWildcardCounter(L"\\GPU Engine(*)\\Utilization Percentage", utilizationCounter);
-        addWildcardCounter(L"\\GPU Process Memory(*)\\Dedicated Usage", dedicatedMemoryCounter);
-        addWildcardCounter(L"\\GPU Process Memory(*)\\Shared Usage", sharedMemoryCounter);
+        // Failures here are not fatal: ensureCounters() retries missing counters
+        // on every read so a transient PDH failure at startup can recover.
+        ensureCounters();
 
         initialized = true;
         spdlog::info("PDHGPUProbe: Initialized successfully");
@@ -300,6 +305,34 @@ struct PDHGPUProbe::Impl
             counter = nullptr;
             spdlog::debug("PDHGPUProbe: Failed to add wildcard counter: 0x{:x}", static_cast<unsigned>(status));
         }
+    }
+
+    /// @brief Retry any wildcard counters that failed to add previously.
+    /// Counter-add failures can be transient (e.g. the GPU performance counter
+    /// provider not yet registered at startup), so missing counters are retried
+    /// on every read instead of being disabled for the probe's lifetime.
+    /// @return true if at least one wildcard counter is active
+    bool ensureCounters()
+    {
+        if (utilizationCounter == nullptr)
+        {
+            addWildcardCounter(UTILIZATION_COUNTER_PATH, utilizationCounter);
+            if (utilizationCounter != nullptr)
+            {
+                // A freshly added utilization counter needs two collects before
+                // it can produce rate values - re-enter warm-up.
+                warmedUp = false;
+            }
+        }
+        if (dedicatedMemoryCounter == nullptr)
+        {
+            addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+        }
+        if (sharedMemoryCounter == nullptr)
+        {
+            addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
+        }
+        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr;
     }
 
     /// @brief Look up (or parse and cache) instance metadata for a wide instance name
@@ -408,7 +441,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         return {};
     }
 
-    if (m_Impl->utilizationCounter == nullptr && m_Impl->dedicatedMemoryCounter == nullptr && m_Impl->sharedMemoryCounter == nullptr)
+    // Retry any counters that failed to add previously; bail out only if none
+    // are active even after the retry.
+    if (!m_Impl->ensureCounters())
     {
         // Return cached results if available
         if (m_Impl->lastValidTimestamp.time_since_epoch().count() > 0)
