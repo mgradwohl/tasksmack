@@ -102,7 +102,11 @@ set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)  # We don't need screensaver sup
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)  # We don't need XTEST
 set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering extension
 
+if(POLICY CMP0219)
+    set(CMAKE_POLICY_DEFAULT_CMP0219 NEW)
+endif()
 FetchContent_MakeAvailable(SDL3)
+unset(CMAKE_POLICY_DEFAULT_CMP0219)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
 # Prefer the project-local environment created by tools/setup-dev.sh without
