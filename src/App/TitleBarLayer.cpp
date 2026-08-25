@@ -921,36 +921,40 @@ void TitleBarLayer::updateResizeCursor()
     {
         edge = m_Resize.edge;
     }
+    else if (SDL_GetMouseFocus() != sdlWindow)
+    {
+        // Pointer is over another window (or has left ours) — no resize edge.
+        edge = ResizeEdge::None;
+        m_CachedHoverEdge = edge;
+        m_HasCursorSample = false;
+    }
     else
     {
-        float globalMouseXF = 0.0F;
-        float globalMouseYF = 0.0F;
-        SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-        const int mouseGlobalX = static_cast<int>(globalMouseXF);
-        const int mouseGlobalY = static_cast<int>(globalMouseYF);
+        // Use window-local coordinates from SDL_GetMouseState. Global
+        // coordinates (SDL_GetGlobalMouseState) are unreliable on Wayland —
+        // including WSLg — where compositors do not expose the global cursor
+        // position, which left edge detection permanently stuck at None.
+        float localX = 0.0F;
+        float localY = 0.0F;
+        SDL_GetMouseState(&localX, &localY);
+        const int mouseLocalX = static_cast<int>(localX);
+        const int mouseLocalY = static_cast<int>(localY);
 
-        const auto [windowX, windowY] = window.getPosition();
         const auto [windowWidth, windowHeight] = window.getSize();
         const bool isMaximized = window.isMaximized();
 
-        const bool stateUnchanged = m_HasCursorSample && mouseGlobalX == m_LastCursorMouseGlobalX &&
-                                    mouseGlobalY == m_LastCursorMouseGlobalY && windowX == m_LastCursorWindowX &&
-                                    windowY == m_LastCursorWindowY && windowWidth == m_LastCursorWindowWidth &&
-                                    windowHeight == m_LastCursorWindowHeight && isMaximized == m_LastCursorWindowMaximized;
+        const bool stateUnchanged = m_HasCursorSample && mouseLocalX == m_LastCursorMouseLocalX && mouseLocalY == m_LastCursorMouseLocalY &&
+                                    windowWidth == m_LastCursorWindowWidth && windowHeight == m_LastCursorWindowHeight &&
+                                    isMaximized == m_LastCursorWindowMaximized;
 
         if (!stateUnchanged)
         {
-            m_LastCursorMouseGlobalX = mouseGlobalX;
-            m_LastCursorMouseGlobalY = mouseGlobalY;
-            m_LastCursorWindowX = windowX;
-            m_LastCursorWindowY = windowY;
+            m_LastCursorMouseLocalX = mouseLocalX;
+            m_LastCursorMouseLocalY = mouseLocalY;
             m_LastCursorWindowWidth = windowWidth;
             m_LastCursorWindowHeight = windowHeight;
             m_LastCursorWindowMaximized = isMaximized;
             m_HasCursorSample = true;
-
-            const float localX = globalMouseXF - static_cast<float>(windowX);
-            const float localY = globalMouseYF - static_cast<float>(windowY);
 
             const bool insideWindow =
                 (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
