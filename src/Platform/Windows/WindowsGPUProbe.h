@@ -44,7 +44,6 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
-    void setInstanceRefreshInterval(std::chrono::seconds interval) override;
 
   private:
     [[nodiscard]] std::unordered_set<std::string> mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters);

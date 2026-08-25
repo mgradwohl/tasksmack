@@ -197,14 +197,6 @@ void UserConfig::load()
                                               [](auto v) { return Domain::Sampling::clampHistorySeconds(v); });
         // When the key is missing we intentionally keep the default (300s) set in UserSettings.
 
-        // PDH instance refresh interval (Windows-only, controls how often PDH refreshes GPU process instances)
-        UserConfigHelpers::loadAndNarrowInt64(config,
-                                              "sampling",
-                                              "pdh_instance_refresh_seconds",
-                                              m_Settings.pdhInstanceRefreshSeconds,
-                                              Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT,
-                                              [](auto v) { return Domain::Sampling::clampPdhInstanceRefreshSeconds(v); });
-
         // Socket stats cache TTL (Linux-only, controls how long per-process network stats are cached)
         UserConfigHelpers::loadAndNarrowInt64(config,
                                               "sampling",
@@ -456,7 +448,6 @@ void UserConfig::save()
          toml::table{
              {"interval_ms", Domain::Sampling::clampRefreshInterval(m_Settings.refreshIntervalMs)},
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(m_Settings.maxHistorySeconds)},
-             {"pdh_instance_refresh_seconds", Domain::Sampling::clampPdhInstanceRefreshSeconds(m_Settings.pdhInstanceRefreshSeconds)},
              {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(m_Settings.socketStatsCacheTtlMs)},
          }},
         {"metrics",
@@ -493,7 +484,6 @@ void UserConfig::save()
     file << "# Notes:\n";
     file << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
     file << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
-    file << "#   [sampling] pdh_instance_refresh_seconds: Windows only; GPU process discovery interval (1-60s)\n";
     file << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
     file << "#   [metrics] min_time_for_rate_seconds: delay before computing network rates (0.0-5.0s); avoids early spikes\n";
     file << "#   [metrics] max_sane_rate_bps: sanity check for network/IO rates (bytes/sec); clamps outliers\n";
