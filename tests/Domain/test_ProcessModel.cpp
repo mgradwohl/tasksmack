@@ -1490,7 +1490,7 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 
     model.updateFromCounters({counter}, 100000);
     model.updateFromCounters({counter}, 200000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.updateFromCounters({counter}, 300000);
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 
