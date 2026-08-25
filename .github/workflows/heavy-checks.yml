@@ -530,7 +530,13 @@ jobs:
           cp "$latest_json" perf-data/benchmark-current.json
           echo "BENCHMARK_JSON=$latest_json" >> "$GITHUB_ENV"
 
-      - name: Check for regression
+      # Informational only: perf-data/linux-baseline.json was recorded on a
+      # local developer machine (10 cores @ 3.7 GHz), so comparing against
+      # shared 4-vCPU hosted runners flags machine-class differences, not real
+      # regressions (65/84 benchmarks "regressed" on every run, including pure
+      # arithmetic microbenchmarks). Do not gate CI on this until a
+      # CI-recorded baseline exists — see the tracking issue for that work.
+      - name: Check for regression (informational)
         id: regression-check
         run: |
           python3 tools/check-benchmark-regression.py \
@@ -543,8 +549,13 @@ jobs:
       - name: Add benchmark summary to workflow summary
         if: always()
         run: |
-          echo "## Benchmark Regression Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Benchmark Regression Check (informational)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.regression-check.outputs.exit_code }}" != "0" ]]; then
+            echo "> [!NOTE]" >> "$GITHUB_STEP_SUMMARY"
+            echo "> Differences vs. the locally recorded baseline are expected on hosted runners and do not fail this job. A CI-recorded baseline is tracked in a follow-up issue." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ -f benchmark-regression-output.txt ]]; then
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat benchmark-regression-output.txt >> "$GITHUB_STEP_SUMMARY"
@@ -561,8 +572,8 @@ jobs:
             benchmark-regression-output.txt
           retention-days: 30
 
-      - name: Fail if regression detected
+      - name: Report regression status (informational)
         if: steps.regression-check.outputs.exit_code != '0'
         run: |
-          echo "Benchmark regression detected. See summary for details."
-          exit 1
+          echo "Benchmarks differ from the local baseline beyond the threshold. See summary for details."
+          echo "Informational only — not failing the job (local baseline is not comparable to hosted runners)."
