@@ -1,4 +1,4 @@
-﻿{
+{
 	"version": "2.0.0",
 	"tasks": [
 		// -----------------------------
@@ -22,10 +22,11 @@
 			"problemMatcher": [],
 			"presentation": {
 				"reveal": "always",
-				"panel": "shared",
+				"panel": "dedicated",
 				"clear": false,
 				"echo": true,
-				"focus": false
+				"focus": true,
+				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
@@ -184,13 +185,34 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "dedicated",
-				"clear": false,
+				"clear": true,
 				"echo": true,
 				"focus": true,
 				"showReuseMessage": false
 			},
 			"options": {
 				"cwd": "${workspaceFolder}"
+			}
+		},
+		{
+			"label": "CMake: Full Clean Debug",
+			"dependsOn": [
+				"CMake: Clean Debug",
+				"CMake: Build Debug"
+			],
+			"dependsOrder": "sequence",
+			"group": {
+				"kind": "build",
+				"isDefault": false
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false,
+				"echo": true,
+				"focus": true,
+				"showReuseMessage": false
 			}
 		},
 		{

@@ -81,7 +81,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG 147a8ee32dbf9ac02f3794964490687b6bbda1bc  # release-3.4.14 - pinned to SHA for supply chain security
+    GIT_TAG 452c3634d4cda3dfaf4e8e419da65bc5d7b78959  # main@2026-08-24 - includes CMP0219-aware dlopen notes probe handling
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
 )
 

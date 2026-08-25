@@ -100,7 +100,11 @@
     // Preserve environment variables when launching terminals
     "terminal.integrated.inheritEnv": true,
     "terminal.integrated.shellIntegration.decorationsEnabled": "both",
-    "terminal.integrated.shellIntegration.history": 100
+    "terminal.integrated.shellIntegration.history": 100,
+    // Keep task output available after a task or debug session ends.
+    "terminal.integrated.enablePersistentSessions": true,
+    "terminal.integrated.persistentSessionReviveProcess": "onExit",
+    "terminal.integrated.scrollback": 10000
     // "cmake.cmakePath": "/snap/bin/cmake",
     // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
     // "cmake.ctestPath": "/snap/bin/cmake"
