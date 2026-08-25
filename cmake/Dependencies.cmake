@@ -30,6 +30,10 @@ include(FetchContent)
 # Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
+# CMP0072: FindOpenGL prefers the legacy GL library unless told otherwise, which
+# emits a policy warning on Linux. Prefer GLVND explicitly (the modern dispatch
+# library) before find_package(OpenGL).
+set(OpenGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
 
 # Prefer header-only spdlog and std::format to sidestep MSVC fmt deprecation noise.
