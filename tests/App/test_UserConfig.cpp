@@ -5,6 +5,7 @@
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -12,8 +13,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <toml++/toml.hpp>
 
 namespace App
 {

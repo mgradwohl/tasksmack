@@ -86,7 +86,7 @@ IncludeCategories:
     Priority: 2
 
   # 3. Third-party libraries (spdlog, imgui, implot, glad, SDL3, gtest, benchmark, etc.)
-  - Regex: '^<(spdlog|fmt|boost|gtest|gmock|benchmark|imgui|implot|glad|SDL3)/.*>'
+  - Regex: '^<(spdlog|fmt|boost|gtest|gmock|benchmark|imgui|implot|glad|SDL3|toml\+\+)/.*>'
     Priority: 3
 
   # 4. Third-party single-header libs (imgui.h, implot.h, stb_image.h without path)
