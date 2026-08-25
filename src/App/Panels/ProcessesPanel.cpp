@@ -483,6 +483,21 @@ void ProcessesPanel::renderContent()
             fmt.gpuMemory = (proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
                                                                                  UI::Format::unitForTotalBytes(proc.gpuMemoryBytes))
                                                       : "-";
+            if (proc.gpuEngines.empty())
+            {
+                fmt.gpuEngines = "-";
+            }
+            else
+            {
+                for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
+                {
+                    if (i > 0)
+                    {
+                        fmt.gpuEngines += ", ";
+                    }
+                    fmt.gpuEngines += proc.gpuEngines[i];
+                }
+            }
             fmt.threads = UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); });
             fmt.handles = UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); });
             fmt.pageFaults = UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); });
@@ -1186,26 +1201,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::GpuEngine:
-        {
-            if (!proc.gpuEngines.empty())
-            {
-                std::string enginesStr;
-                for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        enginesStr += ", ";
-                    }
-                    enginesStr += proc.gpuEngines[i];
-                }
-                ImGui::TextUnformatted(enginesStr.c_str());
-            }
-            else
-            {
-                ImGui::TextUnformatted("-");
-            }
+            ImGui::TextUnformatted(fmt.gpuEngines.c_str());
             break;
-        }
 
         case ProcessColumn::GpuDevice:
         {
