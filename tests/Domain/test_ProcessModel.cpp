@@ -1489,12 +1489,13 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
 
     model.updateFromCounters({counter}, 100000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     model.updateFromCounters({counter}, 200000);
-    ASSERT_EQ(model.historyTimestamps().size(), 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    model.updateFromCounters({counter}, 300000);
+    ASSERT_EQ(model.historyTimestamps().size(), 2);
 
-    model.setMaxHistorySeconds(-1.0);
-    EXPECT_LE(model.historyTimestamps().size(), 1);
+    model.setMaxHistorySeconds(0.0);
+    EXPECT_EQ(model.historyTimestamps().size(), 1);
 }
 
 // =============================================================================
@@ -1715,6 +1716,7 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     rawProcessProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    auto* rawGpuProbe = gpuProbe.get();
     gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
 
@@ -1722,6 +1724,8 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     processModel.setGPUModel(gpuModel);
     gpuModel->refresh();
     processModel.refresh();
+    const auto initialProcessGpuQueryCount = rawGpuProbe->readProcessCountersCallCount();
+    ASSERT_EQ(initialProcessGpuQueryCount, 1);
 
     processModel.setInteractionActive(true);
     rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
@@ -1732,6 +1736,7 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     ASSERT_EQ(snapshots.size(), 1);
     EXPECT_EQ(snapshots[0].gpuMemoryBytes, 512ULL * 1024 * 1024);
     EXPECT_EQ(snapshots[0].gpuDevices, "Test GPU");
+    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount);
 }
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)

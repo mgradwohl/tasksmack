@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <toml++/toml.hpp>
+
 namespace App
 {
 namespace
@@ -531,9 +533,10 @@ TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
     config.settings().fontSize = static_cast<UI::FontSize>(255);
     config.save();
 
-    std::ifstream file(m_ConfigPath);
-    const std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    EXPECT_TRUE(contents.contains("medium"));
+    const auto savedConfig = toml::parse_file(m_ConfigPath.string());
+    const auto fontSize = savedConfig["font"]["size"].value<std::string>();
+    ASSERT_TRUE(fontSize.has_value());
+    EXPECT_EQ(*fontSize, "medium");
 }
 
 } // namespace
