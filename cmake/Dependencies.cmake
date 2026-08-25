@@ -30,6 +30,10 @@ include(FetchContent)
 # Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
+# CMP0072: FindOpenGL prefers the legacy GL library unless told otherwise, which
+# emits a policy warning on Linux. Prefer GLVND explicitly (the modern dispatch
+# library) before find_package(OpenGL).
+set(OpenGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
 
 # Prefer header-only spdlog and std::format to sidestep MSVC fmt deprecation noise.
@@ -81,7 +85,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG 452c3634d4cda3dfaf4e8e419da65bc5d7b78959  # main@2026-08-24 - includes CMP0219-aware dlopen notes probe handling
+    GIT_TAG 147a8ee32dbf9ac02f3794964490687b6bbda1bc  # release-3.4.14 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
 )
 

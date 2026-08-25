@@ -4,22 +4,10 @@
         "terminal.foreground": "#CCCCCC",
         "terminal.background": "#1E1E1E"
     },
-    // Task shell configuration - use plain PowerShell for tasks
-    "terminal.integrated.automationProfile.windows": {
-        "path": "pwsh.exe",
-        "args": [
-            "-NoProfile",
-            "-NonInteractive"
-        ]
-    },
-    // Ensure Linux tasks use a clean, deterministic shell
-    "terminal.integrated.automationProfile.linux": {
-        "path": "/bin/bash",
-        "args": [
-            "--noprofile",
-            "--norc"
-        ]
-    },
+    // Task/agent shells: no custom automation profiles. Custom args (e.g. --norc,
+    // -NonInteractive) block VS Code's automatic shell-integration injection, which
+    // removes the command start/end/exit-code markers (OSC 633) that Copilot Chat and
+    // the task system rely on to detect command completion and read terminal output.
     // CMake Presets - VS Code CMake Tools will use CMakePresets.json
     "cmake.useCMakePresets": "always",
     "cmake.generator": "Ninja",
@@ -101,9 +89,8 @@
     "terminal.integrated.inheritEnv": true,
     "terminal.integrated.shellIntegration.decorationsEnabled": "both",
     "terminal.integrated.shellIntegration.history": 100,
-    // Keep task output available after a task or debug session ends.
-    "terminal.integrated.enablePersistentSessions": true,
-    "terminal.integrated.persistentSessionReviveProcess": "onExit",
+    // Larger scrollback so full build/test output stays readable by tools and agents.
+    // (Persistent sessions and onExit revive are VS Code defaults; not restated here.)
     "terminal.integrated.scrollback": 10000
     // "cmake.cmakePath": "/snap/bin/cmake",
     // "cmake.cpackPath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
