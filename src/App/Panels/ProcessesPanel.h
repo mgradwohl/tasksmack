@@ -200,6 +200,7 @@ class ProcessesPanel : public Panel
         std::string power;      // pre-formatted to avoid per-frame decimal alignment work
         std::string gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
         std::string gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
+        std::string gpuEngines; // comma-joined engine list; avoids per-frame string joins
         std::string threads;    // formatOrDash/formatIntLocalized(threadCount)
         std::string handles;    // formatOrDash/formatIntLocalized(handleCount)
         std::string pageFaults; // formatOrDash/formatIntLocalized(pageFaults)

@@ -31,11 +31,6 @@ struct UserSettings
     // Controls how much timeline data is retained and shown in plots.
     int maxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
 
-    // PDH instance refresh interval (seconds) - Windows only
-    // Controls how often PDH refreshes GPU process instance names.
-    // Lower values detect new GPU-using processes faster but use more CPU.
-    int pdhInstanceRefreshSeconds = Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_DEFAULT;
-
     // Socket stats cache TTL (milliseconds) - Linux only
     // Controls how long per-process network stats are cached.
     // Lower values = fresher data but more kernel queries.

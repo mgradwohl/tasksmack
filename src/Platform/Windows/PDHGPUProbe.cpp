@@ -6,7 +6,6 @@
 #include <spdlog/spdlog.h>
 
 #include <cstddef>
-#include <cwchar>
 #include <exception>
 #include <memory>
 #include <system_error>
@@ -31,7 +30,9 @@
 #include <cstdint>
 #include <functional>
 #include <ranges>
+#include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -171,57 +172,67 @@ struct PDHGPUProbe::Impl
     using PdhCloseQueryFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
     using PdhAddEnglishCounterFn = PDH_STATUS(WINAPI*)(PDH_HQUERY, LPCWSTR, DWORD_PTR, PDH_HCOUNTER*);
     using PdhCollectQueryDataFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
-    using PdhGetFormattedCounterValueFn = PDH_STATUS(WINAPI*)(PDH_HCOUNTER, DWORD, LPDWORD, PPDH_FMT_COUNTERVALUE);
-    using PdhEnumObjectItemsFn = PDH_STATUS(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPWSTR, LPDWORD, LPWSTR, LPDWORD, DWORD, DWORD);
-    using PdhRemoveCounterFn = PDH_STATUS(WINAPI*)(PDH_HCOUNTER);
+    using PdhGetFormattedCounterArrayFn = PDH_STATUS(WINAPI*)(PDH_HCOUNTER, DWORD, LPDWORD, LPDWORD, PPDH_FMT_COUNTERVALUE_ITEM_W);
+
+    /// Guard against unbounded instance-name cache growth from PID churn over long sessions.
+    static constexpr std::size_t MAX_INSTANCE_CACHE_ENTRIES = 16384;
+
+    // Wildcard counter paths. PDH expands the '*' instance wildcard on every collect.
+    static constexpr const wchar_t* UTILIZATION_COUNTER_PATH = L"\\GPU Engine(*)\\Utilization Percentage";
+    static constexpr const wchar_t* DEDICATED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Dedicated Usage";
+    static constexpr const wchar_t* SHARED_MEMORY_COUNTER_PATH = L"\\GPU Process Memory(*)\\Shared Usage";
 
     HMODULE pdhModule = nullptr;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
     PdhCloseQueryFn pdhCloseQuery = nullptr;
     PdhAddEnglishCounterFn pdhAddEnglishCounter = nullptr;
     PdhCollectQueryDataFn pdhCollectQueryData = nullptr;
-    PdhGetFormattedCounterValueFn pdhGetFormattedCounterValue = nullptr;
-    PdhEnumObjectItemsFn pdhEnumObjectItems = nullptr;
-    PdhRemoveCounterFn pdhRemoveCounter = nullptr;
+    PdhGetFormattedCounterArrayFn pdhGetFormattedCounterArray = nullptr;
 
     PDH_HQUERY query = nullptr;
     bool initialized = false;
 
-    // Warm-up tracking - first sample after adding counters is meaningless
+    // Warm-up tracking - the first PdhCollectQueryData sample cannot produce utilization
+    // values because PDH needs two samples to compute deltas.
     bool warmedUp = false;
 
-    // Instance refresh timing.
-    // PDH counter paths embed the PID in the instance name (e.g., "pid_1234_luid_0x...").
-    // When a new process starts using the GPU, we must re-enumerate instances to discover it
-    // and add counters for it. This is separate from ProcessModel's process enumeration -
-    // ProcessModel discovers all processes via OS APIs, while PDH discovers specifically which
-    // processes are actively using GPU resources via Performance Counters.
-    //
-    // Detection delay: The PDH instance refresh interval (default 5 seconds) IS the source
-    // of the detection delay. A process may appear in the process list before its GPU usage
-    // is detected because we only query PDH for new GPU-using processes every 5 seconds.
-    // This balances freshness (quickly detecting new GPU processes) vs. CPU overhead
-    // (PdhEnumObjectItems is expensive to call frequently).
-    //
-    // Trade-off: Shorter intervals = faster detection but more CPU overhead.
-    // Configurable via sampling.pdh_instance_refresh_seconds in user config.
-    std::chrono::steady_clock::time_point lastRefreshTime; // Default-initialized to epoch
-    std::chrono::seconds instanceRefreshInterval{5};       // Configurable via setInstanceRefreshInterval()
+    // Persistent wildcard counters. PDH expands the '*' instance wildcard on every
+    // PdhCollectQueryData call, so new GPU-using processes are discovered automatically
+    // each sample - no periodic PdhEnumObjectItems re-enumeration or counter rebuilds.
+    // Measured on a 651-instance system: wildcard collect + array read is ~1 ms total vs
+    // ~8-30 ms per collect for per-instance counters plus ~140 ms per re-enumeration.
+    PDH_HCOUNTER utilizationCounter = nullptr;     // "\GPU Engine(*)\Utilization Percentage"
+    PDH_HCOUNTER dedicatedMemoryCounter = nullptr; // "\GPU Process Memory(*)\Dedicated Usage"
+    PDH_HCOUNTER sharedMemoryCounter = nullptr;    // "\GPU Process Memory(*)\Shared Usage"
+
+    // Scratch buffer reused across PdhGetFormattedCounterArray calls to avoid
+    // per-sample allocation churn.
+    std::vector<std::byte> arrayBuffer;
 
     // Cache of last valid results - returned during warm-up to avoid data gaps
     std::vector<ProcessGPUCounters> lastValidResults;
     std::chrono::steady_clock::time_point lastValidTimestamp;
 
-    // Cache of counter handles per instance
-    struct CounterInfo
+    /// Parsed metadata for a counter instance name. Cached because instance names repeat
+    /// every sample and wide->UTF-8 conversion plus parsing is per-name work.
+    struct CachedInstance
     {
-        PDH_HCOUNTER counter = nullptr;
         std::int32_t pid = 0;
-        std::string engineType;
+        std::string engineType; // Normalized display name; empty for memory instances
         std::string gpuLuid;
-        bool isMemoryCounter = false; // true = memory counter, false = utilization counter
+        bool valid = false;
     };
-    std::vector<CounterInfo> counters;
+
+    struct WideStringHash
+    {
+        using is_transparent = void;
+        [[nodiscard]] std::size_t operator()(std::wstring_view value) const noexcept
+        {
+            return std::hash<std::wstring_view>{}(value);
+        }
+    };
+
+    std::unordered_map<std::wstring, CachedInstance, WideStringHash, std::equal_to<>> instanceCache;
 
     bool loadPDH()
     {
@@ -238,14 +249,12 @@ struct PDHGPUProbe::Impl
         pdhCloseQuery = reinterpret_cast<PdhCloseQueryFn>(GetProcAddress(pdhModule, "PdhCloseQuery"));
         pdhAddEnglishCounter = reinterpret_cast<PdhAddEnglishCounterFn>(GetProcAddress(pdhModule, "PdhAddEnglishCounterW"));
         pdhCollectQueryData = reinterpret_cast<PdhCollectQueryDataFn>(GetProcAddress(pdhModule, "PdhCollectQueryData"));
-        pdhGetFormattedCounterValue =
-            reinterpret_cast<PdhGetFormattedCounterValueFn>(GetProcAddress(pdhModule, "PdhGetFormattedCounterValue"));
-        pdhEnumObjectItems = reinterpret_cast<PdhEnumObjectItemsFn>(GetProcAddress(pdhModule, "PdhEnumObjectItemsW"));
-        pdhRemoveCounter = reinterpret_cast<PdhRemoveCounterFn>(GetProcAddress(pdhModule, "PdhRemoveCounter"));
+        pdhGetFormattedCounterArray =
+            reinterpret_cast<PdhGetFormattedCounterArrayFn>(GetProcAddress(pdhModule, "PdhGetFormattedCounterArrayW"));
         // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
         if (pdhOpenQuery == nullptr || pdhCloseQuery == nullptr || pdhAddEnglishCounter == nullptr || pdhCollectQueryData == nullptr ||
-            pdhGetFormattedCounterValue == nullptr || pdhEnumObjectItems == nullptr)
+            pdhGetFormattedCounterArray == nullptr)
         {
             spdlog::debug("PDHGPUProbe: Failed to load required PDH functions");
             FreeLibrary(pdhModule);
@@ -277,233 +286,116 @@ struct PDHGPUProbe::Impl
             return false;
         }
 
+        // Wildcard counters expand to all current instances on every collect, so
+        // per-process discovery is automatic and no re-enumeration is ever needed.
+        // Failures here are not fatal: ensureCounters() retries missing counters
+        // on every read so a transient PDH failure at startup can recover.
+        ensureCounters();
+
         initialized = true;
         spdlog::info("PDHGPUProbe: Initialized successfully");
         return true;
     }
 
-    /// @brief Check if we need to refresh the counter list (instances change as processes start/stop)
-    [[nodiscard]] bool needsRefresh() const
+    void addWildcardCounter(const wchar_t* counterPath, PDH_HCOUNTER& counter)
     {
-        if (counters.empty())
-        {
-            return true;
-        }
-        auto now = std::chrono::steady_clock::now();
-        return (now - lastRefreshTime) >= instanceRefreshInterval;
-    }
-
-    /// @brief Refresh the counter list (enumerate instances, add counters)
-    void refreshCounters()
-    {
-        // Clear existing counters
-        for (auto& ci : counters)
-        {
-            if (ci.counter != nullptr && pdhRemoveCounter != nullptr)
-            {
-                pdhRemoveCounter(ci.counter);
-            }
-        }
-        counters.clear();
-
-        // Add GPU Engine counters (for utilization %)
-        addGPUEngineCounters();
-
-        // Add GPU Process Memory counters (for dedicated/shared memory)
-        addGPUProcessMemoryCounters();
-
-        lastRefreshTime = std::chrono::steady_clock::now();
-        warmedUp = false; // Need to warm up after adding new counters
-
-        spdlog::debug("PDHGPUProbe: Added {} total GPU counters", counters.size());
-    }
-
-    void addGPUEngineCounters()
-    {
-        // Enumerate GPU Engine instances
-        DWORD counterListSize = 0;
-        DWORD instanceListSize = 0;
-        PDH_STATUS status = pdhEnumObjectItems(
-            nullptr, nullptr, L"GPU Engine", nullptr, &counterListSize, nullptr, &instanceListSize, PERF_DETAIL_WIZARD, 0);
-
-        // PDH_MORE_DATA is unsigned, PDH_STATUS is signed - cast for comparison
-        if (static_cast<unsigned long>(status) != PDH_MORE_DATA && status != ERROR_SUCCESS)
-        {
-            spdlog::debug("PDHGPUProbe: GPU Engine enum sizing failed: 0x{:x}", static_cast<unsigned>(status));
-            return;
-        }
-
-        if (instanceListSize == 0)
-        {
-            spdlog::debug("PDHGPUProbe: No GPU Engine instances found");
-            return;
-        }
-
-        std::vector<wchar_t> counterList(counterListSize);
-        std::vector<wchar_t> instanceList(instanceListSize);
-
-        status = pdhEnumObjectItems(nullptr,
-                                    nullptr,
-                                    L"GPU Engine",
-                                    counterList.data(),
-                                    &counterListSize,
-                                    instanceList.data(),
-                                    &instanceListSize,
-                                    PERF_DETAIL_WIZARD,
-                                    0);
-
+        const PDH_STATUS status = pdhAddEnglishCounter(query, counterPath, 0, &counter);
         if (status != ERROR_SUCCESS)
         {
-            spdlog::debug("PDHGPUProbe: GPU Engine enum failed: 0x{:x}", static_cast<unsigned>(status));
-            return;
-        }
-
-        // Parse instance list (multi-string: null-separated, double-null terminated)
-        std::vector<std::wstring> instances;
-        const wchar_t* ptr = instanceList.data();
-        while (*ptr != L'\0')
-        {
-            instances.emplace_back(ptr);
-            ptr += wcslen(ptr) + 1;
-        }
-
-        spdlog::debug("PDHGPUProbe: Found {} GPU Engine instances", instances.size());
-
-        // Add a counter for each instance
-        for (const auto& instance : instances)
-        {
-            const std::string narrowInstance = wideToUtf8Fallback(instance);
-
-            auto parsed = parseInstanceName(narrowInstance);
-            if (!parsed.valid || parsed.pid <= 0)
-            {
-                continue;
-            }
-
-            const std::wstring counterPath = L"\\GPU Engine(" + instance + L")\\Utilization Percentage";
-
-            PDH_HCOUNTER counter = nullptr;
-            status = pdhAddEnglishCounter(query, counterPath.c_str(), 0, &counter);
-            if (status == ERROR_SUCCESS)
-            {
-                CounterInfo ci;
-                ci.counter = counter;
-                ci.pid = parsed.pid;
-                ci.engineType = normalizeEngineType(parsed.engineType);
-                ci.gpuLuid = parsed.gpuLuid;
-                ci.isMemoryCounter = false;
-                counters.push_back(std::move(ci));
-            }
-        }
-    }
-
-    void addGPUProcessMemoryCounters()
-    {
-        // Enumerate GPU Process Memory instances
-        // Instance format: pid_<PID>_luid_<LUID>_phys_<N>
-        DWORD counterListSize = 0;
-        DWORD instanceListSize = 0;
-        PDH_STATUS status = pdhEnumObjectItems(
-            nullptr, nullptr, L"GPU Process Memory", nullptr, &counterListSize, nullptr, &instanceListSize, PERF_DETAIL_WIZARD, 0);
-
-        // PDH_MORE_DATA is unsigned, PDH_STATUS is signed - cast for comparison
-        if (static_cast<unsigned long>(status) != PDH_MORE_DATA && status != ERROR_SUCCESS)
-        {
-            spdlog::debug("PDHGPUProbe: GPU Process Memory enum sizing failed: 0x{:x}", static_cast<unsigned>(status));
-            return;
-        }
-
-        if (instanceListSize == 0)
-        {
-            spdlog::debug("PDHGPUProbe: No GPU Process Memory instances found");
-            return;
-        }
-
-        std::vector<wchar_t> counterList(counterListSize);
-        std::vector<wchar_t> instanceList(instanceListSize);
-
-        status = pdhEnumObjectItems(nullptr,
-                                    nullptr,
-                                    L"GPU Process Memory",
-                                    counterList.data(),
-                                    &counterListSize,
-                                    instanceList.data(),
-                                    &instanceListSize,
-                                    PERF_DETAIL_WIZARD,
-                                    0);
-
-        if (status != ERROR_SUCCESS)
-        {
-            spdlog::debug("PDHGPUProbe: GPU Process Memory enum failed: 0x{:x}", static_cast<unsigned>(status));
-            return;
-        }
-
-        // Parse instance list
-        std::vector<std::wstring> instances;
-        const wchar_t* ptr = instanceList.data();
-        while (*ptr != L'\0')
-        {
-            instances.emplace_back(ptr);
-            ptr += wcslen(ptr) + 1;
-        }
-
-        spdlog::debug("PDHGPUProbe: Found {} GPU Process Memory instances", instances.size());
-
-        // Add Dedicated Usage counter for each instance
-        // Counter names: "Dedicated Usage", "Shared Usage", "Total Committed"
-        for (const auto& instance : instances)
-        {
-            const std::string narrowInstance = wideToUtf8Fallback(instance);
-
-            auto parsed = parseInstanceName(narrowInstance);
-            if (!parsed.valid || parsed.pid <= 0)
-            {
-                continue;
-            }
-
-            // Add Dedicated Usage counter (VRAM)
-            std::wstring counterPath = L"\\GPU Process Memory(" + instance + L")\\Dedicated Usage";
-
-            PDH_HCOUNTER counter = nullptr;
-            status = pdhAddEnglishCounter(query, counterPath.c_str(), 0, &counter);
-            if (status == ERROR_SUCCESS)
-            {
-                CounterInfo ci;
-                ci.counter = counter;
-                ci.pid = parsed.pid;
-                ci.engineType = "DedicatedMemory";
-                ci.gpuLuid = parsed.gpuLuid;
-                ci.isMemoryCounter = true;
-                counters.push_back(std::move(ci));
-            }
-
-            // Also add Shared Usage counter (system memory used as GPU memory)
-            counterPath = L"\\GPU Process Memory(" + instance + L")\\Shared Usage";
             counter = nullptr;
-            status = pdhAddEnglishCounter(query, counterPath.c_str(), 0, &counter);
-            if (status == ERROR_SUCCESS)
+            spdlog::debug("PDHGPUProbe: Failed to add wildcard counter: 0x{:x}", static_cast<unsigned>(status));
+        }
+    }
+
+    /// @brief Retry any wildcard counters that failed to add previously.
+    /// Counter-add failures can be transient (e.g. the GPU performance counter
+    /// provider not yet registered at startup), so missing counters are retried
+    /// on every read instead of being disabled for the probe's lifetime.
+    /// @return true if at least one wildcard counter is active
+    bool ensureCounters()
+    {
+        if (utilizationCounter == nullptr)
+        {
+            addWildcardCounter(UTILIZATION_COUNTER_PATH, utilizationCounter);
+            if (utilizationCounter != nullptr)
             {
-                CounterInfo ci;
-                ci.counter = counter;
-                ci.pid = parsed.pid;
-                ci.engineType = "SharedMemory";
-                ci.gpuLuid = parsed.gpuLuid;
-                ci.isMemoryCounter = true;
-                counters.push_back(std::move(ci));
+                // A freshly added utilization counter needs two collects before
+                // it can produce rate values - re-enter warm-up.
+                warmedUp = false;
             }
         }
+        if (dedicatedMemoryCounter == nullptr)
+        {
+            addWildcardCounter(DEDICATED_MEMORY_COUNTER_PATH, dedicatedMemoryCounter);
+        }
+        if (sharedMemoryCounter == nullptr)
+        {
+            addWildcardCounter(SHARED_MEMORY_COUNTER_PATH, sharedMemoryCounter);
+        }
+        return utilizationCounter != nullptr || dedicatedMemoryCounter != nullptr || sharedMemoryCounter != nullptr;
+    }
+
+    /// @brief Look up (or parse and cache) instance metadata for a wide instance name
+    const CachedInstance& instanceFor(std::wstring_view name)
+    {
+        if (const auto it = instanceCache.find(name); it != instanceCache.end())
+        {
+            return it->second;
+        }
+
+        if (instanceCache.size() > MAX_INSTANCE_CACHE_ENTRIES)
+        {
+            instanceCache.clear();
+        }
+
+        std::wstring wide(name);
+        const auto parsed = parseInstanceName(wideToUtf8Fallback(wide));
+        CachedInstance cached;
+        cached.pid = parsed.pid;
+        cached.engineType = parsed.engineType.empty() ? std::string{} : normalizeEngineType(parsed.engineType);
+        cached.gpuLuid = parsed.gpuLuid;
+        cached.valid = parsed.valid;
+        return instanceCache.emplace(std::move(wide), std::move(cached)).first->second;
+    }
+
+    /// @brief Read all expanded instances of a wildcard counter into the reused scratch buffer
+    /// @return Pointer to the item array (valid until the next call), or nullptr on failure
+    PPDH_FMT_COUNTERVALUE_ITEM_W readCounterArray(PDH_HCOUNTER counter, DWORD format, DWORD& itemCount)
+    {
+        itemCount = 0;
+        if (counter == nullptr)
+        {
+            return nullptr;
+        }
+
+        DWORD bufferSize = static_cast<DWORD>(arrayBuffer.size());
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - PDH writes item structs into a raw byte buffer
+            auto* items = arrayBuffer.empty() ? nullptr : reinterpret_cast<PPDH_FMT_COUNTERVALUE_ITEM_W>(arrayBuffer.data());
+            const PDH_STATUS status = pdhGetFormattedCounterArray(counter, format, &bufferSize, &itemCount, items);
+            if (status == ERROR_SUCCESS)
+            {
+                return items;
+            }
+            if (static_cast<unsigned long>(status) != PDH_MORE_DATA)
+            {
+                spdlog::debug("PDHGPUProbe: PdhGetFormattedCounterArray failed: 0x{:x}", static_cast<unsigned>(status));
+                itemCount = 0;
+                return nullptr;
+            }
+            arrayBuffer.resize(bufferSize);
+            itemCount = 0;
+        }
+        return nullptr;
     }
 
     void shutdown()
     {
-        for (auto& ci : counters)
-        {
-            if (ci.counter != nullptr && pdhRemoveCounter != nullptr)
-            {
-                pdhRemoveCounter(ci.counter);
-            }
-        }
-        counters.clear();
+        // Counter handles are owned by the query; PdhCloseQuery releases them.
+        utilizationCounter = nullptr;
+        dedicatedMemoryCounter = nullptr;
+        sharedMemoryCounter = nullptr;
 
         if (query != nullptr && pdhCloseQuery != nullptr)
         {
@@ -542,15 +434,6 @@ bool PDHGPUProbe::isAvailable() const
     return m_Impl && m_Impl->initialized;
 }
 
-void PDHGPUProbe::setInstanceRefreshInterval(std::chrono::seconds interval)
-{
-    if (m_Impl)
-    {
-        m_Impl->instanceRefreshInterval = interval;
-        spdlog::debug("PDHGPUProbe: Instance refresh interval set to {}s", interval.count());
-    }
-}
-
 std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 {
     if (!m_Impl || !m_Impl->initialized)
@@ -558,13 +441,9 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         return {};
     }
 
-    // Refresh counter list periodically (instances change as processes start/stop)
-    if (m_Impl->needsRefresh())
-    {
-        m_Impl->refreshCounters();
-    }
-
-    if (m_Impl->counters.empty())
+    // Retry any counters that failed to add previously; bail out only if none
+    // are active even after the retry.
+    if (!m_Impl->ensureCounters())
     {
         // Return cached results if available
         if (m_Impl->lastValidTimestamp.time_since_epoch().count() > 0)
@@ -594,8 +473,8 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         return m_Impl->lastValidResults;
     }
 
-    // Handle warm-up: First sample after adding counters is meaningless
-    // PDH needs two samples to compute utilization deltas
+    // Handle warm-up: the first collected sample cannot produce utilization values
+    // because PDH needs two samples to compute deltas
     if (!m_Impl->warmedUp)
     {
         m_Impl->warmedUp = true;
@@ -642,52 +521,63 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     };
     std::unordered_map<AggKey, AggData, AggKeyHash> aggregated;
 
-    // Read counter values
-    for (const auto& ci : m_Impl->counters)
+    // Read counter values from the three wildcard counter arrays.
+    // The scratch buffer is reused across reads, so each array must be fully
+    // processed before the next read.
+    DWORD itemCount = 0;
+
+    if (auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount))
     {
-        PDH_FMT_COUNTERVALUE value{};
-        DWORD counterType = 0;
-
-        // Use appropriate format based on counter type
-        const DWORD format = ci.isMemoryCounter ? PDH_FMT_LARGE : (PDH_FMT_DOUBLE | PDH_FMT_NOCAP100);
-        status = m_Impl->pdhGetFormattedCounterValue(ci.counter, format, &counterType, &value);
-
-        if (status != ERROR_SUCCESS || (value.CStatus != ERROR_SUCCESS && value.CStatus != PDH_CSTATUS_NEW_DATA))
+        for (const auto& item : std::span{items, itemCount})
         {
-            continue;
-        }
-
-        const AggKey key{.pid = ci.pid, .gpuLuid = ci.gpuLuid};
-        auto& agg = aggregated[key];
-
-        if (ci.isMemoryCounter)
-        {
-            // Memory counter - aggregate by type
-            // Verify we're using the correct union member for PDH_FMT_LARGE format
-            if (ci.engineType == "DedicatedMemory")
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
             {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-                agg.dedicatedMemory += static_cast<std::uint64_t>(value.largeValue);
+                continue;
             }
-            else if (ci.engineType == "SharedMemory")
+            const auto& inst = m_Impl->instanceFor(item.szName);
+            if (!inst.valid || inst.pid <= 0)
             {
-                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-                agg.sharedMemory += static_cast<std::uint64_t>(value.largeValue);
+                continue;
             }
-        }
-        else
-        {
-            // Utilization counter - verify we're using the correct union member for PDH_FMT_DOUBLE format
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-            agg.totalUtilization += value.doubleValue;
+
+            auto& agg = aggregated[AggKey{.pid = inst.pid, .gpuLuid = inst.gpuLuid}];
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE selects doubleValue
+            agg.totalUtilization += item.FmtValue.doubleValue;
 
             // Add engine type if not already present
-            if (std::ranges::find(agg.engines, ci.engineType) == agg.engines.end())
+            if (!inst.engineType.empty() && std::ranges::find(agg.engines, inst.engineType) == agg.engines.end())
             {
-                agg.engines.push_back(ci.engineType);
+                agg.engines.push_back(inst.engineType);
             }
         }
     }
+
+    const auto accumulateMemory = [&](PDH_HCOUNTER counter, auto memberSelector)
+    {
+        auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
+        if (items == nullptr)
+        {
+            return;
+        }
+        for (const auto& item : std::span{items, itemCount})
+        {
+            if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                continue;
+            }
+            const auto& inst = m_Impl->instanceFor(item.szName);
+            if (!inst.valid || inst.pid <= 0)
+            {
+                continue;
+            }
+            auto& agg = aggregated[AggKey{.pid = inst.pid, .gpuLuid = inst.gpuLuid}];
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
+            memberSelector(agg) += static_cast<std::uint64_t>(item.FmtValue.largeValue);
+        }
+    };
+
+    accumulateMemory(m_Impl->dedicatedMemoryCounter, [](AggData& agg) -> std::uint64_t& { return agg.dedicatedMemory; });
+    accumulateMemory(m_Impl->sharedMemoryCounter, [](AggData& agg) -> std::uint64_t& { return agg.sharedMemory; });
 
     // Convert to ProcessGPUCounters
     for (const auto& [key, agg] : aggregated)
