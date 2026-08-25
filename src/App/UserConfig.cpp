@@ -8,6 +8,7 @@
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
+#include <toml++/toml.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -20,8 +21,6 @@
 #include <string>
 #include <system_error>
 #include <utility>
-
-#include <toml++/toml.hpp>
 
 #ifdef _WIN32
 // clang-format off

@@ -2,12 +2,12 @@
 
 #include "Domain/Numeric.h"
 
+#include <toml++/toml.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <string_view>
-
-#include <toml++/toml.hpp>
 
 namespace App::UserConfigHelpers
 {
