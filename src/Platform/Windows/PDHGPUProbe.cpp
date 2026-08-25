@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
