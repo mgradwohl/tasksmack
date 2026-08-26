@@ -395,19 +395,42 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     EXPECT_GT(before.threadCount, 0);
 
     // Open a batch of event handles and reserve a large virtual region. A TTL-cached
-    // implementation would keep serving the stale pre-change values here.
+    // implementation would keep serving the stale pre-change values here. RAII guard
+    // ensures cleanup even if an ASSERT aborts the test mid-setup.
     constexpr int EXTRA_HANDLES = 64;
     constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB reserve
-    std::vector<HANDLE> events;
-    events.reserve(EXTRA_HANDLES);
+    struct ScopedResources
+    {
+        std::vector<HANDLE> events;
+        void* reservation = nullptr;
+
+        ScopedResources() = default;
+        ScopedResources(const ScopedResources&) = delete;
+        ScopedResources& operator=(const ScopedResources&) = delete;
+        ScopedResources(ScopedResources&&) = delete;
+        ScopedResources& operator=(ScopedResources&&) = delete;
+        ~ScopedResources()
+        {
+            if (reservation != nullptr)
+            {
+                VirtualFree(reservation, 0, MEM_RELEASE);
+            }
+            for (HANDLE event : events)
+            {
+                CloseHandle(event);
+            }
+        }
+    };
+    ScopedResources resources;
+    resources.events.reserve(EXTRA_HANDLES);
     for (int i = 0; i < EXTRA_HANDLES; ++i)
     {
         HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         ASSERT_NE(event, nullptr);
-        events.push_back(event);
+        resources.events.push_back(event);
     }
-    void* reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
-    ASSERT_NE(reservation, nullptr);
+    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
+    ASSERT_NE(resources.reservation, nullptr);
 
     const auto after = findOurProcess(probe.enumerate());
 
@@ -416,12 +439,6 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     EXPECT_GE(after.handleCount, before.handleCount + (EXTRA_HANDLES / 2)) << "handle count must be refreshed every sample, not TTL-cached";
     EXPECT_GE(after.virtualBytes, before.virtualBytes + (EXTRA_VIRTUAL_BYTES / 2))
         << "virtual size must be refreshed every sample, not TTL-cached";
-
-    VirtualFree(reservation, 0, MEM_RELEASE);
-    for (HANDLE event : events)
-    {
-        CloseHandle(event);
-    }
 }
 
 TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)

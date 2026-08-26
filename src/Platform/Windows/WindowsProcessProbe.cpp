@@ -617,18 +617,19 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     // One bulk kernel snapshot provides PIDs, names, CPU times, memory, I/O, and handle/thread
     // counts for every process — replacing per-process OpenProcess + query calls per sample.
     NTSTATUS status = 0;
+    ULONG returnedBytes = 0;
     for (;;)
     {
-        ULONG needed = 0;
+        returnedBytes = 0;
         // Fallback saturates at ULONG max; the kernel simply reports the buffer as too small.
         const ULONG bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
-        status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &needed);
+        status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &returnedBytes);
         if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
         {
             break;
         }
         // Snapshot didn't fit; grow with headroom because the process list can change between calls.
-        m_SnapshotBuffer.resize(static_cast<std::size_t>(needed) + SNAPSHOT_HEADROOM_BYTES);
+        m_SnapshotBuffer.resize(static_cast<std::size_t>(returnedBytes) + SNAPSHOT_HEADROOM_BYTES);
     }
 
     if (status < 0)
@@ -637,7 +638,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         return results;
     }
 
-    for (std::size_t offset = 0;;)
+    // Never trust nextEntryOffset chains beyond the bytes the kernel actually wrote; clamp to the
+    // buffer size in case ReturnLength was not populated.
+    const std::size_t snapshotBytes =
+        std::min<std::size_t>(m_SnapshotBuffer.size(), returnedBytes != 0 ? returnedBytes : m_SnapshotBuffer.size());
+
+    for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
     {
         // Safe and necessary: parsing the OS-defined SYSTEM_PROCESS_INFORMATION layout out of the
         // kernel-filled byte buffer; entries are chained via nextEntryOffset.
@@ -694,6 +700,8 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         {
             break;
         }
+        // The loop condition re-validates the advanced offset against snapshotBytes, so a
+        // corrupt or truncated entry chain terminates instead of reading past the buffer.
         offset += info->nextEntryOffset;
     }
 
