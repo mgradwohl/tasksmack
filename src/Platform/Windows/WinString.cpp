@@ -37,6 +37,34 @@ namespace Platform::WinString
     return wideToUtf8(wide.c_str());
 }
 
+[[nodiscard]] std::string wideToUtf8(std::wstring_view wide)
+{
+    if (wide.empty())
+    {
+        return {};
+    }
+
+    // Safe and necessary: WideCharToMultiByte requires an int length; wide strings from the OS
+    // never approach INT_MAX characters.
+    const int length = static_cast<int>(wide.size());
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - explicit length is passed alongside data()
+    const int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0)
+    {
+        return {};
+    }
+
+    std::string result(static_cast<size_t>(sizeNeeded), '\0');
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - explicit length is passed alongside data()
+    const int written = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, result.data(), sizeNeeded, nullptr, nullptr);
+    if (written <= 0)
+    {
+        return {};
+    }
+    result.resize(static_cast<size_t>(written));
+    return result;
+}
+
 [[nodiscard]] std::wstring utf8ToWide(std::string_view utf8)
 {
     if (utf8.empty())

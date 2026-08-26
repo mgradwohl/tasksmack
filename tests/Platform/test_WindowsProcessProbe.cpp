@@ -372,6 +372,48 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 // Edge Cases and Error Handling
 // =============================================================================
 
+TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
+{
+    // The bulk snapshot must deliver handle count, virtual memory, and I/O counters
+    // on every enumerate() call — these are no longer TTL-cached.
+    WindowsProcessProbe probe;
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+
+    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    {
+        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        return it != processes.end() ? *it : ProcessCounters{};
+    };
+
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        const auto proc = findOurProcess(probe.enumerate());
+        EXPECT_EQ(proc.pid, ourPid);
+        EXPECT_GT(proc.handleCount, 0) << "sample " << sample;
+        EXPECT_GT(proc.virtualBytes, 0ULL) << "sample " << sample;
+        EXPECT_GT(proc.rssBytes, 0ULL) << "sample " << sample;
+        EXPECT_GT(proc.pageFaultCount, 0ULL) << "sample " << sample;
+        EXPECT_GT(proc.threadCount, 0) << "sample " << sample;
+    }
+}
+
+TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
+{
+    // The system snapshot always contains the Idle pseudo-process (PID 0) and the
+    // System process (PID 4); both are inaccessible via OpenProcess but must still
+    // be reported with stable names.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const auto idle = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    ASSERT_NE(idle, processes.end());
+    EXPECT_EQ(idle->name, "[System Process]");
+
+    const auto system = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    ASSERT_NE(system, processes.end());
+    EXPECT_FALSE(system->name.empty());
+}
+
 TEST(WindowsProcessProbeTest, HandlesMissingProcesses)
 {
     // Processes may disappear between enumeration calls
