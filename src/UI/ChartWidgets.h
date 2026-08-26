@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <format>
 #include <functional>
+#include <new>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -644,11 +645,21 @@ class RenderMetricsScope
 {
   public:
     /// Builds "baseId + suffix" only when capture is enabled, so disabled builds skip the allocation.
-    RenderMetricsScope(const char* baseId, const char* suffix) : m_Measure(RenderMetrics::get().enabled())
+    /// noexcept: purely instrumentation used inside render code — on allocation failure the
+    /// scope silently disables itself for this frame instead of failing UI rendering.
+    RenderMetricsScope(const char* baseId, const char* suffix) noexcept : m_Measure(RenderMetrics::get().enabled())
     {
         if (m_Measure)
         {
-            m_Id = std::string(baseId) + suffix;
+            try
+            {
+                m_Id = std::string(baseId) + suffix;
+            }
+            catch (const std::bad_alloc&)
+            {
+                m_Measure = false;
+                return;
+            }
             m_DrawList = ImGui::GetWindowDrawList();
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
             m_IdxBefore = m_DrawList->IdxBuffer.Size;
