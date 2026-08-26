@@ -68,6 +68,19 @@ TEST(ProcessModelTest, WhenConstructedWithNullProbe_ThenDoesNotCrash)
     EXPECT_EQ(model.processCount(), 0);
 }
 
+TEST(ProcessModelTest, UpdateFromCountersPublishesSnapshotsWithoutProbe)
+{
+    Domain::ProcessModel model(nullptr);
+
+    model.updateFromCounters({makeCounter(100, "injected", 'R', 1000, 500)}, 100000);
+
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1);
+    EXPECT_EQ(snapshots[0].name, "injected");
+    EXPECT_DOUBLE_EQ(snapshots[0].cpuPercent, 0.0);
+    EXPECT_EQ(model.snapshotVersion(), 1);
+}
+
 TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
 {
     auto probe = std::make_unique<MockProcessProbe>();
@@ -1470,9 +1483,20 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
     EXPECT_TRUE(timestamps.empty());
 }
 
-// Note: Additional system history tests (systemNetSentHistory, systemThreadCountHistory, etc.)
-// require the ability to call updateFromCounters() with mock data after model construction.
-// These tests are deferred pending refactoring of ProcessModel to support test injection patterns.
+TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
+{
+    Domain::ProcessModel model(nullptr);
+    const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
+
+    model.updateFromCounters({counter}, 100000);
+    model.updateFromCounters({counter}, 200000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    model.updateFromCounters({counter}, 300000);
+    ASSERT_EQ(model.historyTimestamps().size(), 2);
+
+    model.setMaxHistorySeconds(0.0);
+    EXPECT_EQ(model.historyTimestamps().size(), 1);
+}
 
 // =============================================================================
 // Peak RSS Tracking Tests
@@ -1682,6 +1706,46 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     ASSERT_EQ(snaps.size(), 1);
     // gpuDevices should contain the GPU name
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}
+
+TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    rawProcessProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    auto* rawGpuProbe = gpuProbe.get();
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh();
+    const auto initialProcessGpuQueryCount = rawGpuProbe->readProcessCountersCallCount();
+    ASSERT_EQ(initialProcessGpuQueryCount, 1);
+
+    processModel.setInteractionActive(true);
+    currentTime += std::chrono::seconds(1);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh();
+
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 1);
+    EXPECT_EQ(snapshots[0].gpuMemoryBytes, 512ULL * 1024 * 1024);
+    EXPECT_EQ(snapshots[0].gpuDevices, "Test GPU");
+    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount);
+
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1200, 500)});
+    rawProcessProbe->setTotalCpuTime(300000);
+    processModel.refresh();
+
+    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount + 1);
 }
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)

@@ -28,7 +28,8 @@
 namespace Domain
 {
 
-ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe) : m_Probe(std::move(probe))
+ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now)
+    : m_Probe(std::move(probe)), m_Now(std::move(now))
 {
     // Reserve capacity upfront to avoid rehashing as processes are discovered on the
     // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
@@ -131,7 +132,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
     }
 
-    const auto currentSampleTime = std::chrono::steady_clock::now();
+    const auto currentSampleTime = m_Now();
     if (!m_HasStartTime)
     {
         m_StartTime = currentSampleTime;
@@ -368,7 +369,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
         {
-            m_LastGpuMergeTime = std::chrono::steady_clock::now();
+            m_LastGpuMergeTime = m_Now();
             m_HasLastGpuMergeTime = true;
         }
     }

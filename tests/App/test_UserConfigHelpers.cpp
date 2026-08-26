@@ -4,10 +4,9 @@
 #include "Domain/SamplingConfig.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
 #include <filesystem>
-
-#include <toml++/toml.hpp>
 
 namespace App
 {
