@@ -372,6 +372,103 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 // Edge Cases and Error Handling
 // =============================================================================
 
+TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
+{
+    // The bulk snapshot must deliver handle count, virtual memory, and I/O counters
+    // on every enumerate() call — these are no longer TTL-cached. Force deterministic
+    // changes between samples and verify the very next snapshot reflects them.
+    WindowsProcessProbe probe;
+    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+
+    auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
+    {
+        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        return it != processes.end() ? *it : ProcessCounters{};
+    };
+
+    const auto before = findOurProcess(probe.enumerate());
+    EXPECT_EQ(before.pid, ourPid);
+    EXPECT_GT(before.handleCount, 0);
+    EXPECT_GT(before.virtualBytes, 0ULL);
+    EXPECT_GT(before.rssBytes, 0ULL);
+    EXPECT_GT(before.pageFaultCount, 0ULL);
+    EXPECT_GT(before.threadCount, 0);
+
+    // Open a batch of event handles and reserve a large virtual region. A TTL-cached
+    // implementation would keep serving the stale pre-change values here. RAII guard
+    // ensures cleanup even if an ASSERT aborts the test mid-setup.
+    constexpr int EXTRA_HANDLES = 64;
+    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB reserve
+    struct ScopedResources
+    {
+        std::vector<HANDLE> events;
+        void* reservation = nullptr;
+
+        ScopedResources() = default;
+        ScopedResources(const ScopedResources&) = delete;
+        ScopedResources& operator=(const ScopedResources&) = delete;
+        ScopedResources(ScopedResources&&) = delete;
+        ScopedResources& operator=(ScopedResources&&) = delete;
+        ~ScopedResources()
+        {
+            if (reservation != nullptr)
+            {
+                VirtualFree(reservation, 0, MEM_RELEASE);
+            }
+            for (HANDLE event : events)
+            {
+                CloseHandle(event);
+            }
+        }
+    };
+    ScopedResources resources;
+    resources.events.reserve(EXTRA_HANDLES);
+    for (int i = 0; i < EXTRA_HANDLES; ++i)
+    {
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        ASSERT_NE(event, nullptr);
+        resources.events.push_back(event);
+    }
+    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
+    ASSERT_NE(resources.reservation, nullptr);
+
+    const auto after = findOurProcess(probe.enumerate());
+
+    // Allow slack for unrelated handle churn in the test process, but the next sample
+    // must observe most of the new handles and the full reservation immediately.
+    EXPECT_GE(after.handleCount, before.handleCount + (EXTRA_HANDLES / 2)) << "handle count must be refreshed every sample, not TTL-cached";
+    EXPECT_GE(after.virtualBytes, before.virtualBytes + (EXTRA_VIRTUAL_BYTES / 2))
+        << "virtual size must be refreshed every sample, not TTL-cached";
+}
+
+TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
+{
+    // The system snapshot always contains the Idle pseudo-process (PID 0) and the
+    // System process (PID 4); both are inaccessible via OpenProcess but must still
+    // be reported with stable names across samples (name cache / fallback path).
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    const auto idle = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    ASSERT_NE(idle, processes.end());
+    EXPECT_EQ(idle->name, "[System Process]");
+
+    const auto system = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    ASSERT_NE(system, processes.end());
+    EXPECT_FALSE(system->name.empty());
+
+    // A second sample must report identical names — the cached-name/fallback path
+    // may not degrade or change once details refresh TTLs kick in.
+    const auto second = probe.enumerate();
+    const auto idle2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    ASSERT_NE(idle2, second.end());
+    EXPECT_EQ(idle2->name, idle->name);
+
+    const auto system2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    ASSERT_NE(system2, second.end());
+    EXPECT_EQ(system2->name, system->name);
+}
+
 TEST(WindowsProcessProbeTest, HandlesMissingProcesses)
 {
     // Processes may disappear between enumeration calls

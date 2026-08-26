@@ -61,6 +61,17 @@ Write-Host ""
 
 & $benchBin @benchArgs
 
+# Redact machine-identifying context so results are safe to commit (repo convention:
+# host_name "redacted", bare executable name). Fails closed via ErrorActionPreference=Stop:
+# if redaction cannot run, the script aborts before reporting the results as ready to use.
+if (-not (Test-Path $outFile)) {
+    throw "Benchmark output '$outFile' not found; cannot redact machine-identifying context."
+}
+$json = Get-Content $outFile -Raw | ConvertFrom-Json
+$json.context.host_name = 'redacted'
+$json.context.executable = Split-Path $json.context.executable -Leaf
+$json | ConvertTo-Json -Depth 10 | Set-Content $outFile -Encoding utf8
+
 Write-Host ""
 Write-Host "Results written to: $outFile"
 Write-Host "Compare two runs with Google Benchmark's compare.py:"

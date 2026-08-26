@@ -195,7 +195,7 @@ For cross-platform features, be explicit:
 ```markdown
 ## Platform Notes
 - Linux: Read from `/proc/[pid]/io` (requires elevated privileges)
-- Windows: Use `GetProcessIoCounters()` (no special privileges needed)
+- Windows: Read from the bulk `SystemProcessInformation` snapshot (no special privileges needed)
 - If probe fails, return zeros (graceful degradation)
 ```
 

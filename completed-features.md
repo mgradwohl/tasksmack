@@ -47,7 +47,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Capability | Linux | Windows |
 |------------|-------|---------|
 | Process/system metrics | `/proc`, sysfs, Netlink, POSIX APIs | Native system and process APIs |
-| Process I/O | `/proc/[pid]/io`, permission-dependent | `GetProcessIoCounters` |
+| Process I/O | `/proc/[pid]/io`, permission-dependent | `SystemProcessInformation` snapshot |
 | Per-process network | Netlink `INET_DIAG`, Linux 4.2+ | TCP EStats, administrator privileges required |
 | NVIDIA GPU | NVML | NVML |
 | AMD GPU | ROCm SMI | DXGI/PDH capability-dependent data |

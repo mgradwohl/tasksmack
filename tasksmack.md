@@ -225,6 +225,8 @@ Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network a
 
 Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
 
+Process enumeration takes one bulk `NtQuerySystemInformation(SystemProcessInformation)` snapshot per sample, which supplies CPU times, memory, I/O, handle/thread counts, and image names for every process without opening per-process handles. Slow-changing details (owner, command line, publisher, classification) are refreshed through short-lived process handles on RAM-tuned light/heavy TTLs.
+
 Only Linux and Windows are implemented. Windows builds target Windows 10 or later.
 
 ## Application and Rendering Lifecycle

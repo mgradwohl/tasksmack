@@ -23,7 +23,9 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 // Windows headers must be in correct order:
 // winsock2.h must come before windows.h
@@ -40,7 +42,9 @@ namespace Platform
 {
 
 /// Windows implementation of IProcessProbe.
-/// Uses ToolHelp32 API and GetProcessTimes/GetProcessMemoryInfo.
+/// Uses a single bulk NtQuerySystemInformation(SystemProcessInformation) snapshot per sample
+/// (PIDs, names, CPU times, memory, I/O, handle/thread counts), plus TTL-cached per-process
+/// details (owner, command line, publisher, classification) refreshed via short-lived handles.
 class WindowsProcessProbe : public IProcessProbe
 {
   public:
@@ -95,16 +99,14 @@ class WindowsProcessProbe : public IProcessProbe
 
     struct DetailCacheEntry
     {
+        std::string name; // Cached UTF-8 conversion of the image name (immutable per process)
         std::string user;
         std::string command;
         std::string status;
         std::string publisher;
         std::string processType;
         std::optional<std::int32_t> gdiObjectCount;
-        std::optional<std::uint64_t> virtualSizeBytes;
         // Slow-changing fields cached with light/heavy TTL to avoid redundant Win32 calls.
-        // Sentinel: handleCount == -1 means "not yet populated".
-        std::int32_t handleCount = -1;     // GetProcessHandleCount (light TTL)
         std::uint64_t cpuAffinityMask = 0; // GetProcessAffinityMask (heavy TTL)
         std::int32_t nice = 0;             // GetPriorityClass → nice value (heavy TTL)
         char state = '\0';                 // GetExitCodeProcess → R/Z/? (light TTL); '\0' = not yet populated
@@ -113,8 +115,9 @@ class WindowsProcessProbe : public IProcessProbe
         std::uint64_t generation = 0;
     };
 
-    /// Get detailed info for a single process
-    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters);
+    /// Refresh TTL-cached details for a single process (opens a handle only when a TTL expired).
+    /// @param imageName Wide image name from the system snapshot (may be empty for pseudo-processes)
+    [[nodiscard]] bool getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName);
 
     /// Read total system CPU time
     [[nodiscard]] static uint64_t readTotalCpuTime();
@@ -143,6 +146,7 @@ class WindowsProcessProbe : public IProcessProbe
     std::unordered_map<DetailCacheKey, DetailCacheEntry, DetailCacheKeyHash> m_DetailCache;
     std::uint64_t m_DetailCacheGeneration = 0;
     std::size_t m_LastEnumeratedProcessCount = 256;
+    std::vector<std::byte> m_SnapshotBuffer; // Reused buffer for NtQuerySystemInformation snapshots
 };
 
 } // namespace Platform

@@ -71,6 +71,29 @@ TEST(WinStringTest, WideToUtf8SpecialCharactersConvertsCorrectly)
     EXPECT_EQ(wideToUtf8(L"Before"), "Before");
 }
 
+// ========== wideToUtf8 (wstring_view) Tests ==========
+
+TEST(WinStringTest, WideToUtf8ViewEmptyReturnsEmpty)
+{
+    EXPECT_EQ(wideToUtf8(std::wstring_view{}), "");
+    EXPECT_EQ(wideToUtf8(std::wstring_view(L"")), "");
+}
+
+TEST(WinStringTest, WideToUtf8ViewConvertsCorrectly)
+{
+    EXPECT_EQ(wideToUtf8(std::wstring_view(L"TaskSmack.exe")), "TaskSmack.exe");
+    EXPECT_EQ(wideToUtf8(std::wstring_view(L"Größe 日本語 😀")), "Größe 日本語 😀");
+}
+
+TEST(WinStringTest, WideToUtf8ViewHandlesNonNullTerminatedSubstring)
+{
+    // Views over counted OS strings (e.g. UNICODE_STRING) are not null-terminated;
+    // conversion must honor the view length, not scan for a terminator.
+    const std::wstring backing = L"chrome.exe#garbage";
+    const std::wstring_view view(backing.data(), 10);
+    EXPECT_EQ(wideToUtf8(view), "chrome.exe");
+}
+
 // ========== utf8ToWide Tests ==========
 
 TEST(WinStringTest, Utf8ToWideEmptyReturnsEmpty)

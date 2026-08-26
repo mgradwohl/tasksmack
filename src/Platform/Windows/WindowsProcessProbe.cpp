@@ -17,9 +17,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <mstcpip.h>
-#include <psapi.h>
 #include <sddl.h>
-#include <tlhelp32.h>
 #include <winternl.h>
 #include <winver.h>
 // clang-format on
@@ -34,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
@@ -42,6 +41,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -62,21 +62,16 @@ namespace
     return uli.QuadPart;
 }
 
-/// Convert FILETIME to Unix epoch seconds
-/// Windows FILETIME is 100-nanosecond intervals since January 1, 1601 UTC
+/// Convert 100-nanosecond intervals since January 1, 1601 UTC to Unix epoch seconds
 /// Unix epoch is seconds since January 1, 1970 UTC
 /// The difference is 11644473600 seconds (369 years)
-[[nodiscard]] uint64_t filetimeToUnixEpoch(const FILETIME& ft)
+[[nodiscard]] uint64_t ticksToUnixEpoch(uint64_t windowsTicks)
 {
     constexpr uint64_t WINDOWS_TICKS_PER_SECOND = 10'000'000;
     constexpr uint64_t WINDOWS_EPOCH_TO_UNIX_EPOCH = 11644473600ULL;
 
-    ULARGE_INTEGER uli{};
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-
     // Convert 100-nanosecond intervals to seconds and adjust for epoch difference
-    const std::uint64_t windowsSeconds = uli.QuadPart / WINDOWS_TICKS_PER_SECOND;
+    const std::uint64_t windowsSeconds = windowsTicks / WINDOWS_TICKS_PER_SECOND;
     if (windowsSeconds < WINDOWS_EPOCH_TO_UNIX_EPOCH)
     {
         return 0; // Invalid time (before Unix epoch)
@@ -211,63 +206,94 @@ using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, P
     return cachedFn;
 }
 
-// Some Windows SDK versions omit VM_COUNTERS and/or the ProcessVmCounters enum value from public headers.
-// Define what we need locally for compatibility.
-struct TaskSmackVmCounters
+// Some Windows SDK versions omit the full SYSTEM_PROCESS_INFORMATION layout — winternl.h
+// declares a truncated variant with reserved fields. Declare the complete documented layout
+// (stable ABI since Windows XP) so one bulk NtQuerySystemInformation(SystemProcessInformation)
+// snapshot provides CPU times, memory, I/O, handle/thread counts, and names for all processes.
+struct SystemProcessInfo
 {
-    SIZE_T peakVirtualSize = 0;
-    SIZE_T virtualSize = 0;
-    ULONG pageFaultCount = 0;
-    SIZE_T peakWorkingSetSize = 0;
-    SIZE_T workingSetSize = 0;
-    SIZE_T quotaPeakPagedPoolUsage = 0;
-    SIZE_T quotaPagedPoolUsage = 0;
-    SIZE_T quotaPeakNonPagedPoolUsage = 0;
-    SIZE_T quotaNonPagedPoolUsage = 0;
-    SIZE_T pagefileUsage = 0;
-    SIZE_T peakPagefileUsage = 0;
+    ULONG nextEntryOffset;
+    ULONG numberOfThreads;
+    LARGE_INTEGER workingSetPrivateSize;
+    ULONG hardFaultCount;
+    ULONG numberOfThreadsHighWatermark;
+    ULONGLONG cycleTime;
+    LARGE_INTEGER createTime;
+    LARGE_INTEGER userTime;
+    LARGE_INTEGER kernelTime;
+    UNICODE_STRING imageName;
+    LONG basePriority;
+    HANDLE uniqueProcessId;
+    HANDLE inheritedFromUniqueProcessId;
+    ULONG handleCount;
+    ULONG sessionId;
+    ULONG_PTR uniqueProcessKey;
+    SIZE_T peakVirtualSize;
+    SIZE_T virtualSize;
+    ULONG pageFaultCount;
+    SIZE_T peakWorkingSetSize;
+    SIZE_T workingSetSize;
+    SIZE_T quotaPeakPagedPoolUsage;
+    SIZE_T quotaPagedPoolUsage;
+    SIZE_T quotaPeakNonPagedPoolUsage;
+    SIZE_T quotaNonPagedPoolUsage;
+    SIZE_T pagefileUsage;
+    SIZE_T peakPagefileUsage;
+    SIZE_T privatePageCount;
+    LARGE_INTEGER readOperationCount;
+    LARGE_INTEGER writeOperationCount;
+    LARGE_INTEGER otherOperationCount;
+    LARGE_INTEGER readTransferCount;
+    LARGE_INTEGER writeTransferCount;
+    LARGE_INTEGER otherTransferCount;
 };
 
-constexpr PROCESSINFOCLASS PROCESS_INFO_VM_COUNTERS = static_cast<PROCESSINFOCLASS>(3);
+// Compile-time ABI validation against the public SDK declaration: winternl.h names a subset of
+// the fields (hiding the rest behind Reserved blocks of identical size), so every named field's
+// offset and the total size must match our complete layout exactly. Any SDK layout change or a
+// mistake in our declaration fails the build instead of silently producing garbage counters.
+static_assert(sizeof(SystemProcessInfo) == sizeof(SYSTEM_PROCESS_INFORMATION));
+static_assert(offsetof(SystemProcessInfo, nextEntryOffset) == offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset));
+static_assert(offsetof(SystemProcessInfo, numberOfThreads) == offsetof(SYSTEM_PROCESS_INFORMATION, NumberOfThreads));
+static_assert(offsetof(SystemProcessInfo, imageName) == offsetof(SYSTEM_PROCESS_INFORMATION, ImageName));
+static_assert(offsetof(SystemProcessInfo, basePriority) == offsetof(SYSTEM_PROCESS_INFORMATION, BasePriority));
+static_assert(offsetof(SystemProcessInfo, uniqueProcessId) == offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId));
+static_assert(offsetof(SystemProcessInfo, handleCount) == offsetof(SYSTEM_PROCESS_INFORMATION, HandleCount));
+static_assert(offsetof(SystemProcessInfo, sessionId) == offsetof(SYSTEM_PROCESS_INFORMATION, SessionId));
+static_assert(offsetof(SystemProcessInfo, peakVirtualSize) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakVirtualSize));
+static_assert(offsetof(SystemProcessInfo, virtualSize) == offsetof(SYSTEM_PROCESS_INFORMATION, VirtualSize));
+static_assert(offsetof(SystemProcessInfo, peakWorkingSetSize) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakWorkingSetSize));
+static_assert(offsetof(SystemProcessInfo, workingSetSize) == offsetof(SYSTEM_PROCESS_INFORMATION, WorkingSetSize));
+static_assert(offsetof(SystemProcessInfo, quotaPagedPoolUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, QuotaPagedPoolUsage));
+static_assert(offsetof(SystemProcessInfo, quotaNonPagedPoolUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, QuotaNonPagedPoolUsage));
+static_assert(offsetof(SystemProcessInfo, pagefileUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, PagefileUsage));
+static_assert(offsetof(SystemProcessInfo, peakPagefileUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakPagefileUsage));
+static_assert(offsetof(SystemProcessInfo, privatePageCount) == offsetof(SYSTEM_PROCESS_INFORMATION, PrivatePageCount));
+// The SDK's trailing Reserved7[6] covers the six I/O LARGE_INTEGER counters we declare.
+static_assert(offsetof(SystemProcessInfo, readOperationCount) == offsetof(SYSTEM_PROCESS_INFORMATION, Reserved7));
 
-struct ProcessVmInfo
+using NtQuerySystemInformationFn = NTSTATUS(NTAPI*)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+
+[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformationFn() noexcept
 {
-    std::uint64_t virtualSizeBytes = 0;
-    std::uint64_t pageFaultCount = 0;
-};
-
-[[nodiscard]] auto queryProcessVmInfo(HANDLE hProcess) -> std::optional<ProcessVmInfo>
-{
-    if (hProcess == nullptr)
+    static NtQuerySystemInformationFn cachedFn = []() -> NtQuerySystemInformationFn
     {
-        return std::nullopt;
-    }
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (ntdll == nullptr)
+        {
+            return nullptr;
+        }
+        return Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
+    }();
 
-    auto* fn = getNtQueryInformationProcessFn();
-    if (fn == nullptr)
-    {
-        return std::nullopt;
-    }
-
-    TaskSmackVmCounters vm{};
-    ULONG returnLen = 0;
-    // Verify at compile time that sizeof(vm) fits in ULONG
-    static_assert(sizeof(vm) <= std::numeric_limits<ULONG>::max(), "TaskSmackVmCounters size exceeds ULONG range");
-    // Since we've verified the size fits, the narrowOr will never use the fallback
-    const ULONG vmSize = Domain::Numeric::narrowOr<ULONG>(sizeof(vm), ULONG{0});
-    const NTSTATUS status = fn(hProcess, PROCESS_INFO_VM_COUNTERS, &vm, vmSize, &returnLen);
-    if (status < 0)
-    {
-        return std::nullopt;
-    }
-
-    ProcessVmInfo info;
-    // Fallback to 0 if virtual size exceeds uint64_t range (should never happen)
-    info.virtualSizeBytes = Domain::Numeric::narrowOr<uint64_t>(vm.virtualSize, uint64_t{0});
-    // Fallback to 0 if page fault count exceeds uint64_t range (should never happen)
-    info.pageFaultCount = Domain::Numeric::narrowOr<uint64_t>(vm.pageFaultCount, uint64_t{0});
-    return info;
+    return cachedFn;
 }
+
+// Safe and necessary: STATUS_INFO_LENGTH_MISMATCH is the documented NTSTATUS value 0xC0000004;
+// NTSTATUS is signed, so the high-bit-set literal requires an explicit cast.
+constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC0000004L);
+constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{512} * std::size_t{1024};
+constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * std::size_t{1024};
 
 // Structure for ProcessExtendedBasicInformation
 // Available since Windows 8/10, contains IsFrozen and IsBackground flags
@@ -600,41 +626,108 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     results.reserve(m_LastEnumeratedProcessCount);
     ++m_DetailCacheGeneration;
 
-    // Create snapshot of all processes
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE)
+    auto* queryFn = getNtQuerySystemInformationFn();
+    if (queryFn == nullptr)
     {
-        spdlog::error("CreateToolhelp32Snapshot failed: {}", GetLastError());
+        spdlog::error("NtQuerySystemInformation unavailable; cannot enumerate processes");
         return results;
     }
 
-    PROCESSENTRY32W pe32{};
-    pe32.dwSize = sizeof(pe32);
-
-    if (Process32FirstW(hSnapshot, &pe32) == 0)
+    if (m_SnapshotBuffer.empty())
     {
-        CloseHandle(hSnapshot);
+        m_SnapshotBuffer.resize(SNAPSHOT_INITIAL_BYTES);
+    }
+
+    // One bulk kernel snapshot provides PIDs, names, CPU times, memory, I/O, and handle/thread
+    // counts for every process — replacing per-process OpenProcess + query calls per sample.
+    NTSTATUS status = 0;
+    ULONG returnedBytes = 0;
+    for (;;)
+    {
+        returnedBytes = 0;
+        // Fallback saturates at ULONG max; the kernel simply reports the buffer as too small.
+        const ULONG bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
+        status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &returnedBytes);
+        if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
+        {
+            break;
+        }
+        // Snapshot didn't fit; grow with headroom because the process list can change between calls.
+        m_SnapshotBuffer.resize(static_cast<std::size_t>(returnedBytes) + SNAPSHOT_HEADROOM_BYTES);
+    }
+
+    if (status < 0)
+    {
+        spdlog::error("NtQuerySystemInformation(SystemProcessInformation) failed: status=0x{:08X}", static_cast<std::uint32_t>(status));
         return results;
     }
 
-    for (BOOL hasEntry = TRUE; hasEntry != FALSE; hasEntry = Process32NextW(hSnapshot, &pe32))
+    // Never trust nextEntryOffset chains beyond the bytes the kernel actually wrote; clamp to the
+    // buffer size in case ReturnLength was not populated.
+    const std::size_t snapshotBytes =
+        std::min<std::size_t>(m_SnapshotBuffer.size(), returnedBytes != 0 ? returnedBytes : m_SnapshotBuffer.size());
+
+    for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
     {
+        // Safe and necessary: parsing the OS-defined SYSTEM_PROCESS_INFORMATION layout out of the
+        // kernel-filled byte buffer; entries are chained via nextEntryOffset.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto* info = reinterpret_cast<const SystemProcessInfo*>(m_SnapshotBuffer.data() + offset);
+
         ProcessCounters counters{};
-        // Fallback to 0 for PID/parent PID if out of range (should never happen in practice)
-        counters.pid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ProcessID, std::int32_t{0});
-        counters.parentPid = Domain::Numeric::narrowOr<std::int32_t>(pe32.th32ParentProcessID, std::int32_t{0});
-        counters.name = WinString::wideToUtf8(pe32.szExeFile);
-        // Fallback to 0 for thread count if out of range
-        counters.threadCount = Domain::Numeric::narrowOr<std::int32_t>(pe32.cntThreads, std::int32_t{0});
+        // Safe and necessary: the kernel stores PIDs as HANDLE-sized integers in this structure;
+        // Windows PIDs always fit in 32 bits.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto pid = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(info->uniqueProcessId));
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto parentPid = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(info->inheritedFromUniqueProcessId));
 
-        // Get detailed info (CPU times, memory) - may fail for protected processes
-        // Ignore return value - we still want to include process even if details fail
-        (void) getProcessDetails(pe32.th32ProcessID, counters);
+        // Fallback to 0 for PID/parent PID/counts if out of range (should never happen in practice)
+        counters.pid = Domain::Numeric::narrowOr<std::int32_t>(pid, std::int32_t{0});
+        counters.parentPid = Domain::Numeric::narrowOr<std::int32_t>(parentPid, std::int32_t{0});
+        counters.threadCount = Domain::Numeric::narrowOr<std::int32_t>(info->numberOfThreads, std::int32_t{0});
+        counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(info->handleCount, std::int32_t{0});
+
+        // Safe and necessary: kernel time values are non-negative 100-ns tick counts stored in
+        // LARGE_INTEGER (signed); converting to uint64_t preserves the value.
+        counters.userTime = static_cast<std::uint64_t>(info->userTime.QuadPart);
+        counters.systemTime = static_cast<std::uint64_t>(info->kernelTime.QuadPart);
+        counters.startTimeTicks = static_cast<std::uint64_t>(info->createTime.QuadPart);
+        counters.startTimeEpoch = ticksToUnixEpoch(counters.startTimeTicks);
+
+        counters.rssBytes = info->workingSetSize;
+        counters.peakRssBytes = info->peakWorkingSetSize;
+        counters.virtualBytes = info->virtualSize;
+        counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(info->pageFaultCount, std::uint64_t{0});
+
+        // Safe and necessary: cumulative transfer counts are non-negative; LARGE_INTEGER is signed.
+        counters.readBytes = static_cast<std::uint64_t>(info->readTransferCount.QuadPart);
+        counters.writeBytes = static_cast<std::uint64_t>(info->writeTransferCount.QuadPart);
+
+        std::wstring_view imageName;
+        if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)
+        {
+            imageName = std::wstring_view(info->imageName.Buffer, info->imageName.Length / sizeof(wchar_t));
+        }
+        if (imageName.empty() && pid == 0)
+        {
+            counters.name = "[System Process]"; // Parity with the previous Toolhelp name for the Idle pseudo-process
+        }
+
+        // Refresh TTL-cached details (owner, command, publisher, ...) - may fail for protected processes
+        // Ignore return value - we still want to include the process even if details fail
+        (void) getProcessDetails(pid, counters, imageName);
 
         results.push_back(std::move(counters));
-    }
 
-    CloseHandle(hSnapshot);
+        if (info->nextEntryOffset == 0)
+        {
+            break;
+        }
+        // The loop condition re-validates the advanced offset against snapshotBytes, so a
+        // corrupt or truncated entry chain terminates instead of reading past the buffer.
+        offset += info->nextEntryOffset;
+    }
 
     m_LastEnumeratedProcessCount = std::max<std::size_t>(results.size(), std::size_t{64});
 
@@ -654,37 +747,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     return results;
 }
 
-bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters)
+bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName)
 {
-    // Open process with limited access - some system processes won't allow full access
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-
-    if (hProcess == nullptr)
-    {
-        // Can't access this process - leave defaults
-        counters.state = '?';
-        return false;
-    }
-
     const auto now = std::chrono::steady_clock::now();
 
-    // Get CPU times (always read — required for CPU accounting every refresh)
-    FILETIME ftCreation{};
-    FILETIME ftExit{};
-    FILETIME ftKernel{};
-    FILETIME ftUser{};
-
-    if (GetProcessTimes(hProcess, &ftCreation, &ftExit, &ftKernel, &ftUser) != 0)
-    {
-        // Convert to ticks (100-nanosecond intervals)
-        counters.userTime = filetimeToTicks(ftUser);
-        counters.systemTime = filetimeToTicks(ftKernel);
-        counters.startTimeTicks = filetimeToTicks(ftCreation);
-        counters.startTimeEpoch = filetimeToUnixEpoch(ftCreation);
-    }
-
-    // When startTimeTicks is 0, GetProcessTimes failed. Treat as always-miss:
-    // skip caching to prevent {pid, 0} from collapsing multiple processes onto
+    // When startTimeTicks is 0, the snapshot had no create time (Idle/System pseudo-processes).
+    // Treat as always-miss: skip caching to prevent {pid, 0} from collapsing multiple processes onto
     // the same cache entry, which could serve stale details after PID recycling.
     const bool canCache = (counters.startTimeTicks != 0);
 
@@ -697,6 +765,20 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.generation = m_DetailCacheGeneration;
     }
 
+    // Image name: cache the UTF-8 conversion — a process image name never changes.
+    if (!inserted && !cache.name.empty())
+    {
+        counters.name = cache.name;
+    }
+    else if (!imageName.empty())
+    {
+        counters.name = WinString::wideToUtf8(imageName);
+        if (canCache)
+        {
+            cache.name = counters.name;
+        }
+    }
+
     if (!inserted)
     {
         counters.user = cache.user;
@@ -705,17 +787,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.publisher = cache.publisher;
         counters.processType = cache.processType;
         counters.gdiObjectCount = cache.gdiObjectCount;
-        if (cache.virtualSizeBytes.has_value())
-        {
-            counters.virtualBytes = cache.virtualSizeBytes.value();
-        }
-        // Restore slow-changing fields that are now TTL-cached.
-        // Sentinel values (-1 / '\0') indicate the cache entry was inserted but not yet populated;
-        // in that case the fields remain at their zero-initialised defaults.
-        if (cache.handleCount >= 0)
-        {
-            counters.handleCount = cache.handleCount;
-        }
+        // Restore slow-changing fields that are TTL-cached.
+        // Sentinel value '\0' indicates the cache entry was inserted but not yet populated;
+        // in that case the field remains at its default.
         counters.cpuAffinityMask = cache.cpuAffinityMask;
         if (cache.state != '\0')
         {
@@ -726,6 +800,36 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
     const bool refreshLightDetails = inserted || (now >= cache.nextLightRefresh);
     const bool refreshHeavyDetails = inserted || (now >= cache.nextHeavyRefresh);
+
+    if (!refreshLightDetails && !refreshHeavyDetails)
+    {
+        // All remaining fields are TTL-cached; no process handle is needed this sample.
+        if (counters.command.empty())
+        {
+            counters.command = "[" + counters.name + "]";
+        }
+        return true;
+    }
+
+    // A handle is only needed to refresh TTL-cached details. Non-cacheable entries
+    // (startTimeTicks == 0) are kernel pseudo-processes like Idle that OpenProcess can never
+    // access, and TTL backoff cannot be remembered for them — skip the attempt entirely.
+    HANDLE hProcess = canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    if (hProcess == nullptr)
+    {
+        // Can't access this process (protected/system). Push the TTLs forward so we don't retry
+        // OpenProcess every sample; the bulk snapshot still provides fresh counters regardless.
+        if (canCache)
+        {
+            cache.nextLightRefresh = now + m_LightDetailTTL;
+            cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
+        }
+        if (counters.command.empty())
+        {
+            counters.command = "[" + counters.name + "]";
+        }
+        return false;
+    }
 
     if (refreshHeavyDetails)
     {
@@ -785,72 +889,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         counters.command = "[" + counters.name + "]";
     }
 
-    // Get memory info
-    struct ProcessMemoryCountersEx
-    {
-        PROCESS_MEMORY_COUNTERS base{};
-        SIZE_T privateUsage{};
-    };
-
-    ProcessMemoryCountersEx pmc{};
-    pmc.base.cb = sizeof(pmc);
-    bool vmQuerySucceeded = false;
-    std::uint64_t vmVirtualSizeBytes = 0;
-
-    if (GetProcessMemoryInfo(hProcess, &pmc.base, sizeof(pmc)) != 0)
-    {
-        counters.rssBytes = pmc.base.WorkingSetSize;
-        counters.peakRssBytes = pmc.base.PeakWorkingSetSize;
-        counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(pmc.base.PageFaultCount, std::uint64_t{0});
-
-        if (refreshHeavyDetails)
-        {
-            if (auto vmInfo = queryProcessVmInfo(hProcess))
-            {
-                counters.virtualBytes = vmInfo->virtualSizeBytes;
-                counters.pageFaultCount = vmInfo->pageFaultCount;
-                vmQuerySucceeded = true;
-                vmVirtualSizeBytes = vmInfo->virtualSizeBytes;
-            }
-            else if (cache.virtualSizeBytes.has_value())
-            {
-                counters.virtualBytes = cache.virtualSizeBytes.value();
-            }
-            else if (pmc.base.PagefileUsage != 0)
-            {
-                // Fallback: commit charge (not virtual address space size, but avoids reporting RSS/Private bytes as VIRT).
-                counters.virtualBytes = pmc.base.PagefileUsage;
-            }
-            else
-            {
-                // Last resort: private bytes.
-                counters.virtualBytes = pmc.privateUsage;
-            }
-        }
-        else if (cache.virtualSizeBytes.has_value())
-        {
-            counters.virtualBytes = cache.virtualSizeBytes.value();
-        }
-        else if (pmc.base.PagefileUsage != 0)
-        {
-            // Fallback: commit charge (not virtual address space size, but avoids reporting RSS/Private bytes as VIRT).
-            counters.virtualBytes = pmc.base.PagefileUsage;
-        }
-        else
-        {
-            // Last resort: private bytes.
-            counters.virtualBytes = pmc.privateUsage;
-        }
-    }
-
-    // Get I/O counters
-    IO_COUNTERS ioCounters{};
-    if (GetProcessIoCounters(hProcess, &ioCounters) != 0)
-    {
-        counters.readBytes = ioCounters.ReadTransferCount;
-        counters.writeBytes = ioCounters.WriteTransferCount;
-    }
-
     if (refreshLightDetails || refreshHeavyDetails)
     {
         // Medium-cost data refreshed more frequently than heavy details.
@@ -858,17 +896,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
 
         // Process state (R/Z/?) changes infrequently; refresh at light TTL cadence.
         counters.state = getProcessState(hProcess);
-
-        // Handle count changes occasionally; refresh at light TTL cadence.
-        DWORD handleCount = 0;
-        if (GetProcessHandleCount(hProcess, &handleCount) != 0)
-        {
-            counters.handleCount = Domain::Numeric::narrowOr<std::int32_t>(handleCount, std::int32_t{0});
-        }
-        else
-        {
-            spdlog::debug("WindowsProcessProbe: GetProcessHandleCount failed (error code: {})", ::GetLastError());
-        }
     }
 
     if (refreshHeavyDetails)
@@ -895,10 +922,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         cache.publisher = counters.publisher;
         cache.processType = counters.processType;
         cache.gdiObjectCount = counters.gdiObjectCount;
-        if (vmQuerySucceeded)
-        {
-            cache.virtualSizeBytes = vmVirtualSizeBytes;
-        }
         cache.cpuAffinityMask = counters.cpuAffinityMask;
         cache.nice = counters.nice;
         if (canCache)
@@ -911,7 +934,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     {
         cache.status = counters.status;
         cache.state = counters.state;
-        cache.handleCount = counters.handleCount;
         if (canCache)
         {
             cache.nextLightRefresh = now + m_LightDetailTTL;
@@ -987,14 +1009,14 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     return ProcessCapabilities{
         .hasIoCounters = true,
         .hasThreadCount = true,
-        .hasHandleCount = true, // From GetProcessHandleCount
+        .hasHandleCount = true, // From the SystemProcessInformation snapshot
         .hasUserSystemTime = true,
         .hasStartTime = true,
         .hasUser = true,        // From OpenProcessToken + LookupAccountSid
         .hasCommand = true,     // From QueryFullProcessImageName
         .hasNice = true,        // From GetPriorityClass
-        .hasPageFaults = true,  // From NtQueryInformationProcess (VM_COUNTERS)
-        .hasPeakRss = true,     // From PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize
+        .hasPageFaults = true,  // From the SystemProcessInformation snapshot
+        .hasPeakRss = true,     // From the SystemProcessInformation snapshot (PeakWorkingSetSize)
         .hasCpuAffinity = true, // From GetProcessAffinityMask
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
