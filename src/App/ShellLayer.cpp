@@ -200,7 +200,7 @@ void ShellLayer::onUpdate(float deltaTime)
     }
 
     // Ctrl+Shift+M: toggle the Render Metrics overlay (per-chart vertex/index/CPU cost)
-    if (io.KeyCtrl && io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_M))
+    if (io.KeyCtrl && io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_M, false))
     {
         m_ShowRenderMetrics = !m_ShowRenderMetrics;
     }
