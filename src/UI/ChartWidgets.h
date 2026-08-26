@@ -2,6 +2,7 @@
 
 #include "Domain/Numeric.h"
 #include "UI/Format.h"
+#include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -516,6 +517,169 @@ inline void setupLegendDefault()
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoHighlightItem);
 }
 
+/// Declarative configuration for a standard TaskSmack history chart.
+/// yLimits set → Y axis locked to that range (e.g., percent charts pin 0-100).
+/// yLimits empty → Y axis auto-fits the plotted data (rates, counts, watts).
+struct HistoryChartConfig
+{
+    const char* id = "";
+    double xMin = 0.0;
+    double xMax = 0.0;
+    ImPlotFormatter yFormatter = formatAxisLocalized;
+    std::optional<std::pair<double, double>> yLimits;
+    bool showLegend = true;
+    float height = HISTORY_PLOT_HEIGHT_DEFAULT;
+    ImPlotFlags flags = PLOT_FLAGS_DEFAULT;
+};
+
+/// Config for a percent-based history chart: Y axis locked to 0-100 with a percent formatter.
+[[nodiscard]] inline HistoryChartConfig percentHistoryConfig(const char* id, double xMin, double xMax)
+{
+    HistoryChartConfig cfg;
+    cfg.id = id;
+    cfg.xMin = xMin;
+    cfg.xMax = xMax;
+    cfg.yFormatter = formatAxisPercent;
+    cfg.yLimits = std::pair{0.0, 100.0};
+    return cfg;
+}
+
+/// Config for an auto-fit history chart (rates, counts, watts): Y axis fits the plotted data.
+[[nodiscard]] inline HistoryChartConfig autoFitHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter)
+{
+    HistoryChartConfig cfg;
+    cfg.id = id;
+    cfg.xMin = xMin;
+    cfg.xMax = xMax;
+    cfg.yFormatter = yFormatter;
+    return cfg;
+}
+
+/// Maps the config's Y policy to ImPlot axis flags: locked range vs auto-fit.
+[[nodiscard]] constexpr ImPlotAxisFlags historyChartYAxisFlags(bool hasFixedLimits)
+{
+    return hasFixedLimits ? (ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT) : (ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+}
+
+/// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
+/// and applies the shared legend/axis/format/limit setup so all charts look and behave
+/// identically. When the Render Metrics overlay is active it also captures this chart's
+/// vertex/index counts and CPU time. Call series-plotting code only when active() is true;
+/// extra axis setup (e.g., a Y2 axis) may be added right after construction.
+///
+/// Usage:
+///   const HistoryChart chart(percentHistoryConfig("##CPUHistory", axis.xMin, axis.xMax));
+///   if (chart.active()) { ImPlot::PlotLine(...); }
+class HistoryChart
+{
+  public:
+    explicit HistoryChart(const HistoryChartConfig& config) : m_Id(config.id), m_Measure(RenderMetrics::get().enabled())
+    {
+        if (m_Measure)
+        {
+            m_DrawList = ImGui::GetWindowDrawList();
+            m_VtxBefore = m_DrawList->VtxBuffer.Size;
+            m_IdxBefore = m_DrawList->IdxBuffer.Size;
+            m_Start = std::chrono::steady_clock::now();
+        }
+
+        m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), config.flags);
+        if (!m_Active)
+        {
+            return;
+        }
+
+        if (config.showLegend)
+        {
+            setupLegendDefault();
+        }
+        ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, historyChartYAxisFlags(config.yLimits.has_value()));
+        ImPlot::SetupAxisFormat(ImAxis_Y1, config.yFormatter);
+        if (config.yLimits.has_value())
+        {
+            ImPlot::SetupAxisLimits(ImAxis_Y1, config.yLimits->first, config.yLimits->second, ImPlotCond_Always);
+        }
+        ImPlot::SetupAxisLimits(ImAxis_X1, config.xMin, config.xMax, ImPlotCond_Always);
+    }
+
+    ~HistoryChart()
+    {
+        if (m_Active)
+        {
+            ImPlot::EndPlot();
+        }
+
+        if (m_Measure && (m_DrawList != nullptr))
+        {
+            const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
+            RenderMetrics::get().record(
+                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+        }
+    }
+
+    HistoryChart(const HistoryChart&) = delete;
+    HistoryChart& operator=(const HistoryChart&) = delete;
+    HistoryChart(HistoryChart&&) = delete;
+    HistoryChart& operator=(HistoryChart&&) = delete;
+
+    [[nodiscard]] bool active() const noexcept
+    {
+        return m_Active;
+    }
+
+  private:
+    PlotFontGuard m_FontGuard;
+    ImDrawList* m_DrawList = nullptr;
+    std::chrono::steady_clock::time_point m_Start;
+    const char* m_Id = "";
+    int m_VtxBefore = 0;
+    int m_IdxBefore = 0;
+    bool m_Measure = false;
+    bool m_Active = false;
+};
+
+/// RAII scope that records draw-list geometry (and CPU time) added between construction and
+/// destruction under the given id in the Render Metrics overlay. No-op while capture is off.
+class RenderMetricsScope
+{
+  public:
+    /// Builds "baseId + suffix" only when capture is enabled, so disabled builds skip the allocation.
+    RenderMetricsScope(const char* baseId, const char* suffix) : m_Measure(RenderMetrics::get().enabled())
+    {
+        if (m_Measure)
+        {
+            m_Id = std::string(baseId) + suffix;
+            m_DrawList = ImGui::GetWindowDrawList();
+            m_VtxBefore = m_DrawList->VtxBuffer.Size;
+            m_IdxBefore = m_DrawList->IdxBuffer.Size;
+            m_Start = std::chrono::steady_clock::now();
+        }
+    }
+
+    ~RenderMetricsScope()
+    {
+        if (m_Measure && (m_DrawList != nullptr))
+        {
+            const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
+            RenderMetrics::get().record(
+                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+        }
+    }
+
+    RenderMetricsScope(const RenderMetricsScope&) = delete;
+    RenderMetricsScope& operator=(const RenderMetricsScope&) = delete;
+    RenderMetricsScope(RenderMetricsScope&&) = delete;
+    RenderMetricsScope& operator=(RenderMetricsScope&&) = delete;
+
+  private:
+    std::string m_Id;
+    ImDrawList* m_DrawList = nullptr;
+    std::chrono::steady_clock::time_point m_Start;
+    int m_VtxBefore = 0;
+    int m_IdxBefore = 0;
+    bool m_Measure = false;
+};
+
 inline void renderHistoryWithNowBars(const char* tableId,
                                      float plotHeight,
                                      const std::function<void()>& plotFn,
@@ -540,6 +704,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
         const float widthPerBar = 24.0F;
         const ImGuiStyle& style = ImGui::GetStyle();
 
+        const RenderMetricsScope barsScope(tableId, "/bars");
         ImGui::BeginGroup();
         for (size_t i = 0; i < bars.size(); ++i)
         {
@@ -592,6 +757,7 @@ inline void renderHistoryWithNowBars(const char* tableId,
 
         const float widthPerBar = BAR_WIDTH;
 
+        const RenderMetricsScope barsScope(tableId, "/bars");
         ImGui::BeginGroup();
         for (size_t i = 0; i < bars.size(); ++i)
         {

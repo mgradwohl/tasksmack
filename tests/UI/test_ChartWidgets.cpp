@@ -319,6 +319,36 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)
     EXPECT_FALSE(hoveredIndexFromPlotX(axisD, 0.0).has_value());
 }
 
+// ========== HistoryChart configuration ==========
+
+TEST(HistoryChartConfigTest, PercentConfigLocksZeroToHundred)
+{
+    const auto cfg = percentHistoryConfig("##CPU", -60.0, 0.0);
+    EXPECT_STREQ(cfg.id, "##CPU");
+    EXPECT_DOUBLE_EQ(cfg.xMin, -60.0);
+    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.yLimits->second, 100.0);
+    EXPECT_EQ(cfg.yFormatter, &formatAxisPercent);
+    EXPECT_TRUE(cfg.showLegend);
+    EXPECT_FLOAT_EQ(cfg.height, HISTORY_PLOT_HEIGHT_DEFAULT);
+}
+
+TEST(HistoryChartConfigTest, AutoFitConfigHasNoYLimits)
+{
+    const auto cfg = autoFitHistoryConfig("##Net", -30.0, 0.0, formatAxisBytesPerSec);
+    EXPECT_STREQ(cfg.id, "##Net");
+    EXPECT_FALSE(cfg.yLimits.has_value());
+    EXPECT_EQ(cfg.yFormatter, &formatAxisBytesPerSec);
+}
+
+TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
+{
+    EXPECT_EQ(historyChartYAxisFlags(true), ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+    EXPECT_EQ(historyChartYAxisFlags(false), ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
+}
+
 // ========== Generic helpers ==========
 
 TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)

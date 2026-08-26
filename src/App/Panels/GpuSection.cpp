@@ -27,18 +27,14 @@ namespace
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
-using UI::Widgets::formatAxisPercent;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::tailAlignedSpan;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 /// Scale each sample to a 0–100 percentage relative to maxVal, filling the output vector in-place.
 /// Accepts a reusable buffer to avoid per-call heap allocation.
@@ -216,15 +212,9 @@ void renderGpuSection(RenderContext& ctx)
 
         auto gpuCorePlot = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##GPUCoreHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUCoreHistory", axisConfig.xMin, axisConfig.xMax));
+            if (chart.active())
             {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
                 if (!utilData.empty())
                 {
                     plotLineWithFill("Utilization",
@@ -368,8 +358,6 @@ void renderGpuSection(RenderContext& ctx)
                         ImGui::EndTooltip();
                     }
                 }
-
-                ImPlot::EndPlot();
             }
         };
 
@@ -495,15 +483,10 @@ void renderGpuSection(RenderContext& ctx)
 
             auto gpuThermalPlot = [&]()
             {
-                const UI::Widgets::PlotFontGuard fontGuard;
-                if (ImPlot::BeginPlot("##GPUThermalHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+                const UI::Widgets::HistoryChart chart(
+                    UI::Widgets::percentHistoryConfig("##GPUThermalHistory", axisConfig.xMin, axisConfig.xMax));
+                if (chart.active())
                 {
-                    UI::Widgets::setupLegendDefault();
-                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisPercent);
-                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                    ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
                     // Temperature (normalized to 0-100%)
                     if (caps.hasTemperature && !tempData.empty())
                     {
@@ -595,8 +578,6 @@ void renderGpuSection(RenderContext& ctx)
                             ImGui::EndTooltip();
                         }
                     }
-
-                    ImPlot::EndPlot();
                 }
             };
 
