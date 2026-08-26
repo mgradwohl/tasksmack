@@ -64,11 +64,21 @@ echo
     "$@"
 
 # Redact machine-identifying context so results are safe to commit (repo convention:
-# host_name "redacted", bare executable name).
-if command -v jq >/dev/null 2>&1 && [[ -f "${OUT_FILE}" ]]; then
-    jq '.context.host_name = "redacted" | .context.executable = (.context.executable | split("/") | last)' \
-        "${OUT_FILE}" > "${OUT_FILE}.tmp" && mv "${OUT_FILE}.tmp" "${OUT_FILE}"
-fi
+# host_name "redacted", bare executable name). Fails closed under `set -e`: if
+# redaction fails, the script aborts before reporting the results as ready to use.
+# python3 is already a build prerequisite (GLAD loader generation).
+python3 - "${OUT_FILE}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+context = data.setdefault("context", {})
+context["host_name"] = "redacted"
+context["executable"] = pathlib.PurePath(context.get("executable", "")).name or "TaskSmackBenchmarks"
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+PY
 
 echo
 echo "Results written to: ${OUT_FILE}"
