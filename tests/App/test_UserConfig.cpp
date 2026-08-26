@@ -5,6 +5,7 @@
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
+#include <toml++/toml.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -407,6 +408,84 @@ TEST_F(UserConfigLoadSaveTest, LoadClampsInsaneWindowPosition)
     EXPECT_FALSE(UserConfig::get().settings().windowPosY.has_value());
 }
 
+TEST_F(UserConfigLoadSaveTest, LoadClampsSettingsAndAppliesConfiguredColumns)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << R"([sampling]
+interval_ms = 999999
+history_max_seconds = -1
+
+[metrics]
+min_time_for_rate_seconds = 999.0
+max_sane_rate_bps = -1.0
+integrated_gpu_vram_threshold_mb = 999999
+
+[ui]
+chart_smooth_factor = 999.0
+chart_tau_ms_min = -1
+chart_tau_ms_max = 999999
+progress_color_low_threshold = -1.0
+progress_color_high_threshold = 999.0
+show_privilege_notice = false
+
+[process_columns]
+pid = false
+name = true
+)";
+    }
+
+    UserConfig::get().load();
+    const auto& settings = UserConfig::get().settings();
+    EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    EXPECT_EQ(settings.maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_MIN);
+    EXPECT_DOUBLE_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
+    EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    EXPECT_EQ(settings.integratedGpuVramThresholdBytes, Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
+    EXPECT_DOUBLE_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_MAX);
+    EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
+    EXPECT_EQ(settings.chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_MAX);
+    EXPECT_DOUBLE_EQ(settings.progressColorLowThreshold, Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_MIN);
+    EXPECT_DOUBLE_EQ(settings.progressColorHighThreshold, Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
+    EXPECT_FALSE(settings.showPrivilegeNotice);
+    EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
+    EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
+}
+
+TEST_F(UserConfigLoadSaveTest, LoadIgnoresValuesWithWrongTypes)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << R"([sampling]
+interval_ms = "fast"
+
+[theme]
+id = 42
+
+[font]
+size = "unknown"
+
+[window]
+width = "wide"
+height = []
+maximized = "yes"
+
+[process_columns]
+pid = "false"
+)";
+    }
+
+    UserConfig::get().load();
+    const auto& settings = UserConfig::get().settings();
+    EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    EXPECT_EQ(settings.themeId, "arctic-fire");
+    EXPECT_EQ(settings.fontSize, UI::FontSize::Medium);
+    EXPECT_EQ(settings.windowWidth, 1280);
+    EXPECT_EQ(settings.windowHeight, 720);
+    EXPECT_FALSE(settings.windowMaximized);
+    EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::PID));
+}
+
 TEST_F(UserConfigLoadSaveTest, SaveCreatesFileAndRoundTrips)
 {
     auto& cfg = UserConfig::get();
@@ -441,6 +520,18 @@ TEST_F(UserConfigLoadSaveTest, SaveWithNoOptionalWindowPos)
     cfg.load();
     EXPECT_FALSE(cfg.settings().windowPosX.has_value());
     EXPECT_FALSE(cfg.settings().windowPosY.has_value());
+}
+
+TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
+{
+    auto& config = UserConfig::get();
+    config.settings().fontSize = static_cast<UI::FontSize>(255);
+    config.save();
+
+    const auto savedConfig = toml::parse_file(m_ConfigPath.string());
+    const auto fontSize = savedConfig["font"]["size"].value<std::string>();
+    ASSERT_TRUE(fontSize.has_value());
+    EXPECT_EQ(*fontSize, "medium");
 }
 
 } // namespace
