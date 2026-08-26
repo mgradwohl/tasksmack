@@ -442,11 +442,11 @@ name = true
     EXPECT_DOUBLE_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
     EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
     EXPECT_EQ(settings.integratedGpuVramThresholdBytes, Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
-    EXPECT_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_MAX);
+    EXPECT_DOUBLE_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_MAX);
     EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
     EXPECT_EQ(settings.chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_MAX);
-    EXPECT_EQ(settings.progressColorLowThreshold, Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_MIN);
-    EXPECT_EQ(settings.progressColorHighThreshold, Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
+    EXPECT_DOUBLE_EQ(settings.progressColorLowThreshold, Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_MIN);
+    EXPECT_DOUBLE_EQ(settings.progressColorHighThreshold, Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_MAX);
     EXPECT_FALSE(settings.showPrivilegeNotice);
     EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
