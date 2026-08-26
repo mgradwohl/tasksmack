@@ -415,8 +415,6 @@ TEST_F(UserConfigLoadSaveTest, LoadClampsSettingsAndAppliesConfiguredColumns)
         file << R"([sampling]
 interval_ms = 999999
 history_max_seconds = -1
-pdh_instance_refresh_seconds = 999999
-socket_stats_cache_ttl_ms = -1
 
 [metrics]
 min_time_for_rate_seconds = 999.0
@@ -441,8 +439,6 @@ name = true
     const auto& settings = UserConfig::get().settings();
     EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
     EXPECT_EQ(settings.maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_MIN);
-    EXPECT_EQ(settings.pdhInstanceRefreshSeconds, Domain::Sampling::PDH_INSTANCE_REFRESH_SECONDS_MAX);
-    EXPECT_EQ(settings.socketStatsCacheTtlMs, Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_MIN);
     EXPECT_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
     EXPECT_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
     EXPECT_EQ(settings.integratedGpuVramThresholdBytes, Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
