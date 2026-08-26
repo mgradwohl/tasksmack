@@ -369,7 +369,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
         {
-            m_LastGpuMergeTime = currentSampleTime;
+            m_LastGpuMergeTime = m_Now();
             m_HasLastGpuMergeTime = true;
         }
     }

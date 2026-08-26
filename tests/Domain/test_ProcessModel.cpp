@@ -1739,6 +1739,13 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     EXPECT_EQ(snapshots[0].gpuMemoryBytes, 512ULL * 1024 * 1024);
     EXPECT_EQ(snapshots[0].gpuDevices, "Test GPU");
     EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount);
+
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1200, 500)});
+    rawProcessProbe->setTotalCpuTime(300000);
+    processModel.refresh();
+
+    EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount + 1);
 }
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
