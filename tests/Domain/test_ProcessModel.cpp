@@ -1710,6 +1710,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
 
 TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
 {
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
     auto processProbe = std::make_unique<MockProcessProbe>();
     auto* rawProcessProbe = processProbe.get();
     rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
@@ -1720,7 +1721,7 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
 
-    Domain::ProcessModel processModel(std::move(processProbe));
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
     processModel.setGPUModel(gpuModel);
     gpuModel->refresh();
     processModel.refresh();
@@ -1728,6 +1729,7 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
     ASSERT_EQ(initialProcessGpuQueryCount, 1);
 
     processModel.setInteractionActive(true);
+    currentTime += std::chrono::seconds(1);
     rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
     rawProcessProbe->setTotalCpuTime(200000);
     processModel.refresh();

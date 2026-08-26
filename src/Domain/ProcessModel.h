@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -37,7 +38,10 @@ struct ProcessSystemHistories
 class ProcessModel : public ISamplable
 {
   public:
-    explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe);
+    using Clock = std::chrono::steady_clock;
+    using NowFunction = std::function<Clock::time_point()>;
+
+    explicit ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now = [] { return Clock::now(); });
     ~ProcessModel() override = default;
 
     ProcessModel(const ProcessModel&) = delete;
@@ -99,6 +103,7 @@ class ProcessModel : public ISamplable
 
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
+    NowFunction m_Now;
     std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
     Platform::ProcessCapabilities m_Capabilities;
 
@@ -160,11 +165,11 @@ class ProcessModel : public ISamplable
     std::uint64_t m_CurrentGeneration = 0;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
-    std::uint64_t m_SystemTotalMemory = 0;                  // For memoryPercent calculation
-    long m_TicksPerSecond = 100;                            // For cpuTimeSeconds calculation
-    std::chrono::steady_clock::time_point m_PrevSampleTime; // For rate calculations (network, I/O, power)
+    std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation
+    long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
+    Clock::time_point m_PrevSampleTime;    // For rate calculations (network, I/O, power)
     bool m_HasPrevSampleTime = false;
-    std::chrono::steady_clock::time_point m_StartTime; // For history timestamp alignment
+    Clock::time_point m_StartTime; // For history timestamp alignment
     bool m_HasStartTime = false;
 
     // Aggregated system histories (aligned by timestamps)
@@ -182,7 +187,7 @@ class ProcessModel : public ISamplable
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
     std::atomic<bool> m_InteractionActive{false};
-    std::chrono::steady_clock::time_point m_LastGpuMergeTime;
+    Clock::time_point m_LastGpuMergeTime;
     bool m_HasLastGpuMergeTime = false;
 
     // Thread safety

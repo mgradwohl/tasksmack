@@ -439,8 +439,8 @@ name = true
     const auto& settings = UserConfig::get().settings();
     EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
     EXPECT_EQ(settings.maxHistorySeconds, Domain::Sampling::HISTORY_SECONDS_MIN);
-    EXPECT_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
-    EXPECT_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
+    EXPECT_DOUBLE_EQ(settings.minTimeForRateSeconds, Domain::Sampling::MIN_TIME_FOR_RATE_SECONDS_MAX);
+    EXPECT_DOUBLE_EQ(settings.maxSaneRateBps, Domain::Sampling::MAX_SANE_RATE_BPS_MIN);
     EXPECT_EQ(settings.integratedGpuVramThresholdBytes, Domain::Sampling::INTEGRATED_GPU_VRAM_THRESHOLD_BYTES_MAX);
     EXPECT_EQ(settings.chartSmoothFactor, Domain::Sampling::CHART_SMOOTH_FACTOR_MAX);
     EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
