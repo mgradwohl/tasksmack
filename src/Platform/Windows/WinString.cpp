@@ -1,6 +1,7 @@
 #include "WinString.h"
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -44,8 +45,13 @@ namespace Platform::WinString
         return {};
     }
 
-    // Safe and necessary: WideCharToMultiByte requires an int length; wide strings from the OS
-    // never approach INT_MAX characters.
+    // WideCharToMultiByte requires an int length; reject views that cannot be represented.
+    // OS-provided strings never approach INT_MAX characters, so this is effectively unreachable.
+    if (wide.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+    {
+        return {};
+    }
+    // Safe and necessary: bounds-checked above.
     const int length = static_cast<int>(wide.size());
     // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - explicit length is passed alongside data()
     const int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wide.data(), length, nullptr, 0, nullptr, nullptr);

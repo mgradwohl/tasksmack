@@ -63,6 +63,13 @@ echo
     --benchmark_out_format=json \
     "$@"
 
+# Redact machine-identifying context so results are safe to commit (repo convention:
+# host_name "redacted", bare executable name).
+if command -v jq >/dev/null 2>&1 && [[ -f "${OUT_FILE}" ]]; then
+    jq '.context.host_name = "redacted" | .context.executable = (.context.executable | split("/") | last)' \
+        "${OUT_FILE}" > "${OUT_FILE}.tmp" && mv "${OUT_FILE}.tmp" "${OUT_FILE}"
+fi
+
 echo
 echo "Results written to: ${OUT_FILE}"
 echo "Compare two runs with Google Benchmark's compare.py:"

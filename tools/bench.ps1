@@ -61,6 +61,17 @@ Write-Host ""
 
 & $benchBin @benchArgs
 
+# Redact machine-identifying context so results are safe to commit (repo convention:
+# host_name "redacted", bare executable name).
+if (Test-Path $outFile) {
+    $json = Get-Content $outFile -Raw | ConvertFrom-Json
+    if ($json.context) {
+        $json.context.host_name = 'redacted'
+        $json.context.executable = Split-Path $json.context.executable -Leaf
+        $json | ConvertTo-Json -Depth 10 | Set-Content $outFile -Encoding utf8
+    }
+}
+
 Write-Host ""
 Write-Host "Results written to: $outFile"
 Write-Host "Compare two runs with Google Benchmark's compare.py:"

@@ -375,7 +375,8 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
 {
     // The bulk snapshot must deliver handle count, virtual memory, and I/O counters
-    // on every enumerate() call — these are no longer TTL-cached.
+    // on every enumerate() call — these are no longer TTL-cached. Force deterministic
+    // changes between samples and verify the very next snapshot reflects them.
     WindowsProcessProbe probe;
     const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
@@ -385,15 +386,41 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
-    for (int sample = 0; sample < 3; ++sample)
+    const auto before = findOurProcess(probe.enumerate());
+    EXPECT_EQ(before.pid, ourPid);
+    EXPECT_GT(before.handleCount, 0);
+    EXPECT_GT(before.virtualBytes, 0ULL);
+    EXPECT_GT(before.rssBytes, 0ULL);
+    EXPECT_GT(before.pageFaultCount, 0ULL);
+    EXPECT_GT(before.threadCount, 0);
+
+    // Open a batch of event handles and reserve a large virtual region. A TTL-cached
+    // implementation would keep serving the stale pre-change values here.
+    constexpr int EXTRA_HANDLES = 64;
+    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB reserve
+    std::vector<HANDLE> events;
+    events.reserve(EXTRA_HANDLES);
+    for (int i = 0; i < EXTRA_HANDLES; ++i)
     {
-        const auto proc = findOurProcess(probe.enumerate());
-        EXPECT_EQ(proc.pid, ourPid);
-        EXPECT_GT(proc.handleCount, 0) << "sample " << sample;
-        EXPECT_GT(proc.virtualBytes, 0ULL) << "sample " << sample;
-        EXPECT_GT(proc.rssBytes, 0ULL) << "sample " << sample;
-        EXPECT_GT(proc.pageFaultCount, 0ULL) << "sample " << sample;
-        EXPECT_GT(proc.threadCount, 0) << "sample " << sample;
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        ASSERT_NE(event, nullptr);
+        events.push_back(event);
+    }
+    void* reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
+    ASSERT_NE(reservation, nullptr);
+
+    const auto after = findOurProcess(probe.enumerate());
+
+    // Allow slack for unrelated handle churn in the test process, but the next sample
+    // must observe most of the new handles and the full reservation immediately.
+    EXPECT_GE(after.handleCount, before.handleCount + (EXTRA_HANDLES / 2)) << "handle count must be refreshed every sample, not TTL-cached";
+    EXPECT_GE(after.virtualBytes, before.virtualBytes + (EXTRA_VIRTUAL_BYTES / 2))
+        << "virtual size must be refreshed every sample, not TTL-cached";
+
+    VirtualFree(reservation, 0, MEM_RELEASE);
+    for (HANDLE event : events)
+    {
+        CloseHandle(event);
     }
 }
 
