@@ -1,6 +1,7 @@
 #pragma once
 
 #include <format>
+#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -51,7 +52,11 @@ class RenderMetrics
 
     /// Record one chart's cost for the given frame. When frameIndex advances, the previous
     /// frame's samples become the "last frame" snapshot shown by the overlay.
-    void record(std::string_view id, int vertices, int indices, double micros, int frameIndex)
+    ///
+    /// noexcept: called from destructors (HistoryChart, RenderMetricsScope), so a throwing
+    /// allocation would hit std::terminate. Metrics are best-effort — on allocation failure
+    /// the sample is dropped rather than propagating the exception.
+    void record(std::string_view id, int vertices, int indices, double micros, int frameIndex) noexcept
     {
         if (!m_Enabled)
         {
@@ -65,7 +70,14 @@ class RenderMetrics
             m_CurrentFrame = frameIndex;
         }
 
-        m_Current.push_back({.id = std::string(id), .vertices = vertices, .indices = indices, .micros = micros});
+        try
+        {
+            m_Current.push_back({.id = std::string(id), .vertices = vertices, .indices = indices, .micros = micros});
+        }
+        catch (const std::bad_alloc&)
+        {
+            // Drop the sample; instrumentation must never crash the app.
+        }
     }
 
     [[nodiscard]] const std::vector<ChartRenderSample>& lastFrame() const noexcept
