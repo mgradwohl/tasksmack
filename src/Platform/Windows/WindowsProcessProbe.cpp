@@ -248,6 +248,30 @@ struct SystemProcessInfo
     LARGE_INTEGER otherTransferCount;
 };
 
+// Compile-time ABI validation against the public SDK declaration: winternl.h names a subset of
+// the fields (hiding the rest behind Reserved blocks of identical size), so every named field's
+// offset and the total size must match our complete layout exactly. Any SDK layout change or a
+// mistake in our declaration fails the build instead of silently producing garbage counters.
+static_assert(sizeof(SystemProcessInfo) == sizeof(SYSTEM_PROCESS_INFORMATION));
+static_assert(offsetof(SystemProcessInfo, nextEntryOffset) == offsetof(SYSTEM_PROCESS_INFORMATION, NextEntryOffset));
+static_assert(offsetof(SystemProcessInfo, numberOfThreads) == offsetof(SYSTEM_PROCESS_INFORMATION, NumberOfThreads));
+static_assert(offsetof(SystemProcessInfo, imageName) == offsetof(SYSTEM_PROCESS_INFORMATION, ImageName));
+static_assert(offsetof(SystemProcessInfo, basePriority) == offsetof(SYSTEM_PROCESS_INFORMATION, BasePriority));
+static_assert(offsetof(SystemProcessInfo, uniqueProcessId) == offsetof(SYSTEM_PROCESS_INFORMATION, UniqueProcessId));
+static_assert(offsetof(SystemProcessInfo, handleCount) == offsetof(SYSTEM_PROCESS_INFORMATION, HandleCount));
+static_assert(offsetof(SystemProcessInfo, sessionId) == offsetof(SYSTEM_PROCESS_INFORMATION, SessionId));
+static_assert(offsetof(SystemProcessInfo, peakVirtualSize) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakVirtualSize));
+static_assert(offsetof(SystemProcessInfo, virtualSize) == offsetof(SYSTEM_PROCESS_INFORMATION, VirtualSize));
+static_assert(offsetof(SystemProcessInfo, peakWorkingSetSize) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakWorkingSetSize));
+static_assert(offsetof(SystemProcessInfo, workingSetSize) == offsetof(SYSTEM_PROCESS_INFORMATION, WorkingSetSize));
+static_assert(offsetof(SystemProcessInfo, quotaPagedPoolUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, QuotaPagedPoolUsage));
+static_assert(offsetof(SystemProcessInfo, quotaNonPagedPoolUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, QuotaNonPagedPoolUsage));
+static_assert(offsetof(SystemProcessInfo, pagefileUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, PagefileUsage));
+static_assert(offsetof(SystemProcessInfo, peakPagefileUsage) == offsetof(SYSTEM_PROCESS_INFORMATION, PeakPagefileUsage));
+static_assert(offsetof(SystemProcessInfo, privatePageCount) == offsetof(SYSTEM_PROCESS_INFORMATION, PrivatePageCount));
+// The SDK's trailing Reserved7[6] covers the six I/O LARGE_INTEGER counters we declare.
+static_assert(offsetof(SystemProcessInfo, readOperationCount) == offsetof(SYSTEM_PROCESS_INFORMATION, Reserved7));
+
 using NtQuerySystemInformationFn = NTSTATUS(NTAPI*)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 
 [[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformationFn() noexcept
