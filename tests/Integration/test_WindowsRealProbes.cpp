@@ -215,7 +215,7 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
         {
             // This test just verifies we can retrieve I/O counters without error
             // Values may be 0 for newly started or idle processes
-            // The fact that we got here means GetProcessIoCounters succeeded
+            // The fact that we got here means the bulk snapshot delivered I/O counters
         }
         if (caps.hasThreadCount)
         {

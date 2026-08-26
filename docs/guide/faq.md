@@ -35,7 +35,7 @@ sudo setcap cap_dac_read_search+ep /path/to/TaskSmack
 
 `CAP_DAC_READ_SEARCH` grants access to `/proc/[pid]/io` without requiring full root. Re-apply the capability after each update.
 
-> On Windows, I/O counters are always available via `GetProcessIoCounters` — no elevated privileges are needed.
+> On Windows, I/O counters are always available — they come from the bulk `SystemProcessInformation` snapshot, so no elevated privileges are needed.
 
 ---
 

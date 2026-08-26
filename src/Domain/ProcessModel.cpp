@@ -699,8 +699,9 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
         // I/O and page fault rates use delta-based calculation:
         //   rate = (currentCounter - previousCounter) / elapsedSeconds
         //
-        // This works correctly for I/O because GetProcessIoCounters returns per-process
-        // cumulative counters that are stable and monotonically increasing (not affected
+        // This works correctly for I/O because the probes report per-process cumulative
+        // transfer counters (Linux: /proc/[pid]/io; Windows: the SystemProcessInformation
+        // snapshot) that are stable and monotonically increasing (not affected
         // by file handle churn the way network counters are affected by TCP connection churn).
         //
         // Network rates are computed separately in computeSnapshots() using the baseline

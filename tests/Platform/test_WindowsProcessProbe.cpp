@@ -445,7 +445,7 @@ TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
 {
     // The system snapshot always contains the Idle pseudo-process (PID 0) and the
     // System process (PID 4); both are inaccessible via OpenProcess but must still
-    // be reported with stable names.
+    // be reported with stable names across samples (name cache / fallback path).
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
@@ -456,6 +456,17 @@ TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
     const auto system = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system, processes.end());
     EXPECT_FALSE(system->name.empty());
+
+    // A second sample must report identical names — the cached-name/fallback path
+    // may not degrade or change once details refresh TTLs kick in.
+    const auto second = probe.enumerate();
+    const auto idle2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    ASSERT_NE(idle2, second.end());
+    EXPECT_EQ(idle2->name, idle->name);
+
+    const auto system2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    ASSERT_NE(system2, second.end());
+    EXPECT_EQ(system2->name, system->name);
 }
 
 TEST(WindowsProcessProbeTest, HandlesMissingProcesses)
