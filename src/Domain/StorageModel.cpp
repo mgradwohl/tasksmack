@@ -27,7 +27,26 @@ namespace Domain
 
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
     : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
-{}
+{
+    applyHistoryCapacity();
+}
+
+void StorageModel::applyHistoryCapacity()
+{
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_History.setCapacity(capacity);
+    m_Timestamps.setCapacity(capacity);
+    for (auto& [name, history] : m_DiskReadHistory)
+    {
+        history.setCapacity(capacity);
+    }
+    for (auto& [name, history] : m_DiskWriteHistory)
+    {
+        history.setCapacity(capacity);
+    }
+}
 
 void StorageModel::sample()
 {
@@ -85,13 +104,12 @@ void StorageModel::sample()
     // Update shared state
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        m_LatestSnapshot = snapshot;
-        m_History.push_back(snapshot);
-        m_Timestamps.push_back(nowSeconds);
+        m_LatestSnapshot = snapshot;    // Keep a copy for latestSnapshot() queries
+        m_Timestamps.push(nowSeconds);
 
         // Maintain per-disk I/O histories aligned to m_Timestamps.
         // Track which disks are present in this sample; known-but-absent disks
-        // get a zero placeholder so every deque stays index-aligned with m_Timestamps.
+        // get a zero placeholder so every ring buffer stays aligned with m_Timestamps.
         std::unordered_set<std::string> presentDisks;
         presentDisks.reserve(snapshot.disks.size());
         for (const auto& disk : snapshot.disks)
@@ -100,28 +118,38 @@ void StorageModel::sample()
             presentDisks.insert(name);
             if (!m_DiskReadHistory.contains(name))
             {
-                // New disk: backfill zeros for all prior timestamps before this sample.
+                // New disk: backfill zeros for the samples taken before it appeared
+                // (clamped to ring capacity) so its series stays index-aligned
+                // with m_Timestamps.
                 m_DiskOrder.push_back(name);
-                const size_t backfillCount = m_Timestamps.size() - 1; // current ts already pushed
-                for (size_t i = 0; i < backfillCount; ++i)
+                auto& readHistory = m_DiskReadHistory[name];
+                auto& writeHistory = m_DiskWriteHistory[name];
+                const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+                readHistory.setCapacity(capacity);
+                writeHistory.setCapacity(capacity);
+                const std::size_t backfillCount = std::min(m_Timestamps.size() - 1, capacity - 1);
+                for (std::size_t i = 0; i < backfillCount; ++i)
                 {
-                    m_DiskReadHistory[name].push_back(0.0);
-                    m_DiskWriteHistory[name].push_back(0.0);
+                    readHistory.push(0.0);
+                    writeHistory.push(0.0);
                 }
             }
-            m_DiskReadHistory[name].push_back(disk.readBytesPerSec);
-            m_DiskWriteHistory[name].push_back(disk.writeBytesPerSec);
+            m_DiskReadHistory[name].push(disk.readBytesPerSec);
+            m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
         }
         // Append a zero placeholder for known disks absent from this sample.
         for (const auto& name : m_DiskOrder)
         {
             if (!presentDisks.contains(name))
             {
-                m_DiskReadHistory[name].push_back(0.0);
-                m_DiskWriteHistory[name].push_back(0.0);
+                m_DiskReadHistory[name].push(0.0);
+                m_DiskWriteHistory[name].push(0.0);
             }
         }
 
+        // Move snapshot into the history ring after all per-disk iteration is complete,
+        // avoiding an extra deep-copy of the disks vector on every sample.
+        m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
         publish();
         m_HasPrevSample = true;
@@ -129,9 +157,9 @@ void StorageModel::sample()
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
-                  snapshot.disks.size(),
-                  snapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
-                  snapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
+                  m_LatestSnapshot.disks.size(),
+                  m_LatestSnapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
+                  m_LatestSnapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
 }
 
 std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept
@@ -153,8 +181,9 @@ void StorageModel::publish()
     publication->timestamps = HistoryUtils::toVector(m_Timestamps);
     publication->totalReadHistory.reserve(m_History.size());
     publication->totalWriteHistory.reserve(m_History.size());
-    for (const auto& snapshot : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
+        const auto& snapshot = m_History.ref(i);
         publication->totalReadHistory.push_back(snapshot.totalReadBytesPerSec);
         publication->totalWriteHistory.push_back(snapshot.totalWriteBytesPerSec);
     }
@@ -235,27 +264,18 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 
 void StorageModel::trimHistory(double nowSeconds)
 {
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps, cutoff, m_History));
-
-    // Align per-disk deques to the timestamp count so each disk series remains
-    // index-aligned with m_Timestamps even when a disk is introduced later or
-    // missing from some samples.
-    // Use .find() rather than operator[] to avoid unintentionally inserting
-    // empty deques for names that do not yet have map entries.
-    const size_t targetSize = m_Timestamps.size();
-    for (const auto& name : m_DiskOrder)
+    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps, cutoff, m_History);
+    for (auto& [name, history] : m_DiskReadHistory)
     {
-        if (auto readIt = m_DiskReadHistory.find(name); readIt != m_DiskReadHistory.end())
-        {
-            auto& readHist = readIt->second;
-            HistoryUtils::alignFrontToSize(readHist, targetSize);
-        }
-        if (auto writeIt = m_DiskWriteHistory.find(name); writeIt != m_DiskWriteHistory.end())
-        {
-            auto& writeHist = writeIt->second;
-            HistoryUtils::alignFrontToSize(writeHist, targetSize);
-        }
+        history.discardFront(removeCount);
+    }
+    for (auto& [name, history] : m_DiskWriteHistory)
+    {
+        history.discardFront(removeCount);
     }
 }
 
@@ -276,9 +296,9 @@ std::vector<double> StorageModel::totalReadHistory() const
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
-    for (const auto& snap : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(snap.totalReadBytesPerSec);
+        out.push_back(m_History.ref(i).totalReadBytesPerSec);
     }
     return out;
 }
@@ -288,9 +308,9 @@ std::vector<double> StorageModel::totalWriteHistory() const
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
-    for (const auto& snap : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(snap.totalWriteBytesPerSec);
+        out.push_back(m_History.ref(i).totalWriteBytesPerSec);
     }
     return out;
 }
@@ -308,11 +328,11 @@ std::vector<PerDiskHistory> StorageModel::perDiskHistory() const
         const auto writeIt = m_DiskWriteHistory.find(name);
         if (readIt != m_DiskReadHistory.end())
         {
-            entry.readBytesPerSec = {readIt->second.begin(), readIt->second.end()};
+            entry.readBytesPerSec = HistoryUtils::toVector(readIt->second);
         }
         if (writeIt != m_DiskWriteHistory.end())
         {
-            entry.writeBytesPerSec = {writeIt->second.begin(), writeIt->second.end()};
+            entry.writeBytesPerSec = HistoryUtils::toVector(writeIt->second);
         }
         result.push_back(std::move(entry));
     }
@@ -328,7 +348,13 @@ std::vector<double> StorageModel::historyTimestamps() const
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = seconds;
+    m_MaxHistorySeconds = std::max(0.0, seconds);
+    applyHistoryCapacity();
+
+    if (!m_Timestamps.empty())
+    {
+        trimHistory(m_Timestamps.latest());
+    }
 }
 
 Platform::DiskCapabilities StorageModel::capabilities() const

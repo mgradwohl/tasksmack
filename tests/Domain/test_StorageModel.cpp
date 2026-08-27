@@ -184,9 +184,9 @@ TEST(StorageModelTest, MaxHistorySecondsLimitsHistory)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    auto history = model.history();
-    // History should be trimmed - exact size depends on timing, but should be < 10
-    EXPECT_LT(history.size(), 10ULL);
+    const auto history = model.history();
+    // Retention should be trimmed to the configured 0.5-second window.
+    EXPECT_LE(history.size(), 7ULL);
 }
 
 // =============================================================================
@@ -680,20 +680,23 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     const auto history = model.perDiskHistory();
 
     ASSERT_EQ(history.size(), 2U);
+    // Every per-disk series is index-aligned with the shared timestamp axis:
+    // the newly discovered disk is backfilled with 0.0 for samples taken
+    // before it appeared.
     for (const auto& entry : history)
     {
-        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size())
-            << "Per-disk read history for " << entry.deviceName << " must be aligned to timestamps";
-        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size())
-            << "Per-disk write history for " << entry.deviceName << " must be aligned to timestamps";
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size()) << entry.deviceName;
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size()) << entry.deviceName;
     }
 
-    // nvme0n1 appeared in sample 2: its oldest (backfilled) entry must be 0.0
     const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "nvme0n1"; });
     ASSERT_NE(it, history.end());
-    ASSERT_GE(it->readBytesPerSec.size(), 1U);
+    ASSERT_EQ(it->readBytesPerSec.size(), 2U);
+    // Sample 1 predates the disk: backfilled placeholder.
     EXPECT_DOUBLE_EQ(it->readBytesPerSec.front(), 0.0);
     EXPECT_DOUBLE_EQ(it->writeBytesPerSec.front(), 0.0);
+    // Sample 2 is its real (finite, non-negative) rate.
+    EXPECT_GE(it->readBytesPerSec.back(), 0.0);
 }
 
 // =============================================================================

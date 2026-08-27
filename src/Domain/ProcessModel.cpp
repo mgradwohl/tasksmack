@@ -35,6 +35,8 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFu
     // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
     m_PerProcessState.reserve(512);
 
+    applyHistoryCapacity();
+
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
@@ -354,13 +356,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         {
             // Use absolute time (since epoch) to match SystemModel's timestamp format
             const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
-            m_Timestamps.push_back(nowSeconds);
-            m_SystemNetSentHistory.push_back(aggNetSent);
-            m_SystemNetRecvHistory.push_back(aggNetRecv);
-            m_SystemPageFaultsHistory.push_back(aggPageFaults);
-            m_SystemThreadCountHistory.push_back(aggThreads);
-            m_SystemHandleCountHistory.push_back(aggHandles);
-            m_SystemPowerHistory.push_back(aggPower);
+            m_Timestamps.push(nowSeconds);
+            m_SystemNetSentHistory.push(aggNetSent);
+            m_SystemNetRecvHistory.push(aggNetRecv);
+            m_SystemPageFaultsHistory.push(aggPageFaults);
+            m_SystemThreadCountHistory.push(aggThreads);
+            m_SystemHandleCountHistory.push(aggHandles);
+            m_SystemPowerHistory.push(aggPower);
             trimHistory();
         }
 
@@ -477,6 +479,7 @@ void ProcessModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = std::max(0.0, seconds);
+    applyHistoryCapacity();
     trimHistory();
 }
 
@@ -737,16 +740,34 @@ void ProcessModel::trimHistory()
         return;
     }
 
-    const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
+    // With maxHistorySeconds == 0 the cutoff equals the newest timestamp, so
+    // only the current sample is retained (matching the old deque behavior).
+    const double cutoff = m_Timestamps.latest() - m_MaxHistorySeconds;
+    static_cast<void>(HistoryUtils::discardBefore(m_Timestamps,
+                                                  cutoff,
+                                                  m_SystemNetSentHistory,
+                                                  m_SystemNetRecvHistory,
+                                                  m_SystemPageFaultsHistory,
+                                                  m_SystemThreadCountHistory,
+                                                  m_SystemHandleCountHistory,
+                                                  m_SystemPowerHistory));
+}
 
-    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps,
-                                               cutoff,
-                                               m_SystemNetSentHistory,
-                                               m_SystemNetRecvHistory,
-                                               m_SystemPageFaultsHistory,
-                                               m_SystemThreadCountHistory,
-                                               m_SystemHandleCountHistory,
-                                               m_SystemPowerHistory));
+void ProcessModel::applyHistoryCapacity()
+{
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_Timestamps.setCapacity(capacity);
+    m_SystemNetSentHistory.setCapacity(capacity);
+    m_SystemNetRecvHistory.setCapacity(capacity);
+    m_SystemPageFaultsHistory.setCapacity(capacity);
+    m_SystemThreadCountHistory.setCapacity(capacity);
+    m_SystemHandleCountHistory.setCapacity(capacity);
+    m_SystemPowerHistory.setCapacity(capacity);
 }
 
 std::string ProcessModel::translateState(char rawState)

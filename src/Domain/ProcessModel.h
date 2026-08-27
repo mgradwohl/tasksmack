@@ -1,5 +1,6 @@
 #pragma once
 
+#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
@@ -8,7 +9,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -172,14 +172,15 @@ class ProcessModel : public ISamplable
     Clock::time_point m_StartTime; // For history timestamp alignment
     bool m_HasStartTime = false;
 
-    // Aggregated system histories (aligned by timestamps)
-    std::deque<double> m_SystemNetSentHistory;
-    std::deque<double> m_SystemNetRecvHistory;
-    std::deque<double> m_SystemPageFaultsHistory;
-    std::deque<double> m_SystemThreadCountHistory;
-    std::deque<double> m_SystemHandleCountHistory;
-    std::deque<double> m_SystemPowerHistory;
-    std::deque<double> m_Timestamps;
+    // Aggregated system histories (aligned by timestamps). Capacity is set from the
+    // configured window; time-based trimming via discardFront keeps them in the window.
+    HistoryBuffer<double> m_SystemNetSentHistory;
+    HistoryBuffer<double> m_SystemNetRecvHistory;
+    HistoryBuffer<double> m_SystemPageFaultsHistory;
+    HistoryBuffer<double> m_SystemThreadCountHistory;
+    HistoryBuffer<double> m_SystemHandleCountHistory;
+    HistoryBuffer<double> m_SystemPowerHistory;
+    HistoryBuffer<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
 
     // Latest computed snapshots
@@ -208,6 +209,7 @@ class ProcessModel : public ISamplable
                                                          std::uint64_t timeDeltaUs);
 
     void trimHistory();
+    void applyHistoryCapacity();
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

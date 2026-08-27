@@ -462,6 +462,70 @@ TEST(SystemModelTest, PerCoreHistoryTracked)
     EXPECT_FLOAT_EQ(perCoreHist[0][0], 50.0F); // 50% CPU on core 0
 }
 
+TEST(SystemModelTest, PerCoreHistoryStaysAlignedOnCoreCountDecrease)
+{
+    // Establish two cores over three samples, then simulate a transient probe
+    // read that reports only one core.  The retained ring for core 1 must
+    // receive a 0.0F placeholder so every core series stays the same length
+    // as the timestamp axis.  A subsequent sample with two cores again must
+    // resume normal values.
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // Sample 1: baseline (no delta yet, first refresh is discarded)
+    std::vector<Platform::CpuCounters> cores1 = {makeCpuCounters(0, 0, 0, 10000), makeCpuCounters(0, 0, 0, 10000)};
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 20000), makeMemoryCounters(1024, 512), 0, cores1));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh(); // establishes baseline, no history entry
+
+    // Sample 2: both cores active → 1 entry per core ring
+    std::vector<Platform::CpuCounters> cores2 = {makeCpuCounters(1000, 0, 1000, 8000), makeCpuCounters(2000, 0, 2000, 6000)};
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(3000, 0, 3000, 14000), makeMemoryCounters(1024, 512), 0, cores2));
+    model.refresh();
+
+    // Verify both rings have 1 entry after sample 2
+    {
+        auto ts = model.timestamps();
+        auto cores = model.perCoreHistory();
+        ASSERT_EQ(cores.size(), 2);
+        EXPECT_EQ(ts.size(), cores[0].size());
+        EXPECT_EQ(ts.size(), cores[1].size());
+    }
+
+    // Sample 3: only one core reported (simulates transient decrease)
+    std::vector<Platform::CpuCounters> cores3 = {makeCpuCounters(2000, 0, 2000, 16000)};
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(4000, 0, 4000, 28000), makeMemoryCounters(1024, 512), 0, cores3));
+    model.refresh();
+
+    {
+        auto ts = model.timestamps();
+        auto cores = model.perCoreHistory();
+        ASSERT_EQ(cores.size(), 2);
+        // All series must be the same length as the timestamp axis
+        EXPECT_EQ(cores[0].size(), ts.size());
+        EXPECT_EQ(cores[1].size(), ts.size());
+        // Absent core 1 must have received a 0.0F placeholder for this sample
+        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+    }
+
+    // Sample 4: two cores return → core 1 still gets 0.0F this sample because
+    // m_PrevCounters only has 1 core from sample 3 (min-of-two logic), so no
+    // delta is computable for core 1 yet.  What matters is that the ring stays aligned.
+    std::vector<Platform::CpuCounters> cores4 = {makeCpuCounters(3000, 0, 3000, 24000), makeCpuCounters(4000, 0, 4000, 22000)};
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(7000, 0, 7000, 46000), makeMemoryCounters(1024, 512), 0, cores4));
+    model.refresh();
+
+    {
+        auto ts = model.timestamps();
+        auto cores = model.perCoreHistory();
+        ASSERT_EQ(cores.size(), 2);
+        EXPECT_EQ(cores[0].size(), ts.size());
+        EXPECT_EQ(cores[1].size(), ts.size());
+        // Core 1 still shows 0.0F (prev counters only had 1 core); alignment is the key invariant
+        EXPECT_FLOAT_EQ(cores[1].back(), 0.0F);
+    }
+}
+
 // =============================================================================
 // updateFromCounters Tests
 // =============================================================================
@@ -896,19 +960,16 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
     auto rxHistory = model.netRxHistory();
     auto timestamps = model.timestamps();
 
-    // With 10-second window and samples at t=1..15, should keep ~10 samples
-    // (samples from t=6..15, which is within 10 seconds of t=15)
-    EXPECT_LE(rxHistory.size(), 11U); // At most 11 samples in 10-second window
-    EXPECT_GE(rxHistory.size(), 9U);  // At least 9 samples (timing may vary slightly)
+    // Time-based trimming keeps only samples within the 10-second window:
+    // cutoff = 15 - 10 = 5, so samples t=5..15 remain (11 entries).
+    EXPECT_EQ(rxHistory.size(), 11U);
+    EXPECT_EQ(timestamps.size(), 11U);
 
-    // Timestamps should be within the window
+    // Verify window boundaries
     if (!timestamps.empty())
     {
-        const double latestTime = timestamps.back();
-        for (double ts : timestamps)
-        {
-            EXPECT_GE(ts, latestTime - 10.0);
-        }
+        EXPECT_DOUBLE_EQ(timestamps.back(), 15.0);
+        EXPECT_DOUBLE_EQ(timestamps.front(), 5.0);
     }
 }
 // ==========================================================================

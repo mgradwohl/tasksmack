@@ -1,5 +1,6 @@
 #pragma once
 
+#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -7,7 +8,6 @@
 #include "SystemSnapshot.h"
 
 #include <atomic>
-#include <deque>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -117,24 +117,24 @@ class SystemModel : public ISamplable
     // Latest computed snapshot
     SystemSnapshot m_Snapshot;
 
-    // History buffers (trimmed by time window)
-    std::deque<float> m_CpuHistory;
-    std::deque<float> m_CpuUserHistory;
-    std::deque<float> m_CpuSystemHistory;
-    std::deque<float> m_CpuIowaitHistory;
-    std::deque<float> m_CpuIdleHistory;
-    std::deque<float> m_MemoryHistory;
-    std::deque<float> m_MemoryCachedHistory;
-    std::deque<float> m_SwapHistory;
-    std::deque<float> m_PowerHistory;
-    std::deque<float> m_BatteryChargeHistory;
-    std::deque<float> m_NetRxHistory;
-    std::deque<float> m_NetTxHistory;
+    // History buffers (runtime-capacity ring buffers, trimmed by time window)
+    HistoryBuffer<float> m_CpuHistory;
+    HistoryBuffer<float> m_CpuUserHistory;
+    HistoryBuffer<float> m_CpuSystemHistory;
+    HistoryBuffer<float> m_CpuIowaitHistory;
+    HistoryBuffer<float> m_CpuIdleHistory;
+    HistoryBuffer<float> m_MemoryHistory;
+    HistoryBuffer<float> m_MemoryCachedHistory;
+    HistoryBuffer<float> m_SwapHistory;
+    HistoryBuffer<float> m_PowerHistory;
+    HistoryBuffer<float> m_BatteryChargeHistory;
+    HistoryBuffer<float> m_NetRxHistory;
+    HistoryBuffer<float> m_NetTxHistory;
     // Per-interface network history (keyed by interface name)
-    std::unordered_map<std::string, std::deque<float>> m_PerInterfaceRxHistory;
-    std::unordered_map<std::string, std::deque<float>> m_PerInterfaceTxHistory;
-    std::deque<double> m_Timestamps;
-    std::vector<std::deque<float>> m_PerCoreHistory;
+    std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceRxHistory;
+    std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceTxHistory;
+    HistoryBuffer<double> m_Timestamps;
+    std::vector<HistoryBuffer<float>> m_PerCoreHistory;
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
 
@@ -149,6 +149,7 @@ class SystemModel : public ISamplable
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
     void publish();
     void trimHistory(double nowSeconds);
+    void applyHistoryCapacity();
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
 

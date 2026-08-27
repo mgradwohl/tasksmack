@@ -1495,6 +1495,8 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 
     model.setMaxHistorySeconds(0.0);
+    // With a zero-second window the cutoff equals the newest timestamp, so
+    // trimming keeps only the current sample.
     EXPECT_EQ(model.historyTimestamps().size(), 1);
 }
 

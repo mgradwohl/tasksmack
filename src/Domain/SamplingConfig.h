@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <type_traits>
 
 namespace Domain::Sampling
@@ -191,6 +192,26 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
+}
+
+/// Number of ring-buffer slots needed to retain `historySeconds` of data at the
+/// fastest supported refresh cadence (REFRESH_INTERVAL_MIN_MS), plus one slot of
+/// headroom so time-based trimming (not capacity) governs the retention window.
+///
+/// NaN and non-finite inputs are normalised to the supported range before
+/// conversion so the cast to std::size_t is always well-defined.
+[[nodiscard]] inline std::size_t historyCapacityForSeconds(double historySeconds) noexcept
+{
+    // Guard against NaN / infinity before any arithmetic.
+    if (!std::isfinite(historySeconds))
+    {
+        historySeconds = (std::isinf(historySeconds) && historySeconds > 0.0) ? static_cast<double>(HISTORY_SECONDS_MAX)
+                                                                              : static_cast<double>(HISTORY_SECONDS_MIN);
+    }
+    const double seconds = std::clamp(historySeconds, static_cast<double>(HISTORY_SECONDS_MIN), static_cast<double>(HISTORY_SECONDS_MAX));
+    const double samplesPerSecond = 1000.0 / static_cast<double>(REFRESH_INTERVAL_MIN_MS);
+    const auto samples = static_cast<std::size_t>(std::ceil(seconds * samplesPerSecond));
+    return samples + 1;
 }
 
 template<typename T> [[nodiscard]] constexpr T clampSocketStatsCacheTtlMs(T value) noexcept

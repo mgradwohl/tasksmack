@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -44,83 +43,74 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
         m_PowerCapabilities = m_PowerProbe->capabilities();
         spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
     }
+
+    applyHistoryCapacity();
+}
+
+void SystemModel::applyHistoryCapacity()
+{
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_Timestamps.setCapacity(capacity);
+    m_CpuHistory.setCapacity(capacity);
+    m_CpuUserHistory.setCapacity(capacity);
+    m_CpuSystemHistory.setCapacity(capacity);
+    m_CpuIowaitHistory.setCapacity(capacity);
+    m_CpuIdleHistory.setCapacity(capacity);
+    m_MemoryHistory.setCapacity(capacity);
+    m_MemoryCachedHistory.setCapacity(capacity);
+    m_SwapHistory.setCapacity(capacity);
+    m_PowerHistory.setCapacity(capacity);
+    m_BatteryChargeHistory.setCapacity(capacity);
+    m_NetRxHistory.setCapacity(capacity);
+    m_NetTxHistory.setCapacity(capacity);
+    for (auto& [name, history] : m_PerInterfaceRxHistory)
+    {
+        history.setCapacity(capacity);
+    }
+    for (auto& [name, history] : m_PerInterfaceTxHistory)
+    {
+        history.setCapacity(capacity);
+    }
+    for (auto& coreHistory : m_PerCoreHistory)
+    {
+        coreHistory.setCapacity(capacity);
+    }
 }
 
 void SystemModel::trimHistory(double nowSeconds)
 {
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    const std::size_t removeCount = HistoryUtils::trimBefore(m_Timestamps,
-                                                             cutoff,
-                                                             m_CpuHistory,
-                                                             m_CpuUserHistory,
-                                                             m_CpuSystemHistory,
-                                                             m_CpuIowaitHistory,
-                                                             m_CpuIdleHistory,
-                                                             m_MemoryHistory,
-                                                             m_MemoryCachedHistory,
-                                                             m_SwapHistory,
-                                                             m_PowerHistory,
-                                                             m_BatteryChargeHistory,
-                                                             m_NetRxHistory,
-                                                             m_NetTxHistory);
+    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps,
+                                                                cutoff,
+                                                                m_CpuHistory,
+                                                                m_CpuUserHistory,
+                                                                m_CpuSystemHistory,
+                                                                m_CpuIowaitHistory,
+                                                                m_CpuIdleHistory,
+                                                                m_MemoryHistory,
+                                                                m_MemoryCachedHistory,
+                                                                m_SwapHistory,
+                                                                m_PowerHistory,
+                                                                m_BatteryChargeHistory,
+                                                                m_NetRxHistory,
+                                                                m_NetTxHistory);
 
-    // Per-interface network history
-    for (auto& [name, hist] : m_PerInterfaceRxHistory)
+    for (auto& [name, history] : m_PerInterfaceRxHistory)
     {
-        HistoryUtils::trimFront(hist, removeCount);
+        history.discardFront(removeCount);
     }
-    for (auto& [name, hist] : m_PerInterfaceTxHistory)
+    for (auto& [name, history] : m_PerInterfaceTxHistory)
     {
-        HistoryUtils::trimFront(hist, removeCount);
+        history.discardFront(removeCount);
     }
-
-    for (auto& coreHist : m_PerCoreHistory)
+    for (auto& coreHistory : m_PerCoreHistory)
     {
-        HistoryUtils::trimFront(coreHist, removeCount);
-    }
-
-    // Ensure all history buffers remain aligned by truncating to the smallest non-empty size.
-    std::size_t minSize = HistoryUtils::minimumNonEmptySize(m_Timestamps,
-                                                            m_CpuHistory,
-                                                            m_CpuUserHistory,
-                                                            m_CpuSystemHistory,
-                                                            m_CpuIowaitHistory,
-                                                            m_CpuIdleHistory,
-                                                            m_MemoryHistory,
-                                                            m_MemoryCachedHistory,
-                                                            m_SwapHistory,
-                                                            m_PowerHistory,
-                                                            m_BatteryChargeHistory,
-                                                            m_NetRxHistory,
-                                                            m_NetTxHistory);
-    for (const auto& coreHist : m_PerCoreHistory)
-    {
-        if (!coreHist.empty())
-        {
-            minSize = std::min(minSize, coreHist.size());
-        }
-    }
-
-    if (minSize != std::numeric_limits<std::size_t>::max())
-    {
-        HistoryUtils::trimFrontToSize(minSize,
-                                      m_Timestamps,
-                                      m_CpuHistory,
-                                      m_CpuUserHistory,
-                                      m_CpuSystemHistory,
-                                      m_CpuIowaitHistory,
-                                      m_CpuIdleHistory,
-                                      m_MemoryHistory,
-                                      m_MemoryCachedHistory,
-                                      m_SwapHistory,
-                                      m_PowerHistory,
-                                      m_BatteryChargeHistory,
-                                      m_NetRxHistory,
-                                      m_NetTxHistory);
-        for (auto& coreHist : m_PerCoreHistory)
-        {
-            HistoryUtils::trimFrontToSize(minSize, coreHist);
-        }
+        coreHistory.discardFront(removeCount);
     }
 }
 
@@ -128,10 +118,11 @@ void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
+    applyHistoryCapacity();
 
     if (!m_Timestamps.empty())
     {
-        trimHistory(m_Timestamps.back());
+        trimHistory(m_Timestamps.latest());
     }
 }
 
@@ -449,10 +440,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
         snap.cpuPerCore.reserve(numCores);
 
-        // Resize per-core history if needed
+        // Resize per-core history if needed (new cores get zero backfill so all
+        // rings stay in lockstep with m_Timestamps)
         if (m_PerCoreHistory.size() < numCores)
         {
+            const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+            const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
+            const std::size_t oldSize = m_PerCoreHistory.size();
             m_PerCoreHistory.resize(numCores);
+            for (std::size_t i = oldSize; i < numCores; ++i)
+            {
+                m_PerCoreHistory[i].setCapacity(capacity);
+                for (std::size_t j = 0; j < backfillCount; ++j)
+                {
+                    m_PerCoreHistory[i].push(0.0F);
+                }
+            }
         }
 
         for (std::size_t i = 0; i < numCores; ++i)
@@ -484,34 +487,87 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
     {
-        m_CpuHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
-        m_CpuUserHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
-        m_CpuSystemHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
-        m_CpuIowaitHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
-        m_CpuIdleHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
-        m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
-        m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
-        m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-        m_PowerHistory.push_back(static_cast<float>(preservedPower.powerWatts));
+        m_CpuHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
+        m_CpuUserHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
+        m_CpuSystemHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
+        m_CpuIowaitHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
+        m_CpuIdleHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
+        m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
+        m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
+        m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+        m_PowerHistory.push(static_cast<float>(preservedPower.powerWatts));
         // Track battery charge % if available (0-100 range, use -1 as "no data")
         const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
-        m_BatteryChargeHistory.push_back(chargeVal);
+        m_BatteryChargeHistory.push(chargeVal);
         // Network history (bytes per second)
-        m_NetRxHistory.push_back(static_cast<float>(snap.netRxBytesPerSec));
-        m_NetTxHistory.push_back(static_cast<float>(snap.netTxBytesPerSec));
+        m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
+        m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
 
-        // Per-interface network history
+        // Per-interface network history. New interfaces get zero backfill (clamped to
+        // ring capacity) so they align with m_Timestamps. Known interfaces absent from
+        // this sample get a 0.0F placeholder so every series stays index-aligned.
+        // Avoid allocating a hash-set on the hot path: the interface list is small
+        // (typically < 10 entries), so a linear scan is cheaper than hashing.
+        auto ifacePresent = [&snap](const std::string& name) -> bool
+        {
+            for (const auto& ifaceSnap : snap.networkInterfaces)
+            {
+                if (ifaceSnap.name == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            m_PerInterfaceRxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.rxBytesPerSec));
-            m_PerInterfaceTxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.txBytesPerSec));
+            const auto& name = ifaceSnap.name;
+            auto ensureAligned = [this](auto& map, const std::string& ifName) -> auto&
+            {
+                auto [it, inserted] = map.try_emplace(ifName);
+                if (inserted)
+                {
+                    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+                    it->second.setCapacity(capacity);
+                    const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
+                    for (std::size_t j = 0; j < backfillCount; ++j)
+                    {
+                        it->second.push(0.0F);
+                    }
+                }
+                return it->second;
+            };
+            ensureAligned(m_PerInterfaceRxHistory, name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+        }
+        // Push 0.0F placeholder for known interfaces absent from this sample.
+        // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
+        // (not inserting/erasing keys) does not invalidate the iterator, so no
+        // scratch vector is needed.  m_PerInterfaceTxHistory always has the same
+        // key set (both maps are always updated together), so .at() is safe.
+        for (auto& [name, rxBuf] : m_PerInterfaceRxHistory)
+        {
+            if (!ifacePresent(name))
+            {
+                rxBuf.push(0.0F);
+                m_PerInterfaceTxHistory.at(name).push(0.0F);
+            }
         }
 
-        m_Timestamps.push_back(nowSeconds);
+        m_Timestamps.push(nowSeconds);
 
-        for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
+        // Advance rings for present cores; push 0.0F for any retained rings beyond
+        // the reported core count so every core series stays aligned with m_Timestamps.
+        for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
         {
-            m_PerCoreHistory[i].push_back(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
+            if (i < snap.cpuPerCore.size())
+            {
+                m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
+            }
+            else
+            {
+                m_PerCoreHistory[i].push(0.0F);
+            }
         }
 
         trimHistory(nowSeconds);
