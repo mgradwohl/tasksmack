@@ -19,7 +19,6 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -507,12 +506,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // Per-interface network history. New interfaces get zero backfill (clamped to
         // ring capacity) so they align with m_Timestamps. Known interfaces absent from
         // this sample get a 0.0F placeholder so every series stays index-aligned.
-        std::unordered_set<std::string> presentInterfaces;
-        presentInterfaces.reserve(snap.networkInterfaces.size());
+        // Avoid allocating a hash-set on the hot path: the interface list is small
+        // (typically < 10 entries), so a linear scan is cheaper than hashing.
+        auto ifacePresent = [&snap](const std::string& name) -> bool
+        {
+            for (const auto& ifaceSnap : snap.networkInterfaces)
+            {
+                if (ifaceSnap.name == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
             const auto& name = ifaceSnap.name;
-            presentInterfaces.insert(name);
             auto ensureAligned = [this](auto& map, const std::string& ifName) -> auto&
             {
                 auto [it, inserted] = map.try_emplace(ifName);
@@ -536,7 +545,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         std::vector<std::string> absentInterfaces;
         for (const auto& [name, _] : m_PerInterfaceRxHistory)
         {
-            if (!presentInterfaces.contains(name))
+            if (!ifacePresent(name))
             {
                 absentInterfaces.push_back(name);
             }
@@ -549,9 +558,18 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
 
         m_Timestamps.push(nowSeconds);
 
-        for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
+        // Advance rings for present cores; push 0.0F for any retained rings beyond
+        // the reported core count so every core series stays aligned with m_Timestamps.
+        for (std::size_t i = 0; i < m_PerCoreHistory.size(); ++i)
         {
-            m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
+            if (i < snap.cpuPerCore.size())
+            {
+                m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
+            }
+            else
+            {
+                m_PerCoreHistory[i].push(0.0F);
+            }
         }
 
         trimHistory(nowSeconds);
