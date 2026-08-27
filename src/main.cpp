@@ -181,7 +181,7 @@ auto runApp() -> int
 
     // Apply saved position/maximized state after the window exists.
     // Ordering: set restore geometry first, then maximize.
-    if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
+    if (Core::Window::supportsPositioning() && settings.windowPosX.has_value() && settings.windowPosY.has_value())
     {
         appRef.getWindow().setPosition(*settings.windowPosX, *settings.windowPosY);
     }

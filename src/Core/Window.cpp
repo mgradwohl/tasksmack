@@ -291,6 +291,12 @@ auto Window::getPosition() const -> std::pair<int, int>
     return {x, y};
 }
 
+bool Window::supportsPositioning() noexcept
+{
+    const char* driver = SDL_GetCurrentVideoDriver();
+    return driver == nullptr || std::string_view(driver) != "wayland";
+}
+
 void Window::setSize(int width, int height)
 {
     if (m_Handle == nullptr)
