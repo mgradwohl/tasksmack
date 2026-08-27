@@ -1,7 +1,6 @@
 #pragma once
 
 #include <format>
-#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -54,8 +53,8 @@ class RenderMetrics
     /// frame's samples become the "last frame" snapshot shown by the overlay.
     ///
     /// noexcept: called from destructors (HistoryChart, RenderMetricsScope), so a throwing
-    /// allocation would hit std::terminate. Metrics are best-effort — on allocation failure
-    /// the sample is dropped rather than propagating the exception.
+    /// allocation would hit std::terminate. Metrics are best-effort — on any failure the
+    /// sample is dropped rather than propagating the exception.
     void record(std::string_view id, int vertices, int indices, double micros, int frameIndex) noexcept
     {
         if (!m_Enabled)
@@ -74,7 +73,7 @@ class RenderMetrics
         {
             m_Current.push_back({.id = std::string(id), .vertices = vertices, .indices = indices, .micros = micros});
         }
-        catch (const std::bad_alloc&)
+        catch (...)
         {
             // Drop the sample; instrumentation must never crash the app.
         }
@@ -88,8 +87,8 @@ class RenderMetrics
     /// Serialize the last completed frame as CSV (header + one row per chart) for
     /// clipboard export into profiling notes or spreadsheets.
     ///
-    /// noexcept: called directly from UI code (overlay button click); on allocation
-    /// failure returns whatever was built so far — best-effort like all instrumentation.
+    /// noexcept: called directly from UI code (overlay button click); on failure returns
+    /// whatever was built so far — best-effort like all instrumentation.
     [[nodiscard]] std::string toCsv() const noexcept
     {
         std::string csv;
@@ -101,7 +100,7 @@ class RenderMetrics
                 csv += std::format("{},{},{},{:.1f}\n", sample.id, sample.vertices, sample.indices, sample.micros);
             }
         }
-        catch (const std::bad_alloc&)
+        catch (...)
         {
             // Return the partial CSV; instrumentation must never crash the app.
         }

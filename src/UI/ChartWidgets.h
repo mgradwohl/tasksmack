@@ -17,7 +17,6 @@
 #include <cstdio>
 #include <format>
 #include <functional>
-#include <new>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -647,7 +646,7 @@ class RenderMetricsScope
 {
   public:
     /// Builds "baseId + suffix" only when capture is enabled, so disabled builds skip the allocation.
-    /// noexcept: purely instrumentation used inside render code — on allocation failure the
+    /// noexcept: purely instrumentation used inside render code — on any failure the
     /// scope silently disables itself for this frame instead of failing UI rendering.
     RenderMetricsScope(const char* baseId, const char* suffix) noexcept : m_Measure(RenderMetrics::get().enabled())
     {
@@ -657,7 +656,7 @@ class RenderMetricsScope
             {
                 m_Id = std::string(baseId) + suffix;
             }
-            catch (const std::bad_alloc&)
+            catch (...)
             {
                 m_Measure = false;
                 return;

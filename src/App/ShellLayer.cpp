@@ -204,6 +204,9 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_ShowRenderMetrics = !m_ShowRenderMetrics;
     }
+    // Sync capture state before any charts render this frame; renderOverlay runs at the
+    // end of onRender, so relying on it alone leaves capture one frame out of phase.
+    UI::RenderMetrics::get().setEnabled(m_ShowRenderMetrics);
 }
 
 void ShellLayer::onRender()
