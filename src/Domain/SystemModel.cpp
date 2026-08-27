@@ -19,6 +19,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -503,13 +504,18 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
         m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
 
-        // Per-interface network history (new interfaces get capacity + zero
-        // backfill, clamped to ring capacity, so they stay aligned with m_Timestamps)
+        // Per-interface network history. New interfaces get zero backfill (clamped to
+        // ring capacity) so they align with m_Timestamps. Known interfaces absent from
+        // this sample get a 0.0F placeholder so every series stays index-aligned.
+        std::unordered_set<std::string> presentInterfaces;
+        presentInterfaces.reserve(snap.networkInterfaces.size());
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            auto ensureAligned = [this](auto& map, const std::string& name) -> auto&
+            const auto& name = ifaceSnap.name;
+            presentInterfaces.insert(name);
+            auto ensureAligned = [this](auto& map, const std::string& ifName) -> auto&
             {
-                auto [it, inserted] = map.try_emplace(name);
+                auto [it, inserted] = map.try_emplace(ifName);
                 if (inserted)
                 {
                     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
@@ -522,8 +528,23 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
                 }
                 return it->second;
             };
-            ensureAligned(m_PerInterfaceRxHistory, ifaceSnap.name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
-            ensureAligned(m_PerInterfaceTxHistory, ifaceSnap.name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+            ensureAligned(m_PerInterfaceRxHistory, name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+        }
+        // Push 0.0F placeholder for known interfaces absent from this sample.
+        // Collect absent names first to avoid mutating maps while iterating them.
+        std::vector<std::string> absentInterfaces;
+        for (const auto& [name, _] : m_PerInterfaceRxHistory)
+        {
+            if (!presentInterfaces.contains(name))
+            {
+                absentInterfaces.push_back(name);
+            }
+        }
+        for (const auto& name : absentInterfaces)
+        {
+            m_PerInterfaceRxHistory[name].push(0.0F);
+            m_PerInterfaceTxHistory[name].push(0.0F);
         }
 
         m_Timestamps.push(nowSeconds);

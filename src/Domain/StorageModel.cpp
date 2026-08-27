@@ -104,8 +104,7 @@ void StorageModel::sample()
     // Update shared state
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        m_LatestSnapshot = snapshot;
-        m_History.push(snapshot);
+        m_LatestSnapshot = snapshot;    // Keep a copy for latestSnapshot() queries
         m_Timestamps.push(nowSeconds);
 
         // Maintain per-disk I/O histories aligned to m_Timestamps.
@@ -148,6 +147,9 @@ void StorageModel::sample()
             }
         }
 
+        // Move snapshot into the history ring after all per-disk iteration is complete,
+        // avoiding an extra deep-copy of the disks vector on every sample.
+        m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
         publish();
         m_HasPrevSample = true;
@@ -155,9 +157,9 @@ void StorageModel::sample()
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
-                  snapshot.disks.size(),
-                  snapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
-                  snapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
+                  m_LatestSnapshot.disks.size(),
+                  m_LatestSnapshot.totalReadBytesPerSec / (1024.0 * 1024.0),
+                  m_LatestSnapshot.totalWriteBytesPerSec / (1024.0 * 1024.0));
 }
 
 std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept

@@ -172,8 +172,8 @@ class ProcessModel : public ISamplable
     Clock::time_point m_StartTime; // For history timestamp alignment
     bool m_HasStartTime = false;
 
-    // Aggregated system histories (aligned by timestamps) - fixed-size ring buffers
-    // No need to trim: ring buffers auto-wrap and maintain fixed memory footprint
+    // Aggregated system histories (aligned by timestamps). Capacity is set from the
+    // configured window; time-based trimming via discardFront keeps them in the window.
     HistoryBuffer<double> m_SystemNetSentHistory;
     HistoryBuffer<double> m_SystemNetRecvHistory;
     HistoryBuffer<double> m_SystemPageFaultsHistory;
