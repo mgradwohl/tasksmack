@@ -106,7 +106,21 @@ void SystemModel::trimHistory([[maybe_unused]] double nowSeconds)
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
+    const double clamped = Domain::Sampling::clampHistorySeconds(seconds);
+    m_MaxHistorySeconds = clamped;
+
+    // With ring buffers, validate that the requested history window fits in capacity.
+    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
+    // At 1Hz sampling, this supports 1800 seconds. For faster sampling rates, effective
+    // retention will be less. This is a trade-off for eliminating allocation churn.
+    const double maxSupportedSeconds = HistoryCapacity::STANDARD * 1.0; // 1 second per sample at 1Hz
+    if (clamped > maxSupportedSeconds)
+    {
+        spdlog::warn("SystemModel::setMaxHistorySeconds: requested {:.0f}s exceeds ring buffer capacity ({:.0f}s). "
+                     "History will be truncated at capacity.",
+                     clamped,
+                     maxSupportedSeconds);
+    }
 
     if (!m_Timestamps.empty())
     {
