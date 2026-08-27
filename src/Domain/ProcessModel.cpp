@@ -735,7 +735,7 @@ void ProcessModel::trimHistory()
 {
     // With ring buffers, trimming to 0 seconds means keeping only the current sample.
     // For other cases, ring buffers auto-wrap and we validate capacity.
-    
+
     if (m_MaxHistorySeconds == 0.0 && m_Timestamps.size() > 1)
     {
         // Keep only the most recent sample by clearing and pushing it back
@@ -763,13 +763,14 @@ void ProcessModel::trimHistory()
         const double oldestTimestamp = m_Timestamps[0];
         const double newestTimestamp = m_Timestamps.latest();
         const double span = newestTimestamp - oldestTimestamp;
-        
+
         // Log warning if actual history span exceeds configured max
         if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
         {
             spdlog::warn("ProcessModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
                          "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
-                         span, m_MaxHistorySeconds);
+                         span,
+                         m_MaxHistorySeconds);
         }
     }
 }

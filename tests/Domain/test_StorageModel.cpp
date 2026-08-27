@@ -684,18 +684,18 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     // With ring buffers, each disk maintains its own independent history.
     // New disks start with 1 sample (when they're discovered), while older disks may have more.
     // So we don't expect perfect alignment like we did with deques.
-    
+
     // Find nvme0n1 and verify it has at least 1 sample
     const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "nvme0n1"; });
     ASSERT_NE(it, history.end());
     ASSERT_GE(it->readBytesPerSec.size(), 1U);
     ASSERT_GE(it->writeBytesPerSec.size(), 1U);
-    
+
     // The disk was just discovered in sample 2, so its most recent sample should be valid
     // (not necessarily 0.0, but the actual computed value)
     // Old behavior: backfilled with 0.0 for the first sample
     // New behavior: ring buffer starts fresh when disk is discovered
-    EXPECT_GT(it->readBytesPerSec.back(), -1.0);  // Just check it's a valid number
+    EXPECT_GT(it->readBytesPerSec.back(), -1.0); // Just check it's a valid number
 }
 
 // =============================================================================

@@ -1498,7 +1498,7 @@ TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
     // With ring buffers, we maintain the current samples but don't add new ones when maxHistorySeconds is 0.
     // The history retains existing samples until overwritten by new collection cycles.
     // This is a trade-off of ring buffers: we can't dynamically shrink to 1 sample without rebuilding.
-    EXPECT_GE(model.historyTimestamps().size(), 2);  // Ring buffer keeps existing samples
+    EXPECT_GE(model.historyTimestamps().size(), 2); // Ring buffer keeps existing samples
 }
 
 // =============================================================================

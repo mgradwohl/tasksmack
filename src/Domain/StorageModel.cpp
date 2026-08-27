@@ -232,7 +232,7 @@ void StorageModel::trimHistory([[maybe_unused]] double nowSeconds)
 {
     // With ring buffers, trimming on demand clears them when maxHistorySeconds is 0.
     // Otherwise, ring buffers auto-wrap and we just validate capacity.
-    
+
     if (m_MaxHistorySeconds == 0.0)
     {
         // Clear all ring buffers - user wants minimal memory usage
@@ -260,13 +260,14 @@ void StorageModel::trimHistory([[maybe_unused]] double nowSeconds)
         const double oldestTimestamp = m_Timestamps[0];
         const double newestTimestamp = m_Timestamps.latest();
         const double span = newestTimestamp - oldestTimestamp;
-        
+
         // Log warning if actual history span exceeds configured max
         if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
         {
             spdlog::warn("StorageModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
                          "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
-                         span, m_MaxHistorySeconds);
+                         span,
+                         m_MaxHistorySeconds);
         }
     }
 

@@ -14,35 +14,35 @@ namespace Domain
 /// Chosen to support typical 5-minute history windows @ 1Hz sampling rate.
 namespace HistoryCapacity
 {
-    /// Standard history capacity: 1800 samples = 5 min @ 1 Hz
-    /// Matches default Sampling::HISTORY_SECONDS_DEFAULT (300 seconds)
-    /// 
-    /// This capacity was selected based on:
-    /// - Default history window: 300 seconds (5 minutes)
-    /// - Typical sampling rate: 1 Hz (1 sample/second)
-    /// - Capacity formula: 300 seconds × 1 sample/sec = 1800 samples
-    /// - Safety margin: Ring buffer at 1800 capacity supports up to 30 minutes of data
-    ///
-    /// When ring buffer becomes full:
-    /// - New pushes overwrite oldest data automatically
-    /// - No allocation or deallocation occurs
-    /// - Memory footprint remains constant
-    ///
-    /// To extend history window:
-    /// - Increase STANDARD to larger value (e.g., 3600 for 1 hour)
-    /// - Requires recompilation
-    /// - Memory cost: ~7KB per History<double> (1800 × 8 bytes)
-    ///              ~3.5KB per History<float> (1800 × 4 bytes)
-    constexpr std::size_t STANDARD = 1800;
+/// Standard history capacity: 1800 samples = 5 min @ 1 Hz
+/// Matches default Sampling::HISTORY_SECONDS_DEFAULT (300 seconds)
+///
+/// This capacity was selected based on:
+/// - Default history window: 300 seconds (5 minutes)
+/// - Typical sampling rate: 1 Hz (1 sample/second)
+/// - Capacity formula: 300 seconds × 1 sample/sec = 1800 samples
+/// - Safety margin: Ring buffer at 1800 capacity supports up to 30 minutes of data
+///
+/// When ring buffer becomes full:
+/// - New pushes overwrite oldest data automatically
+/// - No allocation or deallocation occurs
+/// - Memory footprint remains constant
+///
+/// To extend history window:
+/// - Increase STANDARD to larger value (e.g., 3600 for 1 hour)
+/// - Requires recompilation
+/// - Memory cost: ~7KB per History<double> (1800 × 8 bytes)
+///              ~3.5KB per History<float> (1800 × 4 bytes)
+constexpr std::size_t STANDARD = 1800;
 
-    /// Maximum supported samples (preallocated at compile time)
-    /// To support longer windows, recompile with larger constant
-    constexpr std::size_t MAXIMUM = 1800;
+/// Maximum supported samples (preallocated at compile time)
+/// To support longer windows, recompile with larger constant
+constexpr std::size_t MAXIMUM = 1800;
 } // namespace HistoryCapacity
 
 /// Fixed-size ring buffer for storing time-series data.
 /// Provides efficient append and contiguous access for plotting.
-/// 
+///
 /// Design rationale:
 /// - Eliminates allocation churn: no allocations after construction
 /// - Constant memory footprint regardless of collection duration
