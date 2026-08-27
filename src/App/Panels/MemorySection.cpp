@@ -32,11 +32,8 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 } // namespace
 
@@ -102,15 +99,9 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     auto memoryPlot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##MemorySwapHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+        const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##MemorySwapHistory", axisConfig.xMin, axisConfig.xMax));
+        if (chart.active())
         {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             if (!memData.empty())
             {
                 plotLineWithFill("Used",
@@ -217,8 +208,6 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     ImGui::EndTooltip();
                 }
             }
-
-            ImPlot::EndPlot();
         }
     };
 

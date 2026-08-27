@@ -33,12 +33,9 @@ using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
-using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::smoothTowards;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 } // namespace
 
@@ -149,14 +146,11 @@ void renderCpuCoresSection(RenderContext& ctx)
 
                         auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg]()
                         {
-                            const UI::Widgets::PlotFontGuard fontGuard;
-                            if (ImPlot::BeginPlot("##PerCorePlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+                            auto coreCfg = UI::Widgets::percentHistoryConfig("##PerCorePlot", axisCfg.xMin, axisCfg.xMax);
+                            coreCfg.showLegend = false;
+                            const UI::Widgets::HistoryChart chart(coreCfg);
+                            if (chart.active())
                             {
-                                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                                ImPlot::SetupAxisLimits(ImAxis_X1, axisCfg.xMin, axisCfg.xMax, ImPlotCond_Always);
-
                                 plotLineWithFill("##Core",
                                                  timeData.data(),
                                                  sampleData.data(),
@@ -186,7 +180,6 @@ void renderCpuCoresSection(RenderContext& ctx)
                                         ImGui::EndTooltip();
                                     }
                                 }
-                                ImPlot::EndPlot();
                             }
                         };
 

@@ -38,8 +38,6 @@ using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
@@ -75,14 +73,10 @@ void renderDiskCell(std::string_view deviceName,
 
     auto diskPlotFn = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot(plotId.c_str(), ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig(plotId.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        if (chart.active())
         {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             const int count = UI::Format::checkedCount(timeData.size());
             plotLineWithFill("Read",
                              timeData.data(),
@@ -123,7 +117,6 @@ void renderDiskCell(std::string_view deviceName,
                     }
                 }
             }
-            ImPlot::EndPlot();
         }
     };
 
@@ -311,14 +304,10 @@ void renderStorageSection(RenderContext& ctx)
 
         auto diskPlot = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##SystemDiskHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::autoFitHistoryConfig("##SystemDiskHistory", diskAxis.xMin, diskAxis.xMax, formatAxisBytesPerSec));
+            if (chart.active())
             {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-                ImPlot::SetupAxisLimits(ImAxis_X1, diskAxis.xMin, diskAxis.xMax, ImPlotCond_Always);
-
                 const int count = UI::Format::checkedCount(alignedDisk);
                 plotLineWithFill("Read",
                                  diskTimes.data(),
@@ -360,8 +349,6 @@ void renderStorageSection(RenderContext& ctx)
                         }
                     }
                 }
-
-                ImPlot::EndPlot();
             }
         };
 

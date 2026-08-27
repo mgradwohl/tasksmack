@@ -39,8 +39,6 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 /// Update smoothed network values
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
@@ -318,14 +316,10 @@ void renderNetworkSection(RenderContext& ctx)
 
     auto plot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##SystemNetHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec));
+        if (chart.active())
         {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
             const int count = UI::Format::checkedCount(aligned);
 
             // When an interface is selected, show both total (muted) and interface (bright)
@@ -439,8 +433,6 @@ void renderNetworkSection(RenderContext& ctx)
                     }
                 }
             }
-
-            ImPlot::EndPlot();
         }
     };
 

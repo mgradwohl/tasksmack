@@ -7,6 +7,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "TitleBarLayer.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UserConfig.h"
 
@@ -200,6 +201,15 @@ void ShellLayer::onUpdate(float deltaTime)
             UI::Theme::get().decreaseFontSize();
         }
     }
+
+    // Ctrl+Shift+M: toggle the Render Metrics overlay (per-chart vertex/index/CPU cost)
+    if (io.KeyCtrl && io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_M, false))
+    {
+        m_ShowRenderMetrics = !m_ShowRenderMetrics;
+    }
+    // Sync capture state before any charts render this frame; renderOverlay runs at the
+    // end of onRender, so relying on it alone leaves capture one frame out of phase.
+    UI::RenderMetrics::get().setEnabled(m_ShowRenderMetrics);
 }
 
 void ShellLayer::onRender()
@@ -266,6 +276,8 @@ void ShellLayer::onRender()
     ImGui::End();
 
     renderStatusBar();
+
+    UI::RenderMetrics::get().renderOverlay(&m_ShowRenderMetrics);
 }
 
 void ShellLayer::renderTabBar()
