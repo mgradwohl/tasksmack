@@ -103,7 +103,8 @@ class StorageModel : public ISamplable
     std::chrono::steady_clock::time_point m_StartTime;
     bool m_HasPrevSample = false;
 
-    // Per-device I/O history for per-disk charting (ring buffers aligned to m_Timestamps)
+    // Per-device I/O history for per-disk charting (ring buffers; newly discovered
+    // disks are NOT backfilled with zeros, so strict index alignment is not guaranteed)
     std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskReadHistory;
     std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display

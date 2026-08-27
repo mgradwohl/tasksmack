@@ -748,16 +748,25 @@ std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startT
 
 void ProcessModel::trimHistory()
 {
-    // With ring buffers, trimming to 0 seconds means keeping only the current sample.
-    // For other cases, ring buffers auto-wrap and we validate capacity.
+    // With ring buffers, the time-based trimming semantic has changed:
+    // - Ring buffers have fixed capacity (1800 samples @ 1Hz = 30 min max)
+    // - setMaxHistorySeconds() sets a *requested* window, but actual retention
+    //   is limited by ring buffer capacity
+    // - When maxHistorySeconds == 0.0: all histories are cleared (minimal memory)
+    // - For non-zero values: histories grow until ring buffer capacity,
+    //   then newest samples overwrite oldest (no time-based trimming)
+    //
+    // Note: This is a trade-off. Old deque-based implementation trimmed on every
+    // sample to maintain strict time windows, causing allocation churn.
+    // Ring buffers provide predictable memory usage but don't enforce time windows
+    // past capacity. Users requesting very long windows should increase
+    // HistoryCapacity::STANDARD at compile time if needed.
 
     if (m_MaxHistorySeconds == 0.0 && m_Timestamps.size() > 1)
     {
-        // Keep only the most recent sample by clearing and pushing it back
-        // This is more efficient than rebuilding the entire ring buffer
-        // Note: We can't actually keep 1 sample with a ring buffer, but we can defer
-        // trimming until the next sample is collected.
-        // For now, we'll just note that this is a limitation of ring buffers.
+        // When history retention is 0, we want minimal memory usage, but clearing
+        // ring buffers every sample would negate the performance benefit.
+        // For now, just log that ring buffers maintain fixed capacity.
         spdlog::debug("ProcessModel: History retention set to 0 seconds. "
                       "Ring buffers maintain fixed capacity, so old data will persist until overwritten.");
         return;

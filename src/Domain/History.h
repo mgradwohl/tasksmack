@@ -11,28 +11,31 @@ namespace Domain
 {
 
 /// Capacity constants for fixed-size ring buffers.
-/// Chosen to support typical 5-minute history windows @ 1Hz sampling rate.
+/// Chosen to support typical history windows @ 1Hz sampling rate.
 namespace HistoryCapacity
 {
-/// Standard history capacity: 1800 samples = 5 min @ 1 Hz
-/// Matches default Sampling::HISTORY_SECONDS_DEFAULT (300 seconds)
+/// Standard history capacity: 1800 samples
+/// At 1 Hz sampling rate: 1800 samples = 1800 seconds = 30 minutes (maximum retention)
+/// Default history window: 300 seconds (5 minutes, via Sampling::HISTORY_SECONDS_DEFAULT)
 ///
-/// This capacity was selected based on:
-/// - Default history window: 300 seconds (5 minutes)
-/// - Typical sampling rate: 1 Hz (1 sample/second)
-/// - Capacity formula: 300 seconds × 1 sample/sec = 1800 samples
-/// - Safety margin: Ring buffer at 1800 capacity supports up to 30 minutes of data
+/// Capacity justification:
+/// - Provides 6× safety margin above default 300-second window
+/// - Supports up to 30 minutes of continuous 1Hz data without loss
+/// - For faster sampling rates, effective retention time decreases
+///   (e.g., at 10Hz: 1800 samples = 180 seconds = 3 minutes)
+/// - Users can increase duration via setMaxHistorySeconds(), but total
+///   samples are capped at capacity (no allocation churn, fixed memory)
 ///
 /// When ring buffer becomes full:
 /// - New pushes overwrite oldest data automatically
 /// - No allocation or deallocation occurs
-/// - Memory footprint remains constant
+/// - Memory footprint remains constant (~14.4 KB per History<double>)
 ///
-/// To extend history window:
-/// - Increase STANDARD to larger value (e.g., 3600 for 1 hour)
+/// To extend maximum retention window:
+/// - Increase STANDARD to larger value (e.g., 3600 for 1 hour @ 1Hz)
 /// - Requires recompilation
-/// - Memory cost: ~7KB per History<double> (1800 × 8 bytes)
-///              ~3.5KB per History<float> (1800 × 4 bytes)
+/// - Memory cost per increase: 8 bytes per sample for double, 4 for float
+///   (e.g., 3600 samples: ~28.8 KB per History<double>)
 constexpr std::size_t STANDARD = 1800;
 
 /// Maximum supported samples (preallocated at compile time)

@@ -48,8 +48,19 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
 
 void SystemModel::trimHistory([[maybe_unused]] double nowSeconds)
 {
-    // With ring buffers, trimming on demand clears them when maxHistorySeconds is 0.
-    // Otherwise, ring buffers auto-wrap and we just validate capacity.
+    // With ring buffers, the time-based trimming semantic has changed:
+    // - Ring buffers have fixed capacity (1800 samples @ 1Hz = 30 min max)
+    // - setMaxHistorySeconds() sets a *requested* window, but actual retention
+    //   is limited by ring buffer capacity
+    // - When maxHistorySeconds == 0.0: all histories are cleared (minimal memory)
+    // - For non-zero values: histories grow until ring buffer capacity,
+    //   then newest samples overwrite oldest (no time-based trimming)
+    //
+    // Note: This is a trade-off. Old deque-based implementation trimmed on every
+    // sample to maintain strict time windows, causing allocation churn.
+    // Ring buffers provide predictable memory usage but don't enforce time windows
+    // past capacity. Users requesting very long windows should increase
+    // HistoryCapacity::STANDARD at compile time if needed.
 
     if (m_MaxHistorySeconds == 0.0)
     {

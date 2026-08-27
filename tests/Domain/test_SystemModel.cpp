@@ -907,9 +907,9 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
     if (!timestamps.empty())
     {
         const double latestTime = timestamps.back();
-        EXPECT_EQ(latestTime, 15.0);
+        EXPECT_DOUBLE_EQ(latestTime, 15.0);
         // First timestamp should be at t=1 (initial sample at t=0 is skipped)
-        EXPECT_EQ(timestamps.front(), 1.0);
+        EXPECT_DOUBLE_EQ(timestamps.front(), 1.0);
     }
 }
 // ==========================================================================
