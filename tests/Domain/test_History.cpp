@@ -525,6 +525,24 @@ TEST(HistoryBufferTest, DiscardFrontZeroIsNoOp)
     EXPECT_EQ(history[0], 1);
 }
 
+TEST(HistoryBufferTest, DiscardFrontOnWrappedBuffer)
+{
+    // Push more than capacity to force internal wraparound, then discard from front.
+    HistoryBuffer<int> history(5);
+    for (int i = 0; i < 8; ++i) // write index wraps; contains 3..7
+    {
+        history.push(i);
+    }
+    ASSERT_EQ(history.size(), 5ULL);
+
+    history.discardFront(2); // drop 3, 4 → should contain 5, 6, 7
+
+    EXPECT_EQ(history.size(), 3ULL);
+    EXPECT_EQ(history[0], 5);
+    EXPECT_EQ(history[1], 6);
+    EXPECT_EQ(history[2], 7);
+}
+
 TEST(HistoryBufferTest, SetCapacityPreservesNewestElements)
 {
     HistoryBuffer<int> history(6);

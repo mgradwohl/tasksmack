@@ -9,8 +9,8 @@ user-configured window (10-1800 s) is honored even at the fastest refresh cadenc
 sample via `discardFront()` (head-index advance, no copies or rebuilds).
 
 ## Test Suite Execution (win-benchmark, clang++ -O3 LTO)
-- **Total Tests**: 1,104 across 68 suites
-- **Passed**: 1,102
+- **Total Tests**: 1,106 across 68 suites
+- **Passed**: 1,104
 - **Skipped**: 2 (GPU hardware-dependent: NVML probe, multi-GPU LUID)
 - **Failed**: 0
 - **Duration**: ~24 seconds
@@ -40,9 +40,16 @@ sample via `discardFront()` (head-index advance, no copies or rebuilds).
 
 ## New Unit Coverage
 `tests/Domain/test_History.cpp` adds a `HistoryBufferTest` suite: push/evict, multiple
-wraparounds, `discardFront` (clamped, zero, wrapped), `setCapacity` shrink/grow
-preserving newest, capacity-1 minimum, chronological `copyTo` after wrap, clear/reuse,
+wraparounds, `discardFront` (clamped, zero, and on a wrapped buffer where more than
+capacity items were pushed before discarding), `setCapacity` shrink/grow preserving
+newest, capacity-1 minimum, chronological `copyTo` after wrap, clear/reuse,
 non-trivial element types, and `HistoryUtils::discardBefore` alignment.
+
+`tests/Domain/test_SystemModel.cpp` adds `PerCoreHistoryStaysAlignedOnCoreCountDecrease`:
+establishes two core rings, simulates a sample where only one core is reported, and
+verifies every retained core ring stays the same length as the timestamp axis with the
+absent core receiving a 0.0F placeholder; also verifies the series resumes real values
+on the next sample when both cores return.
 
 ## Benchmark Spot Checks (win-benchmark)
 - `BM_History_Push` ~6.4 ns; `BM_History_CopyTo(Wrapped)` ~25 ns

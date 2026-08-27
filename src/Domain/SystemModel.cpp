@@ -541,19 +541,17 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
         }
         // Push 0.0F placeholder for known interfaces absent from this sample.
-        // Collect absent names first to avoid mutating maps while iterating them.
-        std::vector<std::string> absentInterfaces;
-        for (const auto& [name, _] : m_PerInterfaceRxHistory)
+        // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
+        // (not inserting/erasing keys) does not invalidate the iterator, so no
+        // scratch vector is needed.  m_PerInterfaceTxHistory always has the same
+        // key set (both maps are always updated together), so .at() is safe.
+        for (auto& [name, rxBuf] : m_PerInterfaceRxHistory)
         {
             if (!ifacePresent(name))
             {
-                absentInterfaces.push_back(name);
+                rxBuf.push(0.0F);
+                m_PerInterfaceTxHistory.at(name).push(0.0F);
             }
-        }
-        for (const auto& name : absentInterfaces)
-        {
-            m_PerInterfaceRxHistory[name].push(0.0F);
-            m_PerInterfaceTxHistory[name].push(0.0F);
         }
 
         m_Timestamps.push(nowSeconds);
