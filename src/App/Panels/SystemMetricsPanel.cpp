@@ -71,11 +71,8 @@ using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisLocalized;
 using UI::Widgets::formatAxisWatts;
 using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
-using UI::Widgets::PLOT_FLAGS_DEFAULT;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::smoothTowards;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 // Get the appropriate battery icon based on charge level
 [[nodiscard]] const char* getBatteryIcon(int chargePercent)
@@ -588,15 +585,9 @@ void SystemMetricsPanel::renderOverview()
 
     auto cpuPlot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##OverviewCPUHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+        const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##OverviewCPUHistory", axisConfig.xMin, axisConfig.xMax));
+        if (chart.active())
         {
-            UI::Widgets::setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             if (breakdownCount > 0)
             {
                 m_CpuStackY0.assign(breakdownCount, 0.0F);
@@ -684,8 +675,6 @@ void SystemMetricsPanel::renderOverview()
             {
                 ImPlot::PlotDummy("##CPU");
             }
-
-            ImPlot::EndPlot();
         }
     };
 
@@ -806,16 +795,11 @@ void SystemMetricsPanel::renderOverview()
 
             auto plot = [&]()
             {
-                const UI::Widgets::PlotFontGuard fontGuard;
-                if (ImPlot::BeginPlot("##PowerBatteryHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+                // Primary Y-axis: Power (Watts, auto-fit)
+                const UI::Widgets::HistoryChart chart(
+                    UI::Widgets::autoFitHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts));
+                if (chart.active())
                 {
-                    UI::Widgets::setupLegendDefault();
-
-                    // Primary Y-axis: Power (Watts)
-                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts);
-                    ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
                     // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
                     if (snap.power.hasBattery && !batteryHist.empty())
                     {
@@ -883,8 +867,6 @@ void SystemMetricsPanel::renderOverview()
                             ImGui::EndTooltip();
                         }
                     }
-
-                    ImPlot::EndPlot();
                 }
             };
 
@@ -1051,14 +1033,10 @@ void SystemMetricsPanel::renderOverview()
 
         auto plot = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##ResourcesHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), PLOT_FLAGS_DEFAULT))
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::autoFitHistoryConfig("##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized));
+            if (chart.active())
             {
-                UI::Widgets::setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axis.xMin, axis.xMax, ImPlotCond_Always);
-
                 const int count = UI::Format::checkedCount(alignedCount);
                 plotLineWithFill("Threads",
                                  timeData.data(),
@@ -1113,8 +1091,6 @@ void SystemMetricsPanel::renderOverview()
                         }
                     }
                 }
-
-                ImPlot::EndPlot();
             }
         };
 
@@ -1158,14 +1134,12 @@ void SystemMetricsPanel::renderCpuSection()
 
     // CPU Usage Plot
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##CPUHistory", ImVec2(-1, 200), PLOT_FLAGS_DEFAULT))
+        auto cpuCfg = UI::Widgets::percentHistoryConfig("##CPUHistory", axisConfig.xMin, axisConfig.xMax);
+        cpuCfg.showLegend = false;
+        cpuCfg.height = 200.0F;
+        const UI::Widgets::HistoryChart chart(cpuCfg);
+        if (chart.active())
         {
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             if (!cpuData.empty())
             {
                 ImPlot::PlotShaded("##CPUShaded",
@@ -1216,8 +1190,6 @@ void SystemMetricsPanel::renderCpuSection()
             {
                 ImPlot::PlotDummy("##CPU");
             }
-
-            ImPlot::EndPlot();
         }
     }
 

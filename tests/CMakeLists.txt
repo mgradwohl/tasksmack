@@ -137,6 +137,7 @@ add_executable(TaskSmackTests
     Domain/test_SamplingConfig.cpp
     UI/test_ChartWidgets.cpp
     UI/test_Format.cpp
+    UI/test_RenderMetrics.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp

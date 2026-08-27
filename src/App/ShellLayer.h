@@ -69,6 +69,9 @@ class ShellLayer : public Core::Layer
     // Dispatched in the first onUpdate() call, after all layers are fully stacked.
     bool m_PendingPrivilegeNotice = false;
 
+    // Render Metrics overlay (per-chart vertex/index/CPU cost). Toggled with Ctrl+Shift+M.
+    bool m_ShowRenderMetrics = false;
+
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()

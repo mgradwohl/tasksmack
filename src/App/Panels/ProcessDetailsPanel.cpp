@@ -49,9 +49,6 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
 using UI::Widgets::renderHistoryWithNowBars;
-using UI::Widgets::setupLegendDefault;
-using UI::Widgets::X_AXIS_FLAGS_DEFAULT;
-using UI::Widgets::Y_AXIS_FLAGS_DEFAULT;
 
 constexpr size_t PROCESS_NOW_BAR_COLUMNS = 3;
 
@@ -691,15 +688,9 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
         auto cpuPlot = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##ProcOverviewCPU", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##ProcOverviewCPU", axisConfig.xMin, axisConfig.xMax));
+            if (chart.active())
             {
-                setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-
                 if (alignedCount > 0)
                 {
                     const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -775,8 +766,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                 {
                     ImPlot::PlotDummy("CPU");
                 }
-
-                ImPlot::EndPlot();
             }
         };
 
@@ -832,15 +821,10 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
 
             auto memoryPlot = [&]()
             {
-                const UI::Widgets::PlotFontGuard fontGuard;
-                if (ImPlot::BeginPlot("##ProcOverviewMemory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+                const UI::Widgets::HistoryChart chart(
+                    UI::Widgets::percentHistoryConfig("##ProcOverviewMemory", axisConfig.xMin, axisConfig.xMax));
+                if (chart.active())
                 {
-                    setupLegendDefault();
-                    ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, UI::Widgets::formatAxisPercent);
-                    ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 100, ImPlotCond_Always);
-                    ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
                     // Draw peak working set as a horizontal reference line (never decreases)
                     if (m_PeakMemoryPercent > 0.0)
                     {
@@ -917,8 +901,6 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                             ImGui::EndTooltip();
                         }
                     }
-
-                    ImPlot::EndPlot();
                 }
             };
 
@@ -1008,14 +990,10 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
 
     auto plot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcThreadsFaults", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig("##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized));
+        if (chart.active())
         {
-            setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Threads",
                              timeData.data(),
@@ -1093,8 +1071,6 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                     }
                 }
             }
-
-            ImPlot::EndPlot();
         }
     };
 
@@ -1165,14 +1141,10 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     // vectors, and the lambda is rendered alongside the matching NowBars below.
     auto plot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcIoHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig("##ProcIoHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        if (chart.active())
         {
-            setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Read",
                              timeData.data(),
@@ -1212,8 +1184,6 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
                     }
                 }
             }
-
-            ImPlot::EndPlot();
         }
     };
 
@@ -1272,14 +1242,10 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     // buffers; renderHistoryWithNowBars composes it with the summary bars.
     auto plot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcNetworkHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig("##ProcNetworkHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        if (chart.active())
         {
-            setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisBytesPerSec);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             const int plotCount = UI::Format::checkedCount(alignedCount);
             plotLineWithFill("Sent",
                              timeData.data(),
@@ -1320,8 +1286,6 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
                     }
                 }
             }
-
-            ImPlot::EndPlot();
         }
     };
 
@@ -1368,14 +1332,10 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
 
     auto plot = [&]()
     {
-        const UI::Widgets::PlotFontGuard fontGuard;
-        if (ImPlot::BeginPlot("##ProcPowerHistory", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::autoFitHistoryConfig("##ProcPowerHistory", axisConfig.xMin, axisConfig.xMax, formatAxisWatts));
+        if (chart.active())
         {
-            setupLegendDefault();
-            ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-            ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisWatts);
-            ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
             if (!powerData.empty())
             {
                 plotLineWithFill(
@@ -1403,8 +1363,6 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
             {
                 ImPlot::PlotDummy("Power");
             }
-
-            ImPlot::EndPlot();
         }
     };
 
@@ -1598,18 +1556,12 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
         const int plotCount = UI::Format::checkedCount(alignedCount);
 
-        // GPU Utilization graph
+        // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
         auto plotGpuUtil = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##GPUUtilPlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+            const UI::Widgets::HistoryChart chart(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axisConfig.xMin, axisConfig.xMax));
+            if (chart.active())
             {
-                setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 100.0, ImPlotCond_Always);
-
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU %",
@@ -1646,22 +1598,16 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                 {
                     ImPlot::PlotDummy("GPU %");
                 }
-
-                ImPlot::EndPlot();
             }
         };
 
         // GPU Memory graph
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::PlotFontGuard fontGuard;
-            if (ImPlot::BeginPlot("##GPUMemPlot", ImVec2(-1, HISTORY_PLOT_HEIGHT_DEFAULT), ImPlotFlags_NoMenus))
+            const UI::Widgets::HistoryChart chart(
+                UI::Widgets::autoFitHistoryConfig("##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized));
+            if (chart.active())
             {
-                setupLegendDefault();
-                ImPlot::SetupAxes("Time (s)", nullptr, X_AXIS_FLAGS_DEFAULT, ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
-                ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized);
-                ImPlot::SetupAxisLimits(ImAxis_X1, axisConfig.xMin, axisConfig.xMax, ImPlotCond_Always);
-
                 if (plotCount > 0)
                 {
                     plotLineWithFill("GPU Memory",
@@ -1697,8 +1643,6 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
                 {
                     ImPlot::PlotDummy("GPU Memory");
                 }
-
-                ImPlot::EndPlot();
             }
         };
 

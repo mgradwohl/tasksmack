@@ -68,6 +68,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Benchmarks | Google Benchmark coverage for models, history, formatting, numeric helpers, and Linux Netlink |
 | Static quality | clang-format, clang-tidy, pre-commit, IWYU guidance, warnings-as-errors |
 | Runtime analysis | ASan/UBSan, TSan, MSan preset, coverage, perf/heaptrack, ETW, resize tracing |
+| Chart rendering | Shared `HistoryChart` RAII helper drives every ImPlot history chart; Render Metrics overlay (Ctrl+Shift+M) reports per-chart vertices, indices, and CPU time with CSV export |
 | Build analysis | Clang time-trace collection and unity-build presets |
 | Optimization | PCH, compiler caching, IPO/LTO, CPU compatibility presets, PGO workflows |
 | Packaging | Linux `.deb`/`.tar.gz`, Windows `.zip`, generated version resources, SPDX-JSON SBOM |
