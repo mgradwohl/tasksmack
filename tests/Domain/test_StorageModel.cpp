@@ -184,10 +184,9 @@ TEST(StorageModelTest, MaxHistorySecondsLimitsHistory)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    auto history = model.history();
-    // With ring buffers, samples are kept up to capacity without time-based trimming on every sample.
-    // We should have approximately 10 samples (100ms * 10 = 1000ms total duration)
-    EXPECT_EQ(history.size(), 10ULL);
+    const auto history = model.history();
+    // Retention should be trimmed to the configured 0.5-second window.
+    EXPECT_LE(history.size(), 7ULL);
 }
 
 // =============================================================================

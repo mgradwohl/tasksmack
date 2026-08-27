@@ -24,6 +24,32 @@
 
 namespace Domain
 {
+namespace
+{
+
+template<std::size_t Capacity> void trimRingFront(History<double, Capacity>& history, std::size_t removeCount)
+{
+    const std::size_t currentSize = history.size();
+    if (removeCount == 0 || currentSize == 0)
+    {
+        return;
+    }
+
+    if (removeCount >= currentSize)
+    {
+        history.clear();
+        return;
+    }
+
+    History<double, Capacity> trimmed;
+    for (std::size_t index = removeCount; index < currentSize; ++index)
+    {
+        trimmed.push(history[index]);
+    }
+    history = std::move(trimmed);
+}
+
+} // namespace
 
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
     : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
@@ -228,29 +254,10 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     return snap;
 }
 
-void StorageModel::trimHistory([[maybe_unused]] double nowSeconds)
+void StorageModel::trimHistory(double nowSeconds)
 {
-    // With ring buffers, the time-based trimming semantic has changed:
-    // - Ring buffers have fixed capacity (1800 samples @ 1Hz = 30 min max)
-    // - setMaxHistorySeconds() sets a *requested* window, but actual retention
-    //   is limited by ring buffer capacity
-    // - When maxHistorySeconds == 0.0: all histories are cleared (minimal memory)
-    // - For non-zero values: histories grow until ring buffer capacity,
-    //   then newest samples overwrite oldest (no time-based trimming)
-    //
-    // Note: This is a trade-off. Old deque-based implementation trimmed on every
-    // sample to maintain strict time windows, causing allocation churn.
-    // Ring buffers provide predictable memory usage but don't enforce time windows
-    // past capacity. Users requesting very long windows should increase
-    // HistoryCapacity::STANDARD at compile time if needed.
-    //
-    // Per-disk histories: newly discovered disks get 0.0 placeholders in existing
-    // histories, but are NOT backfilled into past samples. This means disk histories
-    // may not perfectly align with timestamps for disks that appeared late.
-
     if (m_MaxHistorySeconds == 0.0)
     {
-        // Clear all ring buffers - user wants minimal memory usage
         m_Timestamps.clear();
         for (auto& entry : m_DiskReadHistory)
             entry.second.clear();
@@ -260,35 +267,30 @@ void StorageModel::trimHistory([[maybe_unused]] double nowSeconds)
         return;
     }
 
-    if (m_Timestamps.empty())
+    const std::size_t timestampCount = m_Timestamps.size();
+    if (timestampCount == 0)
     {
         return;
     }
 
-    // Check if we're approaching or exceeding capacity
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
-    // For the default 300-second window, we'll never hit this in normal operation.
-    if (m_Timestamps.full())
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    std::size_t removeCount = 0;
+    while (removeCount < timestampCount && m_Timestamps[removeCount] < cutoff)
     {
-        // Oldest timestamp is at logical index 0
-        const double oldestTimestamp = m_Timestamps[0];
-        const double newestTimestamp = m_Timestamps.latest();
-        const double span = newestTimestamp - oldestTimestamp;
-
-        // Log warning if actual history span exceeds configured max
-        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
-        {
-            spdlog::warn("StorageModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
-                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
-                         span,
-                         m_MaxHistorySeconds);
-        }
+        ++removeCount;
     }
 
-    // Keep m_History (snapshot deque) trimmed to match ring buffer sizes
-    // Ring buffers all have the same size, so we can use m_Timestamps.size()
-    const size_t targetSize = m_Timestamps.size();
+    trimRingFront(m_Timestamps, removeCount);
+    for (auto& entry : m_DiskReadHistory)
+    {
+        trimRingFront(entry.second, removeCount);
+    }
+    for (auto& entry : m_DiskWriteHistory)
+    {
+        trimRingFront(entry.second, removeCount);
+    }
+
+    const std::size_t targetSize = m_Timestamps.size();
     HistoryUtils::trimFrontToSize(targetSize, m_History);
 }
 
