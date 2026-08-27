@@ -87,12 +87,23 @@ class RenderMetrics
 
     /// Serialize the last completed frame as CSV (header + one row per chart) for
     /// clipboard export into profiling notes or spreadsheets.
-    [[nodiscard]] std::string toCsv() const
+    ///
+    /// noexcept: called directly from UI code (overlay button click); on allocation
+    /// failure returns whatever was built so far — best-effort like all instrumentation.
+    [[nodiscard]] std::string toCsv() const noexcept
     {
-        std::string csv = "chart,vertices,indices,cpu_us\n";
-        for (const auto& sample : m_LastFrame)
+        std::string csv;
+        try
         {
-            csv += std::format("{},{},{},{:.1f}\n", sample.id, sample.vertices, sample.indices, sample.micros);
+            csv = "chart,vertices,indices,cpu_us\n";
+            for (const auto& sample : m_LastFrame)
+            {
+                csv += std::format("{},{},{},{:.1f}\n", sample.id, sample.vertices, sample.indices, sample.micros);
+            }
+        }
+        catch (const std::bad_alloc&)
+        {
+            // Return the partial CSV; instrumentation must never crash the app.
         }
         return csv;
     }

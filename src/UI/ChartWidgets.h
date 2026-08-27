@@ -610,7 +610,9 @@ class HistoryChart
             ImPlot::EndPlot();
         }
 
-        if (m_Measure && (m_DrawList != nullptr))
+        // Gate on m_Active: when BeginPlot fails, this scope may span unrelated UI work,
+        // so a recorded delta would be misattributed to the chart.
+        if (m_Active && m_Measure && (m_DrawList != nullptr))
         {
             const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
             RenderMetrics::get().record(
