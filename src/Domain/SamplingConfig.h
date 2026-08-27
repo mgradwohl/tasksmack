@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <type_traits>
 
 namespace Domain::Sampling
@@ -191,6 +192,17 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
+}
+
+/// Number of ring-buffer slots needed to retain `historySeconds` of data at the
+/// fastest supported refresh cadence (REFRESH_INTERVAL_MIN_MS), plus one slot of
+/// headroom so time-based trimming (not capacity) governs the retention window.
+[[nodiscard]] constexpr std::size_t historyCapacityForSeconds(double historySeconds) noexcept
+{
+    const double seconds = historySeconds < 0.0 ? 0.0 : historySeconds;
+    const double samplesPerSecond = 1000.0 / static_cast<double>(REFRESH_INTERVAL_MIN_MS);
+    const auto samples = static_cast<std::size_t>((seconds * samplesPerSecond) + 0.999999);
+    return samples + 1;
 }
 
 template<typename T> [[nodiscard]] constexpr T clampSocketStatsCacheTtlMs(T value) noexcept

@@ -680,21 +680,23 @@ TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)
     const auto history = model.perDiskHistory();
 
     ASSERT_EQ(history.size(), 2U);
-    // With ring buffers, each disk maintains its own independent history.
-    // New disks start with 1 sample (when they're discovered), while older disks may have more.
-    // So we don't expect perfect alignment like we did with deques.
+    // Every per-disk series is index-aligned with the shared timestamp axis:
+    // the newly discovered disk is backfilled with 0.0 for samples taken
+    // before it appeared.
+    for (const auto& entry : history)
+    {
+        EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size()) << entry.deviceName;
+        EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size()) << entry.deviceName;
+    }
 
-    // Find nvme0n1 and verify it has at least 1 sample
     const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "nvme0n1"; });
     ASSERT_NE(it, history.end());
-    ASSERT_GE(it->readBytesPerSec.size(), 1U);
-    ASSERT_GE(it->writeBytesPerSec.size(), 1U);
-
-    // The disk was just discovered in sample 2, so its most recent sample should be valid
-    // (not necessarily 0.0, but the actual computed value)
-    // Old behavior: backfilled with 0.0 for the first sample
-    // New behavior: ring buffer starts fresh when disk is discovered
-    EXPECT_GT(it->readBytesPerSec.back(), -1.0); // Just check it's a valid number
+    ASSERT_EQ(it->readBytesPerSec.size(), 2U);
+    // Sample 1 predates the disk: backfilled placeholder.
+    EXPECT_DOUBLE_EQ(it->readBytesPerSec.front(), 0.0);
+    EXPECT_DOUBLE_EQ(it->writeBytesPerSec.front(), 0.0);
+    // Sample 2 is its real (finite, non-negative) rate.
+    EXPECT_GE(it->readBytesPerSec.back(), 0.0);
 }
 
 // =============================================================================

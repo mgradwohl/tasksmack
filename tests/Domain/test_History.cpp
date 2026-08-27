@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <deque>
 #include <string>
 #include <vector>
 
@@ -20,40 +19,53 @@ using FloatHistory = History<float, 10>;
 // Shared History Utilities
 // =============================================================================
 
-TEST(HistoryUtilsTest, TrimBeforeKeepsAlignedSequencesSynchronized)
+TEST(HistoryUtilsTest, DiscardBeforeKeepsAlignedBuffersSynchronized)
 {
-    std::deque<double> timestamps{1.0, 2.0, 3.0};
-    std::deque<int> first{10, 20, 30};
-    std::deque<int> second{100, 200, 300};
+    HistoryBuffer<double> timestamps(8);
+    HistoryBuffer<int> first(8);
+    HistoryBuffer<int> second(8);
+    timestamps.push(1.0);
+    timestamps.push(2.0);
+    timestamps.push(3.0);
+    first.push(10);
+    first.push(20);
+    first.push(30);
+    second.push(100);
+    second.push(200);
+    second.push(300);
 
-    EXPECT_EQ(HistoryUtils::trimBefore(timestamps, 2.5, first, second), 2);
-    EXPECT_EQ(timestamps, std::deque<double>({3.0}));
-    EXPECT_EQ(first, std::deque<int>({30}));
-    EXPECT_EQ(second, std::deque<int>({300}));
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 2.5, first, second), 2);
+    ASSERT_EQ(timestamps.size(), 1ULL);
+    EXPECT_DOUBLE_EQ(timestamps[0], 3.0);
+    ASSERT_EQ(first.size(), 1ULL);
+    EXPECT_EQ(first[0], 30);
+    ASSERT_EQ(second.size(), 1ULL);
+    EXPECT_EQ(second[0], 300);
 }
 
-TEST(HistoryUtilsTest, AlignFrontToSizeTrimsAndPadsOldestSamples)
+TEST(HistoryUtilsTest, DiscardBeforeWithFutureCutoffEmptiesBuffers)
 {
-    std::deque<int> samples{1, 2, 3};
-    HistoryUtils::alignFrontToSize(samples, 2);
-    EXPECT_EQ(samples, std::deque<int>({2, 3}));
+    HistoryBuffer<double> timestamps(4);
+    HistoryBuffer<int> aligned(4);
+    timestamps.push(1.0);
+    timestamps.push(2.0);
+    aligned.push(10);
+    aligned.push(20);
 
-    HistoryUtils::alignFrontToSize(samples, 4);
-    EXPECT_EQ(samples, std::deque<int>({0, 0, 2, 3}));
+    EXPECT_EQ(HistoryUtils::discardBefore(timestamps, 100.0, aligned), 2);
+    EXPECT_TRUE(timestamps.empty());
+    EXPECT_TRUE(aligned.empty());
 }
 
-TEST(HistoryUtilsTest, FindsMinimumNonEmptySize)
+TEST(HistoryUtilsTest, ToVectorCopiesHistoryBufferChronologically)
 {
-    const std::deque<int> empty;
-    const std::deque<int> longHistory{1, 2, 3};
-    const std::deque<int> shortHistory{1, 2};
-    EXPECT_EQ(HistoryUtils::minimumNonEmptySize(empty, longHistory, shortHistory), 2);
-}
+    HistoryBuffer<int> history(3);
+    history.push(1);
+    history.push(2);
+    history.push(3);
+    history.push(4); // Evicts 1, wraps the ring
 
-TEST(HistoryUtilsTest, CopiesSequenceToVector)
-{
-    const std::deque<int> samples{1, 2, 3};
-    EXPECT_EQ(HistoryUtils::toVector(samples), std::vector<int>({1, 2, 3}));
+    EXPECT_EQ(HistoryUtils::toVector(history), std::vector<int>({2, 3, 4}));
 }
 
 // =============================================================================
@@ -425,6 +437,199 @@ TEST(HistoryTest, LargeNumberOfPushes)
     EXPECT_EQ(history[0], 9900);
     EXPECT_EQ(history[99], 9999);
     EXPECT_EQ(history.latest(), 9999);
+}
+
+// =============================================================================
+// HistoryBuffer (runtime-capacity ring buffer)
+// =============================================================================
+
+TEST(HistoryBufferTest, DefaultConstructedIsEmptyWithZeroCapacity)
+{
+    HistoryBuffer<int> history;
+    EXPECT_TRUE(history.empty());
+    EXPECT_FALSE(history.full());
+    EXPECT_EQ(history.size(), 0ULL);
+    EXPECT_EQ(history.capacity(), 0ULL);
+}
+
+TEST(HistoryBufferTest, PushEvictsOldestWhenFull)
+{
+    HistoryBuffer<int> history(3);
+    history.push(1);
+    history.push(2);
+    history.push(3);
+    EXPECT_TRUE(history.full());
+
+    history.push(4); // Evicts 1
+
+    EXPECT_EQ(history.size(), 3ULL);
+    EXPECT_EQ(history[0], 2);
+    EXPECT_EQ(history[1], 3);
+    EXPECT_EQ(history[2], 4);
+    EXPECT_EQ(history.latest(), 4);
+}
+
+TEST(HistoryBufferTest, MultipleWraparoundsKeepNewest)
+{
+    HistoryBuffer<int> history(5);
+    for (int i = 0; i < 23; ++i)
+    {
+        history.push(i);
+    }
+
+    EXPECT_EQ(history.size(), 5ULL);
+    for (std::size_t i = 0; i < 5; ++i)
+    {
+        EXPECT_EQ(history[i], 18 + static_cast<int>(i));
+    }
+}
+
+TEST(HistoryBufferTest, DiscardFrontRemovesOldest)
+{
+    HistoryBuffer<int> history(5);
+    for (int i = 0; i < 5; ++i)
+    {
+        history.push(i * 10);
+    }
+
+    history.discardFront(2);
+
+    EXPECT_EQ(history.size(), 3ULL);
+    EXPECT_EQ(history[0], 20);
+    EXPECT_EQ(history[1], 30);
+    EXPECT_EQ(history[2], 40);
+}
+
+TEST(HistoryBufferTest, DiscardFrontClampsToSize)
+{
+    HistoryBuffer<int> history(4);
+    history.push(1);
+    history.push(2);
+
+    history.discardFront(10);
+
+    EXPECT_TRUE(history.empty());
+
+    // Buffer remains usable after over-discard
+    history.push(7);
+    EXPECT_EQ(history.size(), 1ULL);
+    EXPECT_EQ(history.latest(), 7);
+}
+
+TEST(HistoryBufferTest, DiscardFrontZeroIsNoOp)
+{
+    HistoryBuffer<int> history(3);
+    history.push(1);
+    history.discardFront(0);
+    EXPECT_EQ(history.size(), 1ULL);
+    EXPECT_EQ(history[0], 1);
+}
+
+TEST(HistoryBufferTest, SetCapacityPreservesNewestElements)
+{
+    HistoryBuffer<int> history(6);
+    for (int i = 0; i < 6; ++i)
+    {
+        history.push(i);
+    }
+
+    history.setCapacity(3); // Keeps newest 3: 3, 4, 5
+
+    EXPECT_EQ(history.capacity(), 3ULL);
+    EXPECT_EQ(history.size(), 3ULL);
+    EXPECT_EQ(history[0], 3);
+    EXPECT_EQ(history[1], 4);
+    EXPECT_EQ(history[2], 5);
+}
+
+TEST(HistoryBufferTest, SetCapacityGrowKeepsAllElements)
+{
+    HistoryBuffer<int> history(2);
+    history.push(1);
+    history.push(2);
+    history.push(3); // Evicts 1
+
+    history.setCapacity(5);
+
+    EXPECT_EQ(history.capacity(), 5ULL);
+    EXPECT_EQ(history.size(), 2ULL);
+    EXPECT_EQ(history[0], 2);
+    EXPECT_EQ(history[1], 3);
+
+    history.push(4);
+    history.push(5);
+    history.push(6);
+    EXPECT_TRUE(history.full());
+    EXPECT_EQ(history[0], 2);
+    EXPECT_EQ(history.latest(), 6);
+}
+
+TEST(HistoryBufferTest, SetCapacityMinimumIsOne)
+{
+    HistoryBuffer<int> history;
+    history.setCapacity(0);
+    EXPECT_EQ(history.capacity(), 1ULL);
+
+    history.push(42);
+    history.push(43);
+    EXPECT_EQ(history.size(), 1ULL);
+    EXPECT_EQ(history.latest(), 43);
+}
+
+TEST(HistoryBufferTest, CopyToAfterWraparoundIsChronological)
+{
+    HistoryBuffer<int> history(5);
+    for (int i = 0; i < 8; ++i) // Contains 3..7, wrapped
+    {
+        history.push(i);
+    }
+
+    std::array<int, 5> buffer{};
+    const std::size_t copied = history.copyTo(buffer.data(), buffer.size());
+
+    EXPECT_EQ(copied, 5ULL);
+    for (std::size_t i = 0; i < 5; ++i)
+    {
+        EXPECT_EQ(buffer[i], 3 + static_cast<int>(i));
+    }
+}
+
+TEST(HistoryBufferTest, ClearResetsAndAllowsReuse)
+{
+    HistoryBuffer<double> history(4);
+    history.push(1.5);
+    history.push(2.5);
+
+    history.clear();
+    EXPECT_TRUE(history.empty());
+    EXPECT_EQ(history.capacity(), 4ULL);
+
+    history.push(9.5);
+    EXPECT_EQ(history.size(), 1ULL);
+    EXPECT_DOUBLE_EQ(history.latest(), 9.5);
+}
+
+TEST(HistoryBufferTest, LatestReturnsDefaultWhenEmpty)
+{
+    HistoryBuffer<int> history(3);
+    EXPECT_EQ(history.latest(), 0);
+
+    HistoryBuffer<std::string> stringHistory(3);
+    EXPECT_EQ(stringHistory.latest(), "");
+}
+
+TEST(HistoryBufferTest, WorksWithNonTrivialTypes)
+{
+    HistoryBuffer<std::string> history(3);
+    history.push("first");
+    history.push("second");
+    history.push("third");
+    history.push("fourth"); // Evicts "first"
+
+    EXPECT_EQ(history.size(), 3ULL);
+    EXPECT_EQ(history.ref(0), "second");
+    EXPECT_EQ(history.ref(1), "third");
+    EXPECT_EQ(history.ref(2), "fourth");
 }
 
 } // namespace

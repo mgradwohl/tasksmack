@@ -3,73 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <limits>
 #include <utility>
 #include <vector>
 
 namespace Domain
 {
 
-/// Capacity constants for fixed-size ring buffers.
-/// Chosen to support typical history windows @ 1Hz sampling rate.
-namespace HistoryCapacity
-{
-/// Standard history capacity: 1800 samples
-/// At 1 Hz sampling rate: 1800 samples = 1800 seconds = 30 minutes (maximum retention)
-/// Default history window: 300 seconds (5 minutes, via Sampling::HISTORY_SECONDS_DEFAULT)
-///
-/// Capacity justification:
-/// - Provides 6× safety margin above default 300-second window
-/// - Supports up to 30 minutes of continuous 1Hz data without loss
-/// - For faster sampling rates, effective retention time decreases
-///   (e.g., at 10Hz: 1800 samples = 180 seconds = 3 minutes)
-/// - Users can increase duration via setMaxHistorySeconds(), but total
-///   samples are capped at capacity (no allocation churn, fixed memory)
-///
-/// When ring buffer becomes full:
-/// - New pushes overwrite oldest data automatically
-/// - No allocation or deallocation occurs
-/// - Memory footprint remains constant (~14.4 KB per History<double>)
-///
-/// To extend maximum retention window:
-/// - Increase STANDARD to larger value (e.g., 3600 for 1 hour @ 1Hz)
-/// - Requires recompilation
-/// - Memory cost per increase: 8 bytes per sample for double, 4 for float
-///   (e.g., 3600 samples: ~28.8 KB per History<double>)
-constexpr std::size_t STANDARD = 1800;
-
-/// Maximum supported samples (preallocated at compile time)
-/// To support longer windows, recompile with larger constant
-constexpr std::size_t MAXIMUM = 1800;
-} // namespace HistoryCapacity
-
 /// Fixed-size ring buffer for storing time-series data.
 /// Provides efficient append and contiguous access for plotting.
-///
-/// Design rationale:
-/// - Eliminates allocation churn: no allocations after construction
-/// - Constant memory footprint regardless of collection duration
-/// - O(1) push operation (modulo arithmetic only)
-/// - O(n) copyTo() for contiguous access (needed for charting)
-/// - O(1) random access via operator[]
-///
-/// Ring buffer semantics:
-/// - push(value): Adds value at end, overwrites oldest if full
-/// - size(): Returns number of valid elements (0 to Capacity)
-/// - empty()/full(): Quick capacity checks
-/// - operator[](i): Logical access (0=oldest, size()-1=newest)
-/// - copyTo(): Efficiently copies chronological data to buffer
-///
-/// Capacity implications:
-/// - At 1Hz sampling: 1800 samples = 30 minutes of history
-/// - With default 300-second window: only 1/6 of capacity used
-/// - No wasteful trimming operations needed
-/// - History automatically maintains fixed window via auto-wrap
-///
-/// For consumers (SystemModel, ProcessModel, StorageModel):
-/// - HistoryUtils::toVector() converts ring buffer to vector
-/// - All history accessors return vectors (API stable)
-/// - No breaking changes to public interfaces
 template<typename T, std::size_t Capacity> class History
 {
     static_assert(Capacity > 0, "History capacity must be greater than zero");
@@ -182,6 +123,172 @@ template<typename T, std::size_t Capacity> class History
     std::size_t m_Size = 0;
 };
 
+/// Runtime-capacity ring buffer for storing time-series data.
+///
+/// Like History<T, N>, but the capacity is chosen at construction (and may be
+/// changed later via setCapacity) so it can track user-configurable history
+/// windows and refresh cadences without a compile-time worst-case allocation.
+///
+/// Design rationale:
+/// - Single backing allocation; no per-sample allocation churn
+/// - O(1) push (auto-evicts oldest when full)
+/// - O(1) discardFront(count) for time-window trimming (advances the logical
+///   start index; no element copies or buffer rebuilds)
+/// - copyTo()/toVector() produce chronological contiguous output in at most
+///   two std::copy_n chunks (cheap publication snapshots)
+template<typename T> class HistoryBuffer
+{
+  public:
+    HistoryBuffer() = default;
+
+    explicit HistoryBuffer(std::size_t capacity)
+    {
+        setCapacity(capacity);
+    }
+
+    /// Change the capacity, preserving the newest min(size, capacity) elements.
+    /// Allocates only when the capacity actually changes (user reconfiguration).
+    void setCapacity(std::size_t capacity)
+    {
+        const std::size_t newCapacity = std::max<std::size_t>(capacity, 1);
+        if (newCapacity == m_Data.size())
+        {
+            return;
+        }
+
+        std::vector<T> newData(newCapacity);
+        const std::size_t keepCount = std::min(m_Size, newCapacity);
+        const std::size_t dropCount = m_Size - keepCount;
+        for (std::size_t i = 0; i < keepCount; ++i)
+        {
+            newData[i] = std::move(m_Data[physicalIndex(dropCount + i)]);
+        }
+        m_Data = std::move(newData);
+        m_Start = 0;
+        m_Size = keepCount;
+    }
+
+    /// Add a new value, overwriting oldest if full.
+    void push(T value)
+    {
+        if (m_Data.empty())
+        {
+            m_Data.resize(1);
+        }
+
+        if (m_Size == m_Data.size())
+        {
+            m_Data[m_Start] = std::move(value);
+            m_Start = (m_Start + 1) % m_Data.size();
+        }
+        else
+        {
+            m_Data[physicalIndex(m_Size)] = std::move(value);
+            ++m_Size;
+        }
+    }
+
+    /// Discard the oldest `count` elements in O(1) per call (no copies).
+    void discardFront(std::size_t count) noexcept
+    {
+        const std::size_t removeCount = std::min(count, m_Size);
+        if (removeCount == 0)
+        {
+            return;
+        }
+        m_Start = (m_Start + removeCount) % m_Data.size();
+        m_Size -= removeCount;
+    }
+
+    /// Clear all data.
+    void clear() noexcept
+    {
+        m_Start = 0;
+        m_Size = 0;
+    }
+
+    /// Number of valid entries.
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Size;
+    }
+
+    /// Maximum capacity.
+    [[nodiscard]] std::size_t capacity() const noexcept
+    {
+        return m_Data.size();
+    }
+
+    /// Check if empty.
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_Size == 0;
+    }
+
+    /// Check if full.
+    [[nodiscard]] bool full() const noexcept
+    {
+        return !m_Data.empty() && m_Size == m_Data.size();
+    }
+
+    /// Access element by logical index (0 = oldest, size()-1 = newest).
+    [[nodiscard]] T operator[](std::size_t index) const
+    {
+        return m_Data[physicalIndex(index)];
+    }
+
+    /// Access element by logical index without copying (0 = oldest, size()-1 = newest).
+    [[nodiscard]] const T& ref(std::size_t index) const noexcept
+    {
+        return m_Data[physicalIndex(index)];
+    }
+
+    /// Get most recent value (or default if empty).
+    [[nodiscard]] T latest() const
+    {
+        if (m_Size == 0)
+        {
+            return T{};
+        }
+        return m_Data[physicalIndex(m_Size - 1)];
+    }
+
+    /// Copy data into a contiguous buffer for plotting.
+    /// Returns number of elements copied.
+    [[nodiscard]] std::size_t copyTo(T* buffer, std::size_t maxCount) const
+    {
+        const std::size_t count = std::min(maxCount, m_Size);
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        const std::size_t bufferCapacity = m_Data.size();
+        if (m_Start + count <= bufferCapacity)
+        {
+            std::copy_n(m_Data.data() + m_Start, count, buffer);
+        }
+        else
+        {
+            const std::size_t firstChunk = bufferCapacity - m_Start;
+            std::copy_n(m_Data.data() + m_Start, firstChunk, buffer);
+            std::copy_n(m_Data.data(), count - firstChunk, buffer + firstChunk);
+        }
+
+        return count;
+    }
+
+  private:
+    [[nodiscard]] std::size_t physicalIndex(std::size_t logicalIndex) const noexcept
+    {
+        return (m_Start + logicalIndex) % m_Data.size();
+    }
+
+    std::vector<T> m_Data;
+    std::size_t m_Start = 0;
+    std::size_t m_Size = 0;
+};
+
 namespace HistoryUtils
 {
 
@@ -198,60 +305,29 @@ template<typename T, std::size_t Capacity> [[nodiscard]] std::vector<T> toVector
     return result;
 }
 
-template<typename Sequence> void trimFront(Sequence& sequence, std::size_t count)
+/// Convert a HistoryBuffer<T> to a vector in chronological order.
+template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T>& history)
 {
-    while (count > 0 && !sequence.empty())
-    {
-        sequence.pop_front();
-        --count;
-    }
+    std::vector<T> result(history.size());
+    static_cast<void>(history.copyTo(result.data(), result.size()));
+    return result;
 }
 
-template<typename... Sequences> void trimFrontToSize(std::size_t targetSize, Sequences&... sequences)
-{
-    (trimFront(sequences, sequences.size() > targetSize ? sequences.size() - targetSize : 0), ...);
-}
-
-template<typename Sequence> void alignFrontToSize(Sequence& sequence, std::size_t targetSize)
-{
-    trimFrontToSize(targetSize, sequence);
-    while (sequence.size() < targetSize)
-    {
-        sequence.push_front({});
-    }
-}
-
-template<typename TimestampSequence, typename... Sequences>
-[[nodiscard]] std::size_t trimBefore(TimestampSequence& timestamps, double cutoff, Sequences&... alignedSequences)
+/// Count leading timestamps strictly older than `cutoff`, then discard that
+/// many entries from the timestamp ring and every aligned ring in O(1) each.
+/// Returns the number of discarded entries.
+template<typename... Buffers>
+[[nodiscard]] std::size_t discardBefore(HistoryBuffer<double>& timestamps, double cutoff, Buffers&... alignedBuffers)
 {
     std::size_t removeCount = 0;
-    while (removeCount < timestamps.size() && timestamps[removeCount] < cutoff)
+    while (removeCount < timestamps.size() && timestamps.ref(removeCount) < cutoff)
     {
         ++removeCount;
     }
 
-    trimFront(timestamps, removeCount);
-    (trimFront(alignedSequences, removeCount), ...);
+    timestamps.discardFront(removeCount);
+    (alignedBuffers.discardFront(removeCount), ...);
     return removeCount;
-}
-
-template<typename... Sequences> [[nodiscard]] std::size_t minimumNonEmptySize(const Sequences&... sequences)
-{
-    std::size_t minimum = std::numeric_limits<std::size_t>::max();
-    const auto updateMinimum = [&minimum](const auto& sequence)
-    {
-        if (!sequence.empty())
-        {
-            minimum = std::min(minimum, sequence.size());
-        }
-    };
-    (updateMinimum(sequences), ...);
-    return minimum;
-}
-
-template<typename Sequence> [[nodiscard]] auto toVector(const Sequence& sequence) -> std::vector<typename Sequence::value_type>
-{
-    return {sequence.begin(), sequence.end()};
 }
 
 } // namespace HistoryUtils

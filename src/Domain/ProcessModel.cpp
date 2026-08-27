@@ -35,6 +35,8 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFu
     // first refresh.  512 is comfortably above typical desktop process counts (~150-500).
     m_PerProcessState.reserve(512);
 
+    applyHistoryCapacity();
+
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
@@ -361,7 +363,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             m_SystemThreadCountHistory.push(aggThreads);
             m_SystemHandleCountHistory.push(aggHandles);
             m_SystemPowerHistory.push(aggPower);
-            // trimHistory() called only to log warnings if history window exceeds capacity
             trimHistory();
         }
 
@@ -477,22 +478,8 @@ std::vector<double> ProcessModel::historyTimestamps() const
 void ProcessModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const double clamped = std::max(0.0, seconds);
-    m_MaxHistorySeconds = clamped;
-
-    // With ring buffers, validate that the requested history window fits in capacity.
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds. For faster sampling rates, effective
-    // retention will be less. This is a trade-off for eliminating allocation churn.
-    const double maxSupportedSeconds = HistoryCapacity::STANDARD * 1.0; // 1 second per sample at 1Hz
-    if (clamped > maxSupportedSeconds)
-    {
-        spdlog::warn("ProcessModel::setMaxHistorySeconds: requested {:.0f}s exceeds ring buffer capacity ({:.0f}s). "
-                     "History will be truncated at capacity.",
-                     clamped,
-                     maxSupportedSeconds);
-    }
-
+    m_MaxHistorySeconds = std::max(0.0, seconds);
+    applyHistoryCapacity();
     trimHistory();
 }
 
@@ -748,63 +735,39 @@ std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startT
 
 void ProcessModel::trimHistory()
 {
-    // With ring buffers, the time-based trimming semantic has changed:
-    // - Ring buffers have fixed capacity (1800 samples @ 1Hz = 30 min max)
-    // - setMaxHistorySeconds() sets a *requested* window, but actual retention
-    //   is limited by ring buffer capacity
-    // - When maxHistorySeconds == 0.0: all histories are cleared (minimal memory)
-    // - For non-zero values: histories grow until ring buffer capacity,
-    //   then newest samples overwrite oldest (no time-based trimming)
-    //
-    // Note: This is a trade-off. Old deque-based implementation trimmed on every
-    // sample to maintain strict time windows, causing allocation churn.
-    // Ring buffers provide predictable memory usage but don't enforce time windows
-    // past capacity. Users requesting very long windows should increase
-    // HistoryCapacity::STANDARD at compile time if needed.
-
-    if (m_MaxHistorySeconds == 0.0 && m_Timestamps.size() > 1)
-    {
-        // User requested minimal history (0 seconds). This differs from old deque behavior
-        // which would only keep the current sample. Ring buffers can't trim to 1 sample,
-        // but we don't actively clear them because that would waste the fixed-size benefit.
-        // Instead: (a) if user sets 0.0 at startup, ring buffers stay empty until first sample,
-        // and (b) if user changes to 0.0 mid-run, old data persists but new samples don't accumulate
-        // (the ring buffer wraps). To truly minimize memory with 0-second retention, either:
-        // - Set it before any sampling starts, or
-        // - Manually call clear() on the histories
-        // We log to inform the user of this limitation.
-        if (m_Timestamps.size() == 1)
-        {
-            spdlog::debug("ProcessModel: History retention set to 0 seconds at startup.");
-        }
-        return;
-    }
-
     if (m_Timestamps.empty())
     {
         return;
     }
 
-    // Check if we're approaching or exceeding capacity
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
-    // For the default 300-second window, we'll never hit this in normal operation.
-    if (m_Timestamps.full())
-    {
-        // Oldest timestamp is at logical index 0
-        const double oldestTimestamp = m_Timestamps[0];
-        const double newestTimestamp = m_Timestamps.latest();
-        const double span = newestTimestamp - oldestTimestamp;
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
+    // With maxHistorySeconds == 0 the cutoff equals the newest timestamp, so
+    // only the current sample is retained (matching the old deque behavior).
+    const double cutoff = m_Timestamps.latest() - m_MaxHistorySeconds;
+    static_cast<void>(HistoryUtils::discardBefore(m_Timestamps,
+                                                  cutoff,
+                                                  m_SystemNetSentHistory,
+                                                  m_SystemNetRecvHistory,
+                                                  m_SystemPageFaultsHistory,
+                                                  m_SystemThreadCountHistory,
+                                                  m_SystemHandleCountHistory,
+                                                  m_SystemPowerHistory));
+}
 
-        // Log warning if actual history span exceeds configured max
-        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
-        {
-            spdlog::warn("ProcessModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
-                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
-                         span,
-                         m_MaxHistorySeconds);
-        }
-    }
+void ProcessModel::applyHistoryCapacity()
+{
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_Timestamps.setCapacity(capacity);
+    m_SystemNetSentHistory.setCapacity(capacity);
+    m_SystemNetRecvHistory.setCapacity(capacity);
+    m_SystemPageFaultsHistory.setCapacity(capacity);
+    m_SystemThreadCountHistory.setCapacity(capacity);
+    m_SystemHandleCountHistory.setCapacity(capacity);
+    m_SystemPowerHistory.setCapacity(capacity);
 }
 
 std::string ProcessModel::translateState(char rawState)

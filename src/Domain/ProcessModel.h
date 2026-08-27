@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -175,13 +174,13 @@ class ProcessModel : public ISamplable
 
     // Aggregated system histories (aligned by timestamps) - fixed-size ring buffers
     // No need to trim: ring buffers auto-wrap and maintain fixed memory footprint
-    History<double, HistoryCapacity::STANDARD> m_SystemNetSentHistory;
-    History<double, HistoryCapacity::STANDARD> m_SystemNetRecvHistory;
-    History<double, HistoryCapacity::STANDARD> m_SystemPageFaultsHistory;
-    History<double, HistoryCapacity::STANDARD> m_SystemThreadCountHistory;
-    History<double, HistoryCapacity::STANDARD> m_SystemHandleCountHistory;
-    History<double, HistoryCapacity::STANDARD> m_SystemPowerHistory;
-    History<double, HistoryCapacity::STANDARD> m_Timestamps;
+    HistoryBuffer<double> m_SystemNetSentHistory;
+    HistoryBuffer<double> m_SystemNetRecvHistory;
+    HistoryBuffer<double> m_SystemPageFaultsHistory;
+    HistoryBuffer<double> m_SystemThreadCountHistory;
+    HistoryBuffer<double> m_SystemHandleCountHistory;
+    HistoryBuffer<double> m_SystemPowerHistory;
+    HistoryBuffer<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
 
     // Latest computed snapshots
@@ -210,6 +209,7 @@ class ProcessModel : public ISamplable
                                                          std::uint64_t timeDeltaUs);
 
     void trimHistory();
+    void applyHistoryCapacity();
 
     [[nodiscard]] static std::uint64_t makeUniqueKey(std::int32_t pid, std::uint64_t startTime);
     [[nodiscard]] static std::string translateState(char rawState);

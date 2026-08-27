@@ -15,7 +15,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -44,94 +43,82 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
         m_PowerCapabilities = m_PowerProbe->capabilities();
         spdlog::debug("SystemModel: initialized with power probe (hasBattery={})", m_PowerCapabilities.hasBattery);
     }
+
+    applyHistoryCapacity();
 }
 
-void SystemModel::trimHistory([[maybe_unused]] double nowSeconds)
+void SystemModel::applyHistoryCapacity()
 {
-    // With ring buffers, the time-based trimming semantic has changed:
-    // - Ring buffers have fixed capacity (1800 samples @ 1Hz = 30 min max)
-    // - setMaxHistorySeconds() sets a *requested* window, but actual retention
-    //   is limited by ring buffer capacity
-    // - When maxHistorySeconds == 0.0: all histories are cleared (minimal memory)
-    // - For non-zero values: histories grow until ring buffer capacity,
-    //   then newest samples overwrite oldest (no time-based trimming)
-    //
-    // Note: This is a trade-off. Old deque-based implementation trimmed on every
-    // sample to maintain strict time windows, causing allocation churn.
-    // Ring buffers provide predictable memory usage but don't enforce time windows
-    // past capacity. Users requesting very long windows should increase
-    // HistoryCapacity::STANDARD at compile time if needed.
-
-    if (m_MaxHistorySeconds == 0.0)
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_Timestamps.setCapacity(capacity);
+    m_CpuHistory.setCapacity(capacity);
+    m_CpuUserHistory.setCapacity(capacity);
+    m_CpuSystemHistory.setCapacity(capacity);
+    m_CpuIowaitHistory.setCapacity(capacity);
+    m_CpuIdleHistory.setCapacity(capacity);
+    m_MemoryHistory.setCapacity(capacity);
+    m_MemoryCachedHistory.setCapacity(capacity);
+    m_SwapHistory.setCapacity(capacity);
+    m_PowerHistory.setCapacity(capacity);
+    m_BatteryChargeHistory.setCapacity(capacity);
+    m_NetRxHistory.setCapacity(capacity);
+    m_NetTxHistory.setCapacity(capacity);
+    for (auto& [name, history] : m_PerInterfaceRxHistory)
     {
-        // Clear all ring buffers - user wants minimal memory usage
-        m_Timestamps.clear();
-        m_CpuHistory.clear();
-        m_CpuUserHistory.clear();
-        m_CpuSystemHistory.clear();
-        m_CpuIowaitHistory.clear();
-        m_CpuIdleHistory.clear();
-        m_MemoryHistory.clear();
-        m_MemoryCachedHistory.clear();
-        m_SwapHistory.clear();
-        m_PowerHistory.clear();
-        m_BatteryChargeHistory.clear();
-        m_NetRxHistory.clear();
-        m_NetTxHistory.clear();
-        for (auto& entry : m_PerInterfaceRxHistory)
-            entry.second.clear();
-        for (auto& entry : m_PerInterfaceTxHistory)
-            entry.second.clear();
-        for (auto& entry : m_PerCoreHistory)
-            entry.clear();
-        return;
+        history.setCapacity(capacity);
     }
-
-    if (m_Timestamps.empty())
+    for (auto& [name, history] : m_PerInterfaceTxHistory)
     {
-        return;
+        history.setCapacity(capacity);
     }
-
-    // Check if we're approaching or exceeding capacity
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
-    // For the default 300-second window, we'll never hit this in normal operation.
-    if (m_Timestamps.full())
+    for (auto& coreHistory : m_PerCoreHistory)
     {
-        // Oldest timestamp is at logical index 0
-        const double oldestTimestamp = m_Timestamps[0];
-        const double newestTimestamp = m_Timestamps.latest();
-        const double span = newestTimestamp - oldestTimestamp;
+        coreHistory.setCapacity(capacity);
+    }
+}
 
-        // Log warning if actual history span exceeds configured max
-        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
-        {
-            spdlog::warn("SystemModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
-                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
-                         span,
-                         m_MaxHistorySeconds);
-        }
+void SystemModel::trimHistory(double nowSeconds)
+{
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps,
+                                                                cutoff,
+                                                                m_CpuHistory,
+                                                                m_CpuUserHistory,
+                                                                m_CpuSystemHistory,
+                                                                m_CpuIowaitHistory,
+                                                                m_CpuIdleHistory,
+                                                                m_MemoryHistory,
+                                                                m_MemoryCachedHistory,
+                                                                m_SwapHistory,
+                                                                m_PowerHistory,
+                                                                m_BatteryChargeHistory,
+                                                                m_NetRxHistory,
+                                                                m_NetTxHistory);
+
+    for (auto& [name, history] : m_PerInterfaceRxHistory)
+    {
+        history.discardFront(removeCount);
+    }
+    for (auto& [name, history] : m_PerInterfaceTxHistory)
+    {
+        history.discardFront(removeCount);
+    }
+    for (auto& coreHistory : m_PerCoreHistory)
+    {
+        coreHistory.discardFront(removeCount);
     }
 }
 
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const double clamped = Domain::Sampling::clampHistorySeconds(seconds);
-    m_MaxHistorySeconds = clamped;
-
-    // With ring buffers, validate that the requested history window fits in capacity.
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds. For faster sampling rates, effective
-    // retention will be less. This is a trade-off for eliminating allocation churn.
-    const double maxSupportedSeconds = HistoryCapacity::STANDARD * 1.0; // 1 second per sample at 1Hz
-    if (clamped > maxSupportedSeconds)
-    {
-        spdlog::warn("SystemModel::setMaxHistorySeconds: requested {:.0f}s exceeds ring buffer capacity ({:.0f}s). "
-                     "History will be truncated at capacity.",
-                     clamped,
-                     maxSupportedSeconds);
-    }
+    m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
+    applyHistoryCapacity();
 
     if (!m_Timestamps.empty())
     {
@@ -453,10 +440,22 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         const std::size_t numCores = std::min(counters.cpuPerCore.size(), m_PrevCounters.cpuPerCore.size());
         snap.cpuPerCore.reserve(numCores);
 
-        // Resize per-core history if needed
+        // Resize per-core history if needed (new cores get zero backfill so all
+        // rings stay in lockstep with m_Timestamps)
         if (m_PerCoreHistory.size() < numCores)
         {
+            const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+            const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
+            const std::size_t oldSize = m_PerCoreHistory.size();
             m_PerCoreHistory.resize(numCores);
+            for (std::size_t i = oldSize; i < numCores; ++i)
+            {
+                m_PerCoreHistory[i].setCapacity(capacity);
+                for (std::size_t j = 0; j < backfillCount; ++j)
+                {
+                    m_PerCoreHistory[i].push(0.0F);
+                }
+            }
         }
 
         for (std::size_t i = 0; i < numCores; ++i)
@@ -504,11 +503,27 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
         m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
 
-        // Per-interface network history
+        // Per-interface network history (new interfaces get capacity + zero
+        // backfill, clamped to ring capacity, so they stay aligned with m_Timestamps)
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            m_PerInterfaceRxHistory[ifaceSnap.name].push(static_cast<float>(ifaceSnap.rxBytesPerSec));
-            m_PerInterfaceTxHistory[ifaceSnap.name].push(static_cast<float>(ifaceSnap.txBytesPerSec));
+            auto ensureAligned = [this](auto& map, const std::string& name) -> auto&
+            {
+                auto [it, inserted] = map.try_emplace(name);
+                if (inserted)
+                {
+                    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+                    it->second.setCapacity(capacity);
+                    const std::size_t backfillCount = std::min(m_Timestamps.size(), capacity - 1);
+                    for (std::size_t j = 0; j < backfillCount; ++j)
+                    {
+                        it->second.push(0.0F);
+                    }
+                }
+                return it->second;
+            };
+            ensureAligned(m_PerInterfaceRxHistory, ifaceSnap.name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            ensureAligned(m_PerInterfaceTxHistory, ifaceSnap.name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
         }
 
         m_Timestamps.push(nowSeconds);

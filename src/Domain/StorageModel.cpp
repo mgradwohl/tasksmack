@@ -24,36 +24,29 @@
 
 namespace Domain
 {
-namespace
-{
-
-template<std::size_t Capacity> void trimRingFront(History<double, Capacity>& history, std::size_t removeCount)
-{
-    const std::size_t currentSize = history.size();
-    if (removeCount == 0 || currentSize == 0)
-    {
-        return;
-    }
-
-    if (removeCount >= currentSize)
-    {
-        history.clear();
-        return;
-    }
-
-    History<double, Capacity> trimmed;
-    for (std::size_t index = removeCount; index < currentSize; ++index)
-    {
-        trimmed.push(history[index]);
-    }
-    history = std::move(trimmed);
-}
-
-} // namespace
 
 StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
     : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
-{}
+{
+    applyHistoryCapacity();
+}
+
+void StorageModel::applyHistoryCapacity()
+{
+    // Size every ring so the configured time window fits even at the fastest
+    // supported refresh cadence; time-based trimming governs actual retention.
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    m_History.setCapacity(capacity);
+    m_Timestamps.setCapacity(capacity);
+    for (auto& [name, history] : m_DiskReadHistory)
+    {
+        history.setCapacity(capacity);
+    }
+    for (auto& [name, history] : m_DiskWriteHistory)
+    {
+        history.setCapacity(capacity);
+    }
+}
 
 void StorageModel::sample()
 {
@@ -112,7 +105,7 @@ void StorageModel::sample()
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_LatestSnapshot = snapshot;
-        m_History.push_back(snapshot);
+        m_History.push(snapshot);
         m_Timestamps.push(nowSeconds);
 
         // Maintain per-disk I/O histories aligned to m_Timestamps.
@@ -126,9 +119,21 @@ void StorageModel::sample()
             presentDisks.insert(name);
             if (!m_DiskReadHistory.contains(name))
             {
-                // New disk: record its first appearance.
-                // Ring buffers auto-align, so no backfill needed.
+                // New disk: backfill zeros for the samples taken before it appeared
+                // (clamped to ring capacity) so its series stays index-aligned
+                // with m_Timestamps.
                 m_DiskOrder.push_back(name);
+                auto& readHistory = m_DiskReadHistory[name];
+                auto& writeHistory = m_DiskWriteHistory[name];
+                const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+                readHistory.setCapacity(capacity);
+                writeHistory.setCapacity(capacity);
+                const std::size_t backfillCount = std::min(m_Timestamps.size() - 1, capacity - 1);
+                for (std::size_t i = 0; i < backfillCount; ++i)
+                {
+                    readHistory.push(0.0);
+                    writeHistory.push(0.0);
+                }
             }
             m_DiskReadHistory[name].push(disk.readBytesPerSec);
             m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
@@ -174,8 +179,9 @@ void StorageModel::publish()
     publication->timestamps = HistoryUtils::toVector(m_Timestamps);
     publication->totalReadHistory.reserve(m_History.size());
     publication->totalWriteHistory.reserve(m_History.size());
-    for (const auto& snapshot : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
+        const auto& snapshot = m_History.ref(i);
         publication->totalReadHistory.push_back(snapshot.totalReadBytesPerSec);
         publication->totalWriteHistory.push_back(snapshot.totalWriteBytesPerSec);
     }
@@ -256,42 +262,19 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 
 void StorageModel::trimHistory(double nowSeconds)
 {
-    if (m_MaxHistorySeconds == 0.0)
-    {
-        m_Timestamps.clear();
-        for (auto& entry : m_DiskReadHistory)
-            entry.second.clear();
-        for (auto& entry : m_DiskWriteHistory)
-            entry.second.clear();
-        HistoryUtils::trimFrontToSize(0, m_History);
-        return;
-    }
-
-    const std::size_t timestampCount = m_Timestamps.size();
-    if (timestampCount == 0)
-    {
-        return;
-    }
-
+    // Drop entries older than the configured time window. All rings are pushed
+    // in lockstep with m_Timestamps, so a single discard count keeps them
+    // aligned. discardFront is O(1): no copies, rebuilds, or allocations.
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    std::size_t removeCount = 0;
-    while (removeCount < timestampCount && m_Timestamps[removeCount] < cutoff)
+    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps, cutoff, m_History);
+    for (auto& [name, history] : m_DiskReadHistory)
     {
-        ++removeCount;
+        history.discardFront(removeCount);
     }
-
-    trimRingFront(m_Timestamps, removeCount);
-    for (auto& entry : m_DiskReadHistory)
+    for (auto& [name, history] : m_DiskWriteHistory)
     {
-        trimRingFront(entry.second, removeCount);
+        history.discardFront(removeCount);
     }
-    for (auto& entry : m_DiskWriteHistory)
-    {
-        trimRingFront(entry.second, removeCount);
-    }
-
-    const std::size_t targetSize = m_Timestamps.size();
-    HistoryUtils::trimFrontToSize(targetSize, m_History);
 }
 
 StorageSnapshot StorageModel::latestSnapshot() const
@@ -311,9 +294,9 @@ std::vector<double> StorageModel::totalReadHistory() const
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
-    for (const auto& snap : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(snap.totalReadBytesPerSec);
+        out.push_back(m_History.ref(i).totalReadBytesPerSec);
     }
     return out;
 }
@@ -323,9 +306,9 @@ std::vector<double> StorageModel::totalWriteHistory() const
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     std::vector<double> out;
     out.reserve(m_History.size());
-    for (const auto& snap : m_History)
+    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        out.push_back(snap.totalWriteBytesPerSec);
+        out.push_back(m_History.ref(i).totalWriteBytesPerSec);
     }
     return out;
 }
@@ -363,20 +346,12 @@ std::vector<double> StorageModel::historyTimestamps() const
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const double clamped = std::max(0.0, seconds);
-    m_MaxHistorySeconds = clamped;
+    m_MaxHistorySeconds = std::max(0.0, seconds);
+    applyHistoryCapacity();
 
-    // With ring buffers, validate that the requested history window fits in capacity.
-    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
-    // At 1Hz sampling, this supports 1800 seconds. For faster sampling rates, effective
-    // retention will be less. This is a trade-off for eliminating allocation churn.
-    const double maxSupportedSeconds = HistoryCapacity::STANDARD * 1.0; // 1 second per sample at 1Hz
-    if (clamped > maxSupportedSeconds)
+    if (!m_Timestamps.empty())
     {
-        spdlog::warn("StorageModel::setMaxHistorySeconds: requested {:.0f}s exceeds ring buffer capacity ({:.0f}s). "
-                     "History will be truncated at capacity.",
-                     clamped,
-                     maxSupportedSeconds);
+        trimHistory(m_Timestamps.latest());
     }
 }
 

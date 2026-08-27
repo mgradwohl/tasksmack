@@ -7,7 +7,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -89,13 +88,14 @@ class StorageModel : public ISamplable
 
     static DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);
     void trimHistory(double nowSeconds);
+    void applyHistoryCapacity();
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
 
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
-    std::deque<StorageSnapshot> m_History;
-    History<double, HistoryCapacity::STANDARD> m_Timestamps; // Seconds since start
+    HistoryBuffer<StorageSnapshot> m_History;
+    HistoryBuffer<double> m_Timestamps; // Seconds since start
 
     // Per-device state for delta calculations
     std::unordered_map<std::string, DiskState> m_DiskStates;
@@ -103,10 +103,11 @@ class StorageModel : public ISamplable
     std::chrono::steady_clock::time_point m_StartTime;
     bool m_HasPrevSample = false;
 
-    // Per-device I/O history for per-disk charting (ring buffers; newly discovered
-    // disks are NOT backfilled with zeros, so strict index alignment is not guaranteed)
-    std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskReadHistory;
-    std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskWriteHistory;
+    // Per-device I/O history for per-disk charting. Newly discovered disks are
+    // backfilled with zeros (clamped to ring capacity) and absent disks receive
+    // 0.0 placeholders, so every series stays index-aligned with m_Timestamps.
+    std::unordered_map<std::string, HistoryBuffer<double>> m_DiskReadHistory;
+    std::unordered_map<std::string, HistoryBuffer<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
     std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
     std::uint64_t m_PublicationVersion = 0;
