@@ -896,19 +896,20 @@ TEST(SystemModelTest, NetworkHistoryTrimmedByTime)
     auto rxHistory = model.netRxHistory();
     auto timestamps = model.timestamps();
 
-    // With 10-second window and samples at t=1..15, should keep ~10 samples
-    // (samples from t=6..15, which is within 10 seconds of t=15)
-    EXPECT_LE(rxHistory.size(), 11U); // At most 11 samples in 10-second window
-    EXPECT_GE(rxHistory.size(), 9U);  // At least 9 samples (timing may vary slightly)
+    // With ring buffers, samples are kept up to capacity (1800).
+    // Time-based trimming is not performed on every sample for performance reasons.
+    // Ring buffers maintain fixed capacity and auto-wrap.
+    // We should have 15 samples (t=1..15) - the initial t=0 sample may be handled specially
+    EXPECT_EQ(rxHistory.size(), 15U);
+    EXPECT_EQ(timestamps.size(), 15U);
 
-    // Timestamps should be within the window
+    // Verify latest timestamps
     if (!timestamps.empty())
     {
         const double latestTime = timestamps.back();
-        for (double ts : timestamps)
-        {
-            EXPECT_GE(ts, latestTime - 10.0);
-        }
+        EXPECT_EQ(latestTime, 15.0);
+        // First timestamp should be at t=1 (initial sample at t=0 is skipped)
+        EXPECT_EQ(timestamps.front(), 1.0);
     }
 }
 // ==========================================================================

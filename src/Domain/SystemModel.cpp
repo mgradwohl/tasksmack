@@ -46,11 +46,36 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
     }
 }
 
-void SystemModel::trimHistory(double nowSeconds)
+void SystemModel::trimHistory([[maybe_unused]] double nowSeconds)
 {
-    // With ring buffers, no actual trimming occurs - they auto-wrap.
-    // This function now validates that history capacity is sufficient for the configured window.
+    // With ring buffers, trimming on demand clears them when maxHistorySeconds is 0.
+    // Otherwise, ring buffers auto-wrap and we just validate capacity.
     
+    if (m_MaxHistorySeconds == 0.0)
+    {
+        // Clear all ring buffers - user wants minimal memory usage
+        m_Timestamps.clear();
+        m_CpuHistory.clear();
+        m_CpuUserHistory.clear();
+        m_CpuSystemHistory.clear();
+        m_CpuIowaitHistory.clear();
+        m_CpuIdleHistory.clear();
+        m_MemoryHistory.clear();
+        m_MemoryCachedHistory.clear();
+        m_SwapHistory.clear();
+        m_PowerHistory.clear();
+        m_BatteryChargeHistory.clear();
+        m_NetRxHistory.clear();
+        m_NetTxHistory.clear();
+        for (auto& entry : m_PerInterfaceRxHistory)
+            entry.second.clear();
+        for (auto& entry : m_PerInterfaceTxHistory)
+            entry.second.clear();
+        for (auto& entry : m_PerCoreHistory)
+            entry.clear();
+        return;
+    }
+
     if (m_Timestamps.empty())
     {
         return;
@@ -84,7 +109,7 @@ void SystemModel::setMaxHistorySeconds(double seconds)
 
     if (!m_Timestamps.empty())
     {
-        trimHistory(m_Timestamps.back());
+        trimHistory(m_Timestamps.latest());
     }
 }
 

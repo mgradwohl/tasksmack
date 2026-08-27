@@ -228,12 +228,23 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
     return snap;
 }
 
-void StorageModel::trimHistory(double nowSeconds)
+void StorageModel::trimHistory([[maybe_unused]] double nowSeconds)
 {
-    // With ring buffers for timestamps, no actual trimming occurs - they auto-wrap.
-    // This function now validates that history capacity is sufficient for the configured window.
-    // The m_History (deque of snapshots) is trimmed to stay aligned with ring buffer sizes.
+    // With ring buffers, trimming on demand clears them when maxHistorySeconds is 0.
+    // Otherwise, ring buffers auto-wrap and we just validate capacity.
     
+    if (m_MaxHistorySeconds == 0.0)
+    {
+        // Clear all ring buffers - user wants minimal memory usage
+        m_Timestamps.clear();
+        for (auto& entry : m_DiskReadHistory)
+            entry.second.clear();
+        for (auto& entry : m_DiskWriteHistory)
+            entry.second.clear();
+        HistoryUtils::trimFrontToSize(0, m_History);
+        return;
+    }
+
     if (m_Timestamps.empty())
     {
         return;
@@ -314,11 +325,11 @@ std::vector<PerDiskHistory> StorageModel::perDiskHistory() const
         const auto writeIt = m_DiskWriteHistory.find(name);
         if (readIt != m_DiskReadHistory.end())
         {
-            entry.readBytesPerSec = {readIt->second.begin(), readIt->second.end()};
+            entry.readBytesPerSec = HistoryUtils::toVector(readIt->second);
         }
         if (writeIt != m_DiskWriteHistory.end())
         {
-            entry.writeBytesPerSec = {writeIt->second.begin(), writeIt->second.end()};
+            entry.writeBytesPerSec = HistoryUtils::toVector(writeIt->second);
         }
         result.push_back(std::move(entry));
     }
