@@ -69,6 +69,7 @@ class Window
 
     void setPosition(int x, int y) const;
     [[nodiscard]] auto getPosition() const -> std::pair<int, int>;
+    [[nodiscard]] static bool supportsPositioning() noexcept;
 
     void setSize(int width, int height);
     /// Return the current logical size as {width, height} in screen coordinates.

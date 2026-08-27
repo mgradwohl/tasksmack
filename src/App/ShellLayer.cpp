@@ -82,9 +82,12 @@ void ShellLayer::onDetach()
     settings.windowWidth = width;
     settings.windowHeight = height;
 
-    const auto [x, y] = window.getPosition();
-    settings.windowPosX = x;
-    settings.windowPosY = y;
+    if (Core::Window::supportsPositioning())
+    {
+        const auto [x, y] = window.getPosition();
+        settings.windowPosX = x;
+        settings.windowPosY = y;
+    }
 
     settings.windowMaximized = window.isMaximized();
 
