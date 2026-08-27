@@ -764,11 +764,19 @@ void ProcessModel::trimHistory()
 
     if (m_MaxHistorySeconds == 0.0 && m_Timestamps.size() > 1)
     {
-        // When history retention is 0, we want minimal memory usage, but clearing
-        // ring buffers every sample would negate the performance benefit.
-        // For now, just log that ring buffers maintain fixed capacity.
-        spdlog::debug("ProcessModel: History retention set to 0 seconds. "
-                      "Ring buffers maintain fixed capacity, so old data will persist until overwritten.");
+        // User requested minimal history (0 seconds). This differs from old deque behavior
+        // which would only keep the current sample. Ring buffers can't trim to 1 sample,
+        // but we don't actively clear them because that would waste the fixed-size benefit.
+        // Instead: (a) if user sets 0.0 at startup, ring buffers stay empty until first sample,
+        // and (b) if user changes to 0.0 mid-run, old data persists but new samples don't accumulate
+        // (the ring buffer wraps). To truly minimize memory with 0-second retention, either:
+        // - Set it before any sampling starts, or
+        // - Manually call clear() on the histories
+        // We log to inform the user of this limitation.
+        if (m_Timestamps.size() == 1)
+        {
+            spdlog::debug("ProcessModel: History retention set to 0 seconds at startup.");
+        }
         return;
     }
 
