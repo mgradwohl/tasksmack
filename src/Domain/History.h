@@ -10,6 +10,19 @@
 namespace Domain
 {
 
+/// Capacity constants for fixed-size ring buffers.
+/// Chosen to support typical 5-minute history windows @ 1Hz sampling rate.
+namespace HistoryCapacity
+{
+    /// Standard history capacity: 1800 samples = 5 min @ 1 Hz
+    /// Matches default Sampling::HISTORY_SECONDS_DEFAULT (300 seconds)
+    constexpr std::size_t STANDARD = 1800;
+
+    /// Maximum supported samples (preallocated at compile time)
+    /// To support longer windows, recompile with larger constant
+    constexpr std::size_t MAXIMUM = 1800;
+} // namespace HistoryCapacity
+
 /// Fixed-size ring buffer for storing time-series data.
 /// Provides efficient append and contiguous access for plotting.
 template<typename T, std::size_t Capacity> class History
@@ -126,6 +139,19 @@ template<typename T, std::size_t Capacity> class History
 
 namespace HistoryUtils
 {
+
+/// Convert a ring buffer History<T, C> to a vector.
+/// Returns all elements in chronological order (oldest to newest).
+template<typename T, std::size_t Capacity> [[nodiscard]] std::vector<T> toVector(const History<T, Capacity>& history)
+{
+    std::vector<T> result;
+    result.reserve(history.size());
+    for (std::size_t i = 0; i < history.size(); ++i)
+    {
+        result.push_back(history[i]);
+    }
+    return result;
+}
 
 template<typename Sequence> void trimFront(Sequence& sequence, std::size_t count)
 {

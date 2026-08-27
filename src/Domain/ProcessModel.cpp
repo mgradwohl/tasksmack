@@ -354,13 +354,14 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         {
             // Use absolute time (since epoch) to match SystemModel's timestamp format
             const double nowSeconds = std::chrono::duration<double>(currentSampleTime.time_since_epoch()).count();
-            m_Timestamps.push_back(nowSeconds);
-            m_SystemNetSentHistory.push_back(aggNetSent);
-            m_SystemNetRecvHistory.push_back(aggNetRecv);
-            m_SystemPageFaultsHistory.push_back(aggPageFaults);
-            m_SystemThreadCountHistory.push_back(aggThreads);
-            m_SystemHandleCountHistory.push_back(aggHandles);
-            m_SystemPowerHistory.push_back(aggPower);
+            m_Timestamps.push(nowSeconds);
+            m_SystemNetSentHistory.push(aggNetSent);
+            m_SystemNetRecvHistory.push(aggNetRecv);
+            m_SystemPageFaultsHistory.push(aggPageFaults);
+            m_SystemThreadCountHistory.push(aggThreads);
+            m_SystemHandleCountHistory.push(aggHandles);
+            m_SystemPowerHistory.push(aggPower);
+            // trimHistory() called only to log warnings if history window exceeds capacity
             trimHistory();
         }
 
@@ -732,21 +733,33 @@ std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startT
 
 void ProcessModel::trimHistory()
 {
+    // With ring buffers, no actual trimming occurs - they auto-wrap.
+    // This function now validates that history capacity is sufficient for the configured window.
+    
     if (m_Timestamps.empty())
     {
         return;
     }
 
-    const double cutoff = m_Timestamps.back() - m_MaxHistorySeconds;
-
-    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps,
-                                               cutoff,
-                                               m_SystemNetSentHistory,
-                                               m_SystemNetRecvHistory,
-                                               m_SystemPageFaultsHistory,
-                                               m_SystemThreadCountHistory,
-                                               m_SystemHandleCountHistory,
-                                               m_SystemPowerHistory));
+    // Check if we're approaching or exceeding capacity
+    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
+    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
+    // For the default 300-second window, we'll never hit this in normal operation.
+    if (m_Timestamps.full())
+    {
+        // Oldest timestamp is at logical index 0
+        const double oldestTimestamp = m_Timestamps[0];
+        const double newestTimestamp = m_Timestamps.latest();
+        const double span = newestTimestamp - oldestTimestamp;
+        
+        // Log warning if actual history span exceeds configured max
+        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
+        {
+            spdlog::warn("ProcessModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
+                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
+                         span, m_MaxHistorySeconds);
+        }
+    }
 }
 
 std::string ProcessModel::translateState(char rawState)

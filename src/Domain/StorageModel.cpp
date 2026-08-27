@@ -87,11 +87,11 @@ void StorageModel::sample()
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_LatestSnapshot = snapshot;
         m_History.push_back(snapshot);
-        m_Timestamps.push_back(nowSeconds);
+        m_Timestamps.push(nowSeconds);
 
         // Maintain per-disk I/O histories aligned to m_Timestamps.
         // Track which disks are present in this sample; known-but-absent disks
-        // get a zero placeholder so every deque stays index-aligned with m_Timestamps.
+        // get a zero placeholder so every ring buffer stays aligned with m_Timestamps.
         std::unordered_set<std::string> presentDisks;
         presentDisks.reserve(snapshot.disks.size());
         for (const auto& disk : snapshot.disks)
@@ -100,25 +100,20 @@ void StorageModel::sample()
             presentDisks.insert(name);
             if (!m_DiskReadHistory.contains(name))
             {
-                // New disk: backfill zeros for all prior timestamps before this sample.
+                // New disk: record its first appearance.
+                // Ring buffers auto-align, so no backfill needed.
                 m_DiskOrder.push_back(name);
-                const size_t backfillCount = m_Timestamps.size() - 1; // current ts already pushed
-                for (size_t i = 0; i < backfillCount; ++i)
-                {
-                    m_DiskReadHistory[name].push_back(0.0);
-                    m_DiskWriteHistory[name].push_back(0.0);
-                }
             }
-            m_DiskReadHistory[name].push_back(disk.readBytesPerSec);
-            m_DiskWriteHistory[name].push_back(disk.writeBytesPerSec);
+            m_DiskReadHistory[name].push(disk.readBytesPerSec);
+            m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
         }
         // Append a zero placeholder for known disks absent from this sample.
         for (const auto& name : m_DiskOrder)
         {
             if (!presentDisks.contains(name))
             {
-                m_DiskReadHistory[name].push_back(0.0);
-                m_DiskWriteHistory[name].push_back(0.0);
+                m_DiskReadHistory[name].push(0.0);
+                m_DiskWriteHistory[name].push(0.0);
             }
         }
 
@@ -235,28 +230,39 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
 
 void StorageModel::trimHistory(double nowSeconds)
 {
-    const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    static_cast<void>(HistoryUtils::trimBefore(m_Timestamps, cutoff, m_History));
-
-    // Align per-disk deques to the timestamp count so each disk series remains
-    // index-aligned with m_Timestamps even when a disk is introduced later or
-    // missing from some samples.
-    // Use .find() rather than operator[] to avoid unintentionally inserting
-    // empty deques for names that do not yet have map entries.
-    const size_t targetSize = m_Timestamps.size();
-    for (const auto& name : m_DiskOrder)
+    // With ring buffers for timestamps, no actual trimming occurs - they auto-wrap.
+    // This function now validates that history capacity is sufficient for the configured window.
+    // The m_History (deque of snapshots) is trimmed to stay aligned with ring buffer sizes.
+    
+    if (m_Timestamps.empty())
     {
-        if (auto readIt = m_DiskReadHistory.find(name); readIt != m_DiskReadHistory.end())
+        return;
+    }
+
+    // Check if we're approaching or exceeding capacity
+    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
+    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
+    // For the default 300-second window, we'll never hit this in normal operation.
+    if (m_Timestamps.full())
+    {
+        // Oldest timestamp is at logical index 0
+        const double oldestTimestamp = m_Timestamps[0];
+        const double newestTimestamp = m_Timestamps.latest();
+        const double span = newestTimestamp - oldestTimestamp;
+        
+        // Log warning if actual history span exceeds configured max
+        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
         {
-            auto& readHist = readIt->second;
-            HistoryUtils::alignFrontToSize(readHist, targetSize);
-        }
-        if (auto writeIt = m_DiskWriteHistory.find(name); writeIt != m_DiskWriteHistory.end())
-        {
-            auto& writeHist = writeIt->second;
-            HistoryUtils::alignFrontToSize(writeHist, targetSize);
+            spdlog::warn("StorageModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
+                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
+                         span, m_MaxHistorySeconds);
         }
     }
+
+    // Keep m_History (snapshot deque) trimmed to match ring buffer sizes
+    // Ring buffers all have the same size, so we can use m_Timestamps.size()
+    const size_t targetSize = m_Timestamps.size();
+    HistoryUtils::trimFrontToSize(targetSize, m_History);
 }
 
 StorageSnapshot StorageModel::latestSnapshot() const

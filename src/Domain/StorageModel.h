@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Domain/StorageSnapshot.h"
+#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
 
@@ -94,7 +95,7 @@ class StorageModel : public ISamplable
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
     std::deque<StorageSnapshot> m_History;
-    std::deque<double> m_Timestamps; // Seconds since start
+    History<double, HistoryCapacity::STANDARD> m_Timestamps; // Seconds since start
 
     // Per-device state for delta calculations
     std::unordered_map<std::string, DiskState> m_DiskStates;
@@ -102,9 +103,9 @@ class StorageModel : public ISamplable
     std::chrono::steady_clock::time_point m_StartTime;
     bool m_HasPrevSample = false;
 
-    // Per-device I/O history for per-disk charting (deques aligned to m_Timestamps)
-    std::unordered_map<std::string, std::deque<double>> m_DiskReadHistory;
-    std::unordered_map<std::string, std::deque<double>> m_DiskWriteHistory;
+    // Per-device I/O history for per-disk charting (ring buffers aligned to m_Timestamps)
+    std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskReadHistory;
+    std::unordered_map<std::string, History<double, HistoryCapacity::STANDARD>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
     std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
     std::uint64_t m_PublicationVersion = 0;

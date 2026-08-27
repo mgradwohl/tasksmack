@@ -1,5 +1,6 @@
 #pragma once
 
+#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessSnapshot.h"
@@ -172,14 +173,15 @@ class ProcessModel : public ISamplable
     Clock::time_point m_StartTime; // For history timestamp alignment
     bool m_HasStartTime = false;
 
-    // Aggregated system histories (aligned by timestamps)
-    std::deque<double> m_SystemNetSentHistory;
-    std::deque<double> m_SystemNetRecvHistory;
-    std::deque<double> m_SystemPageFaultsHistory;
-    std::deque<double> m_SystemThreadCountHistory;
-    std::deque<double> m_SystemHandleCountHistory;
-    std::deque<double> m_SystemPowerHistory;
-    std::deque<double> m_Timestamps;
+    // Aggregated system histories (aligned by timestamps) - fixed-size ring buffers
+    // No need to trim: ring buffers auto-wrap and maintain fixed memory footprint
+    History<double, HistoryCapacity::STANDARD> m_SystemNetSentHistory;
+    History<double, HistoryCapacity::STANDARD> m_SystemNetRecvHistory;
+    History<double, HistoryCapacity::STANDARD> m_SystemPageFaultsHistory;
+    History<double, HistoryCapacity::STANDARD> m_SystemThreadCountHistory;
+    History<double, HistoryCapacity::STANDARD> m_SystemHandleCountHistory;
+    History<double, HistoryCapacity::STANDARD> m_SystemPowerHistory;
+    History<double, HistoryCapacity::STANDARD> m_Timestamps;
     double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
 
     // Latest computed snapshots

@@ -48,78 +48,31 @@ SystemModel::SystemModel(std::unique_ptr<Platform::ISystemProbe> probe, std::uni
 
 void SystemModel::trimHistory(double nowSeconds)
 {
-    const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    const std::size_t removeCount = HistoryUtils::trimBefore(m_Timestamps,
-                                                             cutoff,
-                                                             m_CpuHistory,
-                                                             m_CpuUserHistory,
-                                                             m_CpuSystemHistory,
-                                                             m_CpuIowaitHistory,
-                                                             m_CpuIdleHistory,
-                                                             m_MemoryHistory,
-                                                             m_MemoryCachedHistory,
-                                                             m_SwapHistory,
-                                                             m_PowerHistory,
-                                                             m_BatteryChargeHistory,
-                                                             m_NetRxHistory,
-                                                             m_NetTxHistory);
-
-    // Per-interface network history
-    for (auto& [name, hist] : m_PerInterfaceRxHistory)
+    // With ring buffers, no actual trimming occurs - they auto-wrap.
+    // This function now validates that history capacity is sufficient for the configured window.
+    
+    if (m_Timestamps.empty())
     {
-        HistoryUtils::trimFront(hist, removeCount);
-    }
-    for (auto& [name, hist] : m_PerInterfaceTxHistory)
-    {
-        HistoryUtils::trimFront(hist, removeCount);
+        return;
     }
 
-    for (auto& coreHist : m_PerCoreHistory)
+    // Check if we're approaching or exceeding capacity
+    // Ring buffer capacity is HistoryCapacity::STANDARD (1800 samples).
+    // At 1Hz sampling, this supports 1800 seconds (30 minutes).
+    // For the default 300-second window, we'll never hit this in normal operation.
+    if (m_Timestamps.full())
     {
-        HistoryUtils::trimFront(coreHist, removeCount);
-    }
-
-    // Ensure all history buffers remain aligned by truncating to the smallest non-empty size.
-    std::size_t minSize = HistoryUtils::minimumNonEmptySize(m_Timestamps,
-                                                            m_CpuHistory,
-                                                            m_CpuUserHistory,
-                                                            m_CpuSystemHistory,
-                                                            m_CpuIowaitHistory,
-                                                            m_CpuIdleHistory,
-                                                            m_MemoryHistory,
-                                                            m_MemoryCachedHistory,
-                                                            m_SwapHistory,
-                                                            m_PowerHistory,
-                                                            m_BatteryChargeHistory,
-                                                            m_NetRxHistory,
-                                                            m_NetTxHistory);
-    for (const auto& coreHist : m_PerCoreHistory)
-    {
-        if (!coreHist.empty())
+        // Oldest timestamp is at logical index 0
+        const double oldestTimestamp = m_Timestamps[0];
+        const double newestTimestamp = m_Timestamps.latest();
+        const double span = newestTimestamp - oldestTimestamp;
+        
+        // Log warning if actual history span exceeds configured max
+        if (span > m_MaxHistorySeconds + 1.0) // +1.0 for rounding tolerance
         {
-            minSize = std::min(minSize, coreHist.size());
-        }
-    }
-
-    if (minSize != std::numeric_limits<std::size_t>::max())
-    {
-        HistoryUtils::trimFrontToSize(minSize,
-                                      m_Timestamps,
-                                      m_CpuHistory,
-                                      m_CpuUserHistory,
-                                      m_CpuSystemHistory,
-                                      m_CpuIowaitHistory,
-                                      m_CpuIdleHistory,
-                                      m_MemoryHistory,
-                                      m_MemoryCachedHistory,
-                                      m_SwapHistory,
-                                      m_PowerHistory,
-                                      m_BatteryChargeHistory,
-                                      m_NetRxHistory,
-                                      m_NetTxHistory);
-        for (auto& coreHist : m_PerCoreHistory)
-        {
-            HistoryUtils::trimFrontToSize(minSize, coreHist);
+            spdlog::warn("SystemModel: history span ({:.1f}s) exceeds configured max ({:.1f}s); "
+                         "oldest data is being discarded. Consider increasing HistoryCapacity::STANDARD.",
+                         span, m_MaxHistorySeconds);
         }
     }
 }
@@ -484,34 +437,34 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
     // Update history (only after we have valid deltas)
     if (m_HasPrevious)
     {
-        m_CpuHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
-        m_CpuUserHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
-        m_CpuSystemHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
-        m_CpuIowaitHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
-        m_CpuIdleHistory.push_back(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
-        m_MemoryHistory.push_back(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
-        m_MemoryCachedHistory.push_back(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
-        m_SwapHistory.push_back(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-        m_PowerHistory.push_back(static_cast<float>(preservedPower.powerWatts));
+        m_CpuHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.totalPercent));
+        m_CpuUserHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.userPercent));
+        m_CpuSystemHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.systemPercent));
+        m_CpuIowaitHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.iowaitPercent));
+        m_CpuIdleHistory.push(Numeric::clampPercentToFloat(snap.cpuTotal.idlePercent));
+        m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
+        m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
+        m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
+        m_PowerHistory.push(static_cast<float>(preservedPower.powerWatts));
         // Track battery charge % if available (0-100 range, use -1 as "no data")
         const float chargeVal = preservedPower.hasBattery ? static_cast<float>(preservedPower.chargePercent) : -1.0F;
-        m_BatteryChargeHistory.push_back(chargeVal);
+        m_BatteryChargeHistory.push(chargeVal);
         // Network history (bytes per second)
-        m_NetRxHistory.push_back(static_cast<float>(snap.netRxBytesPerSec));
-        m_NetTxHistory.push_back(static_cast<float>(snap.netTxBytesPerSec));
+        m_NetRxHistory.push(static_cast<float>(snap.netRxBytesPerSec));
+        m_NetTxHistory.push(static_cast<float>(snap.netTxBytesPerSec));
 
         // Per-interface network history
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            m_PerInterfaceRxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.rxBytesPerSec));
-            m_PerInterfaceTxHistory[ifaceSnap.name].push_back(static_cast<float>(ifaceSnap.txBytesPerSec));
+            m_PerInterfaceRxHistory[ifaceSnap.name].push(static_cast<float>(ifaceSnap.rxBytesPerSec));
+            m_PerInterfaceTxHistory[ifaceSnap.name].push(static_cast<float>(ifaceSnap.txBytesPerSec));
         }
 
-        m_Timestamps.push_back(nowSeconds);
+        m_Timestamps.push(nowSeconds);
 
         for (std::size_t i = 0; i < snap.cpuPerCore.size() && i < m_PerCoreHistory.size(); ++i)
         {
-            m_PerCoreHistory[i].push_back(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
+            m_PerCoreHistory[i].push(Numeric::clampPercentToFloat(snap.cpuPerCore[i].totalPercent));
         }
 
         trimHistory(nowSeconds);
