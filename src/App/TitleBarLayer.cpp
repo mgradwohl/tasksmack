@@ -545,25 +545,28 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     }
 
     const ResizeEdge edge = detectResizeEdge(mouseX, mouseY, windowWidth, windowHeight, isMaximized);
-    float globalMouseXF = 0.0F;
-    float globalMouseYF = 0.0F;
-    SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
-    const int globalMouseX = static_cast<int>(globalMouseXF);
-    const int globalMouseY = static_cast<int>(globalMouseYF);
+
+    // Compute the global mouse position from the window origin plus the event's
+    // window-local coordinates. This is more accurate than calling
+    // SDL_GetGlobalMouseState() after the fact: on X11 events are buffered and
+    // the pointer may have moved between the time SDL captured the button-down
+    // and the time we process it, which causes a jump on the first drag frame.
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
+    const int globalMouseX = windowOriginX + static_cast<int>(mouseX);
+    const int globalMouseY = windowOriginY + static_cast<int>(mouseY);
 
     if (edge != ResizeEdge::None)
     {
-        const auto [startX, startY] = window.getPosition();
         m_InteractionMode = InteractionMode::Resize;
         m_Resize.edge = edge;
         m_Resize.startMouseGlobalX = globalMouseX;
         m_Resize.startMouseGlobalY = globalMouseY;
-        m_Resize.startWindowX = startX;
-        m_Resize.startWindowY = startY;
+        m_Resize.startWindowX = windowOriginX;
+        m_Resize.startWindowY = windowOriginY;
         m_Resize.startWindowWidth = windowWidth;
         m_Resize.startWindowHeight = windowHeight;
-        m_Resize.lastAppliedX = startX;
-        m_Resize.lastAppliedY = startY;
+        m_Resize.lastAppliedX = windowOriginX;
+        m_Resize.lastAppliedY = windowOriginY;
         m_Resize.lastAppliedWidth = windowWidth;
         m_Resize.lastAppliedHeight = windowHeight;
         m_Resize.hasPendingCommit = false;
@@ -579,31 +582,28 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
         {
             // Don't restore yet — defer restore until the pointer has actually moved
             // past the drag threshold so a bare click doesn't unmaximize the window.
-            const auto [maxX, maxY] = window.getPosition();
             m_Drag.pendingRestore = true;
-            m_Drag.maximizedWindowX = maxX;
+            m_Drag.maximizedWindowX = windowOriginX;
             m_Drag.maximizedWindowWidth = windowWidth;
             m_InteractionMode = InteractionMode::Drag;
             m_Drag.startMouseGlobalX = globalMouseX;
             m_Drag.startMouseGlobalY = globalMouseY;
             // Placeholder positions replaced once restore actually happens.
-            m_Drag.startWindowX = maxX;
-            m_Drag.startWindowY = maxY;
-            m_Drag.lastAppliedX = maxX;
-            m_Drag.lastAppliedY = maxY;
+            m_Drag.startWindowX = windowOriginX;
+            m_Drag.startWindowY = windowOriginY;
+            m_Drag.lastAppliedX = windowOriginX;
+            m_Drag.lastAppliedY = windowOriginY;
             m_Resize.edge = ResizeEdge::None;
-            (void) maxY;
         }
         else
         {
-            const auto [startX, startY] = window.getPosition();
             m_InteractionMode = InteractionMode::Drag;
             m_Drag.startMouseGlobalX = globalMouseX;
             m_Drag.startMouseGlobalY = globalMouseY;
-            m_Drag.startWindowX = startX;
-            m_Drag.startWindowY = startY;
-            m_Drag.lastAppliedX = startX;
-            m_Drag.lastAppliedY = startY;
+            m_Drag.startWindowX = windowOriginX;
+            m_Drag.startWindowY = windowOriginY;
+            m_Drag.lastAppliedX = windowOriginX;
+            m_Drag.lastAppliedY = windowOriginY;
             m_Resize.edge = ResizeEdge::None;
         }
     }
@@ -906,11 +906,23 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 void TitleBarLayer::updateResizeCursor()
 {
     auto& window = Core::Application::get().getWindow();
-    SDL_Window const* sdlWindow = window.getHandle();
+    SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
         return;
     }
+
+#ifndef _WIN32
+    // On non-Windows the hit-test callback returns SDL_HITTEST_RESIZE_* for border
+    // regions, so the window manager owns both the resize operation and its cursor.
+    // When the WM grabs the pointer for a resize, SDL_GetMouseFocus() may stop
+    // returning our window, which would incorrectly trigger a reset to the default
+    // cursor and fight the WM-drawn resize cursor. Skip client-side cursor management
+    // entirely on non-Windows — the WM keeps the correct resize cursor via hit-test.
+    // (Client-side resize on Windows uses InteractionMode::Resize and is handled below.)
+    (void) sdlWindow;
+    return;
+#endif
 
     // Seed from the cache so the state-unchanged fast-path still reaches the
     // cursor-apply step at the end (ImGui may reset the cursor each frame).
@@ -962,23 +974,12 @@ void TitleBarLayer::updateResizeCursor()
             if (insideWindow)
             {
                 edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
-                // Suppress the resize cursor over title-bar controls on all platforms:
-                // Windows routes these through the custom resize path, and on non-Windows
-                // the hit-test callback returns NORMAL for control areas, so the cursor
-                // must match the action regardless of platform.
+                // Suppress the resize cursor over title-bar controls: on Windows all
+                // resize is client-side, but controls should still show the default cursor.
                 if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
                 {
                     edge = ResizeEdge::None;
                 }
-#ifndef _WIN32
-                // On non-Windows, hitTestCallback returns NORMAL for the top-edge
-                // band right of helpBounds.minX (so the WM doesn't intercept clicks
-                // on that region). Suppress the resize cursor there to match.
-                if (edge == ResizeEdge::Top && m_HelpBounds.maxX > m_HelpBounds.minX && localX >= m_HelpBounds.minX)
-                {
-                    edge = ResizeEdge::None;
-                }
-#endif
             }
             m_CachedHoverEdge = edge;
         }

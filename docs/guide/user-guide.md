@@ -179,6 +179,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |
+| Border resize cursors with custom title bar | ✅ (window-manager owned via native hit-test) | ✅ (app-managed client-side cursors) |
 
 ---
 
