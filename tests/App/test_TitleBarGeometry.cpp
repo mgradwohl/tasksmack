@@ -21,6 +21,16 @@ TEST(ComputeResizeGeometryTest, NoneEdge_ReturnsOriginalRect)
     EXPECT_EQ(r.height, 600);
 }
 
+TEST(ComputeResizeGeometryTest, PureFunction_DeterministicAcrossRepeatedCalls)
+{
+    const auto first = computeResizeGeometry(ResizeEdge::TopLeft, 321, 654, 1024, 768, 37, 19);
+    const auto second = computeResizeGeometry(ResizeEdge::TopLeft, 321, 654, 1024, 768, 37, 19);
+    EXPECT_EQ(first.x, second.x);
+    EXPECT_EQ(first.y, second.y);
+    EXPECT_EQ(first.width, second.width);
+    EXPECT_EQ(first.height, second.height);
+}
+
 TEST(ComputeResizeGeometryTest, ZeroDelta_ReturnsOriginalRect)
 {
     const auto r = computeResizeGeometry(ResizeEdge::BottomRight, 10, 20, 800, 600, 0, 0);
@@ -67,6 +77,21 @@ TEST(ComputeResizeGeometryTest, LeftEdge_RightEdgeStaysAnchored)
     EXPECT_EQ(r.x + r.width, origRight);
 }
 
+TEST(ComputeResizeGeometryTest, LeftEdge_MinClamp_PreservesRightUnderExtremeDrag)
+{
+    const int startX = 145;
+    const int startY = 260;
+    const int startWidth = 740;
+    const int startHeight = 560;
+    const int origRight = startX + startWidth;
+    const auto r = computeResizeGeometry(ResizeEdge::Left, startX, startY, startWidth, startHeight, 5000, 0);
+
+    EXPECT_EQ(r.width, MIN);
+    EXPECT_EQ(r.x + r.width, origRight);
+    EXPECT_EQ(r.y, startY);
+    EXPECT_EQ(r.height, startHeight);
+}
+
 // ========== Bottom edge — x/y unchanged, height changes ==========
 
 TEST(ComputeResizeGeometryTest, BottomEdge_GrowsHeight)
@@ -99,6 +124,21 @@ TEST(ComputeResizeGeometryTest, TopEdge_BottomEdgeStaysAnchored)
     const int origBottom = 200 + 600;
     const auto r = computeResizeGeometry(ResizeEdge::Top, 100, 200, 800, 600, 0, 30);
     EXPECT_EQ(r.y + r.height, origBottom);
+}
+
+TEST(ComputeResizeGeometryTest, TopEdge_MinClamp_PreservesBottomUnderExtremeDrag)
+{
+    const int startX = 75;
+    const int startY = 110;
+    const int startWidth = 900;
+    const int startHeight = 700;
+    const int origBottom = startY + startHeight;
+    const auto r = computeResizeGeometry(ResizeEdge::Top, startX, startY, startWidth, startHeight, 0, 5000);
+
+    EXPECT_EQ(r.height, MIN);
+    EXPECT_EQ(r.y + r.height, origBottom);
+    EXPECT_EQ(r.x, startX);
+    EXPECT_EQ(r.width, startWidth);
 }
 
 // ========== Corner edges ==========

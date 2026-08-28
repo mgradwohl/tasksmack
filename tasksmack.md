@@ -237,6 +237,12 @@ Only Linux and Windows are implemented. Windows builds target Windows 10 or late
 
 The application throttles idle and minimized rendering. Domain and Platform code remain graphics-agnostic.
 
+Custom title-bar behavior is intentionally platform-specific:
+
+- Windows uses client-side drag and resize interactions (`TitleBarLayer`) and applies resize cursors from the app.
+- Linux (X11/Wayland) delegates border resize interactions and resize cursors to the window manager through `SDL_HITTEST_RESIZE_*` results.
+- Linux title-bar drag uses event-consistent coordinates (`window position + event-local mouse`) to avoid drag-start jumps caused by sampling global mouse state after queued events.
+
 ## Configuration and Paths
 
 `App::UserConfig` persists TOML settings through platform-aware paths:
