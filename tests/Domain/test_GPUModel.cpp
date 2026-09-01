@@ -1224,13 +1224,13 @@ TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
     ASSERT_EQ(fullHistory.size(), Domain::GPU_HISTORY_CAPACITY);
 
     // Index 0 is the oldest retained sample (value = overCapacity - GPU_HISTORY_CAPACITY).
-    const double expectedOldestUtil = static_cast<double>(overCapacity - Domain::GPU_HISTORY_CAPACITY);
+    const auto expectedOldestUtil = static_cast<double>(overCapacity - Domain::GPU_HISTORY_CAPACITY);
     auto s0 = model.snapshotAt("GPU0", 0);
     ASSERT_TRUE(s0.has_value());
     EXPECT_DOUBLE_EQ(s0->utilizationPercent, expectedOldestUtil);
 
     // Last index is the newest sample (value = overCapacity - 1).
-    const double expectedNewestUtil = static_cast<double>(overCapacity - 1);
+    const auto expectedNewestUtil = static_cast<double>(overCapacity - 1);
     auto sLast = model.snapshotAt("GPU0", Domain::GPU_HISTORY_CAPACITY - 1);
     ASSERT_TRUE(sLast.has_value());
     EXPECT_DOUBLE_EQ(sLast->utilizationPercent, expectedNewestUtil);
