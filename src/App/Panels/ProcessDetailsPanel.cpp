@@ -1505,8 +1505,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
     }
 }
 
-// Renders a collapsible per-GPU breakdown (utilization, memory, engines) when the process
-// uses more than one GPU.
+// Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
+// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has.
 void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
