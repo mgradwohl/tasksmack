@@ -103,7 +103,10 @@ class ProcessesPanel : public Panel
     [[nodiscard]] bool hasReducedPrivileges() const;
 
   private:
-    std::unique_ptr<Domain::ProcessModel> m_ProcessModel;
+    // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
+    // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
+    // destructor ordering.
+    std::shared_ptr<Domain::ProcessModel> m_ProcessModel;
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
     std::int32_t m_SelectedPid = -1;
 

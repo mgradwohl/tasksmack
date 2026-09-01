@@ -8,10 +8,12 @@
 #include <chrono>
 #include <cstddef>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace Domain
@@ -61,13 +63,10 @@ BackgroundSampler::~BackgroundSampler()
     stop();
 }
 
-void BackgroundSampler::addSamplable(ISamplable* samplable)
+void BackgroundSampler::addSamplable(std::weak_ptr<ISamplable> samplable)
 {
-    if (samplable != nullptr)
-    {
-        std::scoped_lock const lock(m_SamplablesMutex);
-        m_Samplables.push_back(samplable);
-    }
+    std::scoped_lock const lock(m_SamplablesMutex);
+    m_Samplables.push_back(std::move(samplable));
 }
 
 void BackgroundSampler::start()
@@ -149,17 +148,26 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         auto startTime = std::chrono::steady_clock::now();
         bool hadException = false;
 
-        std::vector<ISamplable*> currentSamplables;
+        std::vector<std::weak_ptr<ISamplable>> currentSamplables;
         {
             std::scoped_lock const lock(m_SamplablesMutex);
             currentSamplables = m_Samplables;
         }
 
-        for (auto* samplable : currentSamplables)
+        for (const auto& weakSamplable : currentSamplables)
         {
             if (stopToken.stop_requested())
             {
                 break;
+            }
+
+            // Lock the weak_ptr to get a temporary shared_ptr for the duration of this sample()
+            // call. If the owner has already destroyed the samplable, lock() returns empty and
+            // this entry is skipped rather than dereferencing a dangling pointer.
+            const auto samplable = weakSamplable.lock();
+            if (!samplable)
+            {
+                continue;
             }
 
             try
