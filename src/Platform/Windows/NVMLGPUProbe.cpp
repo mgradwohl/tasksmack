@@ -402,6 +402,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         return allCounters;
     }
 
+    // Guards against a buggy/corrupted driver reporting an implausible process count and
+    // forcing a huge allocation; no real system runs anywhere near this many GPU contexts.
+    constexpr unsigned int kMaxPlausibleProcessCount = 65536;
+
     for (const auto& [index, device] : m_DeviceHandles)
     {
         // Use index-based GPU ID to match WindowsGPUProbe (DXGI) format
@@ -416,6 +420,14 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             unsigned int computeCount = 0;
             nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, nullptr);
+            if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && computeCount > kMaxPlausibleProcessCount)
+            {
+                spdlog::warn("NVMLGPUProbe: DeviceGetComputeRunningProcesses reported implausible count {} on GPU {}, skipping",
+                             computeCount,
+                             index);
+                computeCount = 0;
+                result = NVML_ERROR_NOT_SUPPORTED;
+            }
             std::vector<nvmlProcessInfo_t> computeProcesses(computeCount);
             if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && computeCount > 0)
             {
@@ -455,6 +467,14 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             unsigned int graphicsCount = 0;
             nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, nullptr);
+            if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && graphicsCount > kMaxPlausibleProcessCount)
+            {
+                spdlog::warn("NVMLGPUProbe: DeviceGetGraphicsRunningProcesses reported implausible count {} on GPU {}, skipping",
+                             graphicsCount,
+                             index);
+                graphicsCount = 0;
+                result = NVML_ERROR_NOT_SUPPORTED;
+            }
             std::vector<nvmlProcessInfo_t> graphicsProcesses(graphicsCount);
             if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && graphicsCount > 0)
             {
