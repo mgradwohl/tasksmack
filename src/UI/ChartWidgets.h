@@ -17,8 +17,9 @@
 #include <cstdio>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <optional>
-#include <ranges>
+#include <ratio>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -152,8 +153,8 @@ inline void plotLineWithFill(const char* label,
     const int effectiveMax = (maxPointCount > 1) ? std::min(maxPointCount, static_cast<int>(LINE_PLOT_MAX_POINTS_DENSE)) : maxPointCount;
     if ((effectiveMax > 1) && (count > effectiveMax))
     {
-        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData;
-        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData;
+        std::array<TX, LINE_PLOT_MAX_POINTS_DENSE> reducedXData{};
+        std::array<TY, LINE_PLOT_MAX_POINTS_DENSE> reducedYData{};
         for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
         {
             const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);

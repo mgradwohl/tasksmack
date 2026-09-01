@@ -73,6 +73,7 @@ class RenderMetrics
         {
             m_Current.push_back({.id = std::string(id), .vertices = vertices, .indices = indices, .micros = micros});
         }
+        // NOLINTNEXTLINE(bugprone-empty-catch) -- intentional: instrumentation must never crash the app
         catch (...)
         {
             // Drop the sample; instrumentation must never crash the app.
@@ -100,6 +101,7 @@ class RenderMetrics
                 csv += std::format("{},{},{},{:.1f}\n", sample.id, sample.vertices, sample.indices, sample.micros);
             }
         }
+        // NOLINTNEXTLINE(bugprone-empty-catch) -- intentional: instrumentation must never crash the app
         catch (...)
         {
             // Return the partial CSV; instrumentation must never crash the app.

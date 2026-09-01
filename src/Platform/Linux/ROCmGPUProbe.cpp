@@ -328,7 +328,7 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         // Get device name
         // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - C API buffer
         char nameBuf[RSMI_MAX_BUFFER_LENGTH] = {};
-        rsmi_status_t result = m_Impl->rsmi_dev_name_get(deviceIdx, nameBuf, sizeof(nameBuf));
+        const rsmi_status_t result = m_Impl->rsmi_dev_name_get(deviceIdx, nameBuf, sizeof(nameBuf));
         if (result == RSMI_STATUS_SUCCESS)
         {
             info.name = nameBuf;

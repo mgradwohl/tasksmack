@@ -261,9 +261,10 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
     // Bound recv() so a stalled kernel dump can't hang the background sampler thread
     // forever (see querySocketsForFamily()). Best-effort: if this fails, recv() simply
     // keeps its default blocking behavior.
-    timeval recvTimeout{};
+    timeval recvTimeout{}; // NOLINT(misc-include-cleaner) - provided by <sys/time.h> (already included)
     recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
     recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
+    // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVTIMEO are provided by <sys/socket.h> (already included)
     if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
     {
         spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
