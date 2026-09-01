@@ -65,11 +65,6 @@ void ElevationNoticeLayer::onEvent(Core::Event& event)
         });
 }
 
-auto ElevationNoticeLayer::instance() -> ElevationNoticeLayer*
-{
-    return s_Instance;
-}
-
 void ElevationNoticeLayer::requestOpen()
 {
     m_OpenRequested = true;
@@ -160,7 +155,7 @@ void ElevationNoticeLayer::renderDialog()
 
 /// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
 /// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code accesses instance().
+/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
 void ElevationNoticeLayer::setInstance(ElevationNoticeLayer& layer)
 {
     s_Instance = &layer;

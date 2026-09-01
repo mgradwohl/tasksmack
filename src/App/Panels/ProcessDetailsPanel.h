@@ -55,6 +55,23 @@ class ProcessDetailsPanel : public Panel
     }
 
   private:
+    /// Action pending confirmation in the "Confirm Action" popup. An enum instead of a
+    /// free-form string gives compiler-checked exhaustiveness in the dispatch switch and
+    /// avoids a string-compare per confirmation-popup frame.
+    enum class ProcessAction : std::uint8_t
+    {
+        None,
+        Terminate,
+        Kill,
+        Stop,
+        Resume,
+    };
+
+    /// Human-readable verb for ProcessAction, used in confirmation/result messages.
+    /// Returns a `const char*` (not std::string_view) since callers need a null-terminated
+    /// string for both ImGui::Text()'s printf-style "%s" and std::string concatenation.
+    [[nodiscard]] static const char* actionVerb(ProcessAction action);
+
     static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
     void renderThreadAndFaultHistory();
@@ -116,7 +133,7 @@ class ProcessDetailsPanel : public Panel
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;
-    std::string m_ConfirmAction;
+    ProcessAction m_ConfirmAction = ProcessAction::None;
     std::string m_LastActionResult;
     float m_ActionResultTimer = 0.0F;
 

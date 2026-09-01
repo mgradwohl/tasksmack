@@ -707,7 +707,27 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         std::wstring_view imageName;
         if (info->imageName.Buffer != nullptr && info->imageName.Length != 0)
         {
-            imageName = std::wstring_view(info->imageName.Buffer, info->imageName.Length / sizeof(wchar_t));
+            // imageName.Buffer is a separate absolute pointer into the same kernel-filled
+            // allocation, not implicitly covered by the nextEntryOffset bounds check above.
+            // Reject it if it falls outside the bytes the kernel actually wrote, the same
+            // threat model that check already defends against (a corrupted/mismatched
+            // entry, or a future OS layout change). Compared as integer addresses rather
+            // than via pointer relational operators, since imageName.Buffer is not known
+            // to actually point into m_SnapshotBuffer until after this check passes.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the raw snapshot buffer
+            const auto nameBegin = reinterpret_cast<std::uintptr_t>(info->imageName.Buffer);
+            const auto nameEnd = nameBegin + info->imageName.Length;
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - pointer-range check against the raw snapshot buffer
+            const auto snapshotBegin = reinterpret_cast<std::uintptr_t>(m_SnapshotBuffer.data());
+            const auto snapshotEnd = snapshotBegin + snapshotBytes;
+            if (nameBegin >= snapshotBegin && nameEnd <= snapshotEnd)
+            {
+                imageName = std::wstring_view(info->imageName.Buffer, info->imageName.Length / sizeof(wchar_t));
+            }
+            else
+            {
+                spdlog::debug("WindowsProcessProbe: rejecting out-of-bounds imageName for pid {}", pid);
+            }
         }
         if (imageName.empty() && pid == 0)
         {

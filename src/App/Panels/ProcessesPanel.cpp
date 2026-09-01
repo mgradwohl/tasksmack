@@ -915,29 +915,19 @@ bool ProcessesPanel::hasReducedPrivileges() const
     return m_ProcessModel && m_ProcessModel->capabilities().hasReducedPrivileges;
 }
 
-std::vector<Domain::ProcessSnapshot> ProcessesPanel::snapshots() const
-{
-    if (m_ProcessModel)
-    {
-        return m_ProcessModel->snapshots();
-    }
-    return {};
-}
-
 std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t pid) const
 {
     if (!m_ProcessModel)
     {
         return std::nullopt;
     }
-    for (const auto& snap : m_ProcessModel->snapshots())
-    {
-        if (snap.pid == pid)
-        {
-            return snap;
-        }
-    }
-    return std::nullopt;
+    // Delegates to ProcessModel::findSnapshot(), which searches under its own lock and
+    // copies only the matching entry, instead of copying the entire snapshot vector
+    // just to scan it here. Deliberately does NOT use
+    // m_CachedRenderSnapshots: that cache is only refreshed while this panel's tab is
+    // active (see renderContent()), so it would go stale while e.g. the Process Details
+    // tab is showing — this must always reflect the latest published snapshot.
+    return m_ProcessModel->findSnapshot(pid);
 }
 
 void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)

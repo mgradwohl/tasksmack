@@ -39,7 +39,15 @@ elseif(UNIX)
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
         set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsdl3-0, libx11-6, libfreetype6")
+        # Verified against `ldd` on an actual build (SDL3, FreeType, and Freetype's own
+        # dependencies are all statically linked here per cmake/Dependencies.cmake, so
+        # libsdl3-0/libfreetype6 are runtime dependencies the binary doesn't have and may
+        # not even resolve via apt): libX11 is a real dynamic dependency, OpenGL
+        # (libGLX/libOpenGL, provided by libgl1) was previously missing entirely, and
+        # since this project links against libc++/libc++abi (not the default libstdc++ on
+        # Debian/Ubuntu), those must be declared too or the package fails to launch with
+        # "error while loading shared libraries" on a system without Clang installed.
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libx11-6, libgl1, libc++1, libc++abi1")
     endif()
     # Check for rpmbuild (Red Hat/Fedora)
     find_program(RPMBUILD_PROGRAM rpmbuild)

@@ -11,7 +11,6 @@ set(TASKSMACK_PCH_HEADERS
     <algorithm>
     <functional>
     <optional>
-    <variant>
     <span>
     <format>
     # Third-party headers

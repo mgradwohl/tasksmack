@@ -70,11 +70,8 @@ class ProcessesPanel : public Panel
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
-    /// Get the current process snapshots.
-    [[nodiscard]] std::vector<Domain::ProcessSnapshot> snapshots() const;
-
-    /// Find a single snapshot by PID without copying the full vector.
-    /// Searches the cached render snapshots; returns std::nullopt if not found.
+    /// Find a single snapshot by PID without copying the full snapshot vector.
+    /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
     /// Get column settings (for persistence)

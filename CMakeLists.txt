@@ -277,8 +277,14 @@ endif()
 target_include_directories(TaskSmack PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${stb_SOURCE_DIR}
 )
+
+# SYSTEM (not PRIVATE above): stb is third-party, and the FetchContent_Declare(SYSTEM)
+# keyword only marks CMake's own view of the dependency, not this consuming include path -
+# without this, its headers were reported as project code by warnings-as-errors, papered
+# over by manual #pragma diagnostic guards at the one #include site (IconLoader.cpp) that
+# would silently stop covering any future stb-touching file or warning class.
+target_include_directories(TaskSmack SYSTEM PRIVATE ${stb_SOURCE_DIR})
 
 target_link_libraries(TaskSmack PRIVATE
     spdlog::spdlog_header_only

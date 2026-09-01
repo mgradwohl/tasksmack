@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -214,14 +215,33 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         return;
     }
 
-    // Allocate buffer for all processors
+    // winternl.h does not declare a named STATUS_INFO_LENGTH_MISMATCH constant.
+    constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC0000004L);
+
+    // Allocate buffer for all processors. m_NumCores (GetSystemInfo().dwNumberOfProcessors)
+    // is capped at 64 on systems with multiple processor groups (>64 logical processors,
+    // e.g. Threadripper/EPYC-class machines); grow and retry on a length mismatch instead
+    // of silently reporting no per-core data on those machines, mirroring the retry loop
+    // already used for the SystemProcessInformation query in WindowsProcessProbe.
     std::vector<ProcessorPerformanceInfo> perfInfo(m_NumCores);
     ULONG returnLength = 0;
+    NTSTATUS status = 0;
 
-    NTSTATUS status = ntQuery(SystemProcessorPerformanceInformation,
-                              perfInfo.data(),
-                              static_cast<ULONG>(perfInfo.size() * sizeof(ProcessorPerformanceInfo)),
-                              &returnLength);
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        returnLength = 0;
+        status = ntQuery(SystemProcessorPerformanceInformation,
+                         perfInfo.data(),
+                         static_cast<ULONG>(perfInfo.size() * sizeof(ProcessorPerformanceInfo)),
+                         &returnLength);
+        if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
+        {
+            break;
+        }
+        // Grow with headroom: the processor count can change between calls.
+        const std::size_t neededEntries = (static_cast<std::size_t>(returnLength) / sizeof(ProcessorPerformanceInfo)) + 8;
+        perfInfo.assign(neededEntries, ProcessorPerformanceInfo{});
+    }
 
     if (status != 0) // STATUS_SUCCESS = 0
     {
@@ -230,8 +250,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
         return;
     }
 
-    // Calculate actual number of cores returned
-    size_t coresReturned = returnLength / sizeof(ProcessorPerformanceInfo);
+    // Calculate actual number of cores returned; clamp to the buffer size in case the
+    // kernel ever reports a length longer than what was actually allocated.
+    size_t coresReturned = std::min(returnLength / sizeof(ProcessorPerformanceInfo), perfInfo.size());
     counters.cpuPerCore.reserve(coresReturned);
 
     for (size_t i = 0; i < coresReturned; ++i)

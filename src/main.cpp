@@ -200,7 +200,8 @@ auto runApp() -> int
     appRef.pushLayer<App::ShellLayer>();
 
     // About dialog layer (modal overlay)
-    // NOTE: AboutLayer follows a singleton pattern exposed via App::AboutLayer::instance().
+    // NOTE: AboutLayer tracks its non-owning singleton pointer (s_Instance) via setInstance(),
+    // used internally to detect a double-attach; nothing outside the class reads it.
     // CRITICAL: onAttach() is called inside pushLayer(), so setInstance() must be called
     // immediately after layer creation but BEFORE pushing it to the stack.
     // We create a bare instance, register it as the singleton, then push it.

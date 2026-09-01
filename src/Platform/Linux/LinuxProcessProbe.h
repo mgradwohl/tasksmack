@@ -61,8 +61,15 @@ class LinuxProcessProbe : public IProcessProbe
     std::string m_PowerCapPath;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-    // Per-process network monitoring via Netlink INET_DIAG
-    std::unique_ptr<NetlinkSocketStats> m_SocketStats;
+    // Per-process network monitoring via Netlink INET_DIAG. m_SocketStatsMutex guards
+    // m_SocketStats so setSocketStatsCacheTtl() can publish a new instance concurrently
+    // with enumerate() running on the background sampler thread: socketStats() copies out
+    // a stable shared_ptr under the lock, so a concurrent TTL change can never race a
+    // reader's in-flight dereference or destroy the object out from under it. (libc++ 22
+    // does not yet implement the std::atomic<std::shared_ptr<T>> specialization, so a
+    // plain mutex is used instead.)
+    mutable std::mutex m_SocketStatsMutex;
+    std::shared_ptr<NetlinkSocketStats> m_SocketStats;
     bool m_HasNetworkCounters = false;
 
     // Inode-to-PID cache: refreshed on a TTL basis to avoid scanning
@@ -122,6 +129,9 @@ class LinuxProcessProbe : public IProcessProbe
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Attribute network bytes to processes using Netlink socket stats
     void attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const;
+
+    /// Thread-safe copy of the current NetlinkSocketStats instance (see m_SocketStats).
+    [[nodiscard]] std::shared_ptr<NetlinkSocketStats> socketStats() const;
 #endif
 };
 

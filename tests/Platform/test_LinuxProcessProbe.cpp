@@ -25,6 +25,7 @@
 #include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -672,6 +673,42 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(500)));
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(0)));
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(10000)));
+}
+
+// Regression test for a data race where setSocketStatsCacheTtl() reassigned the
+// NetlinkSocketStats instance with no synchronization while enumerate() (on another
+// thread, as it would be from the background sampler) concurrently dereferenced it.
+// Under TSan this reliably flagged a race before the mutex-guarded shared_ptr fix;
+// without TSan it exercises the same interleaving without asserting on timing.
+TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtlDoesNotRaceWithEnumerate)
+{
+    LinuxProcessProbe probe;
+    std::atomic<bool> stop{false};
+    std::atomic<int> enumerateCount{0};
+
+    std::thread enumerateThread(
+        [&probe, &stop, &enumerateCount]
+        {
+            while (!stop.load(std::memory_order_relaxed))
+            {
+                [[maybe_unused]] const auto processes = probe.enumerate();
+                enumerateCount.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+
+    for (int i = 0; i < 50; ++i)
+    {
+        probe.setSocketStatsCacheTtl(std::chrono::milliseconds(1 + (i % 20)));
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    enumerateThread.join();
+
+    // Guards against the loop above racing past the enumerate thread's first scheduling
+    // window and the test silently passing without exercising the interleaving it exists
+    // to test.
+    EXPECT_GT(enumerateCount.load(), 0) << "enumerate() thread should have run at least once";
 }
 #endif
 

@@ -159,7 +159,12 @@ std::uint64_t GPUModel::publicationVersion() const noexcept
 void GPUModel::publish()
 {
     auto publication = std::make_shared<GPUPublication>();
-    publication->version = ++m_PublicationVersion;
+    // Assign the version from a local candidate rather than mutating m_PublicationVersion
+    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
+    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
+    // the end (see below) keeps all three mutually consistent instead of silently advancing
+    // the version past what was actually published.
+    publication->version = m_PublicationVersion + 1;
     publication->gpuInfo = m_GPUInfo;
     publication->capabilities = m_Capabilities;
     publication->snapshots.reserve(m_Snapshots.size());
@@ -195,6 +200,7 @@ void GPUModel::publish()
             publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedRPMPercent));
         }
     }
+    m_PublicationVersion = publication->version;
     m_Publication = std::move(publication);
     m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }

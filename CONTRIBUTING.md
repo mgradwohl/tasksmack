@@ -243,7 +243,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target 2009+ CPUs
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
 | `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
 | `tsan` | — | ThreadSanitizer (Linux only) |
-| `msan` | — | MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only; requires MSan-instrumented libc++) |
+| `msan` | — | MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only). **Not CI-verified** — no workflow exercises this preset, and it requires an MSan-instrumented libc++ you build and link against yourself; without one it will report false positives from uninstrumented STL code. |
 | `unity` | `win-unity` | Unity (jumbo) build for fast end-to-end checks; trades incremental correctness for speed |
 
 ### Build Commands

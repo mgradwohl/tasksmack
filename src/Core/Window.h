@@ -104,6 +104,15 @@ class Window
     int m_RestoreY = 0;
     int m_RestoreWidth = 0;
     int m_RestoreHeight = 0;
+
+#ifdef _WIN32
+    // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of
+    // this cross-platform header; the .cpp casts to HICON to destroy them). Set from the
+    // embedded resource in the constructor, released in ~Window() via DestroyIcon() since
+    // LoadImage(..., IMAGE_ICON, ...) without LR_SHARED returns handles the caller owns.
+    void* m_IconSmall = nullptr;
+    void* m_IconBig = nullptr;
+#endif
 };
 
 } // namespace Core

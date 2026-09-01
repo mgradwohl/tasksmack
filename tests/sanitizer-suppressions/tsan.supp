@@ -6,5 +6,11 @@
 # code triggers false-positive data-race reports from TSAN on the
 # pthread_barrier_destroy / pthread_barrier_wait entry points.
 # These races are in third-party code, not in TaskSmack itself.
+#
+# NOTE: these are function-name suppressions, not stack-scoped ones - they hide any race
+# TSan reports through these two functions anywhere on the stack, not just the specific
+# gtest/SDL3 interaction described above. TaskSmack code does not itself call
+# pthread_barrier_*, so this is not currently masking a real bug, but re-check this file
+# if a future dependency change routes a genuine race through the same function names.
 race:pthread_barrier_destroy
 race:pthread_barrier_wait

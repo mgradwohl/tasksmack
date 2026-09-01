@@ -17,10 +17,15 @@ class Layer
 
     virtual ~Layer() = default;
 
-    Layer(const Layer&) = default;
-    Layer& operator=(const Layer&) = default;
-    Layer(Layer&&) = default;
-    Layer& operator=(Layer&&) = default;
+    // Deleted rather than left default: Layer is a polymorphic base (used only through
+    // pointers/references, e.g. Application's std::vector<std::unique_ptr<Layer>>), and a
+    // permissive copy/move here would allow object slicing through a Layer&. Every current
+    // subclass already deletes these itself; this makes that safety structural instead of a
+    // convention each new subclass has to remember.
+    Layer(const Layer&) = delete;
+    Layer& operator=(const Layer&) = delete;
+    Layer(Layer&&) = delete;
+    Layer& operator=(Layer&&) = delete;
 
     virtual void onAttach()
     {}

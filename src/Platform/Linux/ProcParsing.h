@@ -8,6 +8,7 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 #include <array>
 #include <cerrno>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -18,6 +19,52 @@ namespace Platform::ProcParsing
 {
 
 #if defined(__linux__) && __has_include(<unistd.h>)
+
+/// RAII guard for a POSIX file descriptor. Ensures the fd is closed on all paths,
+/// including exception paths (e.g. std::vector reserve/insert can throw on OOM).
+/// Move-only: copying would let two guards close the same fd (double-close/UB), so the
+/// copy operations are deleted rather than left to the (unsafe) compiler-generated default.
+class FdGuard
+{
+  public:
+    explicit FdGuard(int fd) noexcept : m_Fd(fd)
+    {}
+
+    ~FdGuard() noexcept
+    {
+        if (m_Fd != -1)
+        {
+            ::close(m_Fd);
+        }
+    }
+
+    FdGuard(const FdGuard&) = delete;
+    FdGuard& operator=(const FdGuard&) = delete;
+
+    FdGuard(FdGuard&& other) noexcept : m_Fd(std::exchange(other.m_Fd, -1))
+    {}
+
+    FdGuard& operator=(FdGuard&& other) noexcept
+    {
+        if (this != &other)
+        {
+            if (m_Fd != -1)
+            {
+                ::close(m_Fd);
+            }
+            m_Fd = std::exchange(other.m_Fd, -1);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] int get() const noexcept
+    {
+        return m_Fd;
+    }
+
+  private:
+    int m_Fd;
+};
 
 /// Read a /proc or /sys virtual file using low-level POSIX I/O.
 /// Avoids std::ifstream overhead (locale machinery, sentry, streambuf allocations).
@@ -66,16 +113,8 @@ namespace Platform::ProcParsing
     {
         return {};
     }
-    // RAII guard — ensures fd is closed on all paths, including exception paths
-    // (buf.reserve / buf.insert can throw on OOM).
-    struct FdGuard
-    {
-        int m_fd;
-        ~FdGuard() noexcept
-        {
-            ::close(m_fd);
-        }
-    } guard{fd};
+    const FdGuard guard{fd}; // ensures fd is closed on all paths, including exception paths
+                             // (buf.reserve / buf.insert can throw on OOM)
 
     std::vector<char> buf;
     buf.reserve(4096);

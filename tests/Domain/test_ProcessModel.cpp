@@ -397,6 +397,65 @@ TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
     ASSERT_EQ(copiedSnapshots.size(), 1);
 }
 
+TEST(ProcessModelTest, FindSnapshotReturnsMatchingProcessAmongMultiple)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({
+        makeCounter(100, "alpha", 'R', 1000, 0, 5000),
+        makeCounter(200, "beta", 'S', 2000, 0, 6000),
+        makeCounter(300, "gamma", 'R', 3000, 0, 7000),
+    });
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto found = model.findSnapshot(200);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->pid, 200);
+    EXPECT_EQ(found->name, "beta");
+}
+
+TEST(ProcessModelTest, FindSnapshotReturnsNulloptForUnknownPid)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_FALSE(model.findSnapshot(999).has_value());
+}
+
+TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVector)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto before = model.findSnapshot(100);
+    ASSERT_TRUE(before.has_value());
+    EXPECT_DOUBLE_EQ(before->cpuPercent, 0.0);
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    const auto after = model.findSnapshot(100);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_GT(after->cpuPercent, 0.0);
+}
+
 // =============================================================================
 // State Translation Tests
 // =============================================================================
@@ -1485,12 +1544,17 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
 
 TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 {
-    Domain::ProcessModel model(nullptr);
+    // Drives sample time via the injectable clock instead of a real sleep, so the two
+    // pushed history entries get distinct, deterministic timestamps regardless of
+    // scheduler/clock-resolution timing.
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
     const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
 
     model.updateFromCounters({counter}, 100000);
+    currentTime += std::chrono::milliseconds(10);
     model.updateFromCounters({counter}, 200000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    currentTime += std::chrono::milliseconds(10);
     model.updateFromCounters({counter}, 300000);
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 

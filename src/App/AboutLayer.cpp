@@ -71,11 +71,6 @@ void AboutLayer::onEvent(Core::Event& event)
         });
 }
 
-auto AboutLayer::instance() -> AboutLayer*
-{
-    return s_Instance;
-}
-
 void AboutLayer::requestOpen()
 {
     m_OpenRequested = true;
@@ -228,7 +223,7 @@ void AboutLayer::loadIcon()
 
 /// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
 /// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code accesses instance().
+/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
 void AboutLayer::setInstance(AboutLayer& layer)
 {
     s_Instance = &layer;
