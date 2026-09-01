@@ -24,6 +24,41 @@ as genuinely correct, not just documented.
 | [#711](https://github.com/mgradwohl/tasksmack/issues/711) | P2/P3 (batched) | App/UI: dead code, magic strings, and redundant copies |
 | [#712](https://github.com/mgradwohl/tasksmack/issues/712) | P2/P3 (batched) | Build system: packaging, dependency, and sanitizer hygiene |
 
+## Fix status (branch `fix/code-review-2026-08`)
+
+Every issue above (#706-#712), plus #705 from the prior architecture pass, plus three opportunistic
+fixes bundled in from the existing issue backlog (#691, #693, #596) has a corresponding fix on this
+branch, across 5 commits:
+
+| Commit | Fixes |
+|---|---|
+| `037c8e6` | Render-loop exception boundary (#707); `findSnapshot`/redundant-copy perf fix (#705, #711) |
+| `1365c74` | Domain counter-rollback/publish-consistency gaps (#708) + clock-driven test (#691) |
+| `8fca27b` | Windows buffer/bounds hardening (#710) + HICON leak (#596) |
+| `e5783d2` | App/UI dead code, magic strings, `Layer` slicing hazard (#711) |
+| `4da2e5d` | Build system packaging/dependency/sanitizer hygiene (#712) + CMake naming (#693) |
+
+Not fixed here, deliberately:
+- `DXGIGPUProbe`'s raw-COM-pointer defense-in-depth item from #710 (confirmed leak-free today; refactoring
+  COM ref-counting without a compiler to verify it carries more risk than value).
+- The `ShellLayer` tab-registration refactor from #711 (explicitly speculative — "worth collapsing before
+  it grows further," not a live bug).
+- #595, #598, #593, #552, #689, #63 from the wider issue backlog — each is a full feature or needs a
+  toolchain/team decision beyond "opportunistic fix in the same area."
+
+**Verification**: every commit was built and tested (`ctest --preset debug`, 100% pass) before being made.
+After all five commits, a full clean rebuild was run across five presets: `debug` (100%), `release`
+(100%), `unity` (100% sequential — a parallel-run flake in `LinuxRealProbesTest.EnumerationIsConsistent`
+was reproduced and confirmed to be system-load-dependent test flakiness, not a regression), `asan-ubsan`
+(100%, no memory-safety or UB findings), and `tsan` (1 failure — a D-Bus lock-order-inversion warning in
+`ApplicationTest.StopPreventsRunLoop` — reproduced identically on unmodified `main` via a throwaway git
+worktree, confirming it predates this branch and is an environment-specific false positive, not caused by
+any change here). `clang-format`/`clang-tidy` were run on every touched file; the Windows-only files
+(`WindowsSystemProbe.cpp`, `WindowsProcessProbe.cpp`, the `#ifdef _WIN32` blocks in `Core/Window.*`) are
+not part of the Linux build and were written by precisely mirroring existing correct patterns in the same
+files, but could not be compiled or linted here — CI's Windows job is the first real verification of those
+specific hunks.
+
 Carried over from a prior architecture-focused pass, still open: [#705](https://github.com/mgradwohl/tasksmack/issues/705)
 (the `ShellLayer::findSnapshot` full-vector-copy bug, the `TitleBarLayer` raw-OpenGL boundary violation,
 the `BackgroundSampler` destruction-order hazard, and the App/Panels test-coverage gap). This review does
