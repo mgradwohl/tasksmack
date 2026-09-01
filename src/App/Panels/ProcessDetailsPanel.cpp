@@ -1776,6 +1776,24 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     }
 }
 
+const char* ProcessDetailsPanel::actionVerb(ProcessAction action)
+{
+    switch (action)
+    {
+    case ProcessAction::Terminate:
+        return "terminate";
+    case ProcessAction::Kill:
+        return "kill";
+    case ProcessAction::Stop:
+        return "stop";
+    case ProcessAction::Resume:
+        return "resume";
+    case ProcessAction::None:
+        break;
+    }
+    return "";
+}
+
 void ProcessDetailsPanel::renderActions()
 {
     const auto& theme = UI::Theme::get();
@@ -1804,8 +1822,10 @@ void ProcessDetailsPanel::renderActions()
 
     if (ImGui::BeginPopupModal("Confirm Action", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text(
-            "Are you sure you want to %s process '%s' (PID %d)?", m_ConfirmAction.c_str(), m_CachedSnapshot.name.c_str(), m_SelectedPid);
+        ImGui::Text("Are you sure you want to %s process '%s' (PID %d)?",
+                    actionVerb(m_ConfirmAction),
+                    m_CachedSnapshot.name.c_str(),
+                    m_SelectedPid);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1814,26 +1834,28 @@ void ProcessDetailsPanel::renderActions()
         {
             Platform::ProcessActionResult result;
 
-            if (m_ConfirmAction == "terminate")
+            switch (m_ConfirmAction)
             {
+            case ProcessAction::Terminate:
                 result = m_ProcessActions->terminate(m_SelectedPid);
-            }
-            else if (m_ConfirmAction == "kill")
-            {
+                break;
+            case ProcessAction::Kill:
                 result = m_ProcessActions->kill(m_SelectedPid);
-            }
-            else if (m_ConfirmAction == "stop")
-            {
+                break;
+            case ProcessAction::Stop:
                 result = m_ProcessActions->stop(m_SelectedPid);
-            }
-            else if (m_ConfirmAction == "resume")
-            {
+                break;
+            case ProcessAction::Resume:
                 result = m_ProcessActions->resume(m_SelectedPid);
+                break;
+            case ProcessAction::None:
+                break;
             }
 
             if (result.success)
             {
-                m_LastActionResult = "Success: " + m_ConfirmAction + " sent to PID " + std::to_string(m_SelectedPid);
+                m_LastActionResult =
+                    std::string("Success: ") + actionVerb(m_ConfirmAction) + " sent to PID " + std::to_string(m_SelectedPid);
             }
             else
             {
@@ -1876,7 +1898,7 @@ void ProcessDetailsPanel::renderActions()
         {
             if (ImGui::Button(ICON_FA_XMARK " Terminate", buttonSize))
             {
-                m_ConfirmAction = "terminate";
+                m_ConfirmAction = ProcessAction::Terminate;
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
@@ -1891,7 +1913,7 @@ void ProcessDetailsPanel::renderActions()
         {
             if (ImGui::Button(ICON_FA_SKULL " Kill", buttonSize))
             {
-                m_ConfirmAction = "kill";
+                m_ConfirmAction = ProcessAction::Kill;
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
@@ -1909,7 +1931,7 @@ void ProcessDetailsPanel::renderActions()
         {
             if (ImGui::Button(ICON_FA_PAUSE " Pause", buttonSize))
             {
-                m_ConfirmAction = "stop";
+                m_ConfirmAction = ProcessAction::Stop;
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())
@@ -1924,7 +1946,7 @@ void ProcessDetailsPanel::renderActions()
         {
             if (ImGui::Button(ICON_FA_PLAY " Resume", buttonSize))
             {
-                m_ConfirmAction = "resume";
+                m_ConfirmAction = ProcessAction::Resume;
                 m_ShowConfirmDialog = true;
             }
             if (ImGui::IsItemHovered())

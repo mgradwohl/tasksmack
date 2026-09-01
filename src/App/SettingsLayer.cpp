@@ -89,11 +89,6 @@ void SettingsLayer::onEvent(Core::Event& event)
         });
 }
 
-auto SettingsLayer::instance() -> SettingsLayer*
-{
-    return s_Instance;
-}
-
 void SettingsLayer::requestOpen()
 {
     m_OpenRequested = true;
@@ -427,7 +422,7 @@ void SettingsLayer::renderSettingsDialog()
 
 /// Set the singleton instance (non-owning; layer is owned by the application's layer stack).
 /// THREAD-SAFETY: Must only be called from main thread during initialization,
-/// before any code accesses instance().
+/// before any code (onAttach's assert, onDetach's clear) reads s_Instance.
 void SettingsLayer::setInstance(SettingsLayer& layer)
 {
     s_Instance = &layer;

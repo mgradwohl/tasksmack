@@ -266,54 +266,23 @@ TEST(LayerTest, GetNameReturnsConstReference)
 // =============================================================================
 // Copy and Move Semantics Tests
 // =============================================================================
+//
+// Layer is a polymorphic base used only through pointers/references (e.g.
+// Application's std::vector<std::unique_ptr<Layer>>); copy/move are deleted, not
+// defaulted, so a Layer& can never be sliced by value. Every current subclass already
+// deletes these itself, making this a structural guarantee rather than a per-subclass
+// convention.
 
-TEST(LayerTest, LayerIsCopyable)
+TEST(LayerTest, LayerIsNotCopyable)
 {
-    EXPECT_TRUE(std::is_copy_constructible_v<Core::Layer>);
-    EXPECT_TRUE(std::is_copy_assignable_v<Core::Layer>);
+    EXPECT_FALSE(std::is_copy_constructible_v<Core::Layer>);
+    EXPECT_FALSE(std::is_copy_assignable_v<Core::Layer>);
 }
 
-TEST(LayerTest, LayerIsMovable)
+TEST(LayerTest, LayerIsNotMovable)
 {
-    EXPECT_TRUE(std::is_move_constructible_v<Core::Layer>);
-    EXPECT_TRUE(std::is_move_assignable_v<Core::Layer>);
-}
-
-TEST(LayerTest, CopyConstructorPreservesName)
-{
-    Core::Layer layer1("Original");
-    Core::Layer layer2(layer1); // Intentional copy to exercise copy constructor in this test
-                                // NOLINT(performance-unnecessary-copy-initialization)
-
-    EXPECT_EQ(layer2.getName(), "Original");
-}
-
-TEST(LayerTest, CopyAssignmentPreservesName)
-{
-    Core::Layer layer1("Original");
-    Core::Layer layer2("Other");
-
-    layer2 = layer1;
-
-    EXPECT_EQ(layer2.getName(), "Original");
-}
-
-TEST(LayerTest, MoveConstructorPreservesName)
-{
-    Core::Layer layer1("Original");
-    Core::Layer layer2(std::move(layer1));
-
-    EXPECT_EQ(layer2.getName(), "Original");
-}
-
-TEST(LayerTest, MoveAssignmentPreservesName)
-{
-    Core::Layer layer1("Original");
-    Core::Layer layer2("Other");
-
-    layer2 = std::move(layer1);
-
-    EXPECT_EQ(layer2.getName(), "Original");
+    EXPECT_FALSE(std::is_move_constructible_v<Core::Layer>);
+    EXPECT_FALSE(std::is_move_assignable_v<Core::Layer>);
 }
 
 // =============================================================================

@@ -28,7 +28,6 @@ class AboutLayer : public Core::Layer
     void onRender() override;
     void onEvent(Core::Event& event) override;
 
-    [[nodiscard]] static auto instance() -> AboutLayer*;
     // Set singleton without taking ownership (use when layer is in layer stack)
     static void setInstance(AboutLayer& layer);
     void requestOpen();
