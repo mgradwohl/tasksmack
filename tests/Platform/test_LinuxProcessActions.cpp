@@ -185,7 +185,7 @@ TEST(LinuxProcessActionsTest, SetPriorityInvalidPid)
 TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
 {
     LinuxProcessActions actions;
-    int32_t ownPid = static_cast<int32_t>(getpid());
+    auto ownPid = static_cast<int32_t>(getpid());
 
     // Lowering priority (raising nice value) should work without root
     auto result = actions.setPriority(ownPid, 10);
@@ -215,7 +215,7 @@ TEST(LinuxProcessActionsTest, SetPriorityOwnProcess)
 TEST(LinuxProcessActionsTest, SetPriorityClampsBoundaryValues)
 {
     LinuxProcessActions actions;
-    int32_t ownPid = static_cast<int32_t>(getpid());
+    auto ownPid = static_cast<int32_t>(getpid());
 
     // Test extreme values - they should be clamped internally
     // These may fail due to permissions, but shouldn't crash
@@ -253,7 +253,7 @@ TEST(LinuxProcessActionsTest, ResumeOwnProcess_Succeeds)
     // Send SIGCONT to our own process - safe because it's a no-op on a running process
     // but exercises the sendSignal() success path (lines ~114-116 in LinuxProcessActions.cpp).
     LinuxProcessActions actions;
-    int32_t ownPid = static_cast<int32_t>(getpid());
+    auto ownPid = static_cast<int32_t>(getpid());
 
     auto result = actions.resume(ownPid);
 

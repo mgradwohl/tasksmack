@@ -973,9 +973,9 @@ void SystemMetricsPanel::renderOverview()
             handleData.assign(handleHist.end() - static_cast<std::ptrdiff_t>(alignedCount), handleHist.end());
 
             // Update smoothed values
-            const double targetThreads = static_cast<double>(threadData.back());
-            const double targetFaults = static_cast<double>(faultData.back());
-            const double targetHandles = static_cast<double>(handleData.back());
+            const auto targetThreads = static_cast<double>(threadData.back());
+            const auto targetFaults = static_cast<double>(faultData.back());
+            const auto targetHandles = static_cast<double>(handleData.back());
             updateSmoothedResources(targetThreads, targetFaults, targetHandles, m_LastDeltaSeconds);
         }
 
@@ -1142,7 +1142,7 @@ void SystemMetricsPanel::renderCpuSection()
                     const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
                     if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                     {
-                        const double timeSec = static_cast<double>(timeData[*idxVal]);
+                        const auto timeSec = static_cast<double>(timeData[*idxVal]);
                         if ((breakdownCount == n) && (*idxVal < breakdownCount))
                         {
                             const size_t si = *idxVal;
@@ -1283,8 +1283,8 @@ void SystemMetricsPanel::updateCachedLayout()
 void SystemMetricsPanel::updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds)
 {
     const double alpha = computeAlpha(deltaTimeSeconds, m_RefreshInterval);
-    const double targetW = static_cast<double>(targetWatts);
-    const double targetB = static_cast<double>(targetBatteryPercent);
+    const auto targetW = static_cast<double>(targetWatts);
+    const auto targetB = static_cast<double>(targetBatteryPercent);
 
     if (!m_SmoothedPower.initialized)
     {

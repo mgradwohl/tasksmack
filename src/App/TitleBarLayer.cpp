@@ -152,8 +152,8 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    const float x = static_cast<float>(area->x);
-    const float y = static_cast<float>(area->y);
+    const auto x = static_cast<float>(area->x);
+    const auto y = static_cast<float>(area->y);
     const float titleBarHeight = TitleBarLayer::height();
 
     int windowWidth = 0;
@@ -243,7 +243,7 @@ void TitleBarLayer::onAttach()
     SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight);
 
     constexpr float buttonWidth = 46.0F;
-    const float rightX = static_cast<float>(windowWidth);
+    const auto rightX = static_cast<float>(windowWidth);
     const float titleBarHeight = height();
 
     // Right to left: Close, Maximize, Minimize, (gap), Settings, Help
@@ -1077,7 +1077,7 @@ void TitleBarLayer::renderTitleBar()
     // Right side buttons
     constexpr float BUTTON_WIDTH = 46.0F;
     const float BUTTON_HEIGHT = titleBarHeight;
-    const float rightX = static_cast<float>(windowWidth);
+    const auto rightX = static_cast<float>(windowWidth);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
     // titleBgActive with zero alpha gives a transparent resting state; if ImGui ever composites

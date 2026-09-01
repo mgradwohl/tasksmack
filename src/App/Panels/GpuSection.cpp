@@ -311,7 +311,7 @@ void renderGpuSection(RenderContext& ctx)
                         }
                         if (*idxVal < memData.size())
                         {
-                            const double pct = static_cast<double>(memData[*idxVal]);
+                            const auto pct = static_cast<double>(memData[*idxVal]);
                             if (histSnap != nullptr && histSnap->memoryTotalBytes > 0)
                             {
                                 ImGui::TextColored(
