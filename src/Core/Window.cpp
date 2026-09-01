@@ -64,7 +64,10 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                 reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
 }
 
-void setWindowIconFromResource(SDL_Window* window)
+// Returns the {small, large} icon handles so the caller (Window) can own and eventually
+// DestroyIcon() them; LoadImage(..., IMAGE_ICON, ...) without LR_SHARED returns handles
+// the caller is responsible for freeing, unlike icons loaded via LoadIcon().
+[[nodiscard]] std::pair<HANDLE, HANDLE> setWindowIconFromResource(SDL_Window* window)
 {
     // SDL returns HWND as void* per its property API contract; direct cast is required and safe
     HWND hwnd = reinterpret_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
@@ -73,7 +76,7 @@ void setWindowIconFromResource(SDL_Window* window)
     if (hwnd == nullptr)
     {
         spdlog::warn("Failed to get Win32 window handle for icon");
-        return;
+        return {nullptr, nullptr};
     }
 
     // Get the module handle for this executable
@@ -93,7 +96,7 @@ void setWindowIconFromResource(SDL_Window* window)
                      smallIconHeight,
                      largeIconWidth,
                      largeIconHeight);
-        return;
+        return {nullptr, nullptr};
     }
 
     // Load small icon (16x16) for title bar and Alt+Tab
@@ -122,6 +125,8 @@ void setWindowIconFromResource(SDL_Window* window)
     {
         spdlog::warn("Failed to load large icon from resource");
     }
+
+    return {hIconSmall, hIconBig};
 }
 } // namespace
 #endif
@@ -212,13 +217,31 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     }
 
 #ifdef _WIN32
-    // Set window icon from embedded resource (title bar and taskbar)
-    setWindowIconFromResource(m_Handle);
+    // Set window icon from embedded resource (title bar and taskbar). The returned
+    // handles are owned by this Window and released in ~Window().
+    const auto [iconSmall, iconBig] = setWindowIconFromResource(m_Handle);
+    m_IconSmall = iconSmall;
+    m_IconBig = iconBig;
 #endif
 }
 
 Window::~Window()
 {
+#ifdef _WIN32
+    if (m_IconSmall != nullptr)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
+        DestroyIcon(reinterpret_cast<HICON>(m_IconSmall));
+        m_IconSmall = nullptr;
+    }
+    if (m_IconBig != nullptr)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
+        DestroyIcon(reinterpret_cast<HICON>(m_IconBig));
+        m_IconBig = nullptr;
+    }
+#endif
+
     if (m_GLContext != nullptr)
     {
         SDL_GL_DestroyContext(m_GLContext);
