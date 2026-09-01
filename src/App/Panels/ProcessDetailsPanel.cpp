@@ -656,6 +656,7 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
     renderMemoryUsageSection();
 }
 
+// Renders the inline CPU history chart (total/user/system) plus paired "now" bars.
 void ProcessDetailsPanel::renderCpuUsageSection()
 {
     const auto& theme = UI::Theme::get();
@@ -786,6 +787,8 @@ void ProcessDetailsPanel::renderCpuUsageSection()
     }
 }
 
+// Renders the inline memory history chart (used/shared/virtual, with a peak-line overlay)
+// plus paired "now" bars.
 void ProcessDetailsPanel::renderMemoryUsageSection()
 {
     const auto& theme = UI::Theme::get();
@@ -1419,6 +1422,8 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     renderGpuHistoryGraphs();
 }
 
+// Renders the current-value GPU metrics table (utilization, memory, devices, engines,
+// encoder/decoder) for the selected process.
 void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const
 {
     const auto& theme = UI::Theme::get();
@@ -1500,6 +1505,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
     }
 }
 
+// Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
+// proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has.
 void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
@@ -1568,6 +1575,8 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
     }
 }
 
+// Renders the GPU utilization and memory history charts, or a "collecting data" placeholder
+// until enough history has accumulated.
 void ProcessDetailsPanel::renderGpuHistoryGraphs()
 {
     auto& theme = UI::Theme::get();
@@ -2015,6 +2024,9 @@ void ProcessDetailsPanel::renderActionButtons()
     }
 }
 
+// Renders the process-priority section: current nice value, the gradient slider (drawn via
+// the drawPriority*/handlePrioritySliderInput helpers below), and the Apply button. No-op if
+// the process actions probe doesn't support setting priority.
 void ProcessDetailsPanel::renderPrioritySection()
 {
     if (!m_ActionCapabilities.canSetPriority)
