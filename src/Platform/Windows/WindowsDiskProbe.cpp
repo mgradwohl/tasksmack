@@ -60,10 +60,12 @@ namespace
     const PDH_STATUS status = PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value);
     // status == ERROR_SUCCESS only means the API call itself succeeded; per-value validity
     // is reported separately via CStatus (e.g. PDH_CSTATUS_INVALID_DATA/NO_INSTANCE for a
-    // stale/removable disk, or before a counter has produced two samples). Mirrors the same
-    // check already used for GPU counters in PDHGPUProbe.cpp.
-    if (status == ERROR_SUCCESS &&
-        (value.CStatus == ERROR_SUCCESS || value.CStatus == PDH_CSTATUS_NEW_DATA)) // NOLINT(cppcoreguidelines-pro-type-union-access)
+    // stale/removable disk, or before a counter has produced two samples). CStatus is a
+    // PDH-specific status code, not a Win32 error code, so it's compared against
+    // PDH_CSTATUS_VALID_DATA rather than ERROR_SUCCESS even though the two happen to share
+    // the same numeric value (0) - conflating the two code spaces would be misleading.
+    if (status == ERROR_SUCCESS && (value.CStatus == PDH_CSTATUS_VALID_DATA ||
+                                    value.CStatus == PDH_CSTATUS_NEW_DATA)) // NOLINT(cppcoreguidelines-pro-type-union-access)
     {
         return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
     }
