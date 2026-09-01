@@ -85,6 +85,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
         unloadNVML();                                                                                                                      \
         return false;                                                                                                                      \
     }
+
+    // Optional: not required for GPU enumeration/monitoring to function. A missing symbol is
+    // logged and left null; callers must null-check before use.
+#define LOAD_NVML_FUNC_OPTIONAL(name)                                                                                                      \
+    name = reinterpret_cast<decltype(name)>(dlsym(nvmlHandle, #name));                                                                     \
+    if (name == nullptr)                                                                                                                   \
+    {                                                                                                                                      \
+        spdlog::debug("NVMLGPUProbe: optional symbol " #name " not available");                                                            \
+    }
     // NOLINTEND(bugprone-macro-parentheses)
 
     LOAD_NVML_FUNC(nvmlInit_v2);
@@ -100,11 +109,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
     LOAD_NVML_FUNC(nvmlDeviceGetPowerManagementLimit);
     LOAD_NVML_FUNC(nvmlDeviceGetClockInfo);
     LOAD_NVML_FUNC(nvmlDeviceGetFanSpeed);
-    LOAD_NVML_FUNC(nvmlDeviceGetPcieThroughput);
+    // Loaded but not called today (readGPUCounters() explains why, further down) - kept
+    // optional so a minimal/older NVML build missing it doesn't block loading the rest of
+    // the counters.
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetPcieThroughput);
     LOAD_NVML_FUNC(nvmlDeviceGetComputeRunningProcesses);
     LOAD_NVML_FUNC(nvmlDeviceGetGraphicsRunningProcesses);
     LOAD_NVML_FUNC(nvmlErrorString);
 
+#undef LOAD_NVML_FUNC_OPTIONAL
 #undef LOAD_NVML_FUNC
 
     // Initialize NVML
