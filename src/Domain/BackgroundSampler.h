@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <thread>
@@ -32,7 +33,11 @@ class BackgroundSampler
     BackgroundSampler& operator=(BackgroundSampler&&) = delete;
 
     /// Add a samplable object to be refreshed on the background thread.
-    void addSamplable(ISamplable* samplable);
+    /// Stored as a weak_ptr: the sampler observes the object but never extends its lifetime,
+    /// so the owner (a Panel) can destroy it at will without any destruction-order dependency
+    /// on the sampler. A samplable whose owner has released it is silently skipped on the next
+    /// sampling iteration rather than causing a use-after-free.
+    void addSamplable(std::weak_ptr<ISamplable> samplable);
 
     /// Start background sampling thread.
     void start();
@@ -56,7 +61,7 @@ class BackgroundSampler
     void samplerLoop(const std::stop_token& stopToken);
 
     SamplerConfig m_Config;
-    std::vector<ISamplable*> m_Samplables;
+    std::vector<std::weak_ptr<ISamplable>> m_Samplables;
 
     std::jthread m_SamplerThread;
     std::atomic<bool> m_Running{false};
