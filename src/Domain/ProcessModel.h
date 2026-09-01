@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +66,10 @@ class ProcessModel : public ISamplable
 
     /// Get latest computed snapshots (copy for thread safety).
     [[nodiscard]] std::vector<ProcessSnapshot> snapshots() const;
+
+    /// Find a single snapshot by PID without copying the full snapshot vector.
+    /// Always reflects the latest published data, unlike a version-gated render cache.
+    [[nodiscard]] std::optional<ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
     /// Copy snapshots only when a newer version exists.
     /// Returns true and copies data when an update is available; otherwise returns false.

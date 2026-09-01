@@ -19,6 +19,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -381,6 +382,19 @@ std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_Snapshots;
+}
+
+std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    for (const auto& snap : m_Snapshots)
+    {
+        if (snap.pid == pid)
+        {
+            return snap;
+        }
+    }
+    return std::nullopt;
 }
 
 std::uint64_t ProcessModel::snapshotVersion() const

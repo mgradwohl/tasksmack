@@ -151,17 +151,17 @@ void ShellLayer::onUpdate(float deltaTime)
     const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     if (selectedPid != -1)
     {
-        // Use findSnapshot() to search the cached render snapshot vector in-place,
-        // avoiding a full vector copy (which could be 200+ ProcessSnapshot objects).
+        // findSnapshot() copies only the one matching entry out of ProcessModel (not the full
+        // 200+ entry vector); foundSnap is a temporary we're about to discard, so move rather
+        // than copy it into cachedSnapshot to avoid a second full-struct copy every frame.
         if (auto foundSnap = m_ProcessesPanel.findSnapshot(selectedPid))
         {
-            const auto& snap = *foundSnap;
-            cachedSnapshot = snap;
+            cachedSnapshot = std::move(*foundSnap);
             selectedSnapshot = &cachedSnapshot;
 
             // Debug: Log when GPU data becomes available for the selected PID.
             // This avoids spamming logs every frame while a GPU-using process is selected.
-            const bool hasGpuData = (!snap.gpuDevices.empty() || (snap.gpuMemoryBytes > 0));
+            const bool hasGpuData = (!cachedSnapshot.gpuDevices.empty() || (cachedSnapshot.gpuMemoryBytes > 0));
 
             if ((selectedPid != m_LastGpuLogPid) || !m_LastGpuLogHasData)
             {
@@ -169,8 +169,8 @@ void ShellLayer::onUpdate(float deltaTime)
                 {
                     spdlog::debug("ShellLayer: Selected PID {} has GPU data: devices='{}', mem={}",
                                   selectedPid,
-                                  snap.gpuDevices,
-                                  snap.gpuMemoryBytes);
+                                  cachedSnapshot.gpuDevices,
+                                  cachedSnapshot.gpuMemoryBytes);
                 }
 
                 m_LastGpuLogPid = selectedPid;

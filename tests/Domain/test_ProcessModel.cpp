@@ -397,6 +397,65 @@ TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
     ASSERT_EQ(copiedSnapshots.size(), 1);
 }
 
+TEST(ProcessModelTest, FindSnapshotReturnsMatchingProcessAmongMultiple)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({
+        makeCounter(100, "alpha", 'R', 1000, 0, 5000),
+        makeCounter(200, "beta", 'S', 2000, 0, 6000),
+        makeCounter(300, "gamma", 'R', 3000, 0, 7000),
+    });
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto found = model.findSnapshot(200);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->pid, 200);
+    EXPECT_EQ(found->name, "beta");
+}
+
+TEST(ProcessModelTest, FindSnapshotReturnsNulloptForUnknownPid)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_FALSE(model.findSnapshot(999).has_value());
+}
+
+TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVector)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto before = model.findSnapshot(100);
+    ASSERT_TRUE(before.has_value());
+    EXPECT_DOUBLE_EQ(before->cpuPercent, 0.0);
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    const auto after = model.findSnapshot(100);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_GT(after->cpuPercent, 0.0);
+}
+
 // =============================================================================
 // State Translation Tests
 // =============================================================================

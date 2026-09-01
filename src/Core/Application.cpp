@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -725,12 +726,34 @@ void Application::renderFrame(float deltaTime,
         postLayerDurations.reserve(m_LayerStack.size());
     }
 
+    // A layer that throws is caught and logged here rather than left to unwind out of the main
+    // loop: for a long-running monitor, one bad frame should not call std::terminate() and take
+    // down the whole process. Note this is a best-effort mitigation, not a full guarantee: layers
+    // pair raw ImGui::Begin()/End() calls (not RAII), so an exception thrown between them still
+    // leaves ImGui's window stack unbalanced for the rest of this frame; the assertion ImGui uses
+    // to detect that is compiled out in NDEBUG (Release) builds but active in Debug.
+    const auto guardLayerCall = [](const std::unique_ptr<Layer>& layer, std::string_view phase, const auto& call)
+    {
+        try
+        {
+            call();
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::error("Layer '{}' threw during {}: {}", layer->getName(), phase, e.what());
+        }
+        catch (...)
+        {
+            spdlog::error("Layer '{}' threw an unknown exception during {}", layer->getName(), phase);
+        }
+    };
+
     const auto updateStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
         const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-        layer->onUpdate(deltaTime);
+        guardLayerCall(layer, "onUpdate", [&] { layer->onUpdate(deltaTime); });
         if (tracingInteractionFrame)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
@@ -743,7 +766,7 @@ void Application::renderFrame(float deltaTime,
     // Render all layers
     for (const auto& layer : m_LayerStack)
     {
-        layer->onRender();
+        guardLayerCall(layer, "onRender", [&] { layer->onRender(); });
     }
     const auto renderEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
@@ -751,7 +774,7 @@ void Application::renderFrame(float deltaTime,
     for (const auto& layer : m_LayerStack)
     {
         const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-        layer->onPostRender();
+        guardLayerCall(layer, "onPostRender", [&] { layer->onPostRender(); });
         if (tracingInteractionFrame)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
