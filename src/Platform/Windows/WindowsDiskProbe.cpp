@@ -81,7 +81,11 @@ namespace
     HANDLE handle = CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
-        spdlog::warn("WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), GetLastError());
+        // Capture GetLastError() before any other call (including wideToUtf8's internal
+        // WideCharToMultiByte) can overwrite it - argument evaluation order is unspecified,
+        // so inlining GetLastError() as a call argument risks logging the wrong error.
+        const DWORD lastError = GetLastError();
+        spdlog::warn("WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
         return INVALID_HANDLE_VALUE;
     }
 
@@ -89,9 +93,9 @@ namespace
     DWORD bytesReturned = 0;
     if (DeviceIoControl(handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
     {
-        spdlog::warn("WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}",
-                     WinString::wideToUtf8(devicePath),
-                     GetLastError());
+        const DWORD lastError = GetLastError();
+        spdlog::warn(
+            "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
         CloseHandle(handle);
         return INVALID_HANDLE_VALUE;
     }
@@ -155,7 +159,17 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                         Impl::DiskHandle diskHandle;
                         diskHandle.instanceName = WinString::wideToUtf8(instanceName);
                         diskHandle.handle = handle;
-                        m_Impl->disks.push_back(std::move(diskHandle));
+                        try
+                        {
+                            m_Impl->disks.push_back(std::move(diskHandle));
+                        }
+                        catch (...)
+                        {
+                            // push_back can throw while growing the vector; the handle isn't
+                            // owned by anything else yet, so close it before propagating.
+                            CloseHandle(handle);
+                            throw;
+                        }
                     }
                 }
                 else
