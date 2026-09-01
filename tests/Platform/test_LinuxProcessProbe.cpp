@@ -684,13 +684,16 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtlDoesNotRaceWithEnumerate)
 {
     LinuxProcessProbe probe;
     std::atomic<bool> stop{false};
+    std::atomic<int> enumerateCount{0};
 
     std::thread enumerateThread(
-        [&probe, &stop]
+        [&probe, &stop, &enumerateCount]
         {
             while (!stop.load(std::memory_order_relaxed))
             {
                 [[maybe_unused]] const auto processes = probe.enumerate();
+                enumerateCount.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         });
 
@@ -701,6 +704,11 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtlDoesNotRaceWithEnumerate)
 
     stop.store(true, std::memory_order_relaxed);
     enumerateThread.join();
+
+    // Guards against the loop above racing past the enumerate thread's first scheduling
+    // window and the test silently passing without exercising the interleaving it exists
+    // to test.
+    EXPECT_GT(enumerateCount.load(), 0) << "enumerate() thread should have run at least once";
 }
 #endif
 

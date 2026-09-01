@@ -1832,7 +1832,13 @@ void ProcessDetailsPanel::renderActions()
 
         if (ImGui::Button("Yes", ImVec2(120, 0)))
         {
-            Platform::ProcessActionResult result;
+            // Explicit error default (ProcessActionResult::success does have a default
+            // member initializer, so this isn't uninitialized-read UB either way) rather
+            // than a bare default-constructed result: ProcessAction::None can't be reached
+            // today (m_ConfirmAction and m_ShowConfirmDialog are always set together by
+            // the action buttons below), but this keeps that invariant from being a
+            // silent "reports success" bug if a future change ever violates it.
+            Platform::ProcessActionResult result = Platform::ProcessActionResult::error("No action selected");
 
             switch (m_ConfirmAction)
             {
