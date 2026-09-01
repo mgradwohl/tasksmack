@@ -78,6 +78,7 @@ FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20  # Pinned to specific commit for supply-chain security
+    SYSTEM  # Treat as system headers to suppress third-party warning noise, matching every other dependency here
 )
 FetchContent_MakeAvailable(stb)
 
@@ -102,22 +103,22 @@ set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)  # We don't need screensaver sup
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)  # We don't need XTEST
 set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering extension
 
-set(_TASKSMACK_RESTORE_CMP0219_DEFAULT FALSE)
+set(_tasksmack_restore_cmp0219_default FALSE)
 if(DEFINED CMAKE_POLICY_DEFAULT_CMP0219)
-    set(_TASKSMACK_SAVED_CMP0219_DEFAULT "${CMAKE_POLICY_DEFAULT_CMP0219}")
-    set(_TASKSMACK_RESTORE_CMP0219_DEFAULT TRUE)
+    set(_tasksmack_saved_cmp0219_default "${CMAKE_POLICY_DEFAULT_CMP0219}")
+    set(_tasksmack_restore_cmp0219_default TRUE)
 endif()
 if(POLICY CMP0219)
     set(CMAKE_POLICY_DEFAULT_CMP0219 NEW)
 endif()
 FetchContent_MakeAvailable(SDL3)
-if(_TASKSMACK_RESTORE_CMP0219_DEFAULT)
-    set(CMAKE_POLICY_DEFAULT_CMP0219 "${_TASKSMACK_SAVED_CMP0219_DEFAULT}")
+if(_tasksmack_restore_cmp0219_default)
+    set(CMAKE_POLICY_DEFAULT_CMP0219 "${_tasksmack_saved_cmp0219_default}")
 else()
     unset(CMAKE_POLICY_DEFAULT_CMP0219)
 endif()
-unset(_TASKSMACK_RESTORE_CMP0219_DEFAULT)
-unset(_TASKSMACK_SAVED_CMP0219_DEFAULT)
+unset(_tasksmack_restore_cmp0219_default)
+unset(_tasksmack_saved_cmp0219_default)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 
 # Prefer the project-local environment created by tools/setup-dev.sh without

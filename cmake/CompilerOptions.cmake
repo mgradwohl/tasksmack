@@ -165,6 +165,17 @@ endfunction()
 
 # Security hardening flags for release builds
 # Applied only for Release-type builds to avoid impacting Debug ergonomics (e.g., ASAN stack checks).
+# NOTE: this assumes a single-config generator, true for every preset in CMakePresets.json
+# (all use Ninja) - CMAKE_BUILD_TYPE is empty at configure time under a multi-config
+# generator (Ninja Multi-Config, Visual Studio), so these flags would silently never apply
+# to a Release configuration if the project were ever configured directly with one instead
+# of a preset.
+get_property(_ts_is_multi_config_generator GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(_ts_is_multi_config_generator)
+    message(WARNING "Security hardening flags are gated on CMAKE_BUILD_TYPE and will not apply "
+                     "to any configuration under this multi-config generator (${CMAKE_GENERATOR}). "
+                     "Use one of the single-config presets in CMakePresets.json instead.")
+endif()
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # -fstack-protector-strong: instrument functions with stack buffers/alloca against overflows

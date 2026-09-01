@@ -135,7 +135,7 @@
         {
             "name": "msan",
             "displayName": "MSan",
-            "description": "MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only). Requires MSan-instrumented libc++.",
+            "description": "MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only). NOT CI-verified: no workflow exercises this preset. Requires an MSan-instrumented libc++ you build yourself and point CMAKE_PREFIX_PATH/link flags at - without one, this links against the ordinary libc++ and will report false positives from uninstrumented STL code.",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
