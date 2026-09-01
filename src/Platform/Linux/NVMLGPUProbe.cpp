@@ -85,6 +85,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
         unloadNVML();                                                                                                                      \
         return false;                                                                                                                      \
     }
+
+    // Optional: not required for GPU enumeration/monitoring to function. A missing symbol is
+    // logged and left null; callers must null-check before use.
+#define LOAD_NVML_FUNC_OPTIONAL(name)                                                                                                      \
+    name = reinterpret_cast<decltype(name)>(dlsym(nvmlHandle, #name));                                                                     \
+    if (name == nullptr)                                                                                                                   \
+    {                                                                                                                                      \
+        spdlog::debug("NVMLGPUProbe: optional symbol " #name " not available");                                                            \
+    }
     // NOLINTEND(bugprone-macro-parentheses)
 
     LOAD_NVML_FUNC(nvmlInit_v2);
@@ -100,11 +109,15 @@ bool NVMLGPUProbe::Impl::loadNVML()
     LOAD_NVML_FUNC(nvmlDeviceGetPowerManagementLimit);
     LOAD_NVML_FUNC(nvmlDeviceGetClockInfo);
     LOAD_NVML_FUNC(nvmlDeviceGetFanSpeed);
-    LOAD_NVML_FUNC(nvmlDeviceGetPcieThroughput);
+    // Loaded but not called today (readGPUCounters() explains why, further down) - kept
+    // optional so a minimal/older NVML build missing it doesn't block loading the rest of
+    // the counters.
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetPcieThroughput);
     LOAD_NVML_FUNC(nvmlDeviceGetComputeRunningProcesses);
     LOAD_NVML_FUNC(nvmlDeviceGetGraphicsRunningProcesses);
     LOAD_NVML_FUNC(nvmlErrorString);
 
+#undef LOAD_NVML_FUNC_OPTIONAL
 #undef LOAD_NVML_FUNC
 
     // Initialize NVML
@@ -333,20 +346,16 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedRPMPercent = fanSpeed;
         }
 
-        // PCIe throughput
-        unsigned int pcieTx = 0;
-        result = m_Impl->nvmlDeviceGetPcieThroughput(device, NVML_PCIE_UTIL_TX_BYTES, &pcieTx);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieTxBytes = static_cast<std::uint64_t>(pcieTx) * 1024; // KB to bytes
-        }
-
-        unsigned int pcieRx = 0;
-        result = m_Impl->nvmlDeviceGetPcieThroughput(device, NVML_PCIE_UTIL_RX_BYTES, &pcieRx);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieRxBytes = static_cast<std::uint64_t>(pcieRx) * 1024; // KB to bytes
-        }
+        // PCIe throughput: NVML returns rates (KB/s over a ~20ms sampling window), not
+        // cumulative counters. GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes, and
+        // GPUModel diffs consecutive samples via Numeric::counterRate() to derive a rate,
+        // which clamps to 0 whenever a fluctuating rate-of-rate sample decreases between
+        // reads - so populating these from nvmlDeviceGetPcieThroughput() would silently
+        // corrupt PCIe throughput reporting rather than just leaving it unavailable. Mirrors
+        // the same decision already made in the Windows NVMLGPUProbe.
+        // Since NVML doesn't provide cumulative counters, we leave these at 0.
+        // Future enhancement: Add rate fields or implement tracking.
+        // For now, Domain layer will compute rates as 0 from cumulative fields.
 
         counters.push_back(std::move(counter));
     }
