@@ -86,8 +86,11 @@ class SystemMetricsPanel : public Panel
     void renderCpuSection();
 
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;
-    std::unique_ptr<Domain::SystemModel> m_Model;
-    std::unique_ptr<Domain::StorageModel> m_StorageModel;
+    // shared_ptr (not unique_ptr): BackgroundSampler observes these models via weak_ptr rather
+    // than raw pointers, so the sampler thread can never outlive-dereference them regardless of
+    // destructor ordering.
+    std::shared_ptr<Domain::SystemModel> m_Model;
+    std::shared_ptr<Domain::StorageModel> m_StorageModel;
     std::shared_ptr<Domain::GPUModel> m_GPUModel;
     Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
