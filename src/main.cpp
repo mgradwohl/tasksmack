@@ -36,7 +36,7 @@
 #endif
 #include <algorithm>
 #include <clocale>
-#include <cstdio>
+#include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <exception>
 #include <iostream>
 #include <print>

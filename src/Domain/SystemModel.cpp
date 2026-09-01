@@ -7,6 +7,7 @@
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
 #include "SamplingConfig.h"
+#include "SystemSnapshot.h"
 
 #include <spdlog/spdlog.h>
 
@@ -528,14 +529,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // (typically < 10 entries), so a linear scan is cheaper than hashing.
         auto ifacePresent = [&snap](const std::string& name) -> bool
         {
-            for (const auto& ifaceSnap : snap.networkInterfaces)
-            {
-                if (ifaceSnap.name == name)
-                {
-                    return true;
-                }
-            }
-            return false;
+            return std::ranges::any_of(snap.networkInterfaces, [&name](const auto& ifaceSnap) { return ifaceSnap.name == name; });
         };
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {

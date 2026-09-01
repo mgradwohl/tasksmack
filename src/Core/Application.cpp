@@ -20,16 +20,20 @@
 #include <ranges>
 #include <ratio>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #ifndef _WIN32
 #include <cerrno>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -325,9 +329,10 @@ void ensureXdgRuntimeDir()
 
     // setenv is POSIX; SDL_setenv would also work but setenv keeps it in the
     // real process environment so child processes inherit it correctly.
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start
+    // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - called once before any threads start; setenv is provided by <cstdlib> (already included)
     if (::setenv("XDG_RUNTIME_DIR", chosen->c_str(), 1) != 0)
     {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once before any threads start, same as setenv() above
         spdlog::warn("Failed to set XDG_RUNTIME_DIR='{}': {}", *chosen, std::strerror(errno));
         return;
     }

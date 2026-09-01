@@ -121,7 +121,7 @@ struct WindowRect
         newHeight = MAX_H;
     }
 
-    return {newX, newY, newWidth, newHeight};
+    return {.x = newX, .y = newY, .width = newWidth, .height = newHeight};
 }
 
 } // namespace App

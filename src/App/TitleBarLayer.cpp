@@ -869,7 +869,7 @@ void TitleBarLayer::applyCursorForEdge(const ResizeEdge edge)
 void TitleBarLayer::updateResizeCursor()
 {
     auto& window = Core::Application::get().getWindow();
-    SDL_Window* sdlWindow = window.getHandle();
+    const SDL_Window* sdlWindow = window.getHandle();
     if (sdlWindow == nullptr)
     {
         return;
