@@ -80,25 +80,27 @@ TEST(WindowsDiskProbeTest, DiskCountersAreMonotonic)
 
     auto counters1 = probe.read();
 
-    // Wait for PDH to collect new samples
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
 
     auto counters2 = probe.read();
 
-    // For each disk that appears in both samples, counters should not decrease
+    // WindowsDiskProbe sources DiskCounters from IOCTL_DISK_PERFORMANCE, which reports
+    // genuinely cumulative counters (bytes/ops/time since the disk's counters started being
+    // tracked) - matching the contract DiskCounters documents. For each disk that appears in
+    // both samples, every counter must be non-decreasing.
     for (const auto& disk2 : counters2.disks)
     {
         for (const auto& disk1 : counters1.disks)
         {
             if (disk1.deviceName == disk2.deviceName)
             {
-                // PDH counters return rates (bytes/sec, ops/sec), not cumulative values
-                // So we can't test monotonicity in the traditional sense
-                // Instead, verify that counters are non-negative
-                EXPECT_GE(disk2.readsCompleted, 0ULL);
-                EXPECT_GE(disk2.readSectors, 0ULL);
-                EXPECT_GE(disk2.writesCompleted, 0ULL);
-                EXPECT_GE(disk2.writeSectors, 0ULL);
+                EXPECT_GE(disk2.readsCompleted, disk1.readsCompleted);
+                EXPECT_GE(disk2.readSectors, disk1.readSectors);
+                EXPECT_GE(disk2.writesCompleted, disk1.writesCompleted);
+                EXPECT_GE(disk2.writeSectors, disk1.writeSectors);
+                EXPECT_GE(disk2.readTimeMs, disk1.readTimeMs);
+                EXPECT_GE(disk2.writeTimeMs, disk1.writeTimeMs);
+                EXPECT_GE(disk2.ioTimeMs, disk1.ioTimeMs);
             }
         }
     }

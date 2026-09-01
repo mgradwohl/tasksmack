@@ -24,9 +24,10 @@
 
 #include "WinString.h"
 
-#include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -35,59 +36,71 @@ namespace Platform
 // Pimpl struct containing Windows-specific types
 struct WindowsDiskProbe::Impl
 {
-    struct DiskCounterSet
+    struct DiskHandle
     {
-        std::string instanceName;
-        PDH_HCOUNTER readBytesCounter = nullptr;
-        PDH_HCOUNTER writeBytesCounter = nullptr;
-        PDH_HCOUNTER readsCounter = nullptr;
-        PDH_HCOUNTER writesCounter = nullptr;
-        PDH_HCOUNTER idleTimeCounter = nullptr;
+        std::string instanceName;             // e.g. "0 C:" - kept for stable UI display
+        HANDLE handle = INVALID_HANDLE_VALUE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - Win32 handle type
     };
 
-    PDH_HQUERY query = nullptr;
-    std::vector<DiskCounterSet> diskCounters;
+    std::vector<DiskHandle> disks;
 };
 
 namespace
 {
 
-/// Helper to extract double value from PDH counter union.
-/// @param counter PDH counter handle
-/// @return The double value if the counter currently holds usable data; std::nullopt if the API
-///         call failed or CStatus reports the value isn't usable yet (and logs on failure).
-///         nullopt rather than 0.0 keeps "no usable reading" from masquerading as a real zero
-///         reading to callers.
-[[nodiscard]] std::optional<double> getPdhDoubleValue(PDH_HCOUNTER counter)
+/// PDH's PhysicalDisk instance names are formatted "<index> <driveletter(s)>", e.g.
+/// "0 C:" or "1 D: E:" for a disk backing multiple volumes. Extract the leading index
+/// so we can open the matching \\.\PhysicalDriveN device directly.
+[[nodiscard]] std::optional<int> parsePhysicalDriveIndex(std::wstring_view instanceName)
 {
-    PDH_FMT_COUNTERVALUE value{}; // Zero-initialize for safety
-    const PDH_STATUS status = PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, nullptr, &value);
-    // status == ERROR_SUCCESS only means the API call itself succeeded; per-value validity
-    // is reported separately via CStatus (e.g. PDH_CSTATUS_INVALID_DATA/NO_INSTANCE for a
-    // stale/removable disk, or before a counter has produced two samples). CStatus is a
-    // PDH-specific status code, not a Win32 error code, so it's compared against
-    // PDH_CSTATUS_VALID_DATA rather than ERROR_SUCCESS even though the two happen to share
-    // the same numeric value (0) - conflating the two code spaces would be misleading.
-    if (status == ERROR_SUCCESS && (value.CStatus == PDH_CSTATUS_VALID_DATA ||
-                                    value.CStatus == PDH_CSTATUS_NEW_DATA)) // NOLINT(cppcoreguidelines-pro-type-union-access)
+    const auto spacePos = instanceName.find(L' ');
+    const std::wstring_view indexPart = (spacePos == std::wstring_view::npos) ? instanceName : instanceName.substr(0, spacePos);
+    if (indexPart.empty())
     {
-        return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
+        return std::nullopt;
     }
 
-    if (status != ERROR_SUCCESS)
+    int index = 0;
+    for (const wchar_t ch : indexPart)
     {
-        spdlog::error("WindowsDiskProbe: PdhGetFormattedCounterValue failed with status {}", status);
+        if (ch < L'0' || ch > L'9')
+        {
+            return std::nullopt;
+        }
+        index = (index * 10) + (ch - L'0');
     }
-    else
+    return index;
+}
+
+/// Opens \\.\PhysicalDriveN with query-only access (no admin rights required) and
+/// verifies IOCTL_DISK_PERFORMANCE is usable on it. Returns INVALID_HANDLE_VALUE on
+/// any failure, closing the handle first if it was opened but the probe query failed.
+[[nodiscard]] HANDLE openPhysicalDriveForPerfQuery(int driveIndex)
+{
+    const std::wstring devicePath = L"\\\\.\\PhysicalDrive" + std::to_wstring(driveIndex);
+    HANDLE handle = CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
     {
-        // status succeeded but CStatus reports the value itself isn't usable yet (e.g. a
-        // stale/removable disk instance, or the first read before two samples exist). Debug,
-        // not warn/error: this is an expected transient state, not a real failure - but it's
-        // logged so a persistently-invalid counter can still be diagnosed in the field.
-        spdlog::debug("WindowsDiskProbe: PDH counter value not usable, CStatus={:#x}",
-                      static_cast<unsigned long>(value.CStatus)); // NOLINT(cppcoreguidelines-pro-type-union-access)
+        // Capture GetLastError() before any other call (including wideToUtf8's internal
+        // WideCharToMultiByte) can overwrite it - argument evaluation order is unspecified,
+        // so inlining GetLastError() as a call argument risks logging the wrong error.
+        const DWORD lastError = GetLastError();
+        spdlog::warn("WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
+        return INVALID_HANDLE_VALUE;
     }
-    return std::nullopt;
+
+    DISK_PERFORMANCE perf{};
+    DWORD bytesReturned = 0;
+    if (DeviceIoControl(handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
+    {
+        const DWORD lastError = GetLastError();
+        spdlog::warn(
+            "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
+        CloseHandle(handle);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    return handle;
 }
 
 } // namespace
@@ -96,26 +109,18 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
 {
     spdlog::debug("WindowsDiskProbe: initialized");
 
-    // Initialize PDH query
-    PDH_STATUS status = PdhOpenQueryW(nullptr, 0, &m_Impl->query);
-    if (status != ERROR_SUCCESS)
-    {
-        spdlog::error("WindowsDiskProbe: PdhOpenQuery failed with status {}", status);
-        m_Impl->query = nullptr;
-        return;
-    }
-
-    // Enumerate physical disks
-    // PdhEnumObjectItemsW requires both counter and instance buffers on the second call.
-    // First call: determine buffer sizes needed
+    // PDH is used only to enumerate PhysicalDisk instance names (which encode the
+    // drive-letter-to-index mapping, e.g. "0 C:") - not to read counter values. PDH's
+    // PhysicalDisk counters (Disk Read Bytes/sec, etc.) are pre-computed rates, not the
+    // cumulative counts DiskCounters documents and StorageModel's delta-then-rate math
+    // requires; IOCTL_DISK_PERFORMANCE below provides the real cumulative source instead.
     DWORD counterBufferSize = 0;
     DWORD instanceBufferSize = 0;
-    status = PdhEnumObjectItemsW(
+    PDH_STATUS status = PdhEnumObjectItemsW(
         nullptr, nullptr, L"PhysicalDisk", nullptr, &counterBufferSize, nullptr, &instanceBufferSize, PERF_DETAIL_WIZARD, 0);
 
     if (static_cast<DWORD>(status) == PDH_MORE_DATA && instanceBufferSize != 0U)
     {
-        // Second call: retrieve actual data with properly sized buffers
         std::vector<wchar_t> counterBuffer(counterBufferSize);
         std::vector<wchar_t> instanceBuffer(instanceBufferSize);
         DWORD counterSize = counterBufferSize;
@@ -146,43 +151,52 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                     continue;
                 }
 
-                Impl::DiskCounterSet counterSet;
-                counterSet.instanceName = WinString::wideToUtf8(instanceName);
-
-                // Add counters for this disk
-                const std::wstring readBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Read Bytes/sec";
-                const std::wstring writeBytesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Write Bytes/sec";
-                const std::wstring readsPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Reads/sec";
-                const std::wstring writesPath = L"\\PhysicalDisk(" + instanceName + L")\\Disk Writes/sec";
-                const std::wstring idleTimePath = L"\\PhysicalDisk(" + instanceName + L")\\% Idle Time";
-
-                PdhAddCounterW(m_Impl->query, readBytesPath.c_str(), 0, &counterSet.readBytesCounter);
-                PdhAddCounterW(m_Impl->query, writeBytesPath.c_str(), 0, &counterSet.writeBytesCounter);
-                PdhAddCounterW(m_Impl->query, readsPath.c_str(), 0, &counterSet.readsCounter);
-                PdhAddCounterW(m_Impl->query, writesPath.c_str(), 0, &counterSet.writesCounter);
-                PdhAddCounterW(m_Impl->query, idleTimePath.c_str(), 0, &counterSet.idleTimeCounter);
-
-                m_Impl->diskCounters.push_back(counterSet);
+                if (const auto driveIndex = parsePhysicalDriveIndex(instanceName))
+                {
+                    HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex);
+                    if (handle != INVALID_HANDLE_VALUE)
+                    {
+                        Impl::DiskHandle diskHandle;
+                        diskHandle.instanceName = WinString::wideToUtf8(instanceName);
+                        diskHandle.handle = handle;
+                        try
+                        {
+                            m_Impl->disks.push_back(std::move(diskHandle));
+                        }
+                        catch (...)
+                        {
+                            // push_back can throw while growing the vector; the handle isn't
+                            // owned by anything else yet, so close it before propagating.
+                            CloseHandle(handle);
+                            throw;
+                        }
+                    }
+                }
+                else
+                {
+                    spdlog::warn("WindowsDiskProbe: could not parse a drive index from PDH instance name '{}'",
+                                 WinString::wideToUtf8(instanceName));
+                }
 
                 instance += instanceName.length() + 1;
             }
         }
     }
 
-    // Collect initial sample
-    if (m_Impl->query != nullptr)
-    {
-        PdhCollectQueryData(m_Impl->query);
-    }
-
-    spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->diskCounters.size());
+    spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
 WindowsDiskProbe::~WindowsDiskProbe()
 {
-    if (m_Impl && m_Impl->query != nullptr)
+    if (m_Impl)
     {
-        PdhCloseQuery(m_Impl->query);
+        for (const auto& disk : m_Impl->disks)
+        {
+            if (disk.handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(disk.handle);
+            }
+        }
     }
 }
 
@@ -190,7 +204,7 @@ SystemDiskCounters WindowsDiskProbe::read()
 {
     SystemDiskCounters result;
 
-    if (!m_Impl || m_Impl->query == nullptr || m_Impl->diskCounters.empty())
+    if (!m_Impl || m_Impl->disks.empty())
     {
         // Fallback: enumerate logical drives
         const DWORD drives = GetLogicalDrives();
@@ -238,57 +252,45 @@ SystemDiskCounters WindowsDiskProbe::read()
         return result;
     }
 
-    // Collect new sample from PDH
-    PDH_STATUS status = PdhCollectQueryData(m_Impl->query);
-    if (status != ERROR_SUCCESS)
+    for (const auto& diskHandle : m_Impl->disks)
     {
-        spdlog::warn("WindowsDiskProbe: PdhCollectQueryData failed with status {}", status);
-        return result;
-    }
+        DISK_PERFORMANCE perf{};
+        DWORD bytesReturned = 0;
+        if (DeviceIoControl(diskHandle.handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
+        {
+            // Skip this disk for this cycle rather than pushing fabricated zero counters,
+            // which would otherwise look like a real (and wildly out-of-range) delta on
+            // the next sample.
+            spdlog::warn(
+                "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE failed for {}, GetLastError={}", diskHandle.instanceName, GetLastError());
+            continue;
+        }
 
-    // Read counter values
-    for (const auto& counterSet : m_Impl->diskCounters)
-    {
         DiskCounters disk;
-        disk.deviceName = counterSet.instanceName;
+        disk.deviceName = diskHandle.instanceName;
         disk.sectorSize = 512;
         disk.isPhysicalDevice = true;
 
-        // Read bytes/sec. disk.readSectors keeps its zero-initialized default (rather than
-        // being assigned a fabricated 0) when the counter isn't usable this cycle, so an
-        // unusable reading never gets treated as a genuine sample by downstream rate math.
-        if (const auto readBytesPerSec = getPdhDoubleValue(counterSet.readBytesCounter))
-        {
-            disk.readSectors = static_cast<uint64_t>(*readBytesPerSec / static_cast<double>(disk.sectorSize));
-        }
+        // DISK_PERFORMANCE reports genuinely cumulative counters (since the disk's
+        // performance counters started being tracked), matching the cumulative-counter
+        // contract DiskCounters documents and that StorageModel::computeDiskSnapshot
+        // relies on for its own delta-then-rate computation - unlike PDH's PhysicalDisk
+        // object, which only exposes pre-computed rates.
+        disk.readSectors = static_cast<uint64_t>(perf.BytesRead.QuadPart) / disk.sectorSize;
+        disk.writeSectors = static_cast<uint64_t>(perf.BytesWritten.QuadPart) / disk.sectorSize;
+        disk.readsCompleted = perf.ReadCount;
+        disk.writesCompleted = perf.WriteCount;
 
-        // Write bytes/sec
-        if (const auto writeBytesPerSec = getPdhDoubleValue(counterSet.writeBytesCounter))
-        {
-            disk.writeSectors = static_cast<uint64_t>(*writeBytesPerSec / static_cast<double>(disk.sectorSize));
-        }
+        // ReadTime/WriteTime are cumulative, in 100-nanosecond units; convert to milliseconds.
+        disk.readTimeMs = static_cast<uint64_t>(perf.ReadTime.QuadPart) / 10000ULL;
+        disk.writeTimeMs = static_cast<uint64_t>(perf.WriteTime.QuadPart) / 10000ULL;
 
-        // Read operations/sec
-        if (const auto readsPerSec = getPdhDoubleValue(counterSet.readsCounter))
-        {
-            disk.readsCompleted = static_cast<uint64_t>(*readsPerSec);
-        }
-
-        // Write operations/sec
-        if (const auto writesPerSec = getPdhDoubleValue(counterSet.writesCounter))
-        {
-            disk.writesCompleted = static_cast<uint64_t>(*writesPerSec);
-        }
-
-        // Idle time (convert to busy time for ioTimeMs)
-        if (const auto idlePercent = getPdhDoubleValue(counterSet.idleTimeCounter))
-        {
-            // Idle time is a percentage; busy time = 100 - idle. Handles all valid idle
-            // percentages, including 0.0 (100% busy).
-            const double busyPercent = std::clamp(100.0 - *idlePercent, 0.0, 100.0);
-            // Convert to milliseconds (approximate based on sample interval)
-            disk.ioTimeMs = static_cast<uint64_t>(busyPercent * 10.0); // Rough approximation
-        }
+        // DISK_PERFORMANCE has no direct cumulative "device busy" counter, so approximate
+        // it as the sum of cumulative read+write service time. Under concurrent I/O (queue
+        // depth > 1) this can overestimate wall-clock busy time, but
+        // StorageModel::computeDiskSnapshot already clamps the resulting utilization to
+        // [0, 100], so it saturates rather than misreporting.
+        disk.ioTimeMs = disk.readTimeMs + disk.writeTimeMs;
 
         result.disks.push_back(disk);
     }
@@ -301,8 +303,8 @@ DiskCapabilities WindowsDiskProbe::capabilities() const
 {
     DiskCapabilities caps;
     caps.hasDiskStats = true;
-    caps.hasReadWriteBytes = (m_Impl && m_Impl->query != nullptr && !m_Impl->diskCounters.empty());
-    caps.hasIoTime = (m_Impl && m_Impl->query != nullptr && !m_Impl->diskCounters.empty());
+    caps.hasReadWriteBytes = (m_Impl && !m_Impl->disks.empty());
+    caps.hasIoTime = (m_Impl && !m_Impl->disks.empty());
     caps.hasDeviceInfo = true;
     caps.canFilterPhysical = true;
     return caps;

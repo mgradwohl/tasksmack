@@ -8,8 +8,9 @@
 namespace Platform
 {
 
-/// Windows implementation of IDiskProbe using Performance Data Helper (PDH).
-/// Reads disk I/O metrics from Windows Performance Counters.
+/// Windows implementation of IDiskProbe. Uses IOCTL_DISK_PERFORMANCE for cumulative
+/// disk I/O counters; Performance Data Helper (PDH) is used only once, at construction,
+/// to enumerate physical disk instance names (e.g. "0 C:").
 class WindowsDiskProbe : public IDiskProbe
 {
   public:

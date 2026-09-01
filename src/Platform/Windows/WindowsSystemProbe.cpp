@@ -128,23 +128,16 @@ WindowsSystemProbe::WindowsSystemProbe()
 
     // Get CPU model from registry
     {
+        constexpr auto* cpuKeyPath = LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)";
+        constexpr auto* cpuValueName = L"ProcessorNameString";
+
         DWORD cpuBufferSize = 0;
-        const LSTATUS sizeStatus = RegGetValueW(HKEY_LOCAL_MACHINE,
-                                                LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                                                L"ProcessorNameString",
-                                                RRF_RT_REG_SZ,
-                                                nullptr,
-                                                nullptr,
-                                                &cpuBufferSize);
+        const LSTATUS sizeStatus =
+            RegGetValueW(HKEY_LOCAL_MACHINE, cpuKeyPath, cpuValueName, RRF_RT_REG_SZ, nullptr, nullptr, &cpuBufferSize);
         std::vector<wchar_t> cpuBuffer(cpuBufferSize / sizeof(wchar_t));
         if (sizeStatus == ERROR_SUCCESS && !cpuBuffer.empty() &&
-            RegGetValueW(HKEY_LOCAL_MACHINE,
-                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         L"ProcessorNameString",
-                         RRF_RT_REG_SZ,
-                         nullptr,
-                         cpuBuffer.data(),
-                         &cpuBufferSize) == ERROR_SUCCESS)
+            RegGetValueW(HKEY_LOCAL_MACHINE, cpuKeyPath, cpuValueName, RRF_RT_REG_SZ, nullptr, cpuBuffer.data(), &cpuBufferSize) ==
+                ERROR_SUCCESS)
         {
             m_CpuModel = WinString::wideToUtf8(cpuBuffer.data());
 
