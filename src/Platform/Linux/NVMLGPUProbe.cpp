@@ -333,20 +333,16 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedRPMPercent = fanSpeed;
         }
 
-        // PCIe throughput
-        unsigned int pcieTx = 0;
-        result = m_Impl->nvmlDeviceGetPcieThroughput(device, NVML_PCIE_UTIL_TX_BYTES, &pcieTx);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieTxBytes = static_cast<std::uint64_t>(pcieTx) * 1024; // KB to bytes
-        }
-
-        unsigned int pcieRx = 0;
-        result = m_Impl->nvmlDeviceGetPcieThroughput(device, NVML_PCIE_UTIL_RX_BYTES, &pcieRx);
-        if (result == NVML_SUCCESS)
-        {
-            counter.pcieRxBytes = static_cast<std::uint64_t>(pcieRx) * 1024; // KB to bytes
-        }
+        // PCIe throughput: NVML returns rates (KB/s over a ~20ms sampling window), not
+        // cumulative counters. GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes, and
+        // GPUModel diffs consecutive samples via Numeric::counterRate() to derive a rate,
+        // which clamps to 0 whenever a fluctuating rate-of-rate sample decreases between
+        // reads - so populating these from nvmlDeviceGetPcieThroughput() would silently
+        // corrupt PCIe throughput reporting rather than just leaving it unavailable. Mirrors
+        // the same decision already made in the Windows NVMLGPUProbe.
+        // Since NVML doesn't provide cumulative counters, we leave these at 0.
+        // Future enhancement: Add rate fields or implement tracking.
+        // For now, Domain layer will compute rates as 0 from cumulative fields.
 
         counters.push_back(std::move(counter));
     }
