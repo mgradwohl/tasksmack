@@ -224,8 +224,10 @@ ProcessesPanel::ProcessesPanel() : Panel("Processes")
 
 ProcessesPanel::~ProcessesPanel()
 {
-    // Stop the background sampler before releasing the model: the sampler callback holds a
-    // raw pointer to the model, so the thread must be joined before the model is destroyed.
+    // Order doesn't matter for safety here: BackgroundSampler observes m_ProcessModel via a
+    // weak_ptr, so it's never left holding a dangling pointer regardless of which is destroyed
+    // first. Stopping the sampler first is still done so no sample() call races the rest of this
+    // destructor's cleanup (setInteractionActive below).
     if (m_Sampler)
     {
         m_Sampler->stop();
@@ -257,7 +259,7 @@ void ProcessesPanel::onAttach()
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
 
-    m_ProcessModel = std::make_unique<Domain::ProcessModel>(std::move(processProbe));
+    m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample
@@ -267,7 +269,7 @@ void ProcessesPanel::onAttach()
     // Wire sampler: polls the ProcessModel on each interval tick.
     Domain::SamplerConfig const samplerCfg{m_AppliedSamplerInterval};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
-    m_Sampler->addSamplable(m_ProcessModel.get());
+    m_Sampler->addSamplable(m_ProcessModel);
     m_Sampler->start();
 
     // Ensure the initial seed snapshots are loaded into the render cache so the UI

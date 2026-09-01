@@ -74,12 +74,22 @@ class ProcessDetailsPanel : public Panel
 
     static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
+    void renderCpuUsageSection();
+    void renderMemoryUsageSection();
     void renderThreadAndFaultHistory();
     void renderIoStats(const Domain::ProcessSnapshot& proc);
     void renderNetworkStats(const Domain::ProcessSnapshot& proc);
     void renderPowerUsage(const Domain::ProcessSnapshot& proc);
     void renderGpuUsage(const Domain::ProcessSnapshot& proc);
+    void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
+    static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
+    void renderGpuHistoryGraphs();
     void renderActions();
+    void renderActionResultFeedback();
+    void renderConfirmDialog();
+    void dispatchConfirmedAction();
+    void renderActionButtons();
+    void renderPrioritySection();
     void trimHistory(double nowSeconds);
 
     // Priority slider helper methods (extracted for testability and clarity)

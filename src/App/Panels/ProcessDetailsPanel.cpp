@@ -646,13 +646,19 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
 void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& proc)
 {
-    const auto& theme = UI::Theme::get();
-
     // Ensure smoothing is initialized even if render is called before an update tick
     if (!m_SmoothedUsage.initialized)
     {
         updateSmoothedUsage(proc, m_LastDeltaSeconds);
     }
+
+    renderCpuUsageSection();
+    renderMemoryUsageSection();
+}
+
+void ProcessDetailsPanel::renderCpuUsageSection()
+{
+    const auto& theme = UI::Theme::get();
 
     // Inline CPU history with paired now bar
     if (!m_Timestamps.empty() && !m_CpuHistory.empty())
@@ -778,6 +784,11 @@ void ProcessDetailsPanel::renderResourceUsage(const Domain::ProcessSnapshot& pro
                                  PROCESS_NOW_BAR_COLUMNS);
         ImGui::Spacing();
     }
+}
+
+void ProcessDetailsPanel::renderMemoryUsageSection()
+{
+    const auto& theme = UI::Theme::get();
 
     // Inline history for memory (overview) mirroring system memory chart layout
     if (!m_Timestamps.empty())
@@ -1394,6 +1405,24 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  GPU Usage");
     ImGui::Spacing();
 
+    renderGpuCurrentMetricsTable(proc);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    renderPerGpuBreakdown(proc);
+
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    renderGpuHistoryGraphs();
+}
+
+void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const
+{
+    const auto& theme = UI::Theme::get();
+
     // Current GPU metrics
     if (ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
     {
@@ -1469,10 +1498,11 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
 
         ImGui::EndTable();
     }
+}
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
+{
+    const auto& theme = UI::Theme::get();
 
     // Per-GPU breakdown if available
     if (!proc.perGpuUsage.empty())
@@ -1536,9 +1566,11 @@ void ProcessDetailsPanel::renderGpuUsage(const Domain::ProcessSnapshot& proc)
             }
         }
     }
+}
 
-    ImGui::Separator();
-    ImGui::Spacing();
+void ProcessDetailsPanel::renderGpuHistoryGraphs()
+{
+    auto& theme = UI::Theme::get();
 
     // GPU history graphs (if we have history)
     if (!m_GpuUtilHistory.empty() && !m_Timestamps.empty())
@@ -1805,16 +1837,28 @@ void ProcessDetailsPanel::renderActions()
     ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GEARS "  Process Control");
     ImGui::Spacing();
 
-    // Action result feedback
-    if (!m_LastActionResult.empty())
+    renderActionResultFeedback();
+    renderConfirmDialog();
+    renderActionButtons();
+    renderPrioritySection();
+}
+
+void ProcessDetailsPanel::renderActionResultFeedback()
+{
+    if (m_LastActionResult.empty())
     {
-        const bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
-        const ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
-        ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
-        ImGui::Spacing();
+        return;
     }
 
-    // Confirmation dialog
+    const auto& theme = UI::Theme::get();
+    const bool isError = m_LastActionResult.contains("Error") || m_LastActionResult.contains("Failed");
+    const ImVec4 color = isError ? theme.scheme().textError : theme.scheme().textSuccess;
+    ImGui::TextColored(color, "%s", m_LastActionResult.c_str());
+    ImGui::Spacing();
+}
+
+void ProcessDetailsPanel::renderConfirmDialog()
+{
     if (m_ShowConfirmDialog)
     {
         ImGui::OpenPopup("Confirm Action");
@@ -1832,43 +1876,7 @@ void ProcessDetailsPanel::renderActions()
 
         if (ImGui::Button("Yes", ImVec2(120, 0)))
         {
-            // Explicit error default (ProcessActionResult::success does have a default
-            // member initializer, so this isn't uninitialized-read UB either way) rather
-            // than a bare default-constructed result: ProcessAction::None can't be reached
-            // today (m_ConfirmAction and m_ShowConfirmDialog are always set together by
-            // the action buttons below), but this keeps that invariant from being a
-            // silent "reports success" bug if a future change ever violates it.
-            Platform::ProcessActionResult result = Platform::ProcessActionResult::error("No action selected");
-
-            switch (m_ConfirmAction)
-            {
-            case ProcessAction::Terminate:
-                result = m_ProcessActions->terminate(m_SelectedPid);
-                break;
-            case ProcessAction::Kill:
-                result = m_ProcessActions->kill(m_SelectedPid);
-                break;
-            case ProcessAction::Stop:
-                result = m_ProcessActions->stop(m_SelectedPid);
-                break;
-            case ProcessAction::Resume:
-                result = m_ProcessActions->resume(m_SelectedPid);
-                break;
-            case ProcessAction::None:
-                break;
-            }
-
-            if (result.success)
-            {
-                m_LastActionResult =
-                    std::string("Success: ") + actionVerb(m_ConfirmAction) + " sent to PID " + std::to_string(m_SelectedPid);
-            }
-            else
-            {
-                m_LastActionResult = "Error: " + result.errorMessage;
-            }
-            m_ActionResultTimer = 5.0F;
-
+            dispatchConfirmedAction();
             m_ShowConfirmDialog = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1883,7 +1891,49 @@ void ProcessDetailsPanel::renderActions()
 
         ImGui::EndPopup();
     }
+}
 
+void ProcessDetailsPanel::dispatchConfirmedAction()
+{
+    // Explicit error default (ProcessActionResult::success does have a default
+    // member initializer, so this isn't uninitialized-read UB either way) rather
+    // than a bare default-constructed result: ProcessAction::None can't be reached
+    // today (m_ConfirmAction and m_ShowConfirmDialog are always set together by
+    // the action buttons below), but this keeps that invariant from being a
+    // silent "reports success" bug if a future change ever violates it.
+    Platform::ProcessActionResult result = Platform::ProcessActionResult::error("No action selected");
+
+    switch (m_ConfirmAction)
+    {
+    case ProcessAction::Terminate:
+        result = m_ProcessActions->terminate(m_SelectedPid);
+        break;
+    case ProcessAction::Kill:
+        result = m_ProcessActions->kill(m_SelectedPid);
+        break;
+    case ProcessAction::Stop:
+        result = m_ProcessActions->stop(m_SelectedPid);
+        break;
+    case ProcessAction::Resume:
+        result = m_ProcessActions->resume(m_SelectedPid);
+        break;
+    case ProcessAction::None:
+        break;
+    }
+
+    if (result.success)
+    {
+        m_LastActionResult = std::string("Success: ") + actionVerb(m_ConfirmAction) + " sent to PID " + std::to_string(m_SelectedPid);
+    }
+    else
+    {
+        m_LastActionResult = "Error: " + result.errorMessage;
+    }
+    m_ActionResultTimer = 5.0F;
+}
+
+void ProcessDetailsPanel::renderActionButtons()
+{
     // Action buttons - use consistent sizing and 2x2 grid layout
     constexpr float BUTTON_WIDTH = 180.0F;
     constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
@@ -1963,163 +2013,168 @@ void ProcessDetailsPanel::renderActions()
 
         ImGui::EndTable();
     }
+}
 
-    // Priority adjustment section
-    if (m_ActionCapabilities.canSetPriority)
+void ProcessDetailsPanel::renderPrioritySection()
+{
+    if (!m_ActionCapabilities.canSetPriority)
+    {
+        return;
+    }
+
+    const auto& theme = UI::Theme::get();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    // Show current nice value in the header
+    const int currentNice = m_HasSnapshot ? m_CachedSnapshot.nice : 0;
+    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
+    ImGui::Spacing();
+
+    // Initialize slider from current process nice value if not changed
+    if (!m_PriorityChanged && m_HasSnapshot)
+    {
+        m_PriorityNiceValue = m_CachedSnapshot.nice;
+    }
+
+    auto* drawList = ImGui::GetWindowDrawList();
+    const ImGuiStyle& style = ImGui::GetStyle();
+
+    // ========================================
+    // Custom gradient priority slider (refactored into helper methods)
+    // Layout: High [====gradient====] Low
+    //                   Default
+    // ========================================
+
+    // Calculate "High" label width for offsetting the slider
+    const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
+    const float highLabelOffset = highLabelSize.x + PRIORITY_LABEL_PADDING;
+
+    // Build context for helper methods
+    PrioritySliderContext ctx;
+    ctx.drawList = drawList;
+    ctx.niceValue = m_PriorityNiceValue;
+    ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
+    ctx.style = &style;
+    ctx.priorityHighColor = theme.scheme().priorityHighColor;
+    ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
+    ctx.priorityLowColor = theme.scheme().priorityLowColor;
+
+    // Reserve space for badge above slider (offset by High label width)
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+    ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
+    ImGui::Dummy(ImVec2(highLabelOffset + PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
+
+    // Draw the value badge/callout above the slider position
+    drawPriorityBadge(drawList, ctx);
+
+    // Draw "High" label (left of slider, vertically centered with slider)
+    // Note: 'theme' is already declared in the outer scope
+    const float sliderRowY = ImGui::GetCursorPosY();
+    const float labelCenterY = sliderRowY + ((PRIORITY_SLIDER_HEIGHT - highLabelSize.y) * 0.5F);
+    ImGui::SetCursorPosY(labelCenterY);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
+    ImGui::TextUnformatted("High");
+    ImGui::PopStyleColor();
+
+    // Position the slider after "High" label on same line
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(sliderRowY);
+
+    // Draw the gradient slider bar
+    ctx.sliderMin = ImGui::GetCursorScreenPos();
+    ctx.sliderMax = ImVec2(ctx.sliderMin.x + PRIORITY_SLIDER_WIDTH, ctx.sliderMin.y + PRIORITY_SLIDER_HEIGHT);
+    // Store window-local X coordinate for scale label positioning
+    ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
+
+    // Draw gradient background (red -> green -> blue)
+    drawPriorityGradient(drawList, ctx);
+
+    // Draw slider border
+    drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), PRIORITY_SLIDER_CORNER_RADIUS);
+
+    // Draw slider thumb/handle
+    drawPriorityThumb(drawList, ctx);
+
+    // Make the slider interactive with an invisible button
+    ImGui::InvisibleButton("##priority_slider", ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_SLIDER_HEIGHT));
+    handlePrioritySliderInput(ctx);
+
+    // Draw "Low" label and "Default" label
+    drawPriorityScaleLabels(ctx);
+
+    // Tooltip on hover with keyboard shortcut hints
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
+                          "Lower values = higher priority (more CPU time)\n"
+                          "Normal priority = 0\n\n"
+                          "Keyboard shortcuts:\n"
+                          "  Left/Right: Adjust by 1\n"
+                          "  PgUp/PgDown: Adjust by 5\n"
+                          "  Home/End: Min/Max priority\n"
+                          "  0: Reset to default\n\n"
+                          "Note: Setting values below 0 typically requires root/admin privileges");
+    }
+
+    ImGui::Spacing();
+
+    // ========================================
+    // Action button (right-aligned)
+    // ========================================
+    const bool canApply = m_PriorityChanged && m_HasSnapshot;
+
+    // Right-align the Apply button
+    constexpr float APPLY_BUTTON_WIDTH = 120.0F;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PRIORITY_SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
+
+    // Apply button with success (green) styling
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
+
+        if (!canApply)
+        {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Apply", ImVec2(APPLY_BUTTON_WIDTH, 0)))
+        {
+            auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
+            if (result.success)
+            {
+                m_PriorityError.clear(); // Clear any previous error
+                m_PriorityChanged = false;
+            }
+            else
+            {
+                m_PriorityError = result.errorMessage; // Persistent error message
+                // Revert slider to the actual process priority since the change failed
+                m_PriorityNiceValue = m_CachedSnapshot.nice;
+                m_PriorityChanged = false;
+            }
+        }
+        if (!canApply)
+        {
+            ImGui::EndDisabled();
+        }
+
+        ImGui::PopStyleColor(3);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+        ImGui::SetTooltip("Apply the selected priority to the process");
+    }
+
+    // Display persistent error message if priority change failed
+    if (!m_PriorityError.empty())
     {
         ImGui::Spacing();
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::Spacing();
-
-        // Show current nice value in the header
-        const int currentNice = m_HasSnapshot ? m_CachedSnapshot.nice : 0;
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  Priority (current nice: %d)", currentNice);
-        ImGui::Spacing();
-
-        // Initialize slider from current process nice value if not changed
-        if (!m_PriorityChanged && m_HasSnapshot)
-        {
-            m_PriorityNiceValue = m_CachedSnapshot.nice;
-        }
-
-        // theme already declared at start of function
-        auto* drawList = ImGui::GetWindowDrawList();
-        const ImGuiStyle& style = ImGui::GetStyle();
-
-        // ========================================
-        // Custom gradient priority slider (refactored into helper methods)
-        // Layout: High [====gradient====] Low
-        //                   Default
-        // ========================================
-
-        // Calculate "High" label width for offsetting the slider
-        const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
-        const float highLabelOffset = highLabelSize.x + PRIORITY_LABEL_PADDING;
-
-        // Build context for helper methods
-        PrioritySliderContext ctx;
-        ctx.drawList = drawList;
-        ctx.niceValue = m_PriorityNiceValue;
-        ctx.normalizedPos = getNicePosition(m_PriorityNiceValue);
-        ctx.style = &style;
-        ctx.priorityHighColor = theme.scheme().priorityHighColor;
-        ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
-        ctx.priorityLowColor = theme.scheme().priorityLowColor;
-
-        // Reserve space for badge above slider (offset by High label width)
-        const ImVec2 rowStart = ImGui::GetCursorScreenPos();
-        ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
-        ImGui::Dummy(ImVec2(highLabelOffset + PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
-
-        // Draw the value badge/callout above the slider position
-        drawPriorityBadge(drawList, ctx);
-
-        // Draw "High" label (left of slider, vertically centered with slider)
-        // Note: 'theme' is already declared in the outer scope
-        const float sliderRowY = ImGui::GetCursorPosY();
-        const float labelCenterY = sliderRowY + ((PRIORITY_SLIDER_HEIGHT - highLabelSize.y) * 0.5F);
-        ImGui::SetCursorPosY(labelCenterY);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
-        ImGui::TextUnformatted("High");
-        ImGui::PopStyleColor();
-
-        // Position the slider after "High" label on same line
-        ImGui::SameLine();
-        ImGui::SetCursorPosY(sliderRowY);
-
-        // Draw the gradient slider bar
-        ctx.sliderMin = ImGui::GetCursorScreenPos();
-        ctx.sliderMax = ImVec2(ctx.sliderMin.x + PRIORITY_SLIDER_WIDTH, ctx.sliderMin.y + PRIORITY_SLIDER_HEIGHT);
-        // Store window-local X coordinate for scale label positioning
-        ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
-
-        // Draw gradient background (red -> green -> blue)
-        drawPriorityGradient(drawList, ctx);
-
-        // Draw slider border
-        drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), PRIORITY_SLIDER_CORNER_RADIUS);
-
-        // Draw slider thumb/handle
-        drawPriorityThumb(drawList, ctx);
-
-        // Make the slider interactive with an invisible button
-        ImGui::InvisibleButton("##priority_slider", ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_SLIDER_HEIGHT));
-        handlePrioritySliderInput(ctx);
-
-        // Draw "Low" label and "Default" label
-        drawPriorityScaleLabels(ctx);
-
-        // Tooltip on hover with keyboard shortcut hints
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
-                              "Lower values = higher priority (more CPU time)\n"
-                              "Normal priority = 0\n\n"
-                              "Keyboard shortcuts:\n"
-                              "  Left/Right: Adjust by 1\n"
-                              "  PgUp/PgDown: Adjust by 5\n"
-                              "  Home/End: Min/Max priority\n"
-                              "  0: Reset to default\n\n"
-                              "Note: Setting values below 0 typically requires root/admin privileges");
-        }
-
-        ImGui::Spacing();
-
-        // ========================================
-        // Action button (right-aligned)
-        // ========================================
-        const bool canApply = m_PriorityChanged && m_HasSnapshot;
-
-        // Right-align the Apply button
-        constexpr float APPLY_BUTTON_WIDTH = 120.0F;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PRIORITY_SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
-
-        // Apply button with success (green) styling
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, theme.scheme().successButton);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme.scheme().successButtonHovered);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme.scheme().successButtonActive);
-
-            if (!canApply)
-            {
-                ImGui::BeginDisabled();
-            }
-            if (ImGui::Button("Apply", ImVec2(APPLY_BUTTON_WIDTH, 0)))
-            {
-                auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
-                if (result.success)
-                {
-                    m_PriorityError.clear(); // Clear any previous error
-                    m_PriorityChanged = false;
-                }
-                else
-                {
-                    m_PriorityError = result.errorMessage; // Persistent error message
-                    // Revert slider to the actual process priority since the change failed
-                    m_PriorityNiceValue = m_CachedSnapshot.nice;
-                    m_PriorityChanged = false;
-                }
-            }
-            if (!canApply)
-            {
-                ImGui::EndDisabled();
-            }
-
-            ImGui::PopStyleColor(3);
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        {
-            ImGui::SetTooltip("Apply the selected priority to the process");
-        }
-
-        // Display persistent error message if priority change failed
-        if (!m_PriorityError.empty())
-        {
-            ImGui::Spacing();
-            ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_PriorityError.c_str());
-        }
+        ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_PriorityError.c_str());
     }
 }
 

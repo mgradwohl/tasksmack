@@ -2,6 +2,7 @@
 
 #include "App/TitleBarGeometry.h"
 #include "Core/Layer.h"
+#include "UI/IconLoader.h"
 
 #include <cstdint>
 
@@ -144,9 +145,7 @@ class TitleBarLayer : public Core::Layer
     void setupHitTest();
 
     // Icon texture
-    unsigned int m_IconTexture = 0;
-    int m_IconWidth = 0;
-    int m_IconHeight = 0;
+    UI::Texture m_IconTexture;
 
     // System menu state
     bool m_ShowSystemMenu = false;

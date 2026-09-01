@@ -6,14 +6,13 @@
 #include "Core/Layer.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
+#include "UI/IconLoader.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
-#include <glad/gl.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
-#include <stb_image.h>
 
 #include <cctype>
 #include <chrono>
@@ -265,49 +264,15 @@ void TitleBarLayer::onAttach()
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
     // Load icon texture
-    auto iconPath = (UI::findAssetsDir() / "icons" / "tasksmack-32.png").string();
-    int channels = 0;
-    unsigned char* data = stbi_load(iconPath.c_str(), &m_IconWidth, &m_IconHeight, &channels, 4);
-    if (data != nullptr)
+    const auto iconPath = UI::findAssetsDir() / "icons" / "tasksmack-32.png";
+    m_IconTexture = UI::loadTexture(iconPath);
+    if (m_IconTexture.valid())
     {
-        glGenTextures(1, &m_IconTexture);
-        if (m_IconTexture == 0U)
-        {
-            spdlog::error("Failed to create OpenGL texture for title bar icon (glGenTextures returned 0)");
-            stbi_image_free(data);
-            m_IconWidth = 0;
-            m_IconHeight = 0;
-        }
-        else
-        {
-            glBindTexture(GL_TEXTURE_2D, m_IconTexture);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_IconWidth, m_IconHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-
-            const GLenum error = glGetError();
-            if (error != GL_NO_ERROR)
-            {
-                spdlog::error("OpenGL error {} while uploading title bar icon texture", static_cast<unsigned int>(error));
-                glBindTexture(GL_TEXTURE_2D, 0); // Unbind before deletion
-                glDeleteTextures(1, &m_IconTexture);
-                m_IconTexture = 0U;
-                m_IconWidth = 0;
-                m_IconHeight = 0;
-            }
-            else
-            {
-                spdlog::info("Loaded title bar icon: {}x{}", m_IconWidth, m_IconHeight);
-            }
-
-            // Unbind texture to avoid dangling OpenGL state
-            glBindTexture(GL_TEXTURE_2D, 0);
-            stbi_image_free(data);
-        }
+        spdlog::info("Loaded title bar icon: {}x{}", static_cast<int>(m_IconTexture.size().x), static_cast<int>(m_IconTexture.size().y));
     }
     else
     {
-        spdlog::warn("Failed to load title bar icon from {}", iconPath);
+        spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
     }
 
     m_TraceEnabled = isResizePerfTracingEnabled();
@@ -321,11 +286,9 @@ void TitleBarLayer::onDetach()
 {
     spdlog::info("TitleBarLayer detached");
 
-    if (m_IconTexture != 0)
-    {
-        glDeleteTextures(1, &m_IconTexture);
-        m_IconTexture = 0;
-    }
+    // Release the OpenGL resource now, while the GL context is still guaranteed valid,
+    // rather than deferring to the (default) destructor's timing.
+    m_IconTexture = UI::Texture{};
 
     destroySystemCursors();
 
@@ -1037,7 +1000,7 @@ void TitleBarLayer::renderTitleBar()
     const float iconY = centerY - (ICON_SIZE * 0.5F);
     constexpr float iconX = 8.0F;
 
-    if (m_IconTexture != 0)
+    if (m_IconTexture.valid())
     {
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
 
@@ -1082,10 +1045,7 @@ void TitleBarLayer::renderTitleBar()
 
         // Draw icon over the invisible button
         ImGui::SetCursorPos(ImVec2(iconX, iconY));
-        // ImTextureID is the opaque texture handle type used by ImGui.
-        // On this platform it's an unsigned integer type, so we use static_cast for clarity.
-        // The backend handles the actual type conversion internally when rendering.
-        ImGui::Image(static_cast<ImTextureID>(m_IconTexture), ImVec2(ICON_SIZE, ICON_SIZE));
+        ImGui::Image(m_IconTexture.textureId(), ImVec2(ICON_SIZE, ICON_SIZE));
 
         // Track icon bounds for right-click detection
         m_IconBounds = {.minX = iconX, .maxX = iconX + ICON_SIZE, .minY = iconY, .maxY = iconY + ICON_SIZE};
