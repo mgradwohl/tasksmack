@@ -143,6 +143,9 @@ add_executable(TaskSmackTests
     UI/test_ThemeHeader.cpp
     UI/test_WidgetsHeader.cpp
     App/test_ProcessColumnConfig.cpp
+    App/test_ProcessSortUtils.cpp
+    App/test_AdaptiveIntervalUtils.cpp
+    App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp

@@ -1,6 +1,7 @@
 #include "SystemMetricsPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
@@ -12,7 +13,6 @@
 #include "Domain/GPUModel.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessModel.h"
-#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
@@ -45,26 +45,6 @@ namespace App
 
 namespace
 {
-
-// Returns an effective refresh interval scaled by interaction/activity state,
-// matching the adaptive cadence strategy used by ProcessesPanel.
-[[nodiscard]] std::chrono::milliseconds
-chooseAdaptiveSystemInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
-{
-    const auto baseMs = baseInterval.count();
-    if (interactionRedrawActive)
-    {
-        // 3x multiplier during active resize/move: defer expensive model refreshes.
-        // Clamp to REFRESH_INTERVAL_MAX_MS so the scaled value never exceeds the guardrail.
-        return std::chrono::milliseconds(std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
-    }
-    if (!isActiveTab)
-    {
-        // 2x multiplier when tab is not visible
-        return std::chrono::milliseconds(std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
-    }
-    return baseInterval;
-}
 
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
@@ -276,7 +256,7 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     }
 
     // Do not throttle the background sampler just because the user is resizing the UI.
-    const auto effectiveInterval = chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
+    const auto effectiveInterval = AdaptiveIntervalUtils::chooseAdaptiveSystemInterval(m_RefreshInterval, m_IsActiveTab, false);
     if (m_Sampler && m_Sampler->interval() != effectiveInterval)
     {
         m_Sampler->setInterval(effectiveInterval);

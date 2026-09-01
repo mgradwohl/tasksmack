@@ -1,6 +1,8 @@
 #include "ProcessesPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessSortUtils.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -9,7 +11,6 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
-#include "Domain/SamplingConfig.h"
 #include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -47,31 +48,6 @@ namespace
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
 constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
-
-[[nodiscard]] std::chrono::milliseconds
-chooseAdaptiveProcessInterval(const std::chrono::milliseconds baseInterval, const bool isActiveTab, const bool interactionRedrawActive)
-{
-    const auto baseMs = std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
-
-    // During active resize/move interactions, dramatically reduce update frequency to preserve UI responsiveness.
-    // ProcessModel refresh includes expensive probe work; batching updates prevents stalls during interaction.
-    if (interactionRedrawActive)
-    {
-        // 3x multiplier during interaction: defer model updates while user is actively resizing/dragging
-        const auto throttledMs = std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
-        return std::chrono::milliseconds(throttledMs);
-    }
-
-    if (!isActiveTab)
-    {
-        // 2x multiplier for inactive tabs (already optimized but far less critical than interaction)
-        const auto relaxedMs = std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS));
-        return std::chrono::milliseconds(relaxedMs);
-    }
-
-    // Active tab, no interaction: use base interval
-    return std::chrono::milliseconds(baseMs);
-}
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -365,7 +341,8 @@ void ProcessesPanel::onUpdate(float deltaTime)
 
     const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
     m_ProcessModel->setInteractionActive(throttleForInteraction);
-    const auto desiredInterval = chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, throttleForInteraction);
+    const auto desiredInterval =
+        AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_IsActiveTab, throttleForInteraction);
     if (desiredInterval != m_AppliedSamplerInterval)
     {
         m_AppliedSamplerInterval = desiredInterval;
@@ -762,98 +739,10 @@ void ProcessesPanel::renderContent()
                     // Sort m_CachedSortedIndices (a copy of natural order) so that
                     // m_CachedFilteredIndices remains in PID/natural order for tree view.
                     m_CachedSortedIndices = m_CachedFilteredIndices;
-                    std::ranges::sort(m_CachedSortedIndices,
-                                      [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                                      {
-                                          const auto& procA = currentSnapshots[a];
-                                          const auto& procB = currentSnapshots[b];
-
-                                          auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
-                                          {
-                                              return ascending ? (lhs < rhs) : (rhs < lhs);
-                                          };
-
-                                          switch (sortCol)
-                                          {
-                                          case ProcessColumn::PID:
-                                              return compare(procA.pid, procB.pid);
-                                          case ProcessColumn::User:
-                                              return compare(procA.user, procB.user);
-                                          case ProcessColumn::CpuPercent:
-                                              return compare(procA.cpuPercent, procB.cpuPercent);
-                                          case ProcessColumn::MemPercent:
-                                              return compare(procA.memoryPercent, procB.memoryPercent);
-                                          case ProcessColumn::Virtual:
-                                              return compare(procA.virtualBytes, procB.virtualBytes);
-                                          case ProcessColumn::Resident:
-                                              return compare(procA.memoryBytes, procB.memoryBytes);
-                                          case ProcessColumn::PeakResident:
-                                              return compare(procA.peakMemoryBytes, procB.peakMemoryBytes);
-                                          case ProcessColumn::Shared:
-                                              return compare(procA.sharedBytes, procB.sharedBytes);
-                                          case ProcessColumn::CpuTime:
-                                              return compare(procA.cpuTimeSeconds, procB.cpuTimeSeconds);
-                                          case ProcessColumn::StartTime:
-                                              return compare(procA.startTimeEpoch, procB.startTimeEpoch);
-                                          case ProcessColumn::State:
-                                              return compare(procA.displayState, procB.displayState);
-                                          case ProcessColumn::Status:
-                                              return compare(procA.status, procB.status);
-                                          case ProcessColumn::Name:
-                                              return compare(procA.name, procB.name);
-                                          case ProcessColumn::PPID:
-                                              return compare(procA.parentPid, procB.parentPid);
-                                          case ProcessColumn::Priority:
-                                              return compare(procA.nice, procB.nice);
-                                          case ProcessColumn::Threads:
-                                              return compare(procA.threadCount, procB.threadCount);
-                                          case ProcessColumn::Handles:
-                                              return compare(procA.handleCount, procB.handleCount);
-                                          case ProcessColumn::PageFaults:
-                                              return compare(procA.pageFaults, procB.pageFaults);
-                                          case ProcessColumn::Affinity:
-                                              return compare(procA.cpuAffinityMask, procB.cpuAffinityMask);
-                                          case ProcessColumn::Command:
-                                              return compare(procA.command, procB.command);
-                                          case ProcessColumn::IoRead:
-                                              return compare(procA.ioReadBytesPerSec, procB.ioReadBytesPerSec);
-                                          case ProcessColumn::IoWrite:
-                                              return compare(procA.ioWriteBytesPerSec, procB.ioWriteBytesPerSec);
-                                          case ProcessColumn::NetSent:
-                                              return compare(procA.netSentBytesPerSec, procB.netSentBytesPerSec);
-                                          case ProcessColumn::NetReceived:
-                                              return compare(procA.netReceivedBytesPerSec, procB.netReceivedBytesPerSec);
-                                          case ProcessColumn::Power:
-                                              return compare(procA.powerWatts, procB.powerWatts);
-                                          case ProcessColumn::GpuPercent:
-                                              return compare(procA.gpuUtilPercent, procB.gpuUtilPercent);
-                                          case ProcessColumn::GpuMemory:
-                                              return compare(procA.gpuMemoryBytes, procB.gpuMemoryBytes);
-                                          case ProcessColumn::GpuEngine:
-                                          {
-                                              // Sort by number of engines, then by first engine name
-                                              if (procA.gpuEngines.size() != procB.gpuEngines.size())
-                                              {
-                                                  return compare(procA.gpuEngines.size(), procB.gpuEngines.size());
-                                              }
-                                              if (!procA.gpuEngines.empty() && !procB.gpuEngines.empty())
-                                              {
-                                                  return compare(procA.gpuEngines[0], procB.gpuEngines[0]);
-                                              }
-                                              return false;
-                                          }
-                                          case ProcessColumn::GpuDevice:
-                                              return compare(procA.gpuDevices, procB.gpuDevices);
-                                          case ProcessColumn::Publisher:
-                                              return compare(procA.publisher, procB.publisher);
-                                          case ProcessColumn::Type:
-                                              return compare(procA.processType, procB.processType);
-                                          case ProcessColumn::GdiObjects:
-                                              return compare(procA.gdiObjectCount, procB.gdiObjectCount);
-                                          default:
-                                              return false;
-                                          }
-                                      });
+                    std::ranges::sort(
+                        m_CachedSortedIndices,
+                        [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
+                        { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
                     sortSpecs->SpecsDirty = false;
                 }
             }
