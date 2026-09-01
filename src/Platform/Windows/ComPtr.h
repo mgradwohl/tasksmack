@@ -1,9 +1,10 @@
 #pragma once
 
-// Minimal RAII wrapper for COM interface pointers (AddRef/Release/QueryInterface).
-// Standing in for Microsoft::WRL::ComPtr, whose header (wrl/client.h) is only
-// shipped under the Windows Kits "winrt" include tree, which is not on this
-// project's include path.
+// Minimal RAII wrapper for COM interface pointers (AddRef/Release only; callers
+// still invoke QueryInterface directly and hand the result to
+// releaseAndGetAddressOf()). Standing in for Microsoft::WRL::ComPtr, whose header
+// (wrl/client.h) is only shipped under the Windows Kits "winrt" include tree,
+// which is not on this project's include path.
 
 #include <cstddef>
 
