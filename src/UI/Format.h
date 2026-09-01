@@ -164,7 +164,7 @@ template<typename T, typename Formatter>
     }
 
     // Convert epoch to local time using thread-safe localtime_r on POSIX or localtime_s on Windows
-    const std::time_t epochTime = static_cast<std::time_t>(epochSeconds);
+    const auto epochTime = static_cast<std::time_t>(epochSeconds);
     std::tm localTm{};
 
 #ifdef _WIN32
@@ -210,7 +210,7 @@ template<typename T, typename Formatter>
     }
 
     // Get current time and process start time in local timezone
-    const std::time_t epochTime = static_cast<std::time_t>(epochSeconds);
+    const auto epochTime = static_cast<std::time_t>(epochSeconds);
     const std::time_t nowTime = std::time(nullptr);
 
     std::tm localTm{};
@@ -409,7 +409,7 @@ struct AlignedBytesParts
         endPtr = digitBuf.data() + 1;
     }
     assert(ec == std::errc{} && "std::to_chars failed unexpectedly");
-    const std::size_t numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
+    const auto numDigits = static_cast<std::size_t>(endPtr - digitBuf.data());
 
     // Get locale separator ('\0' means no separators, e.g., C locale)
     const char sep = getLocaleThousandSep();

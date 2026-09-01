@@ -157,7 +157,7 @@ inline void plotLineWithFill(const char* label,
         for (int resultIdx = 0; resultIdx < effectiveMax; ++resultIdx)
         {
             const std::size_t numerator = static_cast<std::size_t>(resultIdx) * static_cast<std::size_t>(count - 1);
-            const std::size_t denominator = static_cast<std::size_t>(effectiveMax - 1);
+            const auto denominator = static_cast<std::size_t>(effectiveMax - 1);
             const int sourceIdx = static_cast<int>(numerator / denominator);
 
             reducedXData[static_cast<std::size_t>(resultIdx)] = xData[sourceIdx];
@@ -470,7 +470,7 @@ inline auto hoveredIndexFromPlotX(const std::vector<float>& timeData, double mou
     {
         return std::nullopt;
     }
-    const size_t upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
+    const auto upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
     const size_t lowerIdx = upperIdx - 1;
 
     const float distLower = std::abs(timeData[lowerIdx] - x);
@@ -503,7 +503,7 @@ inline auto hoveredIndexFromPlotX(const std::vector<double>& timeData, double mo
     {
         return std::nullopt;
     }
-    const size_t upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
+    const auto upperIdx = static_cast<size_t>(upperDist); // Safe: checked by std::in_range
     const size_t lowerIdx = upperIdx - 1;
 
     const double distLower = std::abs(timeData[lowerIdx] - mouseX);
