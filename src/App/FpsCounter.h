@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 namespace App
@@ -13,7 +14,13 @@ namespace App
 class FpsCounter
 {
   public:
-    explicit FpsCounter(float averageWindowSeconds = 0.5F) : m_AverageWindowSeconds(averageWindowSeconds)
+    /// A non-positive averaging window would let update() divide by an accumulator that can
+    /// still be zero (e.g. a 0.0F deltaTime on the very first frame), so the window is
+    /// clamped to a small positive floor rather than trusted as-is.
+    static constexpr float kMinAveragingWindowSeconds = 1.0e-3F;
+
+    explicit FpsCounter(float averageWindowSeconds = 0.5F)
+        : m_AverageWindowSeconds(std::max(averageWindowSeconds, kMinAveragingWindowSeconds))
     {}
 
     /// Records one frame's delta time. Recomputes displayedFps() once the accumulated time

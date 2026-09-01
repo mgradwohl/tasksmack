@@ -2,10 +2,25 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 namespace App
 {
 namespace
 {
+
+TEST(FpsCounterTest, NonPositiveAveragingWindowIsClampedToAvoidDivideByZero)
+{
+    // A zero or negative window would otherwise let update() divide by an accumulator that
+    // can still be exactly zero (e.g. the very first frame's deltaTime being 0.0F).
+    FpsCounter zeroWindow(0.0F);
+    zeroWindow.update(0.0F);
+    EXPECT_TRUE(std::isfinite(zeroWindow.displayedFps()));
+
+    FpsCounter negativeWindow(-1.0F);
+    negativeWindow.update(0.0F);
+    EXPECT_TRUE(std::isfinite(negativeWindow.displayedFps()));
+}
 
 TEST(FpsCounterTest, InitialStateIsZero)
 {
