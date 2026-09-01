@@ -410,13 +410,17 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         std::string gpuId = std::format("GPU{}", index);
 
         // Query compute processes (CUDA, OpenCL)
-        // NVML API pattern: first call with count=0 returns NVML_ERROR_INSUFFICIENT_SIZE and populates count
+        // NVML API pattern: first call with a null buffer returns the required count,
+        // then a second call with a buffer sized to that count fetches the entries.
         if (hasComputeProcs)
         {
-            constexpr unsigned int MAX_PROCESSES = 256;
-            unsigned int computeCount = MAX_PROCESSES;
-            std::vector<nvmlProcessInfo_t> computeProcesses(MAX_PROCESSES);
-            nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
+            unsigned int computeCount = 0;
+            nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, nullptr);
+            std::vector<nvmlProcessInfo_t> computeProcesses(computeCount);
+            if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && computeCount > 0)
+            {
+                result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
+            }
             if (result == NVML_SUCCESS && computeCount > 0)
             {
                 spdlog::debug("NVMLGPUProbe: Found {} compute processes on GPU {}", computeCount, index);
@@ -449,10 +453,13 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         // Query graphics processes (DirectX, OpenGL, Vulkan)
         if (hasGraphicsProcs)
         {
-            constexpr unsigned int MAX_PROCESSES = 256;
-            unsigned int graphicsCount = MAX_PROCESSES;
-            std::vector<nvmlProcessInfo_t> graphicsProcesses(MAX_PROCESSES);
-            nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
+            unsigned int graphicsCount = 0;
+            nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, nullptr);
+            std::vector<nvmlProcessInfo_t> graphicsProcesses(graphicsCount);
+            if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && graphicsCount > 0)
+            {
+                result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
+            }
             if (result == NVML_SUCCESS && graphicsCount > 0)
             {
                 spdlog::debug("NVMLGPUProbe: Found {} graphics processes on GPU {}", graphicsCount, index);
