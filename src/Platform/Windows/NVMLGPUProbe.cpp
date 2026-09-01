@@ -78,7 +78,6 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC(DeviceGetClockInfo)
     LOAD_NVML_FUNC(DeviceGetMaxClockInfo)
     LOAD_NVML_FUNC(DeviceGetUtilizationRates)
-    LOAD_NVML_FUNC(DeviceGetPcieThroughput)
     // Note: SystemGetDriverVersion (not DeviceGet*) - system-wide, not per-device
     m_NVML.SystemGetDriverVersion = reinterpret_cast<decltype(m_NVML.SystemGetDriverVersion)>(
         GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlSystemGetDriverVersion"));
@@ -99,6 +98,7 @@ bool NVMLGPUProbe::loadNVML()
         spdlog::debug("NVMLGPUProbe: nvml" #name " not available (optional)");                                                             \
     }
 
+    LOAD_NVML_FUNC_OPTIONAL(DeviceGetPcieThroughput)
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetComputeRunningProcesses)
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetGraphicsRunningProcesses)
 
