@@ -127,17 +127,7 @@ void ShellLayer::onUpdate(float deltaTime)
         Core::Application::get().raiseEvent(evt);
     }
 
-    // Update FPS counter (average over ~0.5 seconds)
-    m_FrameTime = deltaTime;
-    m_FrameTimeAccumulator += deltaTime;
-    m_FrameCount++;
-
-    if (m_FrameTimeAccumulator >= FPS_AVERAGE_WINDOW_SECONDS)
-    {
-        m_DisplayedFps = static_cast<float>(m_FrameCount) / m_FrameTimeAccumulator;
-        m_FrameTimeAccumulator = 0.0F;
-        m_FrameCount = 0;
-    }
+    m_FpsCounter.update(deltaTime);
 
     // Update panels
     m_ProcessesPanel.onUpdate(deltaTime);
@@ -389,7 +379,9 @@ void ShellLayer::renderStatusBar() const
         const char* fpsText = "%.1f FPS (%.2f ms)";
         const float fpsWidth = ImGui::CalcTextSize(fpsText).x + 50.0F; // Extra space for numbers
         ImGui::SameLine(ImGui::GetWindowWidth() - fpsWidth);
-        ImGui::Text("%.1f FPS (%.2f ms)", static_cast<double>(m_DisplayedFps), static_cast<double>(m_FrameTime * 1000.0F));
+        ImGui::Text("%.1f FPS (%.2f ms)",
+                    static_cast<double>(m_FpsCounter.displayedFps()),
+                    static_cast<double>(m_FpsCounter.frameTime() * 1000.0F));
     }
     ImGui::End();
     ImGui::PopStyleVar(3);

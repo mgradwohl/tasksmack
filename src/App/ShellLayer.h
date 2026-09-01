@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/Layer.h"
+#include "FpsCounter.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
@@ -48,18 +49,12 @@ class ShellLayer : public Core::Layer
     // Active tab
     ActiveTab m_ActiveTab = ActiveTab::SystemOverview;
 
-    // FPS averaging window: accumulate frames over this many seconds before updating display
-    static constexpr float FPS_AVERAGE_WINDOW_SECONDS = 0.5F;
-
-    // Frame timing
-    float m_FrameTime = 0.0F;
+    // Frame timing / FPS display
+    FpsCounter m_FpsCounter;
 
     // GPU debug logging throttling
     std::int32_t m_LastGpuLogPid = -1;
     bool m_LastGpuLogHasData = false;
-    float m_FrameTimeAccumulator = 0.0F;
-    uint32_t m_FrameCount = 0U;
-    float m_DisplayedFps = 0.0F;
 
     // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
     // Used by renderStatusBar() to show a persistent lock indicator.
