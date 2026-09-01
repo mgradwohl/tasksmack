@@ -163,8 +163,28 @@ class ProcessModel : public ISamplable
         std::uint64_t generation = 0;         // refresh generation when last seen
     };
 
+    // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
+    // combined hash stored in ProcessSnapshot::uniqueKey (a display/collapse-state id that
+    // is not collision-free). Using the actual pair as the map key means a hash collision
+    // only costs a bucket collision, not silently merging two unrelated processes' state.
+    struct ProcessIdentity
+    {
+        std::int32_t pid = 0;
+        std::uint64_t startTime = 0;
+
+        friend bool operator==(const ProcessIdentity&, const ProcessIdentity&) = default;
+    };
+
+    struct ProcessIdentityHash
+    {
+        [[nodiscard]] std::size_t operator()(const ProcessIdentity& id) const noexcept
+        {
+            return static_cast<std::size_t>(makeUniqueKey(id.pid, id.startTime));
+        }
+    };
+
     // Single map replaces m_PrevCounters + m_NetworkBaselines + m_PeakRss + m_ActiveKeys.
-    std::unordered_map<std::uint64_t, PerProcessState> m_PerProcessState;
+    std::unordered_map<ProcessIdentity, PerProcessState, ProcessIdentityHash> m_PerProcessState;
     // Monotonically increasing counter; bumped each computeSnapshots() call.
     // Entries with generation != m_CurrentGeneration belong to dead processes.
     std::uint64_t m_CurrentGeneration = 0;

@@ -674,6 +674,28 @@ TEST(SystemModelTest, ZeroTotalCpuDeltaHandled)
     EXPECT_DOUBLE_EQ(snap.cpuTotal.totalPercent, 0.0);
 }
 
+TEST(SystemModelTest, RegressedCpuFieldDoesNotUnderflowIntoPinned100Percent)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    // user=1000 nice=0 system=500 idle=8500 iowait=100 steal=0 -> total=10100
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(1000, 0, 500, 8500, 100, 0), makeMemoryCounters(1024, 512)));
+
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+
+    // Total still increases (10100 -> 11650), but iowait regresses (100 -> 50), simulating a
+    // per-core hotplug reindex or a transiently stale counter. Without a rollback guard, the
+    // unsigned subtraction wraps and the final std::clamp silently pins iowaitPercent at 100%
+    // instead of reporting 0% for the regressed field.
+    rawProbe->setCounters(makeSystemCounters(makeCpuCounters(2000, 0, 600, 9000, 50, 0), makeMemoryCounters(1024, 512)));
+    model.refresh();
+
+    auto snap = model.snapshot();
+    EXPECT_DOUBLE_EQ(snap.cpuTotal.iowaitPercent, 0.0);
+}
+
 TEST(SystemModelTest, UptimeTracked)
 {
     auto probe = std::make_unique<MockSystemProbe>();

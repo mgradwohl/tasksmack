@@ -1544,12 +1544,17 @@ TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
 
 TEST(ProcessModelTest, ZeroHistoryRetentionKeepsOnlyCurrentSample)
 {
-    Domain::ProcessModel model(nullptr);
+    // Drives sample time via the injectable clock instead of a real sleep, so the two
+    // pushed history entries get distinct, deterministic timestamps regardless of
+    // scheduler/clock-resolution timing.
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    Domain::ProcessModel model(nullptr, [&currentTime] { return currentTime; });
     const auto counter = makeCounter(100, "history_proc", 'R', 1000, 500);
 
     model.updateFromCounters({counter}, 100000);
+    currentTime += std::chrono::milliseconds(10);
     model.updateFromCounters({counter}, 200000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    currentTime += std::chrono::milliseconds(10);
     model.updateFromCounters({counter}, 300000);
     ASSERT_EQ(model.historyTimestamps().size(), 2);
 

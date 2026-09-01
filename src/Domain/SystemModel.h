@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -146,6 +147,11 @@ class SystemModel : public ISamplable
     mutable std::shared_mutex m_Mutex;
 
     // Helpers
+    // Locks once and applies both the power reading (if any) and the counter-derived
+    // snapshot atomically, so readers never observe one cycle's power paired with the
+    // previous cycle's CPU/memory/network data.
+    void
+    updateFromCountersLocked(const Platform::SystemCounters& counters, double nowSeconds, const std::optional<PowerStatus>& powerStatus);
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
     void publish();
     void trimHistory(double nowSeconds);

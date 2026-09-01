@@ -33,6 +33,7 @@
 #include <linux/tcp.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 // NOLINTEND(misc-include-cleaner)
 
@@ -44,6 +45,11 @@ namespace
 
 // Buffer size for netlink messages (should be large enough for typical response)
 constexpr std::size_t NETLINK_BUFFER_SIZE = 65536;
+
+// Bounds how long querySocketsForFamily() can block in recv() on the background sampler
+// thread. Without this, a kernel dump that never emits its multipart terminator (memory
+// pressure, a namespace/container quirk) would hang the sampler thread indefinitely.
+constexpr long NETLINK_RECV_TIMEOUT_MS = 2000;
 
 /// Thread-safe strerror wrapper using strerror_r
 /// Handles both GNU (returns char*) and POSIX (returns int) versions using compile-time detection
@@ -250,6 +256,17 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
     {
         spdlog::debug("Failed to create NETLINK_SOCK_DIAG socket: {}", safeStrerror(errno));
         return;
+    }
+
+    // Bound recv() so a stalled kernel dump can't hang the background sampler thread
+    // forever (see querySocketsForFamily()). Best-effort: if this fails, recv() simply
+    // keeps its default blocking behavior.
+    timeval recvTimeout{};
+    recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
+    recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
+    if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
+    {
+        spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
     }
 
     // Bind the socket

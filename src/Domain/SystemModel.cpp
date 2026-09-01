@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <utility>
@@ -135,18 +136,18 @@ void SystemModel::refresh()
 
     auto counters = m_Probe->read();
 
-    // Also read power data if probe is available (outside mutex - it's I/O)
+    // Also read power data if probe is available (outside mutex - it's I/O). Applied to
+    // the snapshot inside updateFromCountersLocked() below, under the same lock as the
+    // counter-derived fields, so a reader never observes this cycle's power paired with
+    // the previous cycle's CPU/memory/network data.
+    std::optional<PowerStatus> powerStatus;
     if (m_PowerProbe)
     {
-        auto powerCounters = m_PowerProbe->read();
-        auto powerStatus = computePowerStatus(powerCounters);
-
-        // Only lock to update the snapshot
-        std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-        m_Snapshot.power = powerStatus;
+        powerStatus = computePowerStatus(m_PowerProbe->read());
     }
 
-    updateFromCounters(counters);
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    updateFromCountersLocked(counters, nowSeconds, powerStatus);
 }
 
 void SystemModel::updateFromCounters(const Platform::SystemCounters& counters)
@@ -157,7 +158,18 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters)
 
 void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds)
 {
+    updateFromCountersLocked(counters, nowSeconds, std::nullopt);
+}
+
+void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& counters,
+                                           double nowSeconds,
+                                           const std::optional<PowerStatus>& powerStatus)
+{
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    if (powerStatus.has_value())
+    {
+        m_Snapshot.power = *powerStatus;
+    }
     computeSnapshot(counters, nowSeconds);
     m_PrevCounters = counters;
     m_HasPrevious = true;
@@ -184,7 +196,12 @@ std::uint64_t SystemModel::publicationVersion() const noexcept
 void SystemModel::publish()
 {
     auto publication = std::make_shared<SystemPublication>();
-    publication->version = ++m_PublicationVersion;
+    // Assign the version from a local candidate rather than mutating m_PublicationVersion
+    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
+    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
+    // the end (see below) keeps all three mutually consistent instead of silently advancing
+    // the version past what was actually published.
+    publication->version = m_PublicationVersion + 1;
     publication->snapshot = m_Snapshot;
     publication->timestamps = HistoryUtils::toVector(m_Timestamps);
     publication->cpuHistory = HistoryUtils::toVector(m_CpuHistory);
@@ -212,6 +229,7 @@ void SystemModel::publish()
     {
         publication->perInterfaceTxHistory.emplace(name, HistoryUtils::toVector(history));
     }
+    m_PublicationVersion = publication->version;
     m_Publication = std::move(publication);
     m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
@@ -581,7 +599,10 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 {
     CpuUsage usage;
 
-    const std::uint64_t totalDelta = current.total() - previous.total();
+    // counterDelta() clamps to 0 instead of wrapping if a field regresses (per-core CPU
+    // hotplug/offline-online reindexing, a transiently stale counter, etc.) - without it, an
+    // unsigned underflow here would silently pin the reported percentage at 100%.
+    const std::uint64_t totalDelta = Numeric::counterDelta(current.total(), previous.total());
     if (totalDelta == 0)
     {
         return usage; // Avoid division by zero
@@ -591,7 +612,7 @@ CpuUsage SystemModel::computeCpuUsage(const Platform::CpuCounters& current, cons
 
     auto percent = [totalDeltaDouble](std::uint64_t curr, std::uint64_t prev) -> double
     {
-        const std::uint64_t delta = curr - prev;
+        const std::uint64_t delta = Numeric::counterDelta(curr, prev);
         return 100.0 * (Numeric::toDouble(delta) / totalDeltaDouble);
     };
 

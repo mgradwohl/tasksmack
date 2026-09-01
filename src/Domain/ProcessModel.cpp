@@ -178,7 +178,6 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
     // Keep m_Snapshots published and readable until the replacement snapshot vector
     // is fully prepared and ready to publish.
     newSnapshots.reserve(reserveSize);
-    newSnapshots.clear();
 
     // Bump the generation counter once per refresh.  At the end of the loop we
     // prune any PerProcessState entry that was NOT touched this refresh (i.e.
@@ -194,7 +193,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     for (const auto& current : counters)
     {
-        const std::uint64_t key = makeUniqueKey(current.pid, current.startTimeTicks);
+        const ProcessIdentity key{.pid = current.pid, .startTime = current.startTimeTicks};
 
         // Single map operation replaces three separate find/insert calls for
         // m_PrevCounters, m_NetworkBaselines, and m_PeakRss.

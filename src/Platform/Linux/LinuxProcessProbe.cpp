@@ -87,6 +87,7 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
+using ProcParsing::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
 using ProcParsing::readProcFileFull;
@@ -174,8 +175,9 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Initialize per-process network monitoring via Netlink INET_DIAG
-    m_SocketStats = std::make_unique<NetlinkSocketStats>();
-    m_HasNetworkCounters = m_SocketStats->isAvailable();
+    auto initialSocketStats = std::make_shared<NetlinkSocketStats>();
+    m_HasNetworkCounters = initialSocketStats->isAvailable();
+    m_SocketStats = std::move(initialSocketStats); // no lock needed: not yet shared across threads
     if (m_HasNetworkCounters)
     {
         spdlog::info("Per-process network monitoring available via Netlink INET_DIAG");
@@ -190,11 +192,25 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 void LinuxProcessProbe::setSocketStatsCacheTtl(std::chrono::milliseconds ttlMs)
 {
+    // Construct the replacement before taking the lock (socket creation, not the shared
+    // state, is the expensive part); only the swap itself needs to be guarded.
+    auto newSocketStats = std::make_shared<NetlinkSocketStats>(ttlMs);
+
+    const std::scoped_lock lock(m_SocketStatsMutex);
     if (m_SocketStats)
     {
-        // Recreate with new TTL
-        m_SocketStats = std::make_unique<NetlinkSocketStats>(ttlMs);
+        // Swap under the lock: a concurrent enumerate() on the sampler thread either sees
+        // the old or the new NetlinkSocketStats in full via socketStats(), and the old one
+        // stays alive (via shared_ptr refcounting) until any in-flight call using it
+        // returns, instead of being destroyed out from under it.
+        m_SocketStats = std::move(newSocketStats);
     }
+}
+
+std::shared_ptr<NetlinkSocketStats> LinuxProcessProbe::socketStats() const
+{
+    const std::scoped_lock lock(m_SocketStatsMutex);
+    return m_SocketStats;
 }
 #endif
 
@@ -266,7 +282,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Attribute network bytes to processes if socket stats are available
-    if (m_HasNetworkCounters && m_SocketStats)
+    if (m_HasNetworkCounters && socketStats())
     {
         attributeNetworkToProcesses(processes);
     }
@@ -493,6 +509,14 @@ void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counter
     {
         return;
     }
+    if (len == BUF_SIZE)
+    {
+        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on
+        // every kernel this project has seen, but if a future kernel adds/grows earlier
+        // fields (Groups:, Seccomp_filters:, ...) enough to push it past the buffer, this
+        // makes that regression diagnosable instead of a silently-empty counters.user.
+        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid: may have been missed", pid, BUF_SIZE);
+    }
 
     const char* p = buf.data();
     const char* const end = buf.data() + len;
@@ -544,16 +568,8 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
         return;
     }
 
-    // RAII guard — ensures fd is closed on all paths, including exception paths
-    // (buf.reserve / buf.insert can throw on OOM).
-    struct FdGuard
-    {
-        int m_fd;
-        ~FdGuard() noexcept
-        {
-            ::close(m_fd);
-        }
-    } guard{fd};
+    const FdGuard guard{fd}; // ensures fd is closed on all paths, including exception paths
+                             // (buf.reserve / buf.insert can throw on OOM)
 
     // Read until EOF so long command lines are not truncated.
     std::vector<char> buf;
@@ -1095,13 +1111,17 @@ void LinuxProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters>&
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 void LinuxProcessProbe::attributeNetworkToProcesses(std::vector<ProcessCounters>& processes) const
 {
-    if (!m_SocketStats)
+    // Copy out a stable local reference: if setSocketStatsCacheTtl() swaps m_SocketStats
+    // concurrently, this call keeps using the instance it started with (kept alive by
+    // this shared_ptr) rather than racing the reassignment.
+    const auto stats = socketStats();
+    if (!stats)
     {
         return;
     }
 
     // Query all TCP/UDP sockets with their byte counters
-    const std::vector<SocketStats> sockets = m_SocketStats->queryAllSockets();
+    const std::vector<SocketStats> sockets = stats->queryAllSockets();
     if (sockets.empty())
     {
         return;

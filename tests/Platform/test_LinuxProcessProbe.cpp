@@ -25,6 +25,7 @@
 #include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -672,6 +673,34 @@ TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtl_DoesNotCrash)
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(500)));
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(0)));
     EXPECT_NO_THROW(probe.setSocketStatsCacheTtl(std::chrono::milliseconds(10000)));
+}
+
+// Regression test for a data race where setSocketStatsCacheTtl() reassigned the
+// NetlinkSocketStats instance with no synchronization while enumerate() (on another
+// thread, as it would be from the background sampler) concurrently dereferenced it.
+// Under TSan this reliably flagged a race before the mutex-guarded shared_ptr fix;
+// without TSan it exercises the same interleaving without asserting on timing.
+TEST(LinuxProcessProbeTest, SetSocketStatsCacheTtlDoesNotRaceWithEnumerate)
+{
+    LinuxProcessProbe probe;
+    std::atomic<bool> stop{false};
+
+    std::thread enumerateThread(
+        [&probe, &stop]
+        {
+            while (!stop.load(std::memory_order_relaxed))
+            {
+                [[maybe_unused]] const auto processes = probe.enumerate();
+            }
+        });
+
+    for (int i = 0; i < 50; ++i)
+    {
+        probe.setSocketStatsCacheTtl(std::chrono::milliseconds(1 + (i % 20)));
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    enumerateThread.join();
 }
 #endif
 

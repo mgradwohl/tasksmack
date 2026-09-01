@@ -176,7 +176,12 @@ std::uint64_t StorageModel::publicationVersion() const noexcept
 void StorageModel::publish()
 {
     auto publication = std::make_shared<StoragePublication>();
-    publication->version = ++m_PublicationVersion;
+    // Assign the version from a local candidate rather than mutating m_PublicationVersion
+    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
+    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
+    // the end (see below) keeps all three mutually consistent instead of silently advancing
+    // the version past what was actually published.
+    publication->version = m_PublicationVersion + 1;
     publication->snapshot = m_LatestSnapshot;
     publication->timestamps = HistoryUtils::toVector(m_Timestamps);
     publication->totalReadHistory.reserve(m_History.size());
@@ -196,6 +201,7 @@ void StorageModel::publish()
             .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
         });
     }
+    m_PublicationVersion = publication->version;
     m_Publication = std::move(publication);
     m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
