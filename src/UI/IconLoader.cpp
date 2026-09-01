@@ -33,7 +33,7 @@ namespace
     // Use intermediate variable to avoid reinterpret_cast.
     GLint temp = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &temp);
-    const GLuint previous = static_cast<GLuint>(temp);
+    const auto previous = static_cast<GLuint>(temp);
     glBindTexture(GL_TEXTURE_2D, textureId);
     return previous;
 }

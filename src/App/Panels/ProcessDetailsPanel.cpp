@@ -591,7 +591,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         identityRows.push_back({"Publisher", {proc.publisher, theme.scheme().textMuted}});
     }
-    const float identityRowCount = static_cast<float>(identityRows.size());
+    const auto identityRowCount = static_cast<float>(identityRows.size());
     const float leftHeight = (rowHeight * identityRowCount) + basePadding;
 
     // Build runtime rows (conditionally include Type if available)
@@ -621,7 +621,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
         runtimeRows.push_back({"Type", {proc.processType, typeColor}});
     }
-    const float runtimeRowCount = static_cast<float>(runtimeRows.size());
+    const auto runtimeRowCount = static_cast<float>(runtimeRows.size());
     const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
 
     // Identity section: Who is this process?

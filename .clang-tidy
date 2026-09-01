@@ -19,7 +19,6 @@ Checks: >
   -cppcoreguidelines-pro-type-vararg,
   -misc-confusable-identifiers,
   -misc-non-private-member-variables-in-classes,
-  -modernize-use-auto,
   -modernize-use-trailing-return-type,
   -portability-avoid-pragma-once,
   -readability-function-cognitive-complexity,
@@ -34,7 +33,7 @@ Checks: >
 # - cppcoreguidelines-pro-bounds-*: required by ImGui/SDL3/OS APIs and validated hot paths.
 # - cppcoreguidelines-pro-type-reinterpret-cast: required at OS API boundaries (GetProcAddress/dlsym/Netlink/DXGI).
 # - cppcoreguidelines-pro-type-vararg: noisy from fmt/spdlog internals.
-# - modernize-use-auto + modernize-use-trailing-return-type: project style preference.
+# - modernize-use-trailing-return-type: project style preference.
 # - portability-avoid-pragma-once: project standard intentionally uses #pragma once.
 # - readability-function-cognitive-complexity + readability-identifier-length: too noisy for panel/render/math code.
 # - readability-use-concise-preprocessor-directives: project standard prefers #ifdef/#ifndef.

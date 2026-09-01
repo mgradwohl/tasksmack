@@ -168,7 +168,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
                     if (*idxVal < memData.size())
                     {
-                        const double pct = static_cast<double>(memData[*idxVal]);
+                        const auto pct = static_cast<double>(memData[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
                             // Physical RAM total is constant (hardware), so back-calculating bytes from
@@ -185,7 +185,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     }
                     if (*idxVal < cachedData.size())
                     {
-                        const double pct = static_cast<double>(cachedData[*idxVal]);
+                        const auto pct = static_cast<double>(cachedData[*idxVal]);
                         if (snap.memoryTotalBytes > 0)
                         {
                             const auto cachedBytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
@@ -200,7 +200,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     }
                     if (*idxVal < swapData.size())
                     {
-                        const double pct = static_cast<double>(swapData[*idxVal]);
+                        const auto pct = static_cast<double>(swapData[*idxVal]);
                         // Swap/page-file size can change at runtime; show percent only to avoid
                         // stale byte calculations using a total that may have changed
                         ImGui::TextColored(theme.scheme().chartIo, "Swap: %s", UI::Format::percentCompact(pct).c_str());
