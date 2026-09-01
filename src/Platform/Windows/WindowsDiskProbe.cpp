@@ -74,6 +74,15 @@ namespace
     {
         spdlog::error("WindowsDiskProbe: PdhGetFormattedCounterValue failed with status {}", status);
     }
+    else
+    {
+        // status succeeded but CStatus reports the value itself isn't usable yet (e.g. a
+        // stale/removable disk instance, or the first read before two samples exist). Debug,
+        // not warn/error: this is an expected transient state, not a real failure - but it's
+        // logged so a persistently-invalid counter can still be diagnosed in the field.
+        spdlog::debug("WindowsDiskProbe: PDH counter value not usable, CStatus={:#x}",
+                      static_cast<unsigned long>(value.CStatus)); // NOLINT(cppcoreguidelines-pro-type-union-access)
+    }
     return 0.0;
 }
 
