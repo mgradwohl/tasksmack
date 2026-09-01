@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ComPtr.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
 
@@ -37,12 +38,10 @@ class DXGIGPUProbe : public IGPUProbe
 
   private:
     bool initialize();
-    void cleanup();
 
-    [[nodiscard]] static std::string wcharToUtf8(const wchar_t* wstr);
     [[nodiscard]] static bool isIntegratedGPU(IDXGIAdapter1* adapter);
 
-    IDXGIFactory1* m_Factory{nullptr};
+    ComPtr<IDXGIFactory1> m_Factory;
     bool m_Initialized{false};
 };
 
