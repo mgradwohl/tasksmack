@@ -158,10 +158,10 @@ void SystemMetricsPanel::onAttach()
     m_HistoryScrollSeconds = 0.0;
     m_ForceRefresh = true;
 
-    m_Model = std::make_unique<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
+    m_Model = std::make_shared<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_StorageModel = std::make_unique<Domain::StorageModel>(Platform::makeDiskProbe());
+    m_StorageModel = std::make_shared<Domain::StorageModel>(Platform::makeDiskProbe());
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     m_GPUModel = std::make_shared<Domain::GPUModel>(Platform::makeGPUProbe());
@@ -177,11 +177,11 @@ void SystemMetricsPanel::onAttach()
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
-    m_Sampler->addSamplable(m_Model.get());
-    m_Sampler->addSamplable(m_StorageModel.get());
+    m_Sampler->addSamplable(m_Model);
+    m_Sampler->addSamplable(m_StorageModel);
     if (m_GPUModel)
     {
-        m_Sampler->addSamplable(m_GPUModel.get());
+        m_Sampler->addSamplable(m_GPUModel);
     }
     m_Sampler->start();
 
