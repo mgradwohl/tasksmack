@@ -428,9 +428,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                 computeCount = 0;
                 result = NVML_ERROR_NOT_SUPPORTED;
             }
-            std::vector<nvmlProcessInfo_t> computeProcesses(computeCount);
+            std::vector<nvmlProcessInfo_t> computeProcesses;
             if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && computeCount > 0)
             {
+                computeProcesses.resize(computeCount);
                 result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, computeProcesses.data());
             }
             if (result == NVML_SUCCESS && computeCount > 0)
@@ -475,9 +476,10 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
                 graphicsCount = 0;
                 result = NVML_ERROR_NOT_SUPPORTED;
             }
-            std::vector<nvmlProcessInfo_t> graphicsProcesses(graphicsCount);
+            std::vector<nvmlProcessInfo_t> graphicsProcesses;
             if ((result == NVML_SUCCESS || result == NVML_ERROR_INSUFFICIENT_SIZE) && graphicsCount > 0)
             {
+                graphicsProcesses.resize(graphicsCount);
                 result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, graphicsProcesses.data());
             }
             if (result == NVML_SUCCESS && graphicsCount > 0)
