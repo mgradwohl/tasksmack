@@ -2,6 +2,8 @@
 
 #include "Core/WindowConstants.h"
 
+#include <SDL3/SDL_video.h>
+
 #include <cstdint>
 
 namespace App
@@ -122,6 +124,19 @@ struct WindowRect
     }
 
     return {.x = newX, .y = newY, .width = newWidth, .height = newHeight};
+}
+
+/// Decision for the empty title-bar drag area specifically (once the point is known to be
+/// in the title-bar row, not a resize border, and not a button). Pure/header-only, like
+/// computeResizeGeometry above, so it's directly unit-testable without live SDL_Window or
+/// TitleBarLayer state. See #744.
+[[nodiscard]] inline auto computeTitleBarAreaHitTest(const bool isInControlArea, const bool isNativeWayland) -> SDL_HitTestResult
+{
+    if (isInControlArea)
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+    return isNativeWayland ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
 }
 
 } // namespace App

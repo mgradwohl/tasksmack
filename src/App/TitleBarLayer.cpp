@@ -136,8 +136,12 @@ template<typename Fn> struct ScopeExit
 
 // Hit-test callback:
 // - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
-// - Non-Windows: NORMAL for title bar and controls so SDL delivers mouse button events to the app;
-//   RESIZE_* for window edges so the WM handles native resize. Drag is handled client-side too.
+// - X11/XWayland: NORMAL for title bar and controls so SDL delivers mouse button events to the
+//   app and drag is handled client-side (matches Windows); RESIZE_* for window edges so the WM
+//   handles native resize.
+// - Native Wayland: same RESIZE_* border handling, but the title-bar drag area itself returns
+//   DRAGGABLE (compositor-managed drag, since client-side SDL_SetWindowPosition() doesn't work
+//   there -- #744). Buttons stay NORMAL on every backend so DRAGGABLE never consumes their clicks.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
@@ -215,12 +219,17 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
         return SDL_HITTEST_NORMAL;
     }
 
-    // Title bar drag area — return NORMAL so SDL delivers mouse button events
-    // to the app. Drag is handled client-side in beginWindowInteraction /
-    // updateWindowInteraction, mirroring the Windows path. This ensures
-    // SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
+    // Title-bar buttons (icon, help, settings, minimize, maximize, close) must stay
+    // NORMAL on every backend: a DRAGGABLE result would consume their clicks before the
+    // app ever sees them (SDL never delivers SDL_EVENT_MOUSE_BUTTON_DOWN for a hit-test
+    // result it acts on itself), breaking every title-bar button. On native Wayland, hand
+    // the empty drag area to the compositor instead (#744): client-side
+    // SDL_SetWindowPosition() during a drag doesn't work there, and DRAGGABLE consuming
+    // the button-down means double-click-to-maximize doesn't fire from the title bar on
+    // native Wayland -- the maximize button remains available there. X11/XWayland/Windows
+    // stay NORMAL so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
     // double-click maximize/restore detection.
-    return SDL_HITTEST_NORMAL;
+    return computeTitleBarAreaHitTest(layer->isPointInControlArea(x, y), !Core::VideoBackend::supportsClientSideMaximize());
 #endif
 }
 

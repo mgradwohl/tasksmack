@@ -301,5 +301,27 @@ TEST(ComputeResizeGeometryTest, BottomLeft_MinClampOnWidth_PinsRightEdge)
     EXPECT_EQ(r.y, 200);      // BottomLeft does not move y
 }
 
+// ========== computeTitleBarAreaHitTest ==========
+// See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
+// managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE
+// result consumes the click before the app ever sees it (button clicks would stop working).
+
+TEST(ComputeTitleBarAreaHitTestTest, ControlArea_AlwaysNormal_RegardlessOfBackend)
+{
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/true), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NativeWayland_ReturnsDraggable)
+{
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/true), SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NonWayland_ReturnsNormal)
+{
+    // X11, XWayland, and Windows all keep the client-side drag path.
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+}
+
 } // namespace
 } // namespace App

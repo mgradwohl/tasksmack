@@ -82,6 +82,11 @@ class TitleBarLayer : public Core::Layer
         return m_IconBounds;
     }
 
+    /// True if (x, y) falls inside any title-bar button's bounds. Public (like the
+    /// individual bounds getters above) so the free-function hit-test callback can use
+    /// it directly.
+    [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
+
   private:
     enum class InteractionMode : std::uint8_t
     {
@@ -146,7 +151,6 @@ class TitleBarLayer : public Core::Layer
     void applyCursorForEdge(ResizeEdge edge);
 
     [[nodiscard]] static auto detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge;
-    [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
     void renderTitleBar();
     void renderSystemMenu();
