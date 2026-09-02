@@ -196,7 +196,8 @@ function Get-RcCompilerPath {
         "${env:ProgramFiles(x86)}\Windows Kits\11\bin\*\x64\rc.exe",
         "$env:ProgramFiles\Windows Kits\10\bin\*\x64\rc.exe",
         "$env:ProgramFiles\Windows Kits\11\bin\*\x64\rc.exe"
-    ) -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+    ) -ErrorAction SilentlyContinue |
+        Sort-Object { [version]($_.FullName -replace '.*\\bin\\([\d.]+)\\x64\\rc\.exe$', '$1') } -Descending
     if ($sdkCandidates) {
         return $sdkCandidates[0].FullName
     }
