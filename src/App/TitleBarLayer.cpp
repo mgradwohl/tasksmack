@@ -141,7 +141,10 @@ template<typename Fn> struct ScopeExit
 //   handles native resize.
 // - Native Wayland: same RESIZE_* border handling, but the title-bar drag area itself returns
 //   DRAGGABLE (compositor-managed drag, since client-side SDL_SetWindowPosition() doesn't work
-//   there -- #744). Buttons stay NORMAL on every backend so DRAGGABLE never consumes their clicks.
+//   there -- #744). SDL consumes the button-down event entirely for any non-NORMAL hit-test
+//   result, so this file's onSDLEvent()-driven click/drag/double-click handling never runs for
+//   that area on native Wayland -- only the compositor sees the press. Buttons stay NORMAL on
+//   every backend so DRAGGABLE never consumes their clicks.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
