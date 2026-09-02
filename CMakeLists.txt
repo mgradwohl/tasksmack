@@ -22,8 +22,8 @@ if(WIN32)
     # windows-2025 GitHub Actions runner image -- so glob for whatever version is actually
     # installed rather than hardcoding one, and prefer the highest version found.
     file(GLOB WINSDK_RC_CANDIDATES
-        "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/rc.exe"
-        "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/*/x64/rc.exe"
+        "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/rc.exe"
+        "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin/*/x64/rc.exe"
         "$ENV{ProgramFiles}/Windows Kits/10/bin/*/x64/rc.exe"
         "$ENV{ProgramFiles}/Windows Kits/11/bin/*/x64/rc.exe"
     )
