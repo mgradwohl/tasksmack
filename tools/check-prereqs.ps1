@@ -187,31 +187,51 @@ function Get-LLVMCovVersion {
     return $null
 }
 
-# Find an RC compiler the same way cmake/RCCompiler.cmake does: llvm-rc first (this project's
+# Find the RC compiler the same way cmake/RCCompiler.cmake does: the RC environment variable
+# first (an explicit override CMake always honors, may carry the compiler plus arguments, and
+# is skipped here if empty -- CMake treats an empty RC as unset too), then llvm-rc only, searched
+# via LLVM_ROOT/bin, %ProgramFiles%\LLVM\bin, the hardcoded C:\Program Files\LLVM\bin, then PATH
+# -- no fallback to the Windows SDK's rc.exe, PATH-found rc.exe, or llvm-windres. This project's
 # Windows toolchain is LLVM/Clang, not MSVC, and the Windows SDK's own rc.exe is confirmed to
-# hang indefinitely in this project's CI -- issue #746), then any Windows SDK version, then
-# PATH, then llvm-windres. Without matching this order, this check could report a different
-# tool than the one CMake will actually select.
+# hang indefinitely in this project's CI (issue #746); cmake/RCCompiler.cmake fails configuration
+# outright rather than falling back to any of those unless RC opts in, so a check that ignored RC
+# and reported one of them as "ok" (or reported a "fail" when RC selects a compiler CMake would
+# accept) would disagree with what configuration actually does.
+# Returns a hashtable @{ Path = <string or $null>; Source = <display label> }.
 function Get-RcCompilerPath {
-    $llvmRcPath = Get-ToolPath "llvm-rc"
-    if ($llvmRcPath) {
-        return $llvmRcPath
+    if ($env:RC -and $env:RC.Trim() -ne "") {
+        $rcValue = $env:RC.Trim()
+        if ($rcValue.StartsWith('"')) {
+            $endQuote = $rcValue.IndexOf('"', 1)
+            $rcExe = if ($endQuote -gt 0) { $rcValue.Substring(1, $endQuote - 1) } else { $rcValue }
+        }
+        else {
+            $rcExe = ($rcValue -split '\s+', 2)[0]
+        }
+        if (Test-Path $rcExe) {
+            return @{ Path = $rcExe; Source = "RC" }
+        }
     }
-    $sdkCandidates = Get-ChildItem -Path @(
-        "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe",
-        "${env:ProgramFiles(x86)}\Windows Kits\11\bin\*\x64\rc.exe",
-        "$env:ProgramFiles\Windows Kits\10\bin\*\x64\rc.exe",
-        "$env:ProgramFiles\Windows Kits\11\bin\*\x64\rc.exe"
-    ) -ErrorAction SilentlyContinue |
-        Sort-Object { [version]($_.FullName -replace '.*\\bin\\([\d.]+)\\x64\\rc\.exe$', '$1') } -Descending
-    if ($sdkCandidates) {
-        return $sdkCandidates[0].FullName
+    if ($env:LLVM_ROOT) {
+        $candidate = Join-Path $env:LLVM_ROOT "bin\llvm-rc.exe"
+        if (Test-Path $candidate) {
+            return @{ Path = $candidate; Source = "llvm-rc" }
+        }
     }
-    $rcPath = Get-ToolPath "rc"
-    if ($rcPath) {
-        return $rcPath
+    if ($env:ProgramFiles) {
+        $candidate = Join-Path $env:ProgramFiles "LLVM\bin\llvm-rc.exe"
+        if (Test-Path $candidate) {
+            return @{ Path = $candidate; Source = "llvm-rc" }
+        }
     }
-    return Get-ToolPath "llvm-windres"
+    if (Test-Path "C:\Program Files\LLVM\bin\llvm-rc.exe") {
+        return @{ Path = "C:\Program Files\LLVM\bin\llvm-rc.exe"; Source = "llvm-rc" }
+    }
+    $onPath = Get-ToolPath "llvm-rc"
+    if ($onPath) {
+        return @{ Path = $onPath; Source = "llvm-rc" }
+    }
+    return @{ Path = $null; Source = $null }
 }
 
 # Get git version
@@ -498,13 +518,14 @@ else {
     $AllOK = $false
 }
 
-# Check Windows SDK (rc.exe, required -- CMake configuration fails without it)
-$rcPath = Get-RcCompilerPath
-if ($rcPath) {
-    Write-Status -Name "rc.exe" -Status "ok" -Version "available" -Path $rcPath -Required ""
+# Check for an RC compiler (required -- CMake configuration fails without one, with no fallback
+# to the Windows SDK's rc.exe unless RC opts in -- see Get-RcCompilerPath above)
+$rcResult = Get-RcCompilerPath
+if ($rcResult.Path) {
+    Write-Status -Name $rcResult.Source -Status "ok" -Version "available" -Path $rcResult.Path -Required ""
 }
 else {
-    Write-Status -Name "rc.exe" -Status "fail" -Version $null -Path $null -Required ""
+    Write-Status -Name "llvm-rc" -Status "fail" -Version $null -Path $null -Required ""
     $AllOK = $false
 }
 

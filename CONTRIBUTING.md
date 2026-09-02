@@ -124,10 +124,33 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - ccache 4.9.1+ (optional but recommended)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
-- **Windows SDK** (includes `rc.exe` for resource compilation) — required
-  - Installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`)
-  - CMake prefers `llvm-rc` (this project's Windows toolchain is LLVM/Clang, not MSVC), falling back to the installed Windows SDK's `rc.exe`, then `PATH`, then `llvm-windres`
-  - If no RC compiler can be found at all, CMake configuration fails with `FATAL_ERROR` rather than silently shipping a build missing its icon and version info (the DPI-awareness manifest doesn't depend on RC compilation -- it's embedded independently via `/MANIFESTINPUT` at link time)
+- **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
+
+**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version
+info -- the DPI-awareness manifest is separate, embedded via `/MANIFESTINPUT` at link
+time, so it doesn't depend on RC compilation at all) into `TaskSmack.exe`.
+`CMakeLists.txt` (see `cmake/RCCompiler.cmake`) requires `llvm-rc` (installed alongside
+`clang`/`clang++`, so no setup beyond the LLVM install above is needed) instead of the
+Windows SDK's own `rc.exe`, and fails configuration outright with an actionable error if
+`llvm-rc` can't be found -- there is no silent fallback to `rc.exe`, since that's the
+exact RC compiler known to hang indefinitely on this project (#746). **You no longer
+need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
+just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
+setups. To use a different RC compiler instead, opt in explicitly by passing
+`-DCMAKE_RC_COMPILER=<path>` to `cmake --preset ...` or setting the `RC` environment
+variable before configuring, both of which skip auto-detection -- **with one exception:
+use `RC` specifically to pin `rc.exe`**, not `-DCMAKE_RC_COMPILER=`. On a build tree
+that predates this fix (or on the very first configure of a brand-new one),
+`CMakeLists.txt` can't yet tell an intentional `-DCMAKE_RC_COMPILER=<path to rc.exe>`
+override apart from a stale cached value from before, and -- since `rc.exe` is the one
+tool with a confirmed hang -- resolves that specific ambiguity in favor of safety by
+re-detecting `llvm-rc` instead, ignoring the override. `RC` isn't affected by this at
+all and always wins. Any other RC compiler passed via `-DCMAKE_RC_COMPILER=` (i.e. not
+named `rc.exe`) doesn't hit this ambiguity and is always honored as pinned. Also like
+CMake's `CC`/`CXX`, `RC` may include compiler arguments (e.g. `RC="C:\tools\llvm-rc.exe
+--flag"`) -- these are split out automatically -- and, following that same CC/CXX
+convention, a path containing a space (e.g. the default `C:\Program Files\LLVM\bin`)
+must be quoted within the value itself: `RC="\"C:\Program Files\LLVM\bin\llvm-rc.exe\""`.
 
 Install Python + jinja2:
 
