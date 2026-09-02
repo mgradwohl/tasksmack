@@ -43,7 +43,7 @@ if(WIN32)
             "C:/Program Files/Windows Kits/10/bin/10.0.26100.0/x64"
             "C:/Program Files/Windows Kits/11/bin/11.0.1.0/x64"
     )
-    
+
     if(RC_COMPILER_FOUND)
         set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
         message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")

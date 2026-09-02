@@ -26,7 +26,7 @@ class VideoBackend {
     static bool isX11();
     static bool isXWaylandFallback();
     static bool isWindows();
-    
+
     // Capability queries used by Window/TitleBarLayer
     static bool supportsClientSideMaximize();
     static bool supportsGlobalMouseState();
@@ -52,7 +52,7 @@ void Window::maximize() {
         SDL_MaximizeWindow(m_Handle);
         return;
     }
-    
+
     // X11/XWayland/Windows: client-side positioning
     // (saves position, queries SDL_GetDisplayUsableBounds, positions manually)
 }
@@ -63,7 +63,7 @@ void Window::restore() {
         SDL_RestoreWindow(m_Handle);
         return;
     }
-    
+
     // X11/XWayland/Windows: restore from saved position/size
 }
 ```
@@ -78,7 +78,7 @@ Event-consistent coordinate handling that avoids unreliable global mouse state o
 std::pair<int, int> TitleBarLayer::getCurrentMousePosition() {
     auto& window = Core::Application::get().getWindow();
     const auto [windowOriginX, windowOriginY] = window.getPosition();
-    
+
     if (Core::VideoBackend::isWayland()) {
         // Wayland: use window-local coordinates
         float localX, localY;
@@ -88,7 +88,7 @@ std::pair<int, int> TitleBarLayer::getCurrentMousePosition() {
             windowOriginY + static_cast<int>(localY)
         };
     }
-    
+
     // X11/XWayland/Windows: use global coordinates
     float globalX, globalY;
     SDL_GetGlobalMouseState(&globalX, &globalY);
