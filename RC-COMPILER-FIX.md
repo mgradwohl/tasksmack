@@ -17,11 +17,12 @@ CMake's Windows-Clang platform detection tries to enable the RC compiler during 
 
 ## Solution
 
-**Pre-detect RC.exe before the `project()` call**, so CMake's own platform detection has a valid compiler to find instead of failing outright:
+**Pre-detect an RC compiler before the `project()` call**, so CMake's own platform detection has a valid compiler to find instead of failing outright:
 
-1. Glob for `rc.exe` under any installed Windows SDK version (`Windows Kits/10/bin/*/x64` and `Windows Kits/11/bin/*/x64`, under both `Program Files` and `Program Files (x86)`), preferring the highest version found. The exact SDK version isn't hardcoded because it changes whenever the SDK updates -- including unannounced bumps to the `windows-2025` GitHub Actions runner image.
-2. If nothing matches, fall back to `PATH` (covers a Developer Command Prompt or a custom install), then `llvm-rc`, then `llvm-windres`.
-3. If none of those find an RC tool, **fail configuration with `FATAL_ERROR`**. The Windows SDK is a documented, required prerequisite (`CONTRIBUTING.md`'s Windows Pre-Requisites) installed automatically by `tools/setup-dev.ps1`, so "not found" only ever means a broken or incomplete dev environment -- never a platform that legitimately lacks an RC compiler. Silently shipping a `.exe` with no icon, no version info, and no DPI-awareness manifest is a real regression that's easy to miss in build logs; failing loudly matches the `FATAL_ERROR` checks already used for the `.rc.in`/manifest template files.
+1. Prefer `llvm-rc`: this project's Windows toolchain is LLVM/Clang, not MSVC (see `cmake/CompilerOptions.cmake`), so `llvm-rc` is the natural fit, it ships with the LLVM install this project already requires, and -- concretely -- the Windows SDK's own `rc.exe` is confirmed to hang indefinitely mid-build in this project's CI (issue #746: reproduced 3x, always timing out at the 35-minute job limit with a still-running `rc.exe` process and zero output). Because the SDK's `rc.exe` used to be tried first and was always found (the SDK is a required, always-installed prerequisite here), `llvm-rc` was never actually exercised in practice, so this hang went undiagnosed until RC-compiler auto-detection was added at all.
+2. If `llvm-rc` isn't found (e.g. a non-standard LLVM install), glob for `rc.exe` under any installed Windows SDK version (`Windows Kits/10/bin/*/x64` and `Windows Kits/11/bin/*/x64`, under both `Program Files` and `Program Files (x86)`), preferring the highest version found. The exact SDK version isn't hardcoded because it changes whenever the SDK updates -- including unannounced bumps to the `windows-2025` GitHub Actions runner image.
+3. If nothing matches, fall back to `PATH` (covers a Developer Command Prompt or a custom install), then `llvm-windres`.
+4. If none of those find an RC tool, **fail configuration with `FATAL_ERROR`**. LLVM and the Windows SDK are both documented, required prerequisites (`CONTRIBUTING.md`'s Windows Pre-Requisites) installed automatically by `tools/setup-dev.ps1`, so "not found" only ever means a broken or incomplete dev environment -- never a platform that legitimately lacks an RC compiler. Silently shipping a `.exe` with no icon and no version info is a real regression that's easy to miss in build logs; failing loudly matches the `FATAL_ERROR` checks already used for the `.rc.in`/manifest template files. (The DPI-awareness manifest itself doesn't depend on RC compilation at all -- it's embedded independently via `/MANIFESTINPUT` at link time; see `CMakeLists.txt`'s "Windows resource file" section.)
 
 ### Implementation
 
@@ -31,7 +32,7 @@ See `cmake/RCCompiler.cmake` for the full pre-`project()` detection block (inclu
 
 | Scenario | Result |
 |----------|--------|
-| RC.exe found in SDK, PATH, llvm-rc, or llvm-windres | ✅ Full build with resources (icon, version info, manifest) |
+| llvm-rc, SDK rc.exe, PATH rc.exe, or llvm-windres found | ✅ Full build with icon and version info (the manifest is always embedded independently, regardless of RC availability) |
 | No RC tool found anywhere | ❌ CMake configuration fails with `FATAL_ERROR` and installation instructions |
 
 ## Testing

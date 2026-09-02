@@ -86,7 +86,8 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 # Microsoft.VisualStudio.Workload.VCTools pulls in a Windows SDK (including rc.exe) as
 # one of its default components -- no separate SDK package is needed. CMakeLists.txt
 # fails configuration with a clear error if rc.exe can't be found, since TaskSmack's
-# icon, version info, and DPI-awareness manifest all depend on it.
+# icon and version info depend on it (the DPI-awareness manifest is embedded
+# independently at link time and doesn't need rc.exe).
 Write-Host "==> Installing Visual Studio C++ Build Tools and Windows SDK..."
 Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 
