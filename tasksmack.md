@@ -241,12 +241,14 @@ Custom title-bar behavior is intentionally platform-specific:
 
 - **Windows:** Client-side drag and resize interactions (`TitleBarLayer`) with resize cursors applied from the app.
 - **Linux (X11/XWayland):** Delegates border resize to window manager via `SDL_HITTEST_RESIZE_*` results.
-  - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`) to avoid drag-start jumps.
+  - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`), client-side, same as Windows.
   - Window maximize/restore uses client-side positioning with `SDL_GetDisplayUsableBounds`.
 - **Linux (native Wayland):** Prefers compositor-managed window interactions.
-  - Title-bar drag uses event-consistent local coordinates (computed from window position + SDL_GetMouseState) to avoid unreliable global mouse state.
+  - Title-bar drag delegates to the compositor via `SDL_HITTEST_DRAGGABLE` (-> `xdg_toplevel_move()`) rather than client-side `SDL_SetWindowPosition()`, which Wayland doesn't support for absolute positioning (#744). This consumes the button-down event entirely, so double-click-to-maximize does not fire from the title bar on native Wayland -- the maximize button remains available there.
   - Window maximize/restore delegates to compositor via `SDL_MaximizeWindow`/`SDL_RestoreWindow` instead of manual client-side positioning.
   - Border resize remains delegated to window manager.
+  - Resize-border **cursor** hover feedback is client-side on every platform (`TitleBarLayer::updateResizeCursor()`), including native Wayland: the compositor only shows a resize cursor during an active hit-test-triggered drag, not on hover, so the app supplies it. Must not force the cursor to default when `SDL_GetMouseFocus()` transiently disagrees during a WM/compositor-owned interaction, or it fights the WM's own cursor (#749).
+- **Opt-in escape hatch:** `UserConfig`'s `forceNativeWindowDecorationsOnWayland` (Settings > Advanced, native-Wayland builds only) switches to native OS/compositor window decorations instead of the custom title bar, for anyone who prefers that over the behavior above. Off by default; takes effect on next launch (#745).
 
 Backend detection is centralized in `Core::VideoBackend`:
 - Detects whether the current video driver is native Wayland, X11, XWayland (X11 on Wayland), or Windows.
