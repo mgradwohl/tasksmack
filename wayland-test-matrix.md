@@ -17,9 +17,41 @@ XWayland is detected (both `WAYLAND_DISPLAY` and `DISPLAY` set) and treated as X
 
 ## Test Matrix
 
-### Platform Combinations to Test
+### Automated Unit Tests (CI/CD - Required for Merge)
 
-#### Linux - Wayland
+All platform-specific functionality is validated by automated unit tests that run on every build:
+
+#### VideoBackend Detection Tests (tests/Core/test_VideoBackend.cpp)
+
+These tests verify the backend detection and capability query system that gates all platform-specific behavior.
+
+**Test Coverage:**
+- ✅ `test_InitializeOnce` - VideoBackend initialization is idempotent
+- ✅ `test_BackendQueriesAreConsistent` - Exactly one backend is true at a time
+- ✅ `test_DriverNameIsPopulated` - Driver name is always available
+- ✅ `test_ClientSideMaximizeSupportedOnNonWayland` - Wayland doesn't support client-side maximize; others do
+- ✅ `test_GlobalMouseStateSupportedOnAllBackends` - All backends report global mouse state support
+- ✅ `test_XWaylandDetectionLogic` - Wayland and XWayland are mutually exclusive
+- ✅ `test_WindowBehaviorOnWayland` - Native Wayland: no client-side maximize, correct driver name
+- ✅ `test_WindowBehaviorOnX11` - X11: client-side maximize, correct driver name
+- ✅ `test_WindowBehaviorOnXWayland` - XWayland: client-side maximize (X11 compat), wayland driver name
+- ✅ `test_WindowBehaviorOnWindows` - Windows: client-side maximize, correct driver name
+
+**Run Unit Tests:**
+```bash
+# After successful configuration
+cmake --build --preset win-debug  # Windows
+cmake --build --preset debug      # Linux
+ctest --preset win-debug          # Windows tests
+ctest --preset debug              # Linux tests
+```
+
+**Expected Results:**
+- All tests should pass
+- No compilation warnings or errors
+- Tests skip gracefully on platforms where they're not applicable
+
+### Manual Test Matrix - Platform Combinations
 - [ ] GNOME (latest stable)
   - [ ] Single-monitor setup
   - [ ] Multi-monitor setup (with and without different DPI)
