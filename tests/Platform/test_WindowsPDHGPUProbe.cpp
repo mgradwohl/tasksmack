@@ -114,7 +114,7 @@ struct FakeScenario
     std::uintptr_t nextHandleValue = 1;
 };
 
-FakeScenario* g_scenario = nullptr; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+thread_local FakeScenario* g_scenario = nullptr; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 PDH_STATUS WINAPI fakeOpenQuery(LPCWSTR /*dataSource*/, DWORD_PTR /*userData*/, PDH_HQUERY* query)
 {
