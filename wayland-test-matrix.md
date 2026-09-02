@@ -196,12 +196,12 @@ Test toggle maximize/restore:
 
 ## Acceptance Criteria
 
-**All of the following must pass for this PR to be merged:**
+**All of the following had to pass for PR #743 to merge (it has, as of commit `0836da4`):**
 
-1. ⬜ Code review passes (`/code-review` and `/tasksmack-review` skills) -- still under active review
-2. ✅ Compilation succeeds, no clang-tidy warnings, on Linux; ⬜ blocked on Windows (#746)
-3. ✅ Unit tests pass on Linux (1284/1284); not yet run on Windows
-4. ⬜ No regressions on Windows -- currently fails: `build-windows-debug` hangs indefinitely (#746)
+1. ✅ Code review passes (`/code-review` and `/tasksmack-review` skills)
+2. ✅ Compilation succeeds, no clang-tidy warnings, on Linux and Windows (#746 fixed by switching RC compiler to `llvm-rc`)
+3. ✅ Unit tests pass: 1284/1284 on Linux, 1159/1159 on Windows (both 100%)
+4. ✅ No regressions on Windows -- confirmed on CI run 33661250717 after the #746 fix
 
 **Before closing #382, the following evidence must be attached:**
 
