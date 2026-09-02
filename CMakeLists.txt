@@ -21,11 +21,21 @@ if(WIN32)
     # version changes whenever the SDK is updated -- including unannounced bumps to the
     # windows-2025 GitHub Actions runner image -- so glob for whatever version is actually
     # installed rather than hardcoding one, and prefer the highest version found.
+    # %ProgramFiles(x86)%/%ProgramFiles% come from the environment with backslash
+    # separators; normalize to forward slashes before building glob patterns from them,
+    # otherwise the matched path can mix backslashes with the pattern's forward slashes,
+    # and CMake later chokes trying to re-parse that raw backslash out of its own
+    # generated CMakeRCCompiler.cmake (e.g. "\P" in "Program Files" as an invalid escape).
+    # Plain string(REPLACE) rather than file(TO_CMAKE_PATH): the latter treats its input
+    # as a native PATH-style list and its behavior differs by host OS, which isn't what a
+    # single directory path needs here.
+    string(REPLACE "\\" "/" TASKSMACK_PROGRAMFILES_X86 "$ENV{ProgramFiles\(x86\)}")
+    string(REPLACE "\\" "/" TASKSMACK_PROGRAMFILES "$ENV{ProgramFiles}")
     file(GLOB WINSDK_RC_CANDIDATES
-        "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/*/x64/rc.exe"
-        "$ENV{ProgramFiles\(x86\)}/Windows Kits/11/bin/*/x64/rc.exe"
-        "$ENV{ProgramFiles}/Windows Kits/10/bin/*/x64/rc.exe"
-        "$ENV{ProgramFiles}/Windows Kits/11/bin/*/x64/rc.exe"
+        "${TASKSMACK_PROGRAMFILES_X86}/Windows Kits/10/bin/*/x64/rc.exe"
+        "${TASKSMACK_PROGRAMFILES_X86}/Windows Kits/11/bin/*/x64/rc.exe"
+        "${TASKSMACK_PROGRAMFILES}/Windows Kits/10/bin/*/x64/rc.exe"
+        "${TASKSMACK_PROGRAMFILES}/Windows Kits/11/bin/*/x64/rc.exe"
     )
     if(WINSDK_RC_CANDIDATES)
         list(SORT WINSDK_RC_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
