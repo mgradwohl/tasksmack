@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --preset *)",
+      "Bash(cmake --build --preset *)",
+      "Bash(cmake --list-presets*)",
+      "Bash(ctest --preset *)",
+      "Bash(./tools/clang-tidy.sh*)",
+      "Bash(./tools/clang-format.sh*)",
+      "Bash(./tools/check-format.sh*)",
+      "Bash(./tools/coverage.sh*)",
+      "Bash(./tools/check-prereqs.sh*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; if [ -n \"$f\" ] && printf '%s' \"$f\" | grep -qE '\\.(cpp|h|hpp|cc|cxx)$'; then if command -v clang-format >/dev/null 2>&1; then clang-format -i \"$f\"; else echo \"Warning: clang-format not found; skipped formatting $f\" >&2; fi; fi; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
