@@ -908,10 +908,12 @@ void TitleBarLayer::updateResizeCursor()
         // SDL_GetMouseFocus() can transiently disagree with reality while the
         // WM/compositor owns an active hit-test-triggered resize or drag (border
         // SDL_HITTEST_RESIZE_* / title-bar SDL_HITTEST_DRAGGABLE on native Wayland) --
-        // forcing the default cursor here would fight the WM's own cursor rendering
-        // during that interaction (see #699, #749). Hold the cached edge/cursor as-is;
-        // the next real hover sample corrects it once focus is genuinely restored
-        // (e.g. the pointer actually left the window to hover another app).
+        // calling SDL_SetCursor() here, even to reapply the same cached cursor every
+        // frame, would fight the WM's own cursor rendering during that interaction
+        // (see #699, #749, and #750 review). Return without touching the cursor at
+        // all; m_CachedHoverEdge is untouched too, so the next real hover sample
+        // (once focus is genuinely restored, e.g. the pointer actually left the
+        // window to hover another app) picks up exactly where this one left off.
         //
         // Diagnostic: log only on transition into this branch, so a build can confirm
         // whether it fires only around WM-owned interactions (expected) or continuously,
@@ -923,7 +925,7 @@ void TitleBarLayer::updateResizeCursor()
             m_LastLoggedFocusMismatch = true;
             m_HasLoggedFocusMismatch = true;
         }
-        edge = prevEdge;
+        return;
     }
     else
     {
