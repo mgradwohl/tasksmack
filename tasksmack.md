@@ -253,7 +253,7 @@ Backend detection is centralized in `Core::VideoBackend`:
 - Provides semantic capability queries (`supportsClientSideMaximize`, `supportsGlobalMouseState`) used by `Window` and `TitleBarLayer`.
 - Initialized once after SDL_Init in the Application constructor.
 
-XWayland is detected as a first-class fallback path (both `WAYLAND_DISPLAY` and `DISPLAY` set) and is treated like X11 for compatibility.
+XWayland is detected as a first-class fallback path (SDL driver `"x11"` with `WAYLAND_DISPLAY` set -- `DISPLAY` isn't consulted, since it's commonly set on native Wayland sessions too) and is treated like X11 for compatibility.
 
 User-facing safety valve: The `forceNativeWindowDecorationsOnWayland` setting in `UserSettings` allows users to disable the custom title bar on Wayland if compositor behavior remains inconsistent.
 

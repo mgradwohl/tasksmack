@@ -384,9 +384,19 @@ bool Window::isMaximized() const
         return false;
     }
 
-    // For borderless windows, use our tracked state
+    // For borderless windows, X11/XWayland/Windows fake maximize by resizing to the usable
+    // display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our tracked state is
+    // the only source of truth. Native Wayland is different: maximize()/restore() delegate to
+    // the compositor via SDL_MaximizeWindow()/SDL_RestoreWindow(), so SDL_WINDOW_MAXIMIZED is a
+    // real, live signal there -- querying it instead of the cached bool keeps this correct when
+    // the compositor changes maximize state outside the app (tiling shortcut, etc.), which the
+    // cached bool alone can't observe.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0;
+        }
         return m_IsMaximizedBorderless;
     }
 
