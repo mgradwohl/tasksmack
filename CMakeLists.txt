@@ -10,6 +10,53 @@ if(POLICY CMP0069)
     cmake_policy(SET CMP0069 NEW)
 endif()
 
+# Pre-detect the Windows RC (resource) compiler before project() so CMake's platform
+# detection doesn't fail when looking for one, and so we can prefer llvm-rc over the
+# Windows SDK's own rc.exe.
+#
+# This project builds with the plain Clang driver (not clang-cl), which is a toolchain
+# pairing CMake bridges to MSVC's rc.exe via an internal two-stage helper
+# (`cmake -E cmake_llvm_rc`: Clang preprocesses the .rc file, then rc.exe compiles the
+# already-preprocessed output). That bridge is known to hang indefinitely for this
+# project (see issue #746) rather than failing fast, with no reproducible root cause
+# in rc.exe itself -- running rc.exe standalone on the exact .pp file CMake generates
+# fails immediately instead of hanging, so the hang is specific to CMake's bridging of
+# the two processes.
+#
+# llvm-rc doesn't need that bridge: it's LLVM's own resource compiler, gets a simple,
+# direct CMake rule, and uses Clang's own MSVC/SDK auto-detection to resolve headers
+# like <windows.h> -- the same mechanism Clang already uses for ordinary C++ compiles.
+# That also sidesteps the INCLUDE-environment-variable conflict from issue #686 (SDK
+# rc.exe needs INCLUDE set for windows.h, but setting INCLUDE breaks Clang's own MSVC
+# STL auto-detection): llvm-rc needs neither an INCLUDE-based nor a Developer Command
+# Prompt environment, so this works unmodified outside a VS developer shell too.
+#
+# Fall back to the Windows SDK's rc.exe (found on PATH, e.g. inside a Developer Command
+# Prompt) only if llvm-rc isn't available, since some environments may lack it.
+if(WIN32)
+    find_program(LLVM_RC_FOUND llvm-rc)
+    if(LLVM_RC_FOUND)
+        set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
+        message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
+    else()
+        find_program(RC_COMPILER_FOUND rc.exe)
+        if(RC_COMPILER_FOUND)
+            set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
+            message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
+        else()
+            # No RC compiler found anywhere. CONTRIBUTING.md documents LLVM (which
+            # includes llvm-rc) as a required prerequisite, installed automatically by
+            # tools/setup-dev.ps1 -- so this only happens on a broken/incomplete dev
+            # environment, never on a legitimately RC-less platform. Fail loudly instead
+            # of silently shipping an .exe missing its icon, version info, and
+            # DPI-awareness manifest; this matches the FATAL_ERROR checks below for the
+            # .rc.in/manifest templates, which are equally "required for Windows builds."
+            message(FATAL_ERROR "No RC compiler found (tried llvm-rc, rc.exe on PATH). "
+                                 "Install LLVM (see CONTRIBUTING.md's Windows Pre-Requisites), "
+                                 "e.g. by running tools/setup-dev.ps1.")
+        endif()
+    endif()
+endif()
 
 project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
 
