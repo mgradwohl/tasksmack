@@ -18,10 +18,6 @@ namespace Platform
 namespace
 {
 
-// ==========================================================================
-// Basic Smoke Tests
-// ==========================================================================
-
 TEST(WindowsPDHGPUProbeTest, ConstructionDoesNotThrow)
 {
     EXPECT_NO_THROW(PDHGPUProbe probe);
@@ -35,10 +31,6 @@ TEST(WindowsPDHGPUProbeTest, BasicOperationsDoNotThrow)
     EXPECT_NO_THROW([[maybe_unused]] auto caps = probe.capabilities());
 }
 
-// ==========================================================================
-// Availability Tests
-// ==========================================================================
-
 TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
 {
     PDHGPUProbe probe;
@@ -47,26 +39,17 @@ TEST(WindowsPDHGPUProbeTest, IsAvailableReturnsBool)
     EXPECT_EQ(available1, available2) << "isAvailable() should be stable across consecutive calls";
 }
 
-// ==========================================================================
-// Capabilities Tests
-// ==========================================================================
-
 TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
 {
     PDHGPUProbe probe;
     const auto caps = probe.capabilities();
 
     EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
-
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
 }
-
-// ==========================================================================
-// Injected-fake-PDH deterministic tests
-// ==========================================================================
 
 using Impl = PDHGPUProbe::Impl;
 
@@ -82,13 +65,10 @@ struct FakeScenario
 {
     std::unordered_map<std::wstring, bool> failToAdd;
     int addCounterCallCount = 0;
-
     PDH_STATUS collectStatus = ERROR_SUCCESS;
     int collectCallCount = 0;
-
     std::unordered_map<PDH_HCOUNTER, std::vector<FakeItem>> items;
     std::unordered_map<PDH_HCOUNTER, int> extraMoreDataRounds;
-
     int getArrayCallCount = 0;
     std::uintptr_t nextHandleValue = 1;
 };
@@ -128,7 +108,6 @@ PDH_STATUS WINAPI fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD forma
                                                PPDH_FMT_COUNTERVALUE_ITEM_W buffer)
 {
     ++g_scenario->getArrayCallCount;
-
     static const std::vector<FakeItem> emptyList;
     const auto listIt = g_scenario->items.find(counter);
     const std::vector<FakeItem>& list = (listIt != g_scenario->items.end()) ? listIt->second : emptyList;
@@ -286,8 +265,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MissingCounterReturnsPartialDataThenRecov
     EXPECT_EQ(firstResults[0].gpuMemoryBytes, 0U);
 
     m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = false;
-    const auto expectedDedicatedHandle =
-        reinterpret_cast<PDH_HCOUNTER>(m_scenario->nextHandleValue);
+    const auto expectedDedicatedHandle = reinterpret_cast<PDH_HCOUNTER>(m_scenario->nextHandleValue);
     m_scenario->items[expectedDedicatedHandle] = {
         {.name = L"pid_400_luid_0x0_0x1_phys_0", .largeValue = 1234},
     };
