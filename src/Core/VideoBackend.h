@@ -12,6 +12,24 @@ namespace Core
 class VideoBackend
 {
   public:
+    enum class Backend : std::uint8_t
+    {
+        Unknown,
+        Wayland,
+        X11,
+        XWaylandFallback,
+        Windows
+    };
+
+    /// Pure classification policy, with no SDL/environment calls of its own, so it can be
+    /// exhaustively table-tested (Wayland, X11, XWayland, Windows, unknown, and unset/empty
+    /// driver name) without depending on whichever real or headless SDL video driver happens
+    /// to be active in the process running the test. `driverName` is SDL_GetCurrentVideoDriver()'s
+    /// return value; `waylandDisplaySet` is whether the WAYLAND_DISPLAY environment variable was
+    /// non-null. On non-Windows builds, `driverName == "windows"` never classifies as Backend::Windows
+    /// (that check is compiled out), matching detectBackend()'s real behavior on those platforms.
+    [[nodiscard]] static Backend classifyBackend(std::string_view driverName, bool waylandDisplaySet) noexcept;
+
     /// Detect the current video backend and return its capabilities.
     /// This is typically called once at startup and cached.
     static void initialize();
@@ -41,17 +59,8 @@ class VideoBackend
     [[nodiscard]] static std::string_view driverName() noexcept;
 
   private:
-    enum class Backend : std::uint8_t
-    {
-        Unknown,
-        Wayland,
-        X11,
-        XWaylandFallback,
-        Windows
-    };
-
     /// Detect the backend from the SDL video driver name and environment.
-    [[nodiscard]] static Backend detectBackend() noexcept;
+    [[nodiscard]] static Backend detectBackend();
 
     static Backend s_Backend;
     static bool s_Initialized;

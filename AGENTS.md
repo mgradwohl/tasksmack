@@ -31,7 +31,7 @@ construction/`onAttach`, never in render loops). OpenGL calls confined to `Core`
 Build (CMake Presets, `cmake --list-presets` for the full set):
 ```bash
 cmake --workflow --preset dev        # Linux: configure+build+test
-cmake --workflow --preset win-debug  # Windows equivalent
+cmake --workflow --preset win-dev    # Windows equivalent
 ```
 Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `optimized`, `relwithdebinfo`,
 `coverage`, `unity`, `pgo-generate`/`pgo-use`, `profile`. Linux-only: `asan-ubsan`, `tsan`, `msan`.

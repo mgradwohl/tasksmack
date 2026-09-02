@@ -12,8 +12,41 @@ VideoBackend::Backend VideoBackend::s_Backend = VideoBackend::Backend::Unknown;
 bool VideoBackend::s_Initialized = false;
 std::string_view VideoBackend::s_DriverName;
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
-VideoBackend::Backend VideoBackend::detectBackend() noexcept
+VideoBackend::Backend VideoBackend::classifyBackend(const std::string_view driverName, const bool waylandDisplaySet) noexcept
+{
+    if (driverName.empty())
+    {
+        return Backend::Unknown;
+    }
+
+    // Native Wayland.
+    if (driverName == "wayland")
+    {
+        return Backend::Wayland;
+    }
+
+    // X11 or XWayland (X11 apps on a Wayland desktop). XWayland is detected when running X11
+    // on a Wayland desktop (WAYLAND_DISPLAY is set) -- different from native Wayland, where SDL
+    // reports "x11" because we're using XWayland's X11 server.
+    if (driverName == "x11")
+    {
+        return waylandDisplaySet ? Backend::XWaylandFallback : Backend::X11;
+    }
+
+#ifdef _WIN32
+    if (driverName == "windows")
+    {
+        return Backend::Windows;
+    }
+#endif
+
+    return Backend::Unknown;
+}
+
+// Not noexcept: its only caller, initialize(), isn't noexcept either, so there's no reason to
+// convert a (very unlikely) spdlog exception here into a hard std::terminate() instead of letting
+// it propagate normally.
+VideoBackend::Backend VideoBackend::detectBackend()
 {
     const char* driverNameCStr = SDL_GetCurrentVideoDriver();
     if (driverNameCStr == nullptr)
@@ -23,40 +56,30 @@ VideoBackend::Backend VideoBackend::detectBackend() noexcept
     }
 
     const std::string_view driverName = driverNameCStr;
+    const bool waylandDisplaySet = SDL_getenv("WAYLAND_DISPLAY") != nullptr;
+    const Backend backend = classifyBackend(driverName, waylandDisplaySet);
 
-    // Check for native Wayland
-    if (driverName == "wayland")
+    switch (backend)
     {
+    case Backend::Wayland:
         spdlog::info("Detected native Wayland");
-        return Backend::Wayland;
-    }
-
-    // Check for X11 or XWayland (X11 apps on Wayland desktop)
-    if (driverName == "x11")
-    {
-        // XWayland is detected when running X11 on a Wayland desktop (WAYLAND_DISPLAY is set).
-        // This is different from native Wayland: SDL reports "x11" because we're using XWayland's X11 server.
-        const char* waylandDisplay = SDL_getenv("WAYLAND_DISPLAY");
-        if (waylandDisplay != nullptr)
-        {
-            spdlog::info("Detected XWayland fallback (WAYLAND_DISPLAY={})", waylandDisplay);
-            return Backend::XWaylandFallback;
-        }
-
+        break;
+    case Backend::X11:
         spdlog::info("Detected X11 video driver");
-        return Backend::X11;
-    }
-
-#ifdef _WIN32
-    if (driverName == "windows")
-    {
+        break;
+    case Backend::XWaylandFallback:
+        spdlog::info("Detected XWayland fallback (WAYLAND_DISPLAY set)");
+        break;
+    case Backend::Windows:
         spdlog::info("Detected Windows video driver");
-        return Backend::Windows;
+        break;
+    case Backend::Unknown:
+    default:
+        spdlog::warn("Unknown video driver: {}", driverName);
+        break;
     }
-#endif
 
-    spdlog::warn("Unknown video driver: {}", driverName);
-    return Backend::Unknown;
+    return backend;
 }
 
 void VideoBackend::initialize()

@@ -238,11 +238,17 @@ Test toggle maximize/restore:
 
 ### XWayland Fallback Testing (Linux)
 ```bash
-# Start an X server on display :99 and a Wayland session on a nested socket
+# Setting DISPLAY and WAYLAND_DISPLAY alone does NOT force SDL onto X11 -- inside a real
+# Wayland session, SDL still prefers its native "wayland" driver and DISPLAY is commonly
+# set there anyway (e.g. via XWayland running for other apps), so this would silently test
+# the wrong backend. Force the X11 driver explicitly with SDL_VIDEODRIVER.
 export DISPLAY=:99
 export WAYLAND_DISPLAY=wayland-99
+export SDL_VIDEODRIVER=x11
 ./tasksmack
-# Verify VideoBackend logs show XWayland detection
+# Verify the logged driver is actually "x11" (VideoBackend logs "Detected XWayland fallback")
+# before recording results -- if it logs native Wayland instead, SDL_VIDEODRIVER wasn't honored
+# and results from this run don't test XWayland at all.
 ```
 
 ## Known Limitations / Future Work

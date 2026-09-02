@@ -1,11 +1,17 @@
 /// @file test_VideoBackend.cpp
 /// @brief Tests for Core::VideoBackend backend detection and capability queries.
 ///
-/// VideoBackend caches its detection result in process-lifetime static state (initialize()
-/// is a no-op after the first successful call), and detectBackend() calls the real
-/// SDL_GetCurrentVideoDriver() with no seam to inject a fake driver name. CI runners have no
-/// real Wayland/X11 display, so these tests can't assert a specific backend was chosen; instead
-/// they assert the invariants that must hold for whichever backend SDL actually reports.
+/// Two kinds of coverage here:
+/// - ClassifyBackendTest table-tests VideoBackend::classifyBackend() directly. It's a pure
+///   function of (driver name, WAYLAND_DISPLAY-is-set) with no SDL/environment calls of its
+///   own, so every backend/edge case can be exercised deterministically regardless of what
+///   video driver is actually active in the test process.
+/// - VideoBackendTest exercises the real initialize()/isWayland()/etc. path against whichever
+///   real or headless SDL driver is active. VideoBackend caches its detection result in
+///   process-lifetime static state (initialize() is a no-op after the first successful call),
+///   and CI runners have no real Wayland/X11 display, so these tests can't assert a specific
+///   backend was chosen; instead they assert the invariants that must hold for whichever
+///   backend SDL actually reports.
 
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/VideoBackend.h"
@@ -17,6 +23,48 @@ namespace Core
 {
 namespace
 {
+
+TEST(ClassifyBackendTest, EmptyDriverNameIsUnknown)
+{
+    EXPECT_EQ(VideoBackend::classifyBackend("", false), VideoBackend::Backend::Unknown);
+    EXPECT_EQ(VideoBackend::classifyBackend("", true), VideoBackend::Backend::Unknown);
+}
+
+TEST(ClassifyBackendTest, UnrecognizedDriverNameIsUnknown)
+{
+    EXPECT_EQ(VideoBackend::classifyBackend("dummy", false), VideoBackend::Backend::Unknown);
+    EXPECT_EQ(VideoBackend::classifyBackend("offscreen", false), VideoBackend::Backend::Unknown);
+    EXPECT_EQ(VideoBackend::classifyBackend("cocoa", false), VideoBackend::Backend::Unknown);
+}
+
+TEST(ClassifyBackendTest, WaylandDriverIsAlwaysNativeWaylandRegardlessOfEnv)
+{
+    // Regression case for the bug fixed in this PR: a "wayland" driver name must never be
+    // reclassified as XWayland just because WAYLAND_DISPLAY (or DISPLAY) also happens to be set.
+    EXPECT_EQ(VideoBackend::classifyBackend("wayland", false), VideoBackend::Backend::Wayland);
+    EXPECT_EQ(VideoBackend::classifyBackend("wayland", true), VideoBackend::Backend::Wayland);
+}
+
+TEST(ClassifyBackendTest, X11DriverWithoutWaylandDisplayIsPlainX11)
+{
+    EXPECT_EQ(VideoBackend::classifyBackend("x11", false), VideoBackend::Backend::X11);
+}
+
+TEST(ClassifyBackendTest, X11DriverWithWaylandDisplayIsXWaylandFallback)
+{
+    EXPECT_EQ(VideoBackend::classifyBackend("x11", true), VideoBackend::Backend::XWaylandFallback);
+}
+
+TEST(ClassifyBackendTest, WindowsDriverClassifiesPerPlatform)
+{
+#ifdef _WIN32
+    EXPECT_EQ(VideoBackend::classifyBackend("windows", false), VideoBackend::Backend::Windows);
+#else
+    // The "windows" driver name can never occur on a non-Windows build, and detectBackend()'s
+    // #ifdef _WIN32 guard compiles the check out entirely -- classifyBackend() must match that.
+    EXPECT_EQ(VideoBackend::classifyBackend("windows", false), VideoBackend::Backend::Unknown);
+#endif
+}
 
 bool ensureVideoDriverInitialized()
 {
