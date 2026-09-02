@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -69,6 +70,8 @@ struct FakeScenario
     int collectCallCount = 0;
     std::unordered_map<PDH_HCOUNTER, std::vector<FakeItem>> items;
     std::unordered_map<PDH_HCOUNTER, int> extraMoreDataRounds;
+    std::unordered_map<PDH_HCOUNTER, std::vector<DWORD>> seenBufferSizes;
+    std::unordered_map<PDH_HCOUNTER, std::vector<void*>> seenBufferPointers;
     int getArrayCallCount = 0;
     std::uintptr_t nextHandleValue = 1;
 };
@@ -114,6 +117,8 @@ fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferS
 
     if (list.empty())
     {
+        g_scenario->seenBufferSizes[counter].push_back(*bufferSize);
+        g_scenario->seenBufferPointers[counter].push_back(buffer);
         *itemCount = 0;
         return ERROR_SUCCESS;
     }
@@ -128,9 +133,13 @@ fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferS
     const auto needed = static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) * list.size());
     if (*bufferSize < needed || buffer == nullptr)
     {
+        g_scenario->seenBufferSizes[counter].push_back(*bufferSize);
+        g_scenario->seenBufferPointers[counter].push_back(buffer);
         *bufferSize = needed;
         return static_cast<PDH_STATUS>(PDH_MORE_DATA);
     }
+    g_scenario->seenBufferSizes[counter].push_back(*bufferSize);
+    g_scenario->seenBufferPointers[counter].push_back(buffer);
 
     *itemCount = static_cast<DWORD>(list.size());
     for (std::size_t i = 0; i < list.size(); ++i)
@@ -197,6 +206,25 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ResizesBufferOnPdhMoreDataThenSucceeds)
     EXPECT_EQ(results[0].pid, 100);
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 42.0);
     EXPECT_GE(m_scenario->getArrayCallCount, 3);
+
+    const auto firstReadSizes = m_scenario->seenBufferSizes[impl->utilizationCounter];
+    const auto firstReadPtrs = m_scenario->seenBufferPointers[impl->utilizationCounter];
+    ASSERT_FALSE(firstReadSizes.empty());
+    ASSERT_EQ(firstReadSizes.size(), firstReadPtrs.size());
+
+    m_scenario->seenBufferSizes[impl->utilizationCounter].clear();
+    m_scenario->seenBufferPointers[impl->utilizationCounter].clear();
+    const auto secondResults = probe.readProcessGPUCounters();
+    ASSERT_EQ(secondResults.size(), 1U);
+
+    const auto secondReadSizes = m_scenario->seenBufferSizes[impl->utilizationCounter];
+    const auto secondReadPtrs = m_scenario->seenBufferPointers[impl->utilizationCounter];
+    ASSERT_FALSE(secondReadSizes.empty());
+    ASSERT_EQ(secondReadSizes.size(), secondReadPtrs.size());
+    EXPECT_GE(secondReadSizes.front(), static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W)));
+    EXPECT_NE(secondReadPtrs.front(), nullptr);
+    EXPECT_EQ(secondReadSizes.front(), firstReadSizes.back());
+    EXPECT_EQ(secondReadPtrs.front(), firstReadPtrs.back());
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCrashing)
@@ -207,6 +235,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
         {.name = L"", .doubleValue = 5.0},
         {.name = L"pid_12x_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 12.0},
         {.name = L"pid_123_junk", .doubleValue = 13.0},
+        {.name = L"pid_201_luid_not-a-luid_engtype_3D", .doubleValue = 14.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
 
@@ -231,11 +260,15 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, SamePidDifferentLuidAggregatesSeparately)
     const auto results = probe.readProcessGPUCounters();
 
     ASSERT_EQ(results.size(), 2U);
+    std::unordered_map<std::string, double> utilByGpu;
     for (const auto& r : results)
     {
         EXPECT_EQ(r.pid, 300);
+        utilByGpu[r.gpuId] = r.gpuUtilPercent;
     }
     EXPECT_NE(results[0].gpuId, results[1].gpuId);
+    EXPECT_DOUBLE_EQ(utilByGpu["GPU_0x0_0x1"], 20.0);
+    EXPECT_DOUBLE_EQ(utilByGpu["GPU_0x0_0x2"], 30.0);
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, MissingCounterReturnsPartialDataThenRecoversOnRetry)

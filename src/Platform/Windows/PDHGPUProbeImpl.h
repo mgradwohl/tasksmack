@@ -79,6 +79,7 @@ struct ParsedInstance
 inline ParsedInstance parseInstanceName(const std::string& instanceName)
 {
     ParsedInstance result;
+    constexpr std::string_view luidHexPrefix{"0x"};
 
     // Look for pid_ prefix
     const std::string pidPrefix = "pid_";
@@ -125,6 +126,31 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     }
     result.gpuLuid = instanceName.substr(luidStart, luidEnd - luidStart);
     if (result.gpuLuid.empty())
+    {
+        return result;
+    }
+    const auto luidSeparator = result.gpuLuid.find('_');
+    if (luidSeparator == std::string::npos)
+    {
+        return result;
+    }
+    const std::string_view luidHigh{result.gpuLuid.data(), luidSeparator};
+    const std::string_view luidLow{result.gpuLuid.data() + luidSeparator + 1, result.gpuLuid.size() - luidSeparator - 1};
+    if (!luidHigh.starts_with(luidHexPrefix) || !luidLow.starts_with(luidHexPrefix))
+    {
+        return result;
+    }
+    if (luidHigh.size() == luidHexPrefix.size() || luidLow.size() == luidHexPrefix.size())
+    {
+        return result;
+    }
+    if (luidStart < 5 || instanceName.compare(luidStart - 5, 5, "_luid") != 0)
+    {
+        return result;
+    }
+    const bool hasPhysSuffix = instanceName.find("_phys_", luidEnd) != std::string::npos;
+    const bool hasEngineSuffix = instanceName.find("_engtype_", luidEnd) != std::string::npos;
+    if (!hasPhysSuffix && !hasEngineSuffix)
     {
         return result;
     }
@@ -240,6 +266,15 @@ struct PDHGPUProbe::Impl
     };
 
     std::unordered_map<std::wstring, CachedInstance, WideStringHash, std::equal_to<>> instanceCache;
+
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
+    ~Impl() noexcept
+    {
+        shutdown();
+    }
 
     bool loadPDH()
     {
