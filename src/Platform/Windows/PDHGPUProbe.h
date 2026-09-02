@@ -23,8 +23,16 @@ namespace Platform
 class PDHGPUProbe
 {
   public:
+    struct Impl;
+
     PDHGPUProbe();
     ~PDHGPUProbe();
+
+    /// Test-only: construct around a pre-populated Impl (e.g. with an injected fake PDH
+    /// function table in place of the real pdh.dll exports), bypassing normal pdh.dll loading.
+    /// Requires "Platform/Windows/PDHGPUProbeImpl.h" for Impl's full definition; production
+    /// code should always use the default constructor.
+    explicit PDHGPUProbe(std::unique_ptr<Impl> impl);
 
     // Non-copyable, movable
     PDHGPUProbe(const PDHGPUProbe&) = delete;
@@ -43,7 +51,6 @@ class PDHGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const;
 
   private:
-    struct Impl;
     std::unique_ptr<Impl> m_Impl;
 };
 
