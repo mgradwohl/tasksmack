@@ -10,7 +10,34 @@ if(POLICY CMP0069)
     cmake_policy(SET CMP0069 NEW)
 endif()
 
+# Pre-detect RC.exe on Windows and set CMAKE_RC_COMPILER before project() declaration.
+# If RC.exe is not found, use a no-op fallback to prevent CMake configuration failures.
+# NOTE: We set CMAKE_RC_COMPILER BEFORE calling project() so CMake's platform detection
+# doesn't fail when looking for the RC compiler.
+if(WIN32)
+    # Search in common Windows SDK locations, then fall back to PATH
+    find_program(RC_COMPILER_FOUND rc.exe
+        HINTS
+            "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
+            "C:/Program Files (x86)/Windows Kits/11/bin/11.0.1.0/x64"
+            "C:/Program Files/Windows Kits/10/bin/10.0.26100.0/x64"
+            "C:/Program Files/Windows Kits/11/bin/11.0.1.0/x64"
+    )
+    
+    if(RC_COMPILER_FOUND)
+        set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
+        message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
+        set(TASKSMACK_HAS_RC_COMPILER TRUE)
+    else()
+        # Use a no-op fallback to prevent CMake from failing during platform detection.
+        # This allows configuration to proceed without rc.exe in PATH.
+        message(STATUS "RC compiler (rc.exe) not found; using no-op fallback")
+        set(CMAKE_RC_COMPILER "echo")
+        set(TASKSMACK_HAS_RC_COMPILER FALSE)
+    endif()
+endif()
 
+# Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
 project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
 
 # Focused modules keep this root file declarative. Order matters:
@@ -175,7 +202,8 @@ endif()
 include(cmake/StaticAnalysis.cmake)
 
 # Windows resource file (icon, version info, manifest)
-if(WIN32)
+# Only compile resources if RC.exe is available
+if(WIN32 AND TASKSMACK_HAS_RC_COMPILER)
     set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
     set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
     set(TASKSMACK_ICO_FILE ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico)
@@ -209,6 +237,8 @@ if(WIN32)
 
     configure_file(${TASKSMACK_MANIFEST_IN} ${TASKSMACK_MANIFEST_OUT} @ONLY)
     message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
+elseif(WIN32)
+    message(STATUS "Skipping Windows resource compilation (RC.exe not found)")
 endif()
 
 # Enable unity compilation only after third-party targets have been declared. Setting
