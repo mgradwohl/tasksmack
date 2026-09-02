@@ -48,7 +48,18 @@ if(WIN32)
     elseif(DEFINED ENV{RC})
         message(STATUS "Using user-specified RC compiler (RC environment variable): $ENV{RC}")
     else()
-        find_program(LLVM_RC_FOUND llvm-rc)
+        # HINTS so LLVM_ROOT (what the Windows presets/CI use to locate Clang -- see
+        # CMakePresets.json / .github/actions/setup-windows-llvm) is checked before PATH,
+        # matching the LLVM-tool discovery in cmake/StaticAnalysis.cmake:19-33. Without
+        # this, llvm-rc.exe sitting right next to the selected clang.exe could be missed
+        # if LLVM's bin directory isn't separately on PATH, falling back to the
+        # problematic rc.exe or failing configuration outright.
+        find_program(LLVM_RC_FOUND llvm-rc
+            HINTS
+                "$ENV{LLVM_ROOT}/bin"
+                "$ENV{ProgramFiles}/LLVM/bin"
+                "C:/Program Files/LLVM/bin"
+        )
         if(LLVM_RC_FOUND)
             set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
             message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")

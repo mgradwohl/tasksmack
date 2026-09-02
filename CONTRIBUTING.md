@@ -127,14 +127,17 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon, version
 info, DPI-awareness manifest) into `TaskSmack.exe`. `CMakeLists.txt` prefers `llvm-rc`
-(installed alongside `clang`/`clang++`, so no extra setup is needed) over the Windows
-SDK's own `rc.exe`, falling back to `rc.exe` on `PATH` only if `llvm-rc` isn't found, and
-failing configuration outright if neither is available. This means a plain LLVM install is
-enough -- **you do not need to run from inside a Visual Studio Developer Command Prompt**
-for a normal build, unlike some other Clang+MSVC-resource-compiler setups. To pin a
-specific RC compiler yourself, pass `-DCMAKE_RC_COMPILER=<path>` to `cmake --preset ...`
-or set the `RC` environment variable before configuring; either one is honored as-is and
-skips this auto-detection.
+(installed alongside `clang`/`clang++`, so no setup beyond the LLVM install above is
+needed) over the Windows SDK's own `rc.exe`, falling back to `rc.exe` on `PATH` only if
+`llvm-rc` isn't found, and failing configuration outright if neither is available. The
+Visual Studio Build Tools workload and Windows SDK are still required prerequisites
+(installed by `tools/setup-dev.ps1`, above) -- Clang still needs the MSVC toolchain and
+Windows SDK headers/libraries to compile Windows C++ code at all -- but **you no longer
+need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
+just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
+setups. To pin a specific RC compiler yourself, pass `-DCMAKE_RC_COMPILER=<path>` to
+`cmake --preset ...` or set the `RC` environment variable before configuring; either one
+is honored as-is and skips this auto-detection.
 
 Install Python + jinja2:
 
