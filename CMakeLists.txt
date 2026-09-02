@@ -23,13 +23,16 @@ endif()
 # fails immediately instead of hanging, so the hang is specific to CMake's bridging of
 # the two processes.
 #
-# llvm-rc doesn't need that bridge: it's LLVM's own resource compiler, gets a simple,
-# direct CMake rule, and uses Clang's own MSVC/SDK auto-detection to resolve headers
-# like <windows.h> -- the same mechanism Clang already uses for ordinary C++ compiles.
-# That also sidesteps the INCLUDE-environment-variable conflict from issue #686 (SDK
-# rc.exe needs INCLUDE set for windows.h, but setting INCLUDE breaks Clang's own MSVC
-# STL auto-detection): llvm-rc needs neither an INCLUDE-based nor a Developer Command
-# Prompt environment, so this works unmodified outside a VS developer shell too.
+# CMake still runs llvm-rc through that same two-stage `cmake_llvm_rc` bridge -- that
+# part is inherent to pairing the plain Clang driver with any rc-family compiler, not
+# specific to MSVC's rc.exe -- but empirically the bridge does not hang with llvm-rc as
+# its second stage (verified with a full clean build + test run; see the PR that added
+# this comment). llvm-rc also resolves headers like <windows.h> via Clang's own MSVC/SDK
+# auto-detection -- the same mechanism Clang already uses for ordinary C++ compiles --
+# which sidesteps the INCLUDE-environment-variable conflict from issue #686 (SDK rc.exe
+# needs INCLUDE set for windows.h, but setting INCLUDE breaks Clang's own MSVC STL
+# auto-detection): llvm-rc needs neither an INCLUDE-based nor a Developer Command Prompt
+# environment, so this works unmodified outside a VS developer shell too.
 #
 # Fall back to the Windows SDK's rc.exe (found on PATH, e.g. inside a Developer Command
 # Prompt) only if llvm-rc isn't available, since some environments may lack it.
