@@ -187,8 +187,9 @@ function Get-LLVMCovVersion {
     return $null
 }
 
-# Find rc.exe the same way CMakeLists.txt does: any version under the installed
-# Windows SDK, falling back to PATH.
+# Find an RC compiler the same way CMakeLists.txt does: any Windows SDK version, then
+# PATH, then the llvm-rc/llvm-windres alternatives CMake also accepts. Without these,
+# this check could report failure in an environment CMake can actually configure fine.
 function Get-RcCompilerPath {
     $sdkCandidates = Get-ChildItem -Path @(
         "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe",
@@ -199,7 +200,15 @@ function Get-RcCompilerPath {
     if ($sdkCandidates) {
         return $sdkCandidates[0].FullName
     }
-    return Get-ToolPath "rc"
+    $rcPath = Get-ToolPath "rc"
+    if ($rcPath) {
+        return $rcPath
+    }
+    $llvmRcPath = Get-ToolPath "llvm-rc"
+    if ($llvmRcPath) {
+        return $llvmRcPath
+    }
+    return Get-ToolPath "llvm-windres"
 }
 
 # Get git version
