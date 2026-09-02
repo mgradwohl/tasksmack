@@ -52,7 +52,13 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     EXPECT_FALSE(caps.hasFanSpeed);
 }
 
-using Impl = PDHGPUProbe::Impl;
+} // namespace
+} // namespace Platform
+
+// =============================================================================
+// Injectable PDH fakes (testability)
+// FakeItem/FakeScenario are outside the anonymous namespace so std::make_unique works.
+// =============================================================================
 
 struct FakeItem
 {
@@ -77,6 +83,13 @@ struct FakeScenario
     int getArrayCallCount = 0;
     std::uintptr_t nextHandleValue = 1;
 };
+
+namespace Platform
+{
+namespace
+{
+
+using Impl = PDHGPUProbe::Impl;
 
 thread_local FakeScenario* g_scenario = nullptr;
 
