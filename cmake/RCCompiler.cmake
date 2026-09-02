@@ -97,8 +97,25 @@ if(WIN32)
         string(REPLACE "\\" "/" _TASKSMACK_RC_ENV_EXE "${_TASKSMACK_RC_ENV_EXE}")
         set(CMAKE_RC_COMPILER "${_TASKSMACK_RC_ENV_EXE}" CACHE FILEPATH "RC compiler" FORCE)
         if(_TASKSMACK_RC_ENV_PARTS)
-            list(JOIN _TASKSMACK_RC_ENV_PARTS " " _TASKSMACK_RC_ENV_ARGS_STR)
-            set(CMAKE_RC_COMPILER_ARG1 " ${_TASKSMACK_RC_ENV_ARGS_STR}" CACHE STRING "RC compiler argument" FORCE)
+            # separate_arguments() above already stripped quoting when splitting into tokens, so
+            # a plain space-joined re-assembly would lose it again -- e.g. an argument tail like
+            # `/I "C:\Program Files\SDK\include"` would become the unquoted `/I C:\Program
+            # Files\SDK\include`, four separate arguments instead of two, when this string is
+            # later appended verbatim to the actual RC compiler invocation. Re-quote any token
+            # that contains a space before rejoining, so the argument boundaries round-trip.
+            set(_TASKSMACK_RC_ENV_ARGS_STR "")
+            foreach(_TASKSMACK_RC_ENV_ARG IN LISTS _TASKSMACK_RC_ENV_PARTS)
+                # Same backslash normalization as the executable path above: any argument
+                # containing one (e.g. a native Windows include path passed to /I) hits the same
+                # "invalid character escape" problem once embedded in CMakeRCCompiler.cmake.
+                string(REPLACE "\\" "/" _TASKSMACK_RC_ENV_ARG "${_TASKSMACK_RC_ENV_ARG}")
+                if(_TASKSMACK_RC_ENV_ARG MATCHES " ")
+                    string(APPEND _TASKSMACK_RC_ENV_ARGS_STR " \"${_TASKSMACK_RC_ENV_ARG}\"")
+                else()
+                    string(APPEND _TASKSMACK_RC_ENV_ARGS_STR " ${_TASKSMACK_RC_ENV_ARG}")
+                endif()
+            endforeach()
+            set(CMAKE_RC_COMPILER_ARG1 "${_TASKSMACK_RC_ENV_ARGS_STR}" CACHE STRING "RC compiler argument" FORCE)
         else()
             # Clear any argument left over from a previous RC value that had one, e.g. a prior
             # `RC="tool.exe --flag"` followed by a plain `RC="tool.exe"` on a later configure.
