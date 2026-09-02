@@ -187,6 +187,33 @@ function Get-LLVMCovVersion {
     return $null
 }
 
+# Find an RC compiler the same way cmake/RCCompiler.cmake does: llvm-rc first (this project's
+# Windows toolchain is LLVM/Clang, not MSVC, and the Windows SDK's own rc.exe is confirmed to
+# hang indefinitely in this project's CI -- issue #746), then any Windows SDK version, then
+# PATH, then llvm-windres. Without matching this order, this check could report a different
+# tool than the one CMake will actually select.
+function Get-RcCompilerPath {
+    $llvmRcPath = Get-ToolPath "llvm-rc"
+    if ($llvmRcPath) {
+        return $llvmRcPath
+    }
+    $sdkCandidates = Get-ChildItem -Path @(
+        "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe",
+        "${env:ProgramFiles(x86)}\Windows Kits\11\bin\*\x64\rc.exe",
+        "$env:ProgramFiles\Windows Kits\10\bin\*\x64\rc.exe",
+        "$env:ProgramFiles\Windows Kits\11\bin\*\x64\rc.exe"
+    ) -ErrorAction SilentlyContinue |
+        Sort-Object { [version]($_.FullName -replace '.*\\bin\\([\d.]+)\\x64\\rc\.exe$', '$1') } -Descending
+    if ($sdkCandidates) {
+        return $sdkCandidates[0].FullName
+    }
+    $rcPath = Get-ToolPath "rc"
+    if ($rcPath) {
+        return $rcPath
+    }
+    return Get-ToolPath "llvm-windres"
+}
+
 # Get git version
 function Get-GitVersion {
     try {
@@ -468,6 +495,16 @@ if ($gitVer -and [Version]$gitVer -ge $MIN_GIT_VERSION) {
 }
 else {
     Write-Status -Name "git" -Status "fail" -Version $gitVer -Path $gitPath -Required $MIN_GIT_VERSION
+    $AllOK = $false
+}
+
+# Check Windows SDK (rc.exe, required -- CMake configuration fails without it)
+$rcPath = Get-RcCompilerPath
+if ($rcPath) {
+    Write-Status -Name "rc.exe" -Status "ok" -Version "available" -Path $rcPath -Required ""
+}
+else {
+    Write-Status -Name "rc.exe" -Status "fail" -Version $null -Path $null -Required ""
     $AllOK = $false
 }
 

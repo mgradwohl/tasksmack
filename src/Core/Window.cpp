@@ -1,5 +1,6 @@
 #include "Window.h"
 
+#include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 
 #include <SDL3/SDL.h>
@@ -316,8 +317,11 @@ auto Window::getPosition() const -> std::pair<int, int>
 
 bool Window::supportsPositioning() noexcept
 {
-    const char* driver = SDL_GetCurrentVideoDriver();
-    return driver != nullptr && std::string_view(driver) != "wayland";
+    // Routed through VideoBackend rather than querying SDL_GetCurrentVideoDriver() directly here,
+    // per AGENTS.md's rule that backend decisions go through the cached VideoBackend abstraction.
+    // Safe: every caller runs after Application's constructor, which calls VideoBackend::initialize()
+    // right after SDL_Init.
+    return !VideoBackend::isWayland();
 }
 
 void Window::setSize(int width, int height)
@@ -383,9 +387,19 @@ bool Window::isMaximized() const
         return false;
     }
 
-    // For borderless windows, use our tracked state
+    // For borderless windows, X11/XWayland/Windows fake maximize by resizing to the usable
+    // display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our tracked state is
+    // the only source of truth. Native Wayland is different: maximize()/restore() delegate to
+    // the compositor via SDL_MaximizeWindow()/SDL_RestoreWindow(), so SDL_WINDOW_MAXIMIZED is a
+    // real, live signal there -- querying it instead of the cached bool keeps this correct when
+    // the compositor changes maximize state outside the app (tiling shortcut, etc.), which the
+    // cached bool alone can't observe.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0;
+        }
         return m_IsMaximizedBorderless;
     }
 
@@ -399,11 +413,22 @@ void Window::maximize()
         return;
     }
 
-    // For borderless windows, SDL_MaximizeWindow may not work correctly
-    // on all platforms. We need to manually set the window to fill the
-    // usable display bounds (excluding taskbar/dock).
+    // For borderless windows, use backend-gated behavior.
+    // On native Wayland, prefer compositor maximize (avoids client-side geometry issues).
+    // On X11, XWayland, and Windows, use manual client-side positioning for compatibility.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
+            // This avoids the unreliability of client-side usable-bounds queries on Wayland.
+            spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+            SDL_MaximizeWindow(m_Handle);
+            m_IsMaximizedBorderless = true;
+            return;
+        }
+
+        // X11, XWayland, Windows: use client-side maximize with manual positioning
         // Only save restore dimensions if not already maximized
         // This prevents saving maximized dimensions as the restore target
         if (!m_IsMaximizedBorderless)
@@ -441,9 +466,21 @@ void Window::restore()
         return;
     }
 
-    // For borderless windows, restore to saved position and size
+    // For borderless windows, use backend-gated behavior.
+    // On native Wayland, rely on compositor-managed restore.
+    // On X11, XWayland, and Windows, restore to manually-saved position/size.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            // Native Wayland: use compositor-managed restore via SDL_RestoreWindow
+            spdlog::debug("Window::restore: Native Wayland detected; using compositor-managed restore");
+            SDL_RestoreWindow(m_Handle);
+            m_IsMaximizedBorderless = false;
+            return;
+        }
+
+        // X11, XWayland, Windows: restore to manually-saved position and size
         if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
         {
             SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);

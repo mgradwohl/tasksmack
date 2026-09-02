@@ -10,7 +10,13 @@ if(POLICY CMP0069)
     cmake_policy(SET CMP0069 NEW)
 endif()
 
+# RC-compiler pre-detection lives in its own focused module (see cmake/RCCompiler.cmake for the
+# full rationale) but must be included here, before project(), so CMake's platform detection
+# doesn't fail when looking for the RC compiler -- the module can't be included alongside
+# Options/CompilerOptions/Dependencies.cmake below since those run after project().
+include(cmake/RCCompiler.cmake)
 
+# Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
 project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
 
 # Focused modules keep this root file declarative. Order matters:
@@ -49,6 +55,7 @@ set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
     src/Core/PathService.cpp
+    src/Core/VideoBackend.cpp
     src/Core/Window.cpp
     src/UI/AssetPath.cpp
     src/UI/UILayer.cpp
@@ -173,7 +180,9 @@ endif()
 # clang-format only see real C++ sources.
 include(cmake/StaticAnalysis.cmake)
 
-# Windows resource file (icon, version info, manifest)
+# Windows resource file (icon, version info, manifest). CMAKE_RC_COMPILER is guaranteed
+# to be set by this point on WIN32 -- the pre-project() block above fails configuration
+# outright if no RC compiler can be found.
 if(WIN32)
     set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
     set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
