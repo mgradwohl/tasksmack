@@ -125,6 +125,17 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
 
+**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon, version
+info, DPI-awareness manifest) into `TaskSmack.exe`. `CMakeLists.txt` prefers `llvm-rc`
+(installed alongside `clang`/`clang++`, so no extra setup is needed) over the Windows
+SDK's own `rc.exe`, falling back to `rc.exe` on `PATH` only if `llvm-rc` isn't found, and
+failing configuration outright if neither is available. This means a plain LLVM install is
+enough -- **you do not need to run from inside a Visual Studio Developer Command Prompt**
+for a normal build, unlike some other Clang+MSVC-resource-compiler setups. To pin a
+specific RC compiler yourself, pass `-DCMAKE_RC_COMPILER=<path>` to `cmake --preset ...`
+or set the `RC` environment variable before configuring; either one is honored as-is and
+skips this auto-detection.
+
 Install Python + jinja2:
 
 ```powershell

@@ -36,27 +36,39 @@ endif()
 #
 # Fall back to the Windows SDK's rc.exe (found on PATH, e.g. inside a Developer Command
 # Prompt) only if llvm-rc isn't available, since some environments may lack it.
+#
+# Skip auto-detection entirely if the caller already pinned an RC compiler via
+# -DCMAKE_RC_COMPILER=... or the standard RC environment variable (CMake's own
+# convention, analogous to CC/CXX) -- auto-detection must not silently override an
+# explicit toolchain choice, e.g. to select a known-good alternative when the SDK's
+# rc.exe (or even llvm-rc) is problematic in a particular environment.
 if(WIN32)
-    find_program(LLVM_RC_FOUND llvm-rc)
-    if(LLVM_RC_FOUND)
-        set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
-        message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
+    if(DEFINED CMAKE_RC_COMPILER)
+        message(STATUS "Using user-specified RC compiler (CMAKE_RC_COMPILER): ${CMAKE_RC_COMPILER}")
+    elseif(DEFINED ENV{RC})
+        message(STATUS "Using user-specified RC compiler (RC environment variable): $ENV{RC}")
     else()
-        find_program(RC_COMPILER_FOUND rc.exe)
-        if(RC_COMPILER_FOUND)
-            set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
-            message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
+        find_program(LLVM_RC_FOUND llvm-rc)
+        if(LLVM_RC_FOUND)
+            set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
+            message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
         else()
-            # No RC compiler found anywhere. CONTRIBUTING.md documents LLVM (which
-            # includes llvm-rc) as a required prerequisite, installed automatically by
-            # tools/setup-dev.ps1 -- so this only happens on a broken/incomplete dev
-            # environment, never on a legitimately RC-less platform. Fail loudly instead
-            # of silently shipping an .exe missing its icon, version info, and
-            # DPI-awareness manifest; this matches the FATAL_ERROR checks below for the
-            # .rc.in/manifest templates, which are equally "required for Windows builds."
-            message(FATAL_ERROR "No RC compiler found (tried llvm-rc, rc.exe on PATH). "
-                                 "Install LLVM (see CONTRIBUTING.md's Windows Pre-Requisites), "
-                                 "e.g. by running tools/setup-dev.ps1.")
+            find_program(RC_COMPILER_FOUND rc.exe)
+            if(RC_COMPILER_FOUND)
+                set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
+                message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
+            else()
+                # No RC compiler found anywhere. CONTRIBUTING.md documents LLVM (which
+                # includes llvm-rc) as a required prerequisite, installed automatically by
+                # tools/setup-dev.ps1 -- so this only happens on a broken/incomplete dev
+                # environment, never on a legitimately RC-less platform. Fail loudly instead
+                # of silently shipping an .exe missing its icon, version info, and
+                # DPI-awareness manifest; this matches the FATAL_ERROR checks below for the
+                # .rc.in/manifest templates, which are equally "required for Windows builds."
+                message(FATAL_ERROR "No RC compiler found (tried llvm-rc, rc.exe on PATH). "
+                                     "Install LLVM (see CONTRIBUTING.md's Windows Pre-Requisites), "
+                                     "e.g. by running tools/setup-dev.ps1.")
+            endif()
         endif()
     endif()
 endif()
