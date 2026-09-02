@@ -254,6 +254,10 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
         {.name = L"garbage_pid_202_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 16.0},
         {.name = L"pid_203_luid_0xGG_0x1junk_phys_0_eng_0_engtype_3D", .doubleValue = 17.0},
         {.name = L"pid_204_junk_luid_0x0_0x1_phys_0", .doubleValue = 18.0},
+        {.name = L"pid_205_luid_0x0_0x1_phys_", .doubleValue = 19.0},
+        {.name = L"pid_206_luid_0x0_0x1_engtype_", .doubleValue = 20.0},
+        {.name = L"pid_207_luid_0x0_0x1_phys_0_eng_0_engtype_", .doubleValue = 21.0},
+        {.name = L"pid_208_luid_0x0_0x1_phys_x_eng_0_engtype_3D", .doubleValue = 22.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
 

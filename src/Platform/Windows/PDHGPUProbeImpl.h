@@ -158,20 +158,76 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     {
         return result;
     }
-    const auto physSuffixPos = instanceName.find("_phys_", luidEnd);
-    const auto engineSuffixPos = instanceName.find("_engtype_", luidEnd);
-    if (physSuffixPos == std::string::npos && engineSuffixPos == std::string::npos)
+    // The text after the LUID must fully match one of the three documented forms - merely
+    // containing "_phys_" or "_engtype_" somewhere would still accept incomplete suffixes
+    // like "..._phys_" or "..._engtype_" (no digits / no engine type) as valid.
+    std::string_view suffix{instanceName};
+    suffix.remove_prefix(luidEnd);
+
+    constexpr std::string_view physToken{"_phys_"};
+    constexpr std::string_view engToken{"_eng_"};
+    constexpr std::string_view engtypeToken{"_engtype_"};
+
+    const auto consumeDigits = [](std::string_view& sv) -> bool
+    {
+        std::size_t count = 0;
+        while (count < sv.size() && sv[count] >= '0' && sv[count] <= '9')
+        {
+            ++count;
+        }
+        if (count == 0)
+        {
+            return false;
+        }
+        sv.remove_prefix(count);
+        return true;
+    };
+
+    if (suffix.starts_with(physToken))
+    {
+        suffix.remove_prefix(physToken.size());
+        if (!consumeDigits(suffix))
+        {
+            return result;
+        }
+        if (!suffix.empty())
+        {
+            // GPU Engine format continues with _eng_<digits>_engtype_<type>; GPU Process
+            // Memory format ends here (suffix already empty).
+            if (!suffix.starts_with(engToken))
+            {
+                return result;
+            }
+            suffix.remove_prefix(engToken.size());
+            if (!consumeDigits(suffix))
+            {
+                return result;
+            }
+            if (!suffix.starts_with(engtypeToken))
+            {
+                return result;
+            }
+            suffix.remove_prefix(engtypeToken.size());
+            if (suffix.empty())
+            {
+                return result;
+            }
+            result.engineType = std::string(suffix);
+        }
+    }
+    else if (suffix.starts_with(engtypeToken))
+    {
+        // Simplified format: pid_1234_luid_..._engtype_<type> with no _phys_ segment.
+        suffix.remove_prefix(engtypeToken.size());
+        if (suffix.empty())
+        {
+            return result;
+        }
+        result.engineType = std::string(suffix);
+    }
+    else
     {
         return result;
-    }
-
-    // Extract engine type (if present - GPU Process Memory doesn't have this). Anchored to
-    // the "_engtype_" occurrence found after the LUID above, not searched from the start of
-    // the string, so a malformed name can't smuggle in an earlier bogus "engtype_" token.
-    if (engineSuffixPos != std::string::npos)
-    {
-        const std::string engtypePrefix = "engtype_";
-        result.engineType = instanceName.substr(engineSuffixPos + 1 + engtypePrefix.length());
     }
 
     // Instance is valid if we got a PID (engine type is optional for memory counters)
