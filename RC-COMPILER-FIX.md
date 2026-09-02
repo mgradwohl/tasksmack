@@ -13,135 +13,61 @@ This prevented Windows development builds even when the Windows SDK was properly
 
 ## Root Cause
 
-CMake's Windows-Clang platform detection tries to enable the RC compiler during the `project()` call without checking if `rc.exe` is in PATH. On development machines without `rc.exe` explicitly added to PATH, this fails even though the RC compiler is available in the Windows SDK installation.
+CMake's Windows-Clang platform detection tries to enable the RC compiler during the `project()` call without checking if `rc.exe` is in PATH. TaskSmack's Windows CI and `tools/setup-dev.ps1` both install LLVM/Clang directly rather than launching from a Visual Studio Developer Command Prompt, so `rc.exe` is never added to `PATH` even though it's present inside the Windows SDK install.
 
 ## Solution
 
-**Pre-detect RC.exe in standard Windows SDK locations** before the `project()` call:
+**Pre-detect RC.exe before the `project()` call**, so CMake's own platform detection has a valid compiler to find instead of failing outright:
 
-1. Search for `rc.exe` in common Windows SDK paths:
-   - `C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64`
-   - `C:/Program Files (x86)/Windows Kits/11/bin/11.0.1.0/x64`
-   - Plus fallback to PATH
-
-2. If RC.exe is found, set `CMAKE_RC_COMPILER` explicitly
-
-3. If RC.exe is not found, use a no-op fallback (`echo`) to prevent CMake from failing during platform detection
-
-4. Track availability with `TASKSMACK_HAS_RC_COMPILER` variable for conditional resource compilation
+1. Glob for `rc.exe` under any installed Windows SDK version (`Windows Kits/10/bin/*/x64` and `Windows Kits/11/bin/*/x64`, under both `Program Files` and `Program Files (x86)`), preferring the highest version found. The exact SDK version isn't hardcoded because it changes whenever the SDK updates -- including unannounced bumps to the `windows-2025` GitHub Actions runner image.
+2. If nothing matches, fall back to `PATH` (covers a Developer Command Prompt or a custom install), then `llvm-rc`, then `llvm-windres`.
+3. If none of those find an RC tool, **fail configuration with `FATAL_ERROR`**. The Windows SDK is a documented, required prerequisite (`CONTRIBUTING.md`'s Windows Pre-Requisites) installed automatically by `tools/setup-dev.ps1`, so "not found" only ever means a broken or incomplete dev environment -- never a platform that legitimately lacks an RC compiler. Silently shipping a `.exe` with no icon, no version info, and no DPI-awareness manifest is a real regression that's easy to miss in build logs; failing loudly matches the `FATAL_ERROR` checks already used for the `.rc.in`/manifest template files.
 
 ### Implementation (CMakeLists.txt)
 
-```cmake
-# Pre-detect RC.exe on Windows and set CMAKE_RC_COMPILER before project() declaration.
-if(WIN32)
-    # Search in common Windows SDK locations, then fall back to PATH
-    find_program(RC_COMPILER_FOUND rc.exe
-        HINTS
-            "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
-            "C:/Program Files (x86)/Windows Kits/11/bin/11.0.1.0/x64"
-            "C:/Program Files/Windows Kits/10/bin/10.0.26100.0/x64"
-            "C:/Program Files/Windows Kits/11/bin/11.0.1.0/x64"
-    )
-
-    if(RC_COMPILER_FOUND)
-        set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
-        message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
-        set(TASKSMACK_HAS_RC_COMPILER TRUE)
-    else()
-        # Use a no-op fallback to prevent CMake from failing during platform detection.
-        message(STATUS "RC compiler (rc.exe) not found; using no-op fallback")
-        set(CMAKE_RC_COMPILER "echo")
-        set(TASKSMACK_HAS_RC_COMPILER FALSE)
-    endif()
-endif()
-
-# Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
-project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
-```
+See `CMakeLists.txt` lines 13-68 for the full pre-`project()` detection block, and lines 237+ for the conditional Windows resource compilation that consumes `CMAKE_RC_COMPILER`.
 
 ### Behavior
 
 | Scenario | Result |
 |----------|--------|
-| RC.exe found in SDK | ✅ Full build with resources (icon, version info, manifest) |
-| RC.exe not found | ⚠️ Build succeeds without resources (app runs fine, no icon) |
-| RC.exe in PATH | ✅ Either path works (SDK path takes precedence) |
+| RC.exe found in SDK, PATH, llvm-rc, or llvm-windres | ✅ Full build with resources (icon, version info, manifest) |
+| No RC tool found anywhere | ❌ CMake configuration fails with `FATAL_ERROR` and installation instructions |
 
 ## Testing
 
 ### Configure-Only Test (No Build)
 ```bash
 cmake --preset win-debug
-# Should succeed with "Found RC compiler:" message or "no-op fallback" message
+# Should succeed with a "Found RC compiler:" message
 ```
 
 ### Full Build
 ```bash
 cmake --workflow --preset win-dev
-# Configuration passes; build may fail on unrelated FreeType RC issue,
-# but TaskSmack/VideoBackend itself will compile correctly
 ```
 
 ### VideoBackend Unit Tests
 ```cpp
 // tests/Core/test_VideoBackend.cpp
 // Tests for:
-// - Backend detection (Windows, X11, Wayland, XWayland)
-// - Capability queries (supportsClientSideMaximize, etc.)
-// - Consistency across queries
-// - Platform-specific behavior validation
+// - Backend detection consistency (Wayland, X11, XWayland, Windows flags are
+//   mutually exclusive; behavior is driver-agnostic since real CI runners don't
+//   expose a real Wayland/X11 display)
+// - Capability queries (supportsClientSideMaximize, supportsGlobalMouseState)
+// - initialize() idempotency
 ```
 
 Run tests with:
 ```bash
-cmake --preset win-debug
-# Configure succeeds
 ctest --preset win-debug -R VideoBackend
-# Once FreeType RC issue is fixed
-```
-
-## Known Issues
-
-### FreeType RC Compilation
-During full build, FreeType's resource file compilation may fail with:
-```
-fatal error RC1015: cannot open include file 'windows.h'.
-```
-
-This is **not** related to TaskSmack's code. The issue is that:
-1. FreeType's RC file includes windows.h
-2. When rc.exe is in a non-standard path, the include search paths may not include Windows SDK headers
-3. Clang's RC compiler doesn't use the same include paths as the C compiler
-
-**Workaround:**
-- Add Windows SDK headers to RC compiler include path, or
-- Use RC.exe from PATH instead of SDK path (not currently implemented), or
-- Skip FreeType RC compilation by modifying FreeType CMake options
-
-This issue is external to TaskSmack and doesn't block Wayland feature development.
-
-## Configuration Verification
-
-Check if RC compiler was found:
-```bash
-cmake -B build/win-debug -S .
-# Look for one of:
-# -- Found RC compiler: C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/rc.exe
-# OR
-# -- RC compiler (rc.exe) not found; using no-op fallback
 ```
 
 ## Related Files
 
-- **CMakeLists.txt** (lines 7-27): RC compiler detection and fallback logic
-- **CMakeLists.txt** (lines 178-212): Conditional Windows resource compilation
-- **CONTRIBUTING.md** (Windows Pre-Requisites section): Documentation of RC compiler requirement
-- **tests/Core/test_VideoBackend.cpp**: Comprehensive backend detection tests
-
-## Future Improvements
-
-1. **Include Path Configuration:** Properly configure RC compiler include paths so it can find windows.h
-2. **Portable RC Detection:** Support finding rc.exe on non-standard Windows SDK installations
-3. **Environment Variable Support:** Respect `RC` environment variable if set
-4. **CI/CD:** Test on Windows build agents with and without rc.exe in PATH
+- **CMakeLists.txt** (lines 13-68): RC compiler detection and fail-fast logic
+- **CMakeLists.txt** (lines 237+): Conditional Windows resource compilation
+- **CONTRIBUTING.md** (Windows Pre-Requisites section): Documents the Windows SDK requirement
+- **tools/setup-dev.ps1**: Installs the Windows SDK via the VCTools workload
+- **tools/check-prereqs.ps1**: Verifies `rc.exe` is discoverable
+- **tests/Core/test_VideoBackend.cpp**: VideoBackend backend detection tests

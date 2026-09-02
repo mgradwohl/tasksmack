@@ -15,37 +15,53 @@ endif()
 # NOTE: We set CMAKE_RC_COMPILER BEFORE calling project() so CMake's platform detection
 # doesn't fail when looking for the RC compiler.
 if(WIN32)
-    # Search in common Windows SDK locations, then fall back to PATH
-    find_program(RC_COMPILER_FOUND rc.exe
-        HINTS
-            "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
-            "C:/Program Files (x86)/Windows Kits/11/bin/11.0.1.0/x64"
-            "C:/Program Files/Windows Kits/10/bin/10.0.26100.0/x64"
-            "C:/Program Files/Windows Kits/11/bin/11.0.1.0/x64"
+    # Our Windows CI installs only LLVM/Ninja/ccache (no Visual Studio Developer Command
+    # Prompt), so rc.exe is never on PATH; it has to be located inside the Windows SDK
+    # install instead. The SDK's bin directory is versioned (e.g. 10.0.26100.0) and that
+    # version changes whenever the SDK is updated -- including unannounced bumps to the
+    # windows-2025 GitHub Actions runner image -- so glob for whatever version is actually
+    # installed rather than hardcoding one, and prefer the highest version found.
+    file(GLOB WINSDK_RC_CANDIDATES
+        "$ENV{ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/rc.exe"
+        "$ENV{ProgramFiles(x86)}/Windows Kits/11/bin/*/x64/rc.exe"
+        "$ENV{ProgramFiles}/Windows Kits/10/bin/*/x64/rc.exe"
+        "$ENV{ProgramFiles}/Windows Kits/11/bin/*/x64/rc.exe"
     )
+    if(WINSDK_RC_CANDIDATES)
+        list(SORT WINSDK_RC_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+        list(GET WINSDK_RC_CANDIDATES 0 RC_COMPILER_FOUND)
+    endif()
+
+    if(NOT RC_COMPILER_FOUND)
+        # Fall back to PATH (Developer Command Prompt, custom installs, etc.).
+        find_program(RC_COMPILER_FOUND rc.exe)
+    endif()
 
     if(RC_COMPILER_FOUND)
         set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
         message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
-        set(TASKSMACK_HAS_RC_COMPILER TRUE)
     else()
         # RC.exe not found; try alternatives: llvm-rc, llvm-windres
         find_program(LLVM_RC_FOUND llvm-rc)
         if(LLVM_RC_FOUND)
             set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
             message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
-            set(TASKSMACK_HAS_RC_COMPILER TRUE)
         else()
             find_program(LLVM_WINDRES_FOUND llvm-windres)
             if(LLVM_WINDRES_FOUND)
                 set(CMAKE_RC_COMPILER ${LLVM_WINDRES_FOUND})
                 message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
-                set(TASKSMACK_HAS_RC_COMPILER TRUE)
             else()
-                # No RC compiler found; disable .rc compilation and continue.
-                message(STATUS "RC compiler not found (tried rc.exe, llvm-rc, llvm-windres); disabling .rc resource compilation")
-                set(CMAKE_RC_COMPILER "")
-                set(TASKSMACK_HAS_RC_COMPILER FALSE)
+                # No RC compiler found anywhere. CONTRIBUTING.md documents the Windows SDK
+                # (which includes rc.exe) as a required prerequisite, and setup-dev.ps1
+                # installs it automatically -- so this only happens on a broken/incomplete
+                # dev environment, never on a legitimately RC-less platform. Fail loudly
+                # instead of silently shipping an .exe missing its icon, version info, and
+                # DPI-awareness manifest; this matches the FATAL_ERROR checks below for the
+                # .rc.in/manifest templates, which are equally "required for Windows builds."
+                message(FATAL_ERROR "No RC compiler found (tried Windows SDK, PATH, llvm-rc, llvm-windres). "
+                                     "Install the Windows SDK (see CONTRIBUTING.md's Windows Pre-Requisites), "
+                                     "e.g. by running tools/setup-dev.ps1.")
             endif()
         endif()
     endif()
@@ -215,9 +231,10 @@ endif()
 # clang-format only see real C++ sources.
 include(cmake/StaticAnalysis.cmake)
 
-# Windows resource file (icon, version info, manifest)
-# Only compile resources if RC.exe is available
-if(WIN32 AND TASKSMACK_HAS_RC_COMPILER)
+# Windows resource file (icon, version info, manifest). CMAKE_RC_COMPILER is guaranteed
+# to be set by this point on WIN32 -- the pre-project() block above fails configuration
+# outright if no RC compiler can be found.
+if(WIN32)
     set(TASKSMACK_RC_IN ${CMAKE_SOURCE_DIR}/assets/tasksmack.rc.in)
     set(TASKSMACK_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack.rc)
     set(TASKSMACK_ICO_FILE ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico)
@@ -251,8 +268,6 @@ if(WIN32 AND TASKSMACK_HAS_RC_COMPILER)
 
     configure_file(${TASKSMACK_MANIFEST_IN} ${TASKSMACK_MANIFEST_OUT} @ONLY)
     message(STATUS "Configured application manifest with version ${PROJECT_VERSION}")
-elseif(WIN32)
-    message(STATUS "Skipping Windows resource compilation (RC.exe not found)")
 endif()
 
 # Enable unity compilation only after third-party targets have been declared. Setting

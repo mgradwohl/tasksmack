@@ -4,12 +4,13 @@
 
 This implementation adds production-ready Wayland native support to TaskSmack (PR #593), addressing compositor-sensitive window management issues with backend capability gating, comprehensive testing, and a robust RC compiler detection system.
 
-**Status:** ✅ Complete and Verified
+**Status:** Implementation complete; manual Wayland/XWayland/Windows validation still outstanding
 - Implementation: 7/7 steps complete
-- Unit Tests: 10/10 comprehensive tests
-- Documentation: Complete with RC compiler fix guide
-- Build System: Fixed RC compiler detection on Windows
-- Code Quality: Full clang-format compliance
+- Unit Tests: 7 VideoBackend tests, all passing (or self-skipping) on Linux; not yet run on Windows
+- Documentation: RC compiler fix guide included
+- Build System: Windows RC compiler detection fails loudly (not silently) when unavailable
+- Code Quality: clang-format and clang-tidy clean
+- Manual validation matrix (`wayland-test-matrix.md`) not yet executed on real compositors -- required before #382 can close
 
 ## What Was Implemented
 
@@ -139,44 +140,17 @@ Allows users to disable the custom title bar on Wayland if compositor behavior r
 
 ### RC Compiler Detection Fix
 
-**Problem:** Windows CMake configuration failed when `rc.exe` wasn't in PATH, even though it was installed in Windows SDK.
+**Problem:** Windows CMake configuration failed when `rc.exe` wasn't in PATH, even though it was installed in the Windows SDK.
 
-**Solution:** Pre-detect RC.exe in standard SDK paths before `project()` call:
-
-```cmake
-# Search in Windows SDK paths
-find_program(RC_COMPILER_FOUND rc.exe
-    HINTS
-        "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
-        "C:/Program Files (x86)/Windows Kits/11/bin/11.0.1.0/x64"
-)
-
-if(RC_COMPILER_FOUND)
-    set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
-    set(TASKSMACK_HAS_RC_COMPILER TRUE)
-else()
-    set(CMAKE_RC_COMPILER "echo")  # No-op fallback
-    set(TASKSMACK_HAS_RC_COMPILER FALSE)
-endif()
-
-project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
-```
-
-**Result:**
-- ✅ Configuration succeeds even without RC.exe in PATH
-- ✅ RC.exe auto-detected from Windows SDK
-- ✅ Falls back gracefully if RC.exe not found
-- ✅ Maintains backward compatibility
-
-See `RC-COMPILER-FIX.md` for complete details, testing instructions, and known issues.
+**Solution:** Pre-detect `rc.exe` before the `project()` call by globbing every installed Windows SDK version (not a hardcoded one, since the installed version drifts with SDK/runner-image updates), falling back to `PATH`, then `llvm-rc`/`llvm-windres`. If none of those find a compiler, configuration fails with `FATAL_ERROR` rather than silently shipping a build missing its icon, version info, and manifest -- the Windows SDK is a required, documented prerequisite (see CONTRIBUTING.md), so "not found" only ever means a broken dev environment. See `RC-COMPILER-FIX.md` and `CMakeLists.txt` (lines 13-68) for the full implementation, testing instructions, and rationale.
 
 ## Files Modified
 
 ### New Files
-- `src/Core/VideoBackend.h` (57 lines)
-- `src/Core/VideoBackend.cpp` (125 lines)
-- `tests/Core/test_VideoBackend.cpp` (147 lines)
-- `RC-COMPILER-FIX.md` (200+ lines)
+- `src/Core/VideoBackend.h` (61 lines)
+- `src/Core/VideoBackend.cpp` (117 lines)
+- `tests/Core/test_VideoBackend.cpp` (103 lines, 7 tests)
+- `RC-COMPILER-FIX.md`
 
 ### Modified Files
 - `CMakeLists.txt` - RC compiler detection + conditional resource compilation
@@ -192,22 +166,24 @@ See `RC-COMPILER-FIX.md` for complete details, testing instructions, and known i
 
 ## Testing Status
 
-### ✅ Automated Tests (Ready)
-- 10 VideoBackend unit tests defined
-- Tests skip gracefully on non-applicable platforms
-- Tests registered in CMakeLists.txt
-- Ready to run via: `ctest --preset <platform> -R VideoBackend`
+### ✅ Automated Tests (Verified Locally on Linux)
+- 7 VideoBackend unit tests defined in `tests/Core/test_VideoBackend.cpp`
+- 6 pass under the `debug` preset's `dummy`/`offscreen` SDL driver; the 7th
+  (`NativeWaylandIsNeverClassifiedAsXWaylandFallback`) self-skips when no real
+  Wayland display is present, since VideoBackend has no seam to inject a fake driver
+- Full suite (1278 tests) passes: `ctest --preset debug`
+- Not yet run on Windows in this session -- run `ctest --preset win-debug -R VideoBackend` there
 
-### ✅ Manual Test Matrix (Ready)
-- Comprehensive test matrix for GNOME, KDE, Sway, Hyprland, X11, XWayland, Windows
+### Manual Test Matrix (Not Yet Executed)
+- Matrix defined in `wayland-test-matrix.md` for GNOME, KDE, Sway, Hyprland, X11, XWayland, Windows
 - Test scenarios: maximize/restore, drag, resize, multi-monitor
-- Acceptance criteria for #382 validation gate
+- Acceptance criteria for #382 validation gate -- still requires real manual runs before that issue can close
 
-### ✅ Build Verification
-- Configuration succeeds on Windows
-- RC compiler auto-detected or falls back gracefully
-- All includes and symbols verified correct
-- Code formatted with clang-format
+### Build Verification
+- Linux `debug` preset configures and builds cleanly; full test suite passes
+- Windows CI logs (run 33584084640) confirm `rc.exe` is found via the Windows SDK: `C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/rc.exe`
+- If no RC compiler can be found at all, configuration now fails with `FATAL_ERROR` instead of silently skipping resource compilation
+- clang-format and clang-tidy clean on all files touched by this PR
 
 ## Git History
 
@@ -257,8 +233,8 @@ As specified in the original plan:
 - [x] Window.cpp changes gate behavior consistently
 - [x] TitleBarLayer.cpp uses correct coordinate system per platform
 - [x] No circular dependencies with Platform/UI
-- [x] Tests cover all backends including edge cases
-- [x] Documentation is comprehensive and accurate
+- [ ] Tests cover all backends including edge cases -- VideoBackend has no seam to inject a fake SDL driver, so unit tests can only assert cross-backend invariants (mutual exclusivity, idempotency) on whatever real driver the test runner has; native Wayland/X11/XWayland classification is only exercised by the manual test matrix
+- [x] Documentation matches the current implementation (see corrections above)
 
 ### Before Merge
 1. Run `cmake --preset win-dev` to verify Windows build configuration
@@ -287,14 +263,14 @@ As specified in the original plan:
 
 ## Summary
 
-This implementation delivers complete Wayland native support with production-grade quality:
+This implementation adds backend-gated Wayland/X11/XWayland/Windows window handling:
 
-✅ **Correctness:** Backend-gated platform-specific behavior  
-✅ **Compatibility:** X11/XWayland fallback preserves existing behavior  
-✅ **Safety:** No circular dependencies, RAII, thread-safe  
-✅ **Testing:** Automated unit tests + comprehensive manual matrix  
-✅ **Usability:** User-facing safety valve for edge cases  
-✅ **Maintenance:** Clear documentation, future-proof architecture  
-✅ **Build:** Robust RC compiler detection on Windows  
+✅ **Correctness:** Backend-gated platform-specific behavior
+✅ **Compatibility:** X11/XWayland fallback preserves existing behavior
+✅ **Safety:** No circular dependencies, RAII, thread-safe
+✅ **Testing:** Automated unit tests (cross-backend invariants only) + a manual matrix that still needs to be run
+✅ **Usability:** User-facing safety valve for edge cases
+✅ **Maintenance:** Clear documentation, future-proof architecture
+✅ **Build:** Windows RC compiler detection fails fast with a clear error instead of silently degrading
 
-Ready for review and merge as PR #593.
+Implementation and automated tests are ready for review in PR #743. The manual Wayland/XWayland/Windows validation matrix (`wayland-test-matrix.md`) still needs to be run on real compositors before issue #382 can close.

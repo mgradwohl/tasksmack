@@ -187,6 +187,21 @@ function Get-LLVMCovVersion {
     return $null
 }
 
+# Find rc.exe the same way CMakeLists.txt does: any version under the installed
+# Windows SDK, falling back to PATH.
+function Get-RcCompilerPath {
+    $sdkCandidates = Get-ChildItem -Path @(
+        "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe",
+        "${env:ProgramFiles(x86)}\Windows Kits\11\bin\*\x64\rc.exe",
+        "$env:ProgramFiles\Windows Kits\10\bin\*\x64\rc.exe",
+        "$env:ProgramFiles\Windows Kits\11\bin\*\x64\rc.exe"
+    ) -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+    if ($sdkCandidates) {
+        return $sdkCandidates[0].FullName
+    }
+    return Get-ToolPath "rc"
+}
+
 # Get git version
 function Get-GitVersion {
     try {
@@ -468,6 +483,16 @@ if ($gitVer -and [Version]$gitVer -ge $MIN_GIT_VERSION) {
 }
 else {
     Write-Status -Name "git" -Status "fail" -Version $gitVer -Path $gitPath -Required $MIN_GIT_VERSION
+    $AllOK = $false
+}
+
+# Check Windows SDK (rc.exe, required -- CMake configuration fails without it)
+$rcPath = Get-RcCompilerPath
+if ($rcPath) {
+    Write-Status -Name "rc.exe" -Status "ok" -Version "available" -Path $rcPath -Required ""
+}
+else {
+    Write-Status -Name "rc.exe" -Status "fail" -Version $null -Path $null -Required ""
     $AllOK = $false
 }
 

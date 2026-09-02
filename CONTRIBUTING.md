@@ -124,10 +124,10 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - ccache 4.9.1+ (optional but recommended)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
-- **Windows SDK** (includes `rc.exe` for resource compilation)
-  - Installed automatically by Visual Studio 2022 C++ Build Tools
-  - CMake will auto-detect `rc.exe` in standard SDK paths
-  - If RC compiler is not found, the build will proceed without resource compilation (app will run without icon/version info)
+- **Windows SDK** (includes `rc.exe` for resource compilation) — required
+  - Installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`)
+  - CMake auto-detects `rc.exe` in the installed SDK version, falling back to `PATH`, then `llvm-rc`/`llvm-windres`
+  - If no RC compiler can be found at all, CMake configuration fails with `FATAL_ERROR` rather than silently shipping a build missing its icon, version info, and DPI-awareness manifest
 
 Install Python + jinja2:
 
