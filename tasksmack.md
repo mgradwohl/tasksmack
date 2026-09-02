@@ -239,9 +239,21 @@ The application throttles idle and minimized rendering. Domain and Platform code
 
 Custom title-bar behavior is intentionally platform-specific:
 
-- Windows uses client-side drag and resize interactions (`TitleBarLayer`) and applies resize cursors from the app.
-- Linux (X11/Wayland) delegates border resize interactions and resize cursors to the window manager through `SDL_HITTEST_RESIZE_*` results.
-- Linux title-bar drag uses event-consistent coordinates (`window position + event-local mouse`) to avoid drag-start jumps caused by sampling global mouse state after queued events.
+- **Windows:** Client-side drag and resize interactions (`TitleBarLayer`) with resize cursors applied from the app.
+- **Linux (X11/XWayland):** Delegates border resize to window manager via `SDL_HITTEST_RESIZE_*` results.
+  - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`) to avoid drag-start jumps.
+  - Window maximize/restore uses client-side positioning with `SDL_GetDisplayUsableBounds`.
+- **Linux (native Wayland):** Prefers compositor-managed window interactions.
+  - Title-bar drag uses event-consistent local coordinates (computed from window position + SDL_GetMouseState) to avoid unreliable global mouse state.
+  - Window maximize/restore delegates to compositor via `SDL_MaximizeWindow`/`SDL_RestoreWindow` instead of manual client-side positioning.
+  - Border resize remains delegated to window manager.
+
+Backend detection is centralized in `Core::VideoBackend`:
+- Detects whether the current video driver is native Wayland, X11, XWayland (X11 on Wayland), or Windows.
+- Provides semantic capability queries (`supportsClientSideMaximize`, `supportsGlobalMouseState`) used by `Window` and `TitleBarLayer`.
+- Initialized once after SDL_Init in the Application constructor.
+
+XWayland is detected as a first-class fallback path (SDL driver `"x11"` with `WAYLAND_DISPLAY` set -- `DISPLAY` isn't consulted, since it's commonly set on native Wayland sessions too) and is treated like X11 for compatibility.
 
 ## Configuration and Paths
 

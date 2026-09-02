@@ -124,19 +124,19 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - ccache 4.9.1+ (optional but recommended)
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
+- **Windows SDK** — required (Clang needs its headers/libraries to compile Windows C++ code at all, regardless of which RC compiler is used); installed automatically by Visual Studio 2022 C++ Build Tools (`tools/setup-dev.ps1`); see below for how the RC (resource) compiler itself is selected
 
-**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon, version
-info, DPI-awareness manifest) into `TaskSmack.exe`. `CMakeLists.txt` requires `llvm-rc`
-(installed alongside `clang`/`clang++`, so no setup beyond the LLVM install above is
-needed) instead of the Windows SDK's own `rc.exe`, and fails configuration outright with
-an actionable error if `llvm-rc` can't be found -- there is no silent fallback to
-`rc.exe`, since that's the exact RC compiler known to hang indefinitely on this project
-(#746). The Visual Studio Build Tools workload and Windows SDK are still required
-prerequisites (installed by `tools/setup-dev.ps1`, above) -- Clang still needs the MSVC
-toolchain and Windows SDK headers/libraries to compile Windows C++ code at all -- but
-**you no longer need to run from inside a Visual Studio Developer Command Prompt**
-(`vcvarsall.bat`) just to get a working RC compiler, unlike some other
-Clang+MSVC-resource-compiler setups. To use a different RC compiler (e.g. `rc.exe`)
+**RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version
+info -- the DPI-awareness manifest is separate, embedded via `/MANIFESTINPUT` at link
+time, so it doesn't depend on RC compilation at all) into `TaskSmack.exe`.
+`CMakeLists.txt` (see `cmake/RCCompiler.cmake`) requires `llvm-rc` (installed alongside
+`clang`/`clang++`, so no setup beyond the LLVM install above is needed) instead of the
+Windows SDK's own `rc.exe`, and fails configuration outright with an actionable error if
+`llvm-rc` can't be found -- there is no silent fallback to `rc.exe`, since that's the
+exact RC compiler known to hang indefinitely on this project (#746). **You no longer
+need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
+just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
+setups. To use a different RC compiler (e.g. `rc.exe`)
 instead, opt in explicitly by passing `-DCMAKE_RC_COMPILER=<path>` to `cmake --preset
 ...` or setting the `RC` environment variable before configuring; either one is honored
 as-is and skips auto-detection. `RC` is the more durable choice for pinning `rc.exe`

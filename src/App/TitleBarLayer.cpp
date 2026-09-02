@@ -4,6 +4,7 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
+#include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
@@ -19,6 +20,7 @@
 #include <cstddef>
 #include <ratio>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #ifdef _WIN32
@@ -572,8 +574,35 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     }
 }
 
+auto TitleBarLayer::queryMouseState() -> std::tuple<int, int, SDL_MouseButtonFlags>
+{
+    if (!Core::VideoBackend::supportsGlobalMouseState())
+    {
+        // Native Wayland: SDL_GetGlobalMouseState() is unreliable there, so use the window-local
+        // query for both position and button mask -- the button mask stays accurate as long as
+        // the pointer is over this window, which holds while a drag/resize we started is active.
+        auto& window = Core::Application::get().getWindow();
+        const auto [windowOriginX, windowOriginY] = window.getPosition();
+        float localX = 0.0F;
+        float localY = 0.0F;
+        const SDL_MouseButtonFlags buttons = SDL_GetMouseState(&localX, &localY);
+        const int globalMouseX = windowOriginX + static_cast<int>(localX);
+        const int globalMouseY = windowOriginY + static_cast<int>(localY);
+        return {globalMouseX, globalMouseY, buttons};
+    }
+
+    // X11, XWayland, and Windows: the local query's button mask goes stale once the pointer
+    // leaves the window (no mouse capture here), which can leave a drag/resize started near an
+    // edge stuck active after the button is released off-window. Use the global query for both
+    // position and button mask, matching this project's pre-Wayland-support behavior.
+    float globalMouseXF = 0.0F;
+    float globalMouseYF = 0.0F;
+    const SDL_MouseButtonFlags buttons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
+    return {static_cast<int>(globalMouseXF), static_cast<int>(globalMouseYF), buttons};
+}
+
 // Called every frame while a custom drag or resize is in progress. Reads the
-// current global mouse state, computes the desired window position/size delta
+// current mouse state, computes the desired window position/size delta
 // from the recorded start positions, applies rate-limited SDL calls, and
 // fires a WindowResizedEvent when a size commit is issued. Ends the interaction
 // (via endWindowInteraction) if the left mouse button is no longer held.
@@ -629,11 +658,13 @@ void TitleBarLayer::updateWindowInteraction()
                          raiseResizeEventMs);
         }};
 
-    // Query the OS for the current pointer position and button mask.
-    float globalMouseXF = 0.0F;
-    float globalMouseYF = 0.0F;
+    // Query the current pointer position and button mask using a single backend-appropriate
+    // call (see queryMouseState()) rather than mixing a global position query with a local
+    // button-state query, which desyncs on Wayland and goes stale off-window elsewhere.
     SDL_MouseButtonFlags mouseButtons = 0U;
-    timedOp(m_TraceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
+    int globalMouseX = 0;
+    int globalMouseY = 0;
+    timedOp(m_TraceEnabled, mouseStateMs, [&] { std::tie(globalMouseX, globalMouseY, mouseButtons) = queryMouseState(); });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -641,8 +672,6 @@ void TitleBarLayer::updateWindowInteraction()
         return;
     }
 
-    const int globalMouseX = static_cast<int>(globalMouseXF);
-    const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
     if (m_InteractionMode == InteractionMode::Drag)

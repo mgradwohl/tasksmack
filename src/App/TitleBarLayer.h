@@ -4,7 +4,10 @@
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 
+#include <SDL3/SDL_mouse.h>
+
 #include <cstdint>
+#include <tuple>
 
 struct SDL_Cursor;
 
@@ -131,6 +134,11 @@ class TitleBarLayer : public Core::Layer
     void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
+
+    /// Query the current mouse position and button mask together, using whichever SDL query is
+    /// reliable for the active backend (see VideoBackend::supportsGlobalMouseState()): the local
+    /// query on native Wayland, the global query elsewhere. Returns {x, y, buttonMask}.
+    [[nodiscard]] static auto queryMouseState() -> std::tuple<int, int, SDL_MouseButtonFlags>;
 
     void createSystemCursors();
     void destroySystemCursors();

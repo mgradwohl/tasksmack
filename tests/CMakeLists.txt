@@ -124,6 +124,7 @@ add_executable(TaskSmackTests
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
+    Core/test_VideoBackend.cpp
     Core/test_Window.cpp
     Core/test_WindowEvents.cpp
     Domain/test_History.cpp
@@ -163,6 +164,7 @@ add_executable(TaskSmackTests
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
