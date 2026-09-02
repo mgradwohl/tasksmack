@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 namespace Core
@@ -40,7 +41,7 @@ class VideoBackend
     [[nodiscard]] static std::string_view driverName() noexcept;
 
   private:
-    enum class Backend
+    enum class Backend : std::uint8_t
     {
         Unknown,
         Wayland,
@@ -48,6 +49,9 @@ class VideoBackend
         XWaylandFallback,
         Windows
     };
+
+    /// Detect the backend from the SDL video driver name and environment.
+    [[nodiscard]] static Backend detectBackend() noexcept;
 
     static Backend s_Backend;
     static bool s_Initialized;

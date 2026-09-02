@@ -10,19 +10,16 @@ namespace Core
 
 VideoBackend::Backend VideoBackend::s_Backend = VideoBackend::Backend::Unknown;
 bool VideoBackend::s_Initialized = false;
-std::string_view VideoBackend::s_DriverName = "";
+std::string_view VideoBackend::s_DriverName;
 
-namespace
-{
-
-/// Detect the backend from the SDL video driver name and environment.
-[[nodiscard]] VideoBackend::Backend detectBackend() noexcept
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
+VideoBackend::Backend VideoBackend::detectBackend() noexcept
 {
     const char* driverNameCStr = SDL_GetCurrentVideoDriver();
     if (driverNameCStr == nullptr)
     {
         spdlog::warn("SDL_GetCurrentVideoDriver returned nullptr");
-        return VideoBackend::Backend::Unknown;
+        return Backend::Unknown;
     }
 
     const std::string_view driverName = driverNameCStr;
@@ -31,7 +28,7 @@ namespace
     if (driverName == "wayland")
     {
         spdlog::info("Detected native Wayland");
-        return VideoBackend::Backend::Wayland;
+        return Backend::Wayland;
     }
 
     // Check for X11 or XWayland (X11 apps on Wayland desktop)
@@ -43,26 +40,24 @@ namespace
         if (waylandDisplay != nullptr)
         {
             spdlog::info("Detected XWayland fallback (WAYLAND_DISPLAY={})", waylandDisplay);
-            return VideoBackend::Backend::XWaylandFallback;
+            return Backend::XWaylandFallback;
         }
 
         spdlog::info("Detected X11 video driver");
-        return VideoBackend::Backend::X11;
+        return Backend::X11;
     }
 
 #ifdef _WIN32
     if (driverName == "windows")
     {
         spdlog::info("Detected Windows video driver");
-        return VideoBackend::Backend::Windows;
+        return Backend::Windows;
     }
 #endif
 
     spdlog::warn("Unknown video driver: {}", driverName);
-    return VideoBackend::Backend::Unknown;
+    return Backend::Unknown;
 }
-
-} // namespace
 
 void VideoBackend::initialize()
 {
