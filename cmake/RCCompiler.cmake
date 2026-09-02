@@ -52,21 +52,31 @@
 # should set the RC environment variable instead (checked first, below, and always honored)
 # rather than relying on -DCMAKE_RC_COMPILER alone.
 if(WIN32)
-    if(DEFINED CACHE{CMAKE_RC_COMPILER} AND NOT DEFINED CACHE{TASKSMACK_AUTO_RC_COMPILER})
+    # CMake treats an explicitly empty RC/-DCMAKE_RC_COMPILER= as unset, not as "use an empty
+    # compiler" -- match that here too. An empty CACHE{CMAKE_RC_COMPILER} is still DEFINED, so
+    # without this a `-DCMAKE_RC_COMPILER=` with no value would be misclassified as a deliberate
+    # override (or, on a fresh tree, as a stale value to evict) instead of simply not being set.
+    set(_TASKSMACK_RC_CACHE_IS_SET FALSE)
+    if(DEFINED CACHE{CMAKE_RC_COMPILER} AND NOT "$CACHE{CMAKE_RC_COMPILER}" STREQUAL "")
+        set(_TASKSMACK_RC_CACHE_IS_SET TRUE)
+    endif()
+
+    if(_TASKSMACK_RC_CACHE_IS_SET AND NOT DEFINED CACHE{TASKSMACK_AUTO_RC_COMPILER})
         get_filename_component(_TASKSMACK_RC_CACHED_NAME "$CACHE{CMAKE_RC_COMPILER}" NAME)
         if(_TASKSMACK_RC_CACHED_NAME MATCHES "^[Rr][Cc]\\.[Ee][Xx][Ee]$")
             unset(CMAKE_RC_COMPILER CACHE)
+            set(_TASKSMACK_RC_CACHE_IS_SET FALSE)
         endif()
     endif()
 
     set(_TASKSMACK_RC_IS_OVERRIDE FALSE)
-    if(DEFINED CACHE{CMAKE_RC_COMPILER} AND
+    if(_TASKSMACK_RC_CACHE_IS_SET AND
        (NOT DEFINED CACHE{TASKSMACK_AUTO_RC_COMPILER} OR
         NOT "$CACHE{CMAKE_RC_COMPILER}" STREQUAL "${TASKSMACK_AUTO_RC_COMPILER}"))
         set(_TASKSMACK_RC_IS_OVERRIDE TRUE)
     endif()
 
-    if(DEFINED ENV{RC})
+    if(DEFINED ENV{RC} AND NOT "$ENV{RC}" STREQUAL "")
         # Set CMAKE_RC_COMPILER from RC ourselves, via CACHE ... FORCE, rather than relying on
         # CMake's own project()/enable_language(RC) to pick up the environment variable: on an
         # existing build tree, CMake reuses its previously generated per-language compiler-info
@@ -74,7 +84,26 @@ if(WIN32)
         # unsetting the CMAKE_RC_COMPILER cache entry doesn't invalidate that file, and the stale
         # compiler stays silently active -- confirmed by reproducing exactly that (RC ignored,
         # prior compiler still selected) with an unset()-only version of this branch.
-        set(CMAKE_RC_COMPILER "$ENV{RC}" CACHE FILEPATH "RC compiler" FORCE)
+        #
+        # RC may carry the compiler plus arguments (CMake's own CC/CXX convention), e.g.
+        # `RC="C:\tools\llvm-rc.exe --some-flag"` -- split those apart instead of forcing the
+        # whole string into CMAKE_RC_COMPILER as a single (invalid) executable path.
+        # NATIVE_COMMAND so quoting follows Windows/cmd rules, matching how RC is normally set.
+        separate_arguments(_TASKSMACK_RC_ENV_PARTS NATIVE_COMMAND "$ENV{RC}")
+        list(POP_FRONT _TASKSMACK_RC_ENV_PARTS _TASKSMACK_RC_ENV_EXE)
+        # Normalize backslashes: a native Windows path (e.g. RC="C:\tools\llvm-rc.exe") stored
+        # as-is makes CMake choke later trying to re-parse it out of its own generated
+        # CMakeRCCompiler.cmake ("\l" isn't a valid escape in that file's quoted strings).
+        string(REPLACE "\\" "/" _TASKSMACK_RC_ENV_EXE "${_TASKSMACK_RC_ENV_EXE}")
+        set(CMAKE_RC_COMPILER "${_TASKSMACK_RC_ENV_EXE}" CACHE FILEPATH "RC compiler" FORCE)
+        if(_TASKSMACK_RC_ENV_PARTS)
+            list(JOIN _TASKSMACK_RC_ENV_PARTS " " _TASKSMACK_RC_ENV_ARGS_STR)
+            set(CMAKE_RC_COMPILER_ARG1 " ${_TASKSMACK_RC_ENV_ARGS_STR}" CACHE STRING "RC compiler argument" FORCE)
+        else()
+            # Clear any argument left over from a previous RC value that had one, e.g. a prior
+            # `RC="tool.exe --flag"` followed by a plain `RC="tool.exe"` on a later configure.
+            unset(CMAKE_RC_COMPILER_ARG1 CACHE)
+        endif()
         unset(TASKSMACK_AUTO_RC_COMPILER CACHE)
         message(STATUS "Using user-specified RC compiler (RC environment variable): $ENV{RC}")
     elseif(_TASKSMACK_RC_IS_OVERRIDE)
@@ -109,6 +138,9 @@ if(WIN32)
             set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND} CACHE FILEPATH "RC compiler" FORCE)
             set(TASKSMACK_AUTO_RC_COMPILER ${LLVM_RC_FOUND} CACHE INTERNAL
                 "Last RC compiler path auto-selected by cmake/RCCompiler.cmake; used to detect stale cache entries.")
+            # Clear any argument left over from a previous RC="tool.exe --flag"-style override,
+            # since llvm-rc is invoked plain here.
+            unset(CMAKE_RC_COMPILER_ARG1 CACHE)
             message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
         else()
             # No RC compiler found anywhere. CONTRIBUTING.md documents LLVM (which includes
@@ -123,8 +155,12 @@ if(WIN32)
             message(FATAL_ERROR "llvm-rc not found (searched LLVM_ROOT/bin, standard LLVM install "
                                  "locations, and PATH). Install LLVM (see CONTRIBUTING.md's Windows "
                                  "Pre-Requisites), e.g. by running tools/setup-dev.ps1. To use a "
-                                 "different RC compiler instead, pass -DCMAKE_RC_COMPILER=<path> or "
-                                 "set the RC environment variable.")
+                                 "different RC compiler instead, set the RC environment variable -- "
+                                 "it's always honored. -DCMAKE_RC_COMPILER=<path> also works, EXCEPT "
+                                 "specifically for a path named rc.exe: that's indistinguishable "
+                                 "from a stale value left over from before this fix and is evicted "
+                                 "rather than honored, reproducing this same error -- use RC for "
+                                 "rc.exe specifically.")
         endif()
     endif()
 endif()

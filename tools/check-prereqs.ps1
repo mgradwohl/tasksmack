@@ -187,31 +187,30 @@ function Get-LLVMCovVersion {
     return $null
 }
 
-# Find an RC compiler the same way cmake/RCCompiler.cmake does: llvm-rc first (this project's
+# Find an RC compiler the same way cmake/RCCompiler.cmake does: llvm-rc only, searched via
+# LLVM_ROOT/bin, %ProgramFiles%\LLVM\bin, the hardcoded C:\Program Files\LLVM\bin, then PATH --
+# no fallback to the Windows SDK's rc.exe, PATH-found rc.exe, or llvm-windres. This project's
 # Windows toolchain is LLVM/Clang, not MSVC, and the Windows SDK's own rc.exe is confirmed to
-# hang indefinitely in this project's CI -- issue #746), then any Windows SDK version, then
-# PATH, then llvm-windres. Without matching this order, this check could report a different
-# tool than the one CMake will actually select.
+# hang indefinitely in this project's CI (issue #746); cmake/RCCompiler.cmake fails configuration
+# outright rather than falling back to any of those, so a check that reported one of them as "ok"
+# would let a broken environment (missing llvm-rc) pass here and then fail at configure time.
 function Get-RcCompilerPath {
-    $llvmRcPath = Get-ToolPath "llvm-rc"
-    if ($llvmRcPath) {
-        return $llvmRcPath
+    if ($env:LLVM_ROOT) {
+        $candidate = Join-Path $env:LLVM_ROOT "bin\llvm-rc.exe"
+        if (Test-Path $candidate) {
+            return $candidate
+        }
     }
-    $sdkCandidates = Get-ChildItem -Path @(
-        "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe",
-        "${env:ProgramFiles(x86)}\Windows Kits\11\bin\*\x64\rc.exe",
-        "$env:ProgramFiles\Windows Kits\10\bin\*\x64\rc.exe",
-        "$env:ProgramFiles\Windows Kits\11\bin\*\x64\rc.exe"
-    ) -ErrorAction SilentlyContinue |
-        Sort-Object { [version]($_.FullName -replace '.*\\bin\\([\d.]+)\\x64\\rc\.exe$', '$1') } -Descending
-    if ($sdkCandidates) {
-        return $sdkCandidates[0].FullName
+    if ($env:ProgramFiles) {
+        $candidate = Join-Path $env:ProgramFiles "LLVM\bin\llvm-rc.exe"
+        if (Test-Path $candidate) {
+            return $candidate
+        }
     }
-    $rcPath = Get-ToolPath "rc"
-    if ($rcPath) {
-        return $rcPath
+    if (Test-Path "C:\Program Files\LLVM\bin\llvm-rc.exe") {
+        return "C:\Program Files\LLVM\bin\llvm-rc.exe"
     }
-    return Get-ToolPath "llvm-windres"
+    return Get-ToolPath "llvm-rc"
 }
 
 # Get git version
@@ -498,13 +497,14 @@ else {
     $AllOK = $false
 }
 
-# Check Windows SDK (rc.exe, required -- CMake configuration fails without it)
+# Check for llvm-rc (RC compiler; required -- CMake configuration fails without it, with no
+# fallback to the Windows SDK's rc.exe, which is known to hang -- see Get-RcCompilerPath above)
 $rcPath = Get-RcCompilerPath
 if ($rcPath) {
-    Write-Status -Name "rc.exe" -Status "ok" -Version "available" -Path $rcPath -Required ""
+    Write-Status -Name "llvm-rc" -Status "ok" -Version "available" -Path $rcPath -Required ""
 }
 else {
-    Write-Status -Name "rc.exe" -Status "fail" -Version $null -Path $null -Required ""
+    Write-Status -Name "llvm-rc" -Status "fail" -Version $null -Path $null -Required ""
     $AllOK = $false
 }
 

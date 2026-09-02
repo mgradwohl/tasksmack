@@ -136,17 +136,21 @@ Windows SDK's own `rc.exe`, and fails configuration outright with an actionable 
 exact RC compiler known to hang indefinitely on this project (#746). **You no longer
 need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
 just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
-setups. To use a different RC compiler (e.g. `rc.exe`)
-instead, opt in explicitly by passing `-DCMAKE_RC_COMPILER=<path>` to `cmake --preset
-...` or setting the `RC` environment variable before configuring; either one is honored
-as-is and skips auto-detection. `RC` is the more durable choice for pinning `rc.exe`
-specifically: on a build tree that predates this fix (or on the very first configure of
-a brand-new one), `CMakeLists.txt` can't yet tell an intentional `-DCMAKE_RC_COMPILER=`
-override of `rc.exe` apart from a stale cached value from before, and -- since `rc.exe`
-is the one tool with a confirmed hang -- resolves that specific ambiguity in favor of
-safety by re-detecting `llvm-rc` instead. `RC` isn't affected by this at all and always
-wins. Any other RC compiler passed via `-DCMAKE_RC_COMPILER=` (i.e. not named `rc.exe`)
-doesn't hit this ambiguity and is always honored as pinned.
+setups. To use a different RC compiler instead, opt in explicitly by passing
+`-DCMAKE_RC_COMPILER=<path>` to `cmake --preset ...` or setting the `RC` environment
+variable before configuring, both of which skip auto-detection -- **with one exception:
+use `RC` specifically to pin `rc.exe`**, not `-DCMAKE_RC_COMPILER=`. On a build tree
+that predates this fix (or on the very first configure of a brand-new one),
+`CMakeLists.txt` can't yet tell an intentional `-DCMAKE_RC_COMPILER=<path to rc.exe>`
+override apart from a stale cached value from before, and -- since `rc.exe` is the one
+tool with a confirmed hang -- resolves that specific ambiguity in favor of safety by
+re-detecting `llvm-rc` instead, ignoring the override. `RC` isn't affected by this at
+all and always wins. Any other RC compiler passed via `-DCMAKE_RC_COMPILER=` (i.e. not
+named `rc.exe`) doesn't hit this ambiguity and is always honored as pinned. Also like
+CMake's `CC`/`CXX`, `RC` may include compiler arguments (e.g. `RC="C:\tools\llvm-rc.exe
+--flag"`) -- these are split out automatically -- and, following that same CC/CXX
+convention, a path containing a space (e.g. the default `C:\Program Files\LLVM\bin`)
+must be quoted within the value itself: `RC="\"C:\Program Files\LLVM\bin\llvm-rc.exe\""`.
 
 Install Python + jinja2:
 
