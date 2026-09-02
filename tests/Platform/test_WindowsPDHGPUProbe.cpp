@@ -322,13 +322,19 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MissingCounterReturnsPartialDataThenRecov
     // Allow the counter to add successfully on the next ensureCounters() retry, and give it
     // data to return.
     m_Scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = false;
+
+    // The next successful PdhAddEnglishCounter() will assign the current nextHandleValue,
+    // so pre-populate items for that handle to verify the recovered counter contributes.
+    const auto expectedDedicatedHandle =
+        reinterpret_cast<PDH_HCOUNTER>(m_Scenario->nextHandleValue); // NOLINT(performance-no-int-to-ptr)
+    m_Scenario->items[expectedDedicatedHandle] = {
+        {.name = L"pid_400_luid_0x0_0x1_phys_0", .largeValue = 1234},
+    };
+
     const auto secondResults = probe.readProcessGPUCounters();
     ASSERT_EQ(secondResults.size(), 1U);
-    // The now-recovered dedicated-memory counter has no configured items yet (added mid-flight,
-    // m_Scenario->items was never populated for it), so this just confirms the retry didn't
-    // crash and utilization data is still intact; a following read is what would show memory.
+    EXPECT_EQ(secondResults[0].gpuMemoryBytes, 1234U);
     EXPECT_DOUBLE_EQ(secondResults[0].gpuUtilPercent, 25.0);
-}
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, ItemsWithFailingCStatusAreSkipped)
 {
