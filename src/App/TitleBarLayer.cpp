@@ -802,6 +802,21 @@ void TitleBarLayer::createSystemCursors()
     m_EwResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
     m_NeswResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
     m_NwseResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
+
+    // Diagnostic: SDL_CreateSystemCursor() returns nullptr on failure (e.g. a cursor theme
+    // missing a directional resize shape), and applyCursorForEdge() silently falls back to the
+    // default cursor whenever its target cursor is null -- indistinguishable at the UI level
+    // from "no resize cursor at all". Surface creation failures explicitly (see #749 follow-up).
+    if (m_NsResizeCursor == nullptr || m_EwResizeCursor == nullptr || m_NeswResizeCursor == nullptr || m_NwseResizeCursor == nullptr)
+    {
+        spdlog::warn("TitleBarLayer: one or more resize-cursor shapes failed to create (ns={} ew={} nesw={} nwse={}); "
+                     "SDL error: {}",
+                     m_NsResizeCursor != nullptr,
+                     m_EwResizeCursor != nullptr,
+                     m_NeswResizeCursor != nullptr,
+                     m_NwseResizeCursor != nullptr,
+                     SDL_GetError());
+    }
 }
 
 void TitleBarLayer::destroySystemCursors()
@@ -897,10 +912,28 @@ void TitleBarLayer::updateResizeCursor()
         // during that interaction (see #699, #749). Hold the cached edge/cursor as-is;
         // the next real hover sample corrects it once focus is genuinely restored
         // (e.g. the pointer actually left the window to hover another app).
+        //
+        // Diagnostic: log only on transition into this branch, so a build can confirm
+        // whether it fires only around WM-owned interactions (expected) or continuously,
+        // even during plain hover (would mean this branch, not the interaction case, is
+        // starving the real hover-detection path below -- see #749 follow-up).
+        if (!m_HasLoggedFocusMismatch || !m_LastLoggedFocusMismatch)
+        {
+            spdlog::debug("updateResizeCursor: SDL_GetMouseFocus() != our window (holding cached edge={})", static_cast<int>(prevEdge));
+            m_LastLoggedFocusMismatch = true;
+            m_HasLoggedFocusMismatch = true;
+        }
         edge = prevEdge;
     }
     else
     {
+        if (!m_HasLoggedFocusMismatch || m_LastLoggedFocusMismatch)
+        {
+            spdlog::debug("updateResizeCursor: SDL_GetMouseFocus() matches our window (real hover detection active)");
+            m_LastLoggedFocusMismatch = false;
+            m_HasLoggedFocusMismatch = true;
+        }
+
         // Use window-local coordinates from SDL_GetMouseState. Global
         // coordinates (SDL_GetGlobalMouseState) are unreliable on Wayland —
         // including WSLg — where compositors do not expose the global cursor
@@ -940,6 +973,15 @@ void TitleBarLayer::updateResizeCursor()
                     edge = ResizeEdge::None;
                 }
             }
+            // Diagnostic: state already changed this frame (gated by stateUnchanged above), so
+            // this can't spam -- confirms whether real hover samples reach detectResizeEdge() at
+            // all, and what edge they resolve to, on a live Wayland/WSLg build (#749 follow-up).
+            spdlog::debug("updateResizeCursor: hover sample ({}, {}) in {}x{} window -> edge={}",
+                          mouseLocalX,
+                          mouseLocalY,
+                          windowWidth,
+                          windowHeight,
+                          static_cast<int>(edge));
             m_CachedHoverEdge = edge;
         }
         // State unchanged: edge == m_CachedHoverEdge, falls through to apply.
