@@ -206,8 +206,9 @@ void ShellLayer::onRender()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    // Get dynamic title bar height (matches tab bars)
-    const float titleBarHeight = TitleBarLayer::height();
+    // Get dynamic title bar height (matches tab bars). Zero when native OS decorations are in
+    // use instead of the custom title bar (see #745) -- TitleBarLayer isn't pushed in that case.
+    const float titleBarHeight = Core::Application::get().getWindow().isBorderless() ? TitleBarLayer::height() : 0.0F;
 
     // Calculate status bar height
     const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
@@ -374,6 +375,33 @@ void ShellLayer::renderStatusBar() const
         }
 
         ImGui::Text("Ready");
+
+        // When native OS decorations replace the custom title bar (see #745), its
+        // Settings/Help buttons don't exist -- surface equivalents here so those stay
+        // reachable. Hidden otherwise since the title bar already provides them.
+        if (!Core::Application::get().getWindow().isBorderless())
+        {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(ICON_FA_GEAR "##StatusBarSettings"))
+            {
+                Core::OpenSettingsEvent event;
+                Core::Application::get().raiseEvent(event);
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Settings");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(ICON_FA_CIRCLE_QUESTION "##StatusBarHelp"))
+            {
+                Core::OpenAboutEvent event;
+                Core::Application::get().raiseEvent(event);
+            }
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("About / Help");
+            }
+        }
 
         // Right-align FPS display
         const char* fpsText = "%.1f FPS (%.2f ms)";

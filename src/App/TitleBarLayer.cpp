@@ -229,7 +229,7 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     // native Wayland -- the maximize button remains available there. X11/XWayland/Windows
     // stay NORMAL so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
     // double-click maximize/restore detection.
-    return computeTitleBarAreaHitTest(layer->isPointInControlArea(x, y), !Core::VideoBackend::supportsClientSideMaximize());
+    return computeTitleBarAreaHitTest(layer->isPointInControlArea(x, y), Core::VideoBackend::isWayland());
 #endif
 }
 
