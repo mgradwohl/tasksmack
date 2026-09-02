@@ -14,7 +14,7 @@ endif()
 # If RC.exe is not found, search for alternatives (llvm-rc, llvm-windres).
 # NOTE: We set CMAKE_RC_COMPILER BEFORE calling project() so CMake's platform detection
 # doesn't fail when looking for the RC compiler.
-if(WIN32)
+if(WIN32 AND NOT CMAKE_RC_COMPILER AND "$ENV{RC}" STREQUAL "")
     # Our Windows CI installs only LLVM/Ninja/ccache (no Visual Studio Developer Command
     # Prompt), so rc.exe is never on PATH; it has to be located inside the Windows SDK
     # install instead. The SDK's bin directory is versioned (e.g. 10.0.26100.0) and that
