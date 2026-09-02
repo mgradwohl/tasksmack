@@ -11,7 +11,7 @@ if(POLICY CMP0069)
 endif()
 
 # Pre-detect RC.exe on Windows and set CMAKE_RC_COMPILER before project() declaration.
-# If RC.exe is not found, use a no-op fallback to prevent CMake configuration failures.
+# If RC.exe is not found, search for alternatives (llvm-rc, llvm-windres).
 # NOTE: We set CMAKE_RC_COMPILER BEFORE calling project() so CMake's platform detection
 # doesn't fail when looking for the RC compiler.
 if(WIN32)
@@ -29,11 +29,25 @@ if(WIN32)
         message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
         set(TASKSMACK_HAS_RC_COMPILER TRUE)
     else()
-        # Use a no-op fallback to prevent CMake from failing during platform detection.
-        # This allows configuration to proceed without rc.exe in PATH.
-        message(STATUS "RC compiler (rc.exe) not found; using no-op fallback")
-        set(CMAKE_RC_COMPILER "echo")
-        set(TASKSMACK_HAS_RC_COMPILER FALSE)
+        # RC.exe not found; try alternatives: llvm-rc, llvm-windres
+        find_program(LLVM_RC_FOUND llvm-rc)
+        if(LLVM_RC_FOUND)
+            set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
+            message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
+            set(TASKSMACK_HAS_RC_COMPILER TRUE)
+        else()
+            find_program(LLVM_WINDRES_FOUND llvm-windres)
+            if(LLVM_WINDRES_FOUND)
+                set(CMAKE_RC_COMPILER ${LLVM_WINDRES_FOUND})
+                message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
+                set(TASKSMACK_HAS_RC_COMPILER TRUE)
+            else()
+                # No RC compiler found; disable .rc compilation and continue.
+                message(STATUS "RC compiler not found (tried rc.exe, llvm-rc, llvm-windres); disabling .rc resource compilation")
+                set(CMAKE_RC_COMPILER "")
+                set(TASKSMACK_HAS_RC_COMPILER FALSE)
+            endif()
+        endif()
     endif()
 endif()
 
