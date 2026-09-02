@@ -92,3 +92,6 @@ build.log
 build-logs/
 *.Zone.Identifier
 build_output.txt
+
+# Claude Code session-local runtime state (not project config)
+.claude/scheduled_tasks.lock
