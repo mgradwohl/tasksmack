@@ -3,6 +3,7 @@
     "allow": [
       "Bash(cmake --preset *)",
       "Bash(cmake --build --preset *)",
+      "Bash(cmake --workflow --preset *)",
       "Bash(cmake --list-presets*)",
       "Bash(ctest --preset *)",
       "Bash(./tools/clang-tidy.sh*)",

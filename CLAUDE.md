@@ -11,7 +11,7 @@ read those instead of duplicating them here.
   focused PRs, full PR template, `clang-tidy`/`clang-format`/`pre-commit` run before opening, and CI green before
   requesting merge.
 - Use the existing templates rather than freehand text: `.github/pull_request_template.md` for PRs,
-  `.github/ISSUE_TEMPLATE/bug_report.md` / `feature_request.md` for issues.
+  `.github/ISSUE_TEMPLATE/bug_report.md` / `.github/ISSUE_TEMPLATE/feature_request.md` for issues.
 - Never force-push to a PR branch once a review has started, and never merge, close, or force-push anything without
   asking first — these are shared/hard-to-reverse actions per the standing safety rules. Opening a draft PR, pushing
   a first version, and commenting/reviewing are fine to do directly when asked.
