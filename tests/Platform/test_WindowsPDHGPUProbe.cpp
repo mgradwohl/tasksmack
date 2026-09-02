@@ -104,8 +104,8 @@ PDH_STATUS WINAPI fakeCollectQueryData(PDH_HQUERY)
     return g_scenario->collectStatus;
 }
 
-PDH_STATUS WINAPI fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferSize, LPDWORD itemCount,
-                                               PPDH_FMT_COUNTERVALUE_ITEM_W buffer)
+PDH_STATUS WINAPI
+fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferSize, LPDWORD itemCount, PPDH_FMT_COUNTERVALUE_ITEM_W buffer)
 {
     ++g_scenario->getArrayCallCount;
     static const std::vector<FakeItem> emptyList;
