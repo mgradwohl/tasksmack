@@ -904,18 +904,6 @@ void TitleBarLayer::updateResizeCursor()
         return;
     }
 
-#ifndef _WIN32
-    // On non-Windows the hit-test callback returns SDL_HITTEST_RESIZE_* for border
-    // regions, so the window manager owns both the resize operation and its cursor.
-    // When the WM grabs the pointer for a resize, SDL_GetMouseFocus() may stop
-    // returning our window, which would incorrectly trigger a reset to the default
-    // cursor and fight the WM-drawn resize cursor. Skip client-side cursor management
-    // entirely on non-Windows — the WM keeps the correct resize cursor via hit-test.
-    // (Client-side resize on Windows uses InteractionMode::Resize and is handled below.)
-    (void) sdlWindow;
-    return;
-#endif
-
     // Seed from the cache so the state-unchanged fast-path still reaches the
     // cursor-apply step at the end (ImGui may reset the cursor each frame).
     const ResizeEdge prevEdge = m_CachedHoverEdge;
@@ -927,10 +915,14 @@ void TitleBarLayer::updateResizeCursor()
     }
     else if (SDL_GetMouseFocus() != sdlWindow)
     {
-        // Pointer is over another window (or has left ours) — no resize edge.
-        edge = ResizeEdge::None;
-        m_CachedHoverEdge = edge;
-        m_HasCursorSample = false;
+        // SDL_GetMouseFocus() can transiently disagree with reality while the
+        // WM/compositor owns an active hit-test-triggered resize or drag (border
+        // SDL_HITTEST_RESIZE_* / title-bar SDL_HITTEST_DRAGGABLE on native Wayland) --
+        // forcing the default cursor here would fight the WM's own cursor rendering
+        // during that interaction (see #699, #749). Hold the cached edge/cursor as-is;
+        // the next real hover sample corrects it once focus is genuinely restored
+        // (e.g. the pointer actually left the window to hover another app).
+        edge = prevEdge;
     }
     else
     {
