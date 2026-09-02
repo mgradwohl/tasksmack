@@ -13,7 +13,7 @@ fourth time, this is now a thin pointer to the documents that stay current becau
 the codebase (and CI) actually depends on them being right:
 
 - **Architecture and backend detection logic:** `tasksmack.md`
-- **Windows RC compiler detection:** `RC-COMPILER-FIX.md`, `CMakeLists.txt` (lines 13-78, pre-`project()` block)
+- **Windows RC compiler detection:** `RC-COMPILER-FIX.md`, `cmake/RCCompiler.cmake` (included from `CMakeLists.txt` before `project()`)
 - **Manual validation matrix:** `wayland-test-matrix.md`
 - **Prerequisites:** `CONTRIBUTING.md`
 - **Automated tests:** `tests/Core/test_VideoBackend.cpp`

@@ -151,9 +151,9 @@ TEST_F(VideoBackendTest, SupportsClientSideMaximizeIsFalseOnlyOnWayland)
     EXPECT_EQ(VideoBackend::supportsClientSideMaximize(), !VideoBackend::isWayland());
 }
 
-TEST_F(VideoBackendTest, SupportsGlobalMouseStateIsAlwaysTrue)
+TEST_F(VideoBackendTest, SupportsGlobalMouseStateIsFalseOnlyOnWayland)
 {
-    EXPECT_TRUE(VideoBackend::supportsGlobalMouseState());
+    EXPECT_EQ(VideoBackend::supportsGlobalMouseState(), !VideoBackend::isWayland());
 }
 
 TEST_F(VideoBackendTest, IsWindowsIsFalseOnNonWindowsBuilds)

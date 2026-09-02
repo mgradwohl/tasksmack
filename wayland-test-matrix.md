@@ -29,16 +29,16 @@ Wayland specifically is tracked as still broken, issue #744).
 
 These tests verify the backend detection and capability query system that gates all platform-specific behavior.
 
-**Test Coverage** (7 `TEST_F` cases; SDL gives no seam to inject a fake driver, so
-these check cross-backend invariants rather than asserting a specific backend on
-every platform):
-- `InitializeIsIdempotent` - calling `initialize()` twice doesn't change the result
-- `DriverNameIsNotEmptyAfterInitialize` - driver name is always available once initialized
-- `BackendFlagsAreMutuallyExclusive` - at most one of `isWayland`/`isX11`/`isXWaylandFallback`/`isWindows` is true
-- `NativeWaylandIsNeverClassifiedAsXWaylandFallback` - regression test for the native-Wayland-vs-XWayland bug fixed in this PR; self-skips unless the actual driver is `"wayland"`
-- `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
-- `SupportsGlobalMouseStateIsAlwaysTrue`
-- `IsWindowsIsFalseOnNonWindowsBuilds` (Linux/macOS builds only)
+**Test Coverage:**
+- `ClassifyBackendTest` (6 cases) - table-tests `VideoBackend::classifyBackend(driverName, waylandDisplaySet)` directly. It's a pure function with no SDL/environment calls of its own, so every backend and edge case (empty/unrecognized driver name, Wayland regardless of env, X11 with/without `WAYLAND_DISPLAY`, Windows per-platform) is exercised deterministically regardless of what driver the test process actually has active.
+- `VideoBackendTest` (7 `TEST_F` cases) - exercises the real `initialize()`/`isWayland()`/etc. path against whichever real or headless SDL driver is active, so (unlike `ClassifyBackendTest`) these check cross-backend invariants rather than asserting a specific backend on every platform:
+  - `InitializeIsIdempotent` - calling `initialize()` twice doesn't change the result
+  - `DriverNameIsNotEmptyAfterInitialize` - driver name is always available once initialized
+  - `BackendFlagsAreMutuallyExclusive` - at most one of `isWayland`/`isX11`/`isXWaylandFallback`/`isWindows` is true
+  - `NativeWaylandIsNeverClassifiedAsXWaylandFallback` - regression test for the native-Wayland-vs-XWayland bug fixed in this PR; self-skips unless the actual driver is `"wayland"`
+  - `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
+  - `SupportsGlobalMouseStateIsFalseOnlyOnWayland` - global mouse state is deliberately unsupported on native Wayland (`TitleBarLayer` uses the window-local query there instead)
+  - `IsWindowsIsFalseOnNonWindowsBuilds` (Linux/macOS builds only)
 
 **Run Unit Tests:**
 ```bash
@@ -70,7 +70,8 @@ ctest --preset debug              # Linux tests
 
 #### Linux - XWayland Fallback
 - [ ] GNOME Wayland with XWayland fallback enabled
-  - [ ] Start tasksmack with `DISPLAY=:<N>` set alongside `WAYLAND_DISPLAY`
+  - [ ] Start tasksmack with `DISPLAY=:<N>` and `WAYLAND_DISPLAY` set, **and** `SDL_VIDEODRIVER=x11` -- setting the display variables alone does not select XWayland; SDL still normally chooses its native Wayland driver
+  - [ ] Verify VideoBackend logs confirm the `x11` driver before recording results
   - Verify behavior matches X11 (client-side positioning)
 
 #### Linux - X11

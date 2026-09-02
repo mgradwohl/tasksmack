@@ -25,9 +25,9 @@ VideoBackend::Backend VideoBackend::classifyBackend(const std::string_view drive
         return Backend::Wayland;
     }
 
-    // X11 or XWayland (X11 apps on a Wayland desktop). XWayland is detected when running X11
-    // on a Wayland desktop (WAYLAND_DISPLAY is set) -- different from native Wayland, where SDL
-    // reports "x11" because we're using XWayland's X11 server.
+    // X11 or XWayland (X11 apps on a Wayland desktop). Native Wayland is caught by the "wayland"
+    // check above; here SDL reports "x11" because we're either on a real X11 session, or using
+    // XWayland's X11 server (WAYLAND_DISPLAY set) as a compatibility layer on a Wayland desktop.
     if (driverName == "x11")
     {
         return waylandDisplaySet ? Backend::XWaylandFallback : Backend::X11;
