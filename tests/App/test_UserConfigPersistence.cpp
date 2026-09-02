@@ -821,6 +821,16 @@ TEST_F(UserConfigSaveLoadFixture, WindowDimensionsRoundTrip)
     EXPECT_TRUE(config.settings().windowMaximized);
 }
 
+TEST_F(UserConfigSaveLoadFixture, ForceNativeWindowDecorationsOnWaylandRoundTrip)
+{
+    auto& config = UserConfig::get();
+    config.settings().forceNativeWindowDecorationsOnWayland = true;
+    config.save();
+    config.settings().forceNativeWindowDecorationsOnWayland = false;
+    config.load();
+    EXPECT_TRUE(config.settings().forceNativeWindowDecorationsOnWayland);
+}
+
 TEST_F(UserConfigSaveLoadFixture, WindowPositionSaneValuesRoundTrip)
 {
     auto& config = UserConfig::get();

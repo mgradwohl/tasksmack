@@ -53,6 +53,8 @@ TEST(UserSettingsTest, DefaultWindowDimensions)
     EXPECT_FALSE(settings.windowPosX.has_value());
     EXPECT_FALSE(settings.windowPosY.has_value());
     EXPECT_FALSE(settings.windowMaximized);
+    // The custom title bar is the default everywhere; native decorations are opt-in (#745).
+    EXPECT_FALSE(settings.forceNativeWindowDecorationsOnWayland);
 }
 
 TEST(UserSettingsTest, DefaultProcessColumnsAreVisible)

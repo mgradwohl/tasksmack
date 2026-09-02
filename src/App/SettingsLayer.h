@@ -45,6 +45,7 @@ class SettingsLayer : public Core::Layer
     std::size_t m_SelectedFontSizeIndex = 0;
     std::size_t m_SelectedRefreshRateIndex = 0;
     std::size_t m_SelectedHistoryIndex = 0;
+    bool m_ForceNativeDecorationsOnWayland = false;
 
     // Available options
     std::vector<UI::DiscoveredTheme> m_Themes;

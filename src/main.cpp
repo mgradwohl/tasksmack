@@ -172,6 +172,7 @@ auto runApp() -> int
     appSpec.Width = std::clamp(settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.Height = std::clamp(settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.VSync = true;
+    appSpec.ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 
     auto app = std::make_unique<Core::Application>(appSpec);
     Core::Application::setInstance(std::move(app));

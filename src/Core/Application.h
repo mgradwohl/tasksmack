@@ -20,6 +20,11 @@ struct ApplicationSpecification
     int Width = 1280;
     int Height = 720;
     bool VSync = true;
+    /// User's UserConfig::forceNativeWindowDecorationsOnWayland preference, threaded through
+    /// here (rather than Application reading UserConfig directly) to respect the
+    /// Platform/Domain/Core/UI/App layering: Core must not depend on App. Only has an effect
+    /// combined with VideoBackend::isWayland() at window-creation time (see #745).
+    bool ForceNativeDecorationsOnWayland = false;
 };
 
 class Application
