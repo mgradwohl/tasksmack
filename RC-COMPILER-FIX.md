@@ -1,4 +1,4 @@
-# Windows RC Compiler Fix (PR #593)
+# Windows RC Compiler Fix (PR #743, implementing issue #593)
 
 ## Problem
 

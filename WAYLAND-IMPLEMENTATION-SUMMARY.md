@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This implementation adds production-ready Wayland native support to TaskSmack (PR #593), addressing compositor-sensitive window management issues with backend capability gating, comprehensive testing, and a robust RC compiler detection system.
+This implementation adds Wayland native support to TaskSmack (PR #743, implementing issue #593), addressing compositor-sensitive window management issues with backend capability gating, automated tests, and Windows RC compiler detection.
 
 **Status:** Implementation complete; manual Wayland/XWayland/Windows validation still outstanding
 - Implementation: 7/7 steps complete
@@ -101,17 +101,7 @@ std::pair<int, int> TitleBarLayer::getCurrentMousePosition() {
 
 XWayland is `SDL_GetCurrentVideoDriver() == "x11"` with `WAYLAND_DISPLAY` also set -- not "both `WAYLAND_DISPLAY` and `DISPLAY` set" (an earlier, incorrect description; `DISPLAY` is commonly set on native Wayland sessions too, via XWayland running for other apps, so it can't be part of the discriminator). Treated like X11 for backward compatibility. No regression to client-side behavior.
 
-### 5. User-Facing Safety Valve
-
-**File:** `src/App/UserConfig.h`
-
-```cpp
-bool forceNativeWindowDecorationsOnWayland = false;
-```
-
-Allows users to disable the custom title bar on Wayland if compositor behavior remains inconsistent (explicitly documented).
-
-### 6. Comprehensive Documentation
+### 5. Comprehensive Documentation
 
 **Files Updated/Created:**
 - `tasksmack.md` - Architecture section updated with backend-specific window behavior (20 lines)
@@ -119,7 +109,7 @@ Allows users to disable the custom title bar on Wayland if compositor behavior r
 - `RC-COMPILER-FIX.md` - Windows RC compiler detection guide and troubleshooting
 - `CONTRIBUTING.md` - Windows SDK documentation for RC compiler
 
-### 7. Automated Unit Tests
+### 6. Automated Unit Tests
 
 **File:** `tests/Core/test_VideoBackend.cpp`
 
@@ -157,7 +147,6 @@ backend on every platform):
 - `src/Core/Window.cpp` - Backend-gated maximize/restore (31 lines)
 - `src/App/TitleBarLayer.h` - New getCurrentMousePosition() method
 - `src/App/TitleBarLayer.cpp` - Backend-gated coordinate handling (47 lines)
-- `src/App/UserConfig.h` - forceNativeWindowDecorationsOnWayland setting (7 lines)
 - `tests/CMakeLists.txt` - Register VideoBackend tests
 - `tasksmack.md` - Updated window behavior documentation
 - `wayland-test-matrix.md` - Expanded with unit tests section
@@ -196,7 +185,7 @@ f133cc1 feat: Implement Wayland native support with backend capability gating
 ## Issue Workflow
 
 As specified in the original plan:
-- **#593:** Implementation umbrella (this PR)
+- **#593:** Implementation umbrella issue, implemented by PR #743
 - **#382:** Manual validation gate (re-triage after merge, manual test evidence required before close)
 
 ## Architecture Verification
@@ -240,7 +229,7 @@ As specified in the original plan:
 2. Review `RC-COMPILER-FIX.md` for RC compiler context
 3. Verify `test_VideoBackend.cpp` tests match your environment
 
-### Post-Merge (PR #593)
+### Post-Merge (PR #743)
 1. Attach `wayland-test-matrix.md` to issue #382
 2. Assign to Wayland test team
 3. Re-triage #382 with manual test evidence
@@ -268,7 +257,6 @@ This implementation adds backend-gated Wayland/X11/XWayland/Windows window handl
 ✅ **Compatibility:** X11/XWayland fallback preserves existing behavior
 ✅ **Safety:** No circular dependencies, RAII, thread-safe
 ✅ **Testing:** Automated unit tests (cross-backend invariants only) + a manual matrix that still needs to be run
-✅ **Usability:** User-facing safety valve for edge cases
 ✅ **Maintenance:** Clear documentation, future-proof architecture
 ✅ **Build:** Windows RC compiler detection fails fast with a clear error instead of silently degrading
 

@@ -255,8 +255,6 @@ Backend detection is centralized in `Core::VideoBackend`:
 
 XWayland is detected as a first-class fallback path (SDL driver `"x11"` with `WAYLAND_DISPLAY` set -- `DISPLAY` isn't consulted, since it's commonly set on native Wayland sessions too) and is treated like X11 for compatibility.
 
-User-facing safety valve: The `forceNativeWindowDecorationsOnWayland` setting in `UserSettings` allows users to disable the custom title bar on Wayland if compositor behavior remains inconsistent.
-
 ## Configuration and Paths
 
 `App::UserConfig` persists TOML settings through platform-aware paths:

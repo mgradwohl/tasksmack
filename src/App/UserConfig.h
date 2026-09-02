@@ -68,13 +68,6 @@ struct UserSettings
     std::optional<int> windowPosY;
     bool windowMaximized = false;
 
-    // Wayland-specific settings
-    // Force native window decorations on Wayland if custom title bar behavior is inconsistent
-    // On Wayland, setting this to true disables the custom borderless title bar and uses
-    // the compositor's native window decorations instead. This is a workaround for
-    // compositor-specific bugs or behavioral differences.
-    bool forceNativeWindowDecorationsOnWayland = false;
-
     // Whether to show the reduced-privileges notice dialog on startup.
     // Set to false permanently via "Don't show again" in the dialog.
     bool showPrivilegeNotice = true;

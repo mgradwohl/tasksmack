@@ -57,7 +57,7 @@ running `tools/*.sh` scripts that shell out to Python, if a venv exists at `.ven
 For a full architecture-boundary/C++23/thread-safety review checklist, see the `tasksmack-review` Claude Code
 skill (mirrors `.github/skills/code-review/SKILL.md`, written for Copilot) — run alongside `/code-review`.
 
-## Wayland-Native Support (PR #593, Validation #382)
+## Wayland-Native Support (PR #743, implementing issue #593; validation #382)
 
 All platform-specific window behavior uses `Core::VideoBackend` abstraction:
 

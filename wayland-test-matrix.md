@@ -1,11 +1,11 @@
 # Wayland Native Support - Test Matrix and Validation
 
 ## Overview
-This document defines the test matrix and acceptance criteria for the Wayland native support implementation (PR #593). All tests should be executed on each platform/compositor combination to validate that #382's manual testing gate is satisfied.
+This document defines the test matrix and acceptance criteria for the Wayland native support implementation (PR #743, implementing issue #593). All tests should be executed on each platform/compositor combination to validate that #382's manual testing gate is satisfied.
 
 **Issue Workflow:**
-- #593: Implementation umbrella (this PR)
-- #382: Manual validation gate (re-triage after this PR merges, manual test matrix evidence required before close)
+- #593: Implementation umbrella issue, implemented by PR #743
+- #382: Manual validation gate (re-triage after PR #743 merges, manual test matrix evidence required before close)
 
 ## Implementation Summary
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
@@ -174,14 +174,6 @@ Test toggle maximize/restore:
 - [ ] Verify animation and transition smoothness
 - [ ] Test floating vs. tiling window modes
 
-#### 7. **Alternate Settings**
-
-**Wayland:**
-- [ ] Enable `forceNativeWindowDecorationsOnWayland` setting
-  - Expected: Custom title bar hidden; native window decorations shown
-  - Expected: Maximize/restore delegates to compositor (should be unchanged)
-  - Expected: Behavior should match non-custom-title-bar apps
-
 ### Performance Validation
 
 - [ ] No excessive CPU usage during drag/resize on any platform
@@ -255,7 +247,7 @@ export WAYLAND_DISPLAY=wayland-99
 
 ## Known Limitations / Future Work
 
-- **Native Wayland:** Some compositors may have quirks with client-side drag initiation. The `forceNativeWindowDecorationsOnWayland` setting provides a safety valve.
+- **Native Wayland:** Some compositors may have quirks with client-side drag initiation. There is currently no user-facing setting to fall back to native window decorations if a compositor's behavior is problematic (see issue #745).
 - **Multi-DPI:** Resize behavior on multi-DPI setups may vary by compositor. Log output will indicate which backend is active.
 - **Touch input:** Not tested (future enhancement).
 

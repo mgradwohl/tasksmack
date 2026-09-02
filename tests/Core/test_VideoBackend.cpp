@@ -27,8 +27,14 @@ bool ensureVideoDriverInitialized()
     return TestSupport::tryEnableOffscreenVideoDriver() && SDL_Init(SDL_INIT_VIDEO);
 }
 
-// VideoBackend's static state persists for the life of the test process, so initialize()
-// only needs to run once; SDL is intentionally never quit here (see file comment).
+// VideoBackend's own static state persists for the life of the test process (initialize()
+// only needs to run once), but SDL_Init/SDL_Quit must still be balanced per test: other Core
+// test files (e.g. ApplicationTest.FailedConstructionClearsSingletonAndAllowsRetry) rely on
+// the video subsystem being uninitialized so their own SDL_Init() call is the one that applies
+// a hint like SDL_HINT_VIDEO_DRIVER. SDL ref-counts subsystem init, so a leaked SDL_Init() here
+// would make a later SDL_Init() elsewhere just increment the refcount and silently ignore
+// whatever hint that test set. driverName() stays valid across SDL_Quit() regardless -- SDL's
+// driver names are static string literals, not allocated per Init/Quit cycle.
 class VideoBackendTest : public ::testing::Test
 {
   protected:
@@ -38,8 +44,20 @@ class VideoBackendTest : public ::testing::Test
         {
             GTEST_SKIP() << "No SDL video driver available (headless environment)";
         }
+        m_SdlInitialized = true;
         VideoBackend::initialize();
     }
+
+    void TearDown() override
+    {
+        if (m_SdlInitialized)
+        {
+            SDL_Quit();
+        }
+    }
+
+  private:
+    bool m_SdlInitialized = false;
 };
 
 TEST_F(VideoBackendTest, InitializeIsIdempotent)
