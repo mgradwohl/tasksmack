@@ -27,28 +27,25 @@ namespace
 
     const std::string_view driverName = driverNameCStr;
 
-    // Check for native Wayland vs XWayland
+    // Check for native Wayland
     if (driverName == "wayland")
     {
-        // Detect XWayland by checking the WAYLAND_DISPLAY and DISPLAY environment variables.
-        // XWayland sets both; native Wayland only sets WAYLAND_DISPLAY.
-        const char* waylandDisplay = SDL_getenv("WAYLAND_DISPLAY");
-        const char* xDisplay = SDL_getenv("DISPLAY");
-
-        if (xDisplay != nullptr && waylandDisplay != nullptr)
-        {
-            // Both set => XWayland fallback
-            spdlog::info("Detected XWayland fallback (WAYLAND_DISPLAY={}, DISPLAY={})", waylandDisplay, xDisplay);
-            return VideoBackend::Backend::XWaylandFallback;
-        }
-
-        // Only WAYLAND_DISPLAY set => native Wayland
-        spdlog::info("Detected native Wayland (WAYLAND_DISPLAY={})", waylandDisplay != nullptr ? waylandDisplay : "<unset>");
+        spdlog::info("Detected native Wayland");
         return VideoBackend::Backend::Wayland;
     }
 
+    // Check for X11 or XWayland (X11 apps on Wayland desktop)
     if (driverName == "x11")
     {
+        // XWayland is detected when running X11 on a Wayland desktop (WAYLAND_DISPLAY is set).
+        // This is different from native Wayland: SDL reports "x11" because we're using XWayland's X11 server.
+        const char* waylandDisplay = SDL_getenv("WAYLAND_DISPLAY");
+        if (waylandDisplay != nullptr)
+        {
+            spdlog::info("Detected XWayland fallback (WAYLAND_DISPLAY={})", waylandDisplay);
+            return VideoBackend::Backend::XWaylandFallback;
+        }
+
         spdlog::info("Detected X11 video driver");
         return VideoBackend::Backend::X11;
     }

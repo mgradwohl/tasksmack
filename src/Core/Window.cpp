@@ -411,6 +411,7 @@ void Window::maximize()
             // This avoids the unreliability of client-side usable-bounds queries on Wayland.
             spdlog::info("Window::maximize: Native Wayland detected; using compositor-managed maximize");
             SDL_MaximizeWindow(m_Handle);
+            m_IsMaximizedBorderless = true;
             return;
         }
 
