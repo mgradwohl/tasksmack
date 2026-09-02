@@ -49,6 +49,7 @@ set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
     src/Core/PathService.cpp
+    src/Core/VideoBackend.cpp
     src/Core/Window.cpp
     src/UI/AssetPath.cpp
     src/UI/UILayer.cpp

@@ -1,5 +1,6 @@
 #include "Window.h"
 
+#include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 
 #include <SDL3/SDL.h>
@@ -399,11 +400,21 @@ void Window::maximize()
         return;
     }
 
-    // For borderless windows, SDL_MaximizeWindow may not work correctly
-    // on all platforms. We need to manually set the window to fill the
-    // usable display bounds (excluding taskbar/dock).
+    // For borderless windows, use backend-gated behavior.
+    // On native Wayland, prefer compositor maximize (avoids client-side geometry issues).
+    // On X11, XWayland, and Windows, use manual client-side positioning for compatibility.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
+            // This avoids the unreliability of client-side usable-bounds queries on Wayland.
+            spdlog::info("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+            SDL_MaximizeWindow(m_Handle);
+            return;
+        }
+
+        // X11, XWayland, Windows: use client-side maximize with manual positioning
         // Only save restore dimensions if not already maximized
         // This prevents saving maximized dimensions as the restore target
         if (!m_IsMaximizedBorderless)
@@ -441,9 +452,21 @@ void Window::restore()
         return;
     }
 
-    // For borderless windows, restore to saved position and size
+    // For borderless windows, use backend-gated behavior.
+    // On native Wayland, rely on compositor-managed restore.
+    // On X11, XWayland, and Windows, restore to manually-saved position/size.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
+        if (!VideoBackend::supportsClientSideMaximize())
+        {
+            // Native Wayland: use compositor-managed restore via SDL_RestoreWindow
+            spdlog::info("Window::restore: Native Wayland detected; using compositor-managed restore");
+            SDL_RestoreWindow(m_Handle);
+            m_IsMaximizedBorderless = false;
+            return;
+        }
+
+        // X11, XWayland, Windows: restore to manually-saved position and size
         if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
         {
             SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);

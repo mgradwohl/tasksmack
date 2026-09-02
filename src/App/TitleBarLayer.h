@@ -132,6 +132,11 @@ class TitleBarLayer : public Core::Layer
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
 
+    /// Get the current mouse position using backend-appropriate method.
+    /// On native Wayland, uses window-local coordinates to avoid unreliable global state.
+    /// On other backends, uses global coordinates for consistency.
+    [[nodiscard]] auto getCurrentMousePosition() -> std::pair<int, int>;
+
     void createSystemCursors();
     void destroySystemCursors();
     void updateResizeCursor();

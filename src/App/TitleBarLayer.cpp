@@ -4,6 +4,7 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Layer.h"
+#include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
@@ -572,8 +573,32 @@ void TitleBarLayer::beginWindowInteraction(const SDL_Event& event)
     }
 }
 
+auto TitleBarLayer::getCurrentMousePosition() -> std::pair<int, int>
+{
+    auto& window = Core::Application::get().getWindow();
+    const auto [windowOriginX, windowOriginY] = window.getPosition();
+
+    if (Core::VideoBackend::isWayland())
+    {
+        // On native Wayland, use window-local coordinates to avoid unreliable global mouse state.
+        // SDL_GetMouseState returns the position relative to the window.
+        float localX = 0.0F;
+        float localY = 0.0F;
+        SDL_GetMouseState(&localX, &localY);
+        const int globalMouseX = windowOriginX + static_cast<int>(localX);
+        const int globalMouseY = windowOriginY + static_cast<int>(localY);
+        return {globalMouseX, globalMouseY};
+    }
+
+    // On X11, XWayland, and Windows, use global coordinates
+    float globalMouseXF = 0.0F;
+    float globalMouseYF = 0.0F;
+    SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF);
+    return {static_cast<int>(globalMouseXF), static_cast<int>(globalMouseYF)};
+}
+
 // Called every frame while a custom drag or resize is in progress. Reads the
-// current global mouse state, computes the desired window position/size delta
+// current mouse state, computes the desired window position/size delta
 // from the recorded start positions, applies rate-limited SDL calls, and
 // fires a WindowResizedEvent when a size commit is issued. Ends the interaction
 // (via endWindowInteraction) if the left mouse button is no longer held.
@@ -629,11 +654,21 @@ void TitleBarLayer::updateWindowInteraction()
                          raiseResizeEventMs);
         }};
 
-    // Query the OS for the current pointer position and button mask.
-    float globalMouseXF = 0.0F;
-    float globalMouseYF = 0.0F;
+    // Query the current pointer position and button mask using backend-appropriate method.
     SDL_MouseButtonFlags mouseButtons = 0U;
-    timedOp(m_TraceEnabled, mouseStateMs, [&] { mouseButtons = SDL_GetGlobalMouseState(&globalMouseXF, &globalMouseYF); });
+    int globalMouseX = 0;
+    int globalMouseY = 0;
+    timedOp(m_TraceEnabled,
+            mouseStateMs,
+            [&]
+            {
+                // Get mouse position using backend-gated method
+                const auto [mx, my] = getCurrentMousePosition();
+                globalMouseX = mx;
+                globalMouseY = my;
+                // Check button state using window-local coordinates (works on all backends)
+                mouseButtons = SDL_GetMouseState(nullptr, nullptr);
+            });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
@@ -641,8 +676,6 @@ void TitleBarLayer::updateWindowInteraction()
         return;
     }
 
-    const int globalMouseX = static_cast<int>(globalMouseXF);
-    const int globalMouseY = static_cast<int>(globalMouseYF);
     auto& window = Core::Application::get().getWindow();
 
     if (m_InteractionMode == InteractionMode::Drag)

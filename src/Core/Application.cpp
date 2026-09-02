@@ -2,6 +2,7 @@
 
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
+#include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
 
@@ -385,6 +386,9 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         sdlInitialized = true;
 
         spdlog::info("SDL initialized: {}", SDL_GetRevision());
+
+        // Initialize video backend detection (must happen after SDL_Init)
+        VideoBackend::initialize();
 
         WindowSpecification windowSpec;
         windowSpec.Title = m_Spec.Name;
