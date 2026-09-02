@@ -11,11 +11,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <cstddef>
-#include <exception>
-#include <system_error>
-#include <utility>
-
 // Windows headers
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -31,11 +26,15 @@
 
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Platform::PDHGPUProbeImplDetail
