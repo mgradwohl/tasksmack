@@ -139,4 +139,72 @@ struct WindowRect
     return isNativeWayland ? SDL_HITTEST_DRAGGABLE : SDL_HITTEST_NORMAL;
 }
 
+/// Full non-Windows hit-test decision tree, given already-queried SDL/TitleBarLayer state.
+/// Pure/header-only, like computeResizeGeometry and computeTitleBarAreaHitTest above, so the
+/// *ordering* itself is directly unit-testable without live SDL_Window/TitleBarLayer state: a
+/// title-bar button can sit within resizeBorderThickness of a window edge (the close button's
+/// rightmost pixels reach the window's right edge; the icon's top pixels sit inside the top
+/// resize strip), so the control-area check below must run before any resize-border branch, or
+/// SDL would consume the click as a resize instead of delivering it to the app (see #750 review).
+[[nodiscard]] inline auto computeWindowHitTest(const float x,
+                                               const float y,
+                                               const int windowWidth,
+                                               const int windowHeight,
+                                               const float titleBarHeight,
+                                               const float resizeBorderThickness,
+                                               const bool isMaximized,
+                                               const bool isInControlArea,
+                                               const bool isNativeWayland) -> SDL_HitTestResult
+{
+    if (isInControlArea)
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+
+    if (!isMaximized)
+    {
+        if (y >= static_cast<float>(windowHeight) - resizeBorderThickness)
+        {
+            if (x < resizeBorderThickness)
+            {
+                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+            }
+            if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
+            {
+                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+            }
+            return SDL_HITTEST_RESIZE_BOTTOM;
+        }
+
+        if (x < resizeBorderThickness)
+        {
+            if (y < resizeBorderThickness)
+            {
+                return SDL_HITTEST_RESIZE_TOPLEFT;
+            }
+            return SDL_HITTEST_RESIZE_LEFT;
+        }
+        if (x >= static_cast<float>(windowWidth) - resizeBorderThickness)
+        {
+            if (y < resizeBorderThickness)
+            {
+                return SDL_HITTEST_RESIZE_TOPRIGHT;
+            }
+            return SDL_HITTEST_RESIZE_RIGHT;
+        }
+
+        if (y < resizeBorderThickness)
+        {
+            return SDL_HITTEST_RESIZE_TOP;
+        }
+    }
+
+    if (y > titleBarHeight)
+    {
+        return SDL_HITTEST_NORMAL;
+    }
+
+    return computeTitleBarAreaHitTest(/*isInControlArea=*/false, isNativeWayland);
+}
+
 } // namespace App

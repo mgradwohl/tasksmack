@@ -174,65 +174,28 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     }
 
     const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
-    if (!isMaximized)
-    {
-        if (y >= static_cast<float>(windowHeight) - RESIZE_BORDER_THICKNESS)
-        {
-            if (x < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            }
-            if (x >= static_cast<float>(windowWidth) - RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_BOTTOM;
-        }
 
-        if (x < RESIZE_BORDER_THICKNESS)
-        {
-            if (y < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_TOPLEFT;
-            }
-            return SDL_HITTEST_RESIZE_LEFT;
-        }
-        if (x >= static_cast<float>(windowWidth) - RESIZE_BORDER_THICKNESS)
-        {
-            if (y < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_TOPRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_RIGHT;
-        }
-
-        if (y < RESIZE_BORDER_THICKNESS)
-        {
-            const auto& helpBounds = layer->getHelpBounds();
-            if (helpBounds.maxX > helpBounds.minX && x >= helpBounds.minX)
-            {
-                return SDL_HITTEST_NORMAL;
-            }
-            return SDL_HITTEST_RESIZE_TOP;
-        }
-    }
-
-    if (y > titleBarHeight)
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // Title-bar buttons (icon, help, settings, minimize, maximize, close) must stay
-    // NORMAL on every backend: a DRAGGABLE result would consume their clicks before the
-    // app ever sees them (SDL never delivers SDL_EVENT_MOUSE_BUTTON_DOWN for a hit-test
-    // result it acts on itself), breaking every title-bar button. On native Wayland, hand
-    // the empty drag area to the compositor instead (#744): client-side
-    // SDL_SetWindowPosition() during a drag doesn't work there, and DRAGGABLE consuming
-    // the button-down means double-click-to-maximize doesn't fire from the title bar on
-    // native Wayland -- the maximize button remains available there. X11/XWayland/Windows
-    // stay NORMAL so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
-    // double-click maximize/restore detection.
-    return computeTitleBarAreaHitTest(layer->isPointInControlArea(x, y), Core::VideoBackend::isWayland());
+    // The actual decision tree lives in computeWindowHitTest() (TitleBarGeometry.h), pure and
+    // header-only so its ordering -- buttons must be excluded before any resize-border check,
+    // since a button can sit within RESIZE_BORDER_THICKNESS of a window edge -- is directly
+    // unit-testable without live SDL_Window/TitleBarLayer state (see #750 review). On native
+    // Wayland the empty drag area hands off to the compositor (#744): client-side
+    // SDL_SetWindowPosition() during a drag doesn't work there, and since SDL consumes the
+    // button-down event entirely for any non-NORMAL result, this file's onSDLEvent()-driven
+    // click/drag/double-click handling never runs for that area there -- only the compositor
+    // sees the press, which means double-click-to-maximize doesn't fire from the title bar on
+    // native Wayland (the maximize button remains available). X11/XWayland/Windows stay NORMAL
+    // so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for double-click
+    // maximize/restore detection there.
+    return computeWindowHitTest(x,
+                                y,
+                                windowWidth,
+                                windowHeight,
+                                titleBarHeight,
+                                RESIZE_BORDER_THICKNESS,
+                                isMaximized,
+                                layer->isPointInControlArea(x, y),
+                                Core::VideoBackend::isWayland());
 #endif
 }
 

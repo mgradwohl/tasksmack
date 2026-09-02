@@ -323,5 +323,231 @@ TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NonWayland_ReturnsNormal)
     EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
 }
 
+// ========== computeWindowHitTest ==========
+// See #750 review: a title-bar button can sit within resizeBorderThickness of a window edge
+// (the close button's rightmost pixels reach the window's right edge; the icon's top pixels sit
+// inside the top resize strip), so the control-area check must win over every resize-border
+// branch below it -- this exercises the *ordering* itself, not just the terminal helper.
+
+constexpr int WIN_W = 1200;
+constexpr int WIN_H = 800;
+constexpr float TITLE_BAR_H = 40.0F;
+constexpr float BORDER = 8.0F;
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsOverRightEdgeOverlap)
+{
+    // Close button's rightmost pixel: geometrically inside the right resize-border strip.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsRightEdgeResize)
+{
+    // Sanity check: absent the control-area guard, that same point is genuinely a resize edge.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_RIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsOverTopEdgeOverlap)
+{
+    // Icon's top pixels: geometrically inside the top resize-border strip.
+    EXPECT_EQ(computeWindowHitTest(20.0F,
+                                   5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsTopEdgeResize)
+{
+    EXPECT_EQ(computeWindowHitTest(20.0F,
+                                   5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOP);
+}
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsEvenWhenMaximized)
+{
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/true,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomLeftCorner_ReturnsResizeBottomLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOMLEFT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomRightCorner_ReturnsResizeBottomRight)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) - 1.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOMRIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomEdgeMiddle_ReturnsResizeBottom)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOM);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_TopLeftCorner_ReturnsResizeTopLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   0.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOPLEFT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_TopRightCorner_ReturnsResizeTopRight)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) - 1.0F,
+                                   0.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOPRIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_LeftEdgeMiddle_ReturnsResizeLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   TITLE_BAR_H + 50.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_LEFT);
+}
+
+TEST(ComputeWindowHitTestTest, Maximized_SuppressesResizeBorders_EvenNearEdge)
+{
+    // Same point that returned RESIZE_RIGHT when not maximized (see above) falls through to the
+    // title-row decision once maximized, since border resize is disabled while maximized.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/true,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_NonWayland_ReturnsNormal)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_NativeWayland_ReturnsDraggable)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H + 100.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_NORMAL);
+}
+
 } // namespace
 } // namespace App
