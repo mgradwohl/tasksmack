@@ -34,26 +34,62 @@ endif()
 # auto-detection): llvm-rc needs neither an INCLUDE-based nor a Developer Command Prompt
 # environment, so this works unmodified outside a VS developer shell too.
 #
-# Fall back to the Windows SDK's rc.exe (found on PATH, e.g. inside a Developer Command
-# Prompt) only if llvm-rc isn't available, since some environments may lack it.
+# No automatic fallback to the Windows SDK's rc.exe: LLVM (which includes llvm-rc) is
+# already a required prerequisite (see CONTRIBUTING.md), so a missing llvm-rc means a
+# broken/incomplete dev environment -- fail fast with an actionable error instead of
+# silently falling back to the exact tool known to trigger the #746 hang. Users who
+# intentionally need rc.exe (or any other RC compiler) can still opt in explicitly via
+# -DCMAKE_RC_COMPILER=... or the RC environment variable, below.
 #
-# Skip auto-detection entirely if the caller already pinned an RC compiler via
-# -DCMAKE_RC_COMPILER=... or the standard RC environment variable (CMake's own
-# convention, analogous to CC/CXX) -- auto-detection must not silently override an
-# explicit toolchain choice, e.g. to select a known-good alternative when the SDK's
-# rc.exe (or even llvm-rc) is problematic in a particular environment.
+# Skip auto-detection when the caller pinned an RC compiler via -DCMAKE_RC_COMPILER=...
+# or the standard RC environment variable (CMake's own convention, analogous to CC/CXX)
+# -- auto-detection must not silently override an explicit toolchain choice. But
+# CMAKE_RC_COMPILER also ends up cached (by CMake's own project()/enable_language(RC)
+# machinery) after any successful configure, including a plain default-detected value
+# from before this pre-detection block existed at all -- so "CMAKE_RC_COMPILER is
+# cached" alone can't distinguish a genuine override from a stale cache entry left over
+# from an old build tree, and CMake's normal set(... CACHE ...) semantics (which never
+# overwrite an existing entry without FORCE) would otherwise leave such a tree stuck on
+# the exact rc.exe implicated in the #746 hang forever.
+#
+# TASKSMACK_AUTO_RC_COMPILER records our own last auto-selection so a cached value that
+# still matches it is recognized as "ours", not a user override, and safely
+# re-detected/refreshed. A cached value that DOESN'T match it is normally trusted as a
+# deliberate override -- except specifically when it's the SDK's rc.exe by filename,
+# which is untrusted and evicted instead: that's the one tool with a confirmed hang, and
+# on a tree from before this fix landed there's no marker yet to tell a stale
+# default-detected rc.exe apart from someone deliberately choosing it via
+# -DCMAKE_RC_COMPILER on that same invocation, so this narrowly favors safety over that
+# rare, ambiguous case. A build tree configured before this fix therefore self-heals on
+# its next reconfigure without needing to be deleted. Anyone who deliberately wants
+# rc.exe specifically should set the RC environment variable instead (checked first,
+# below, and entirely unaffected by this eviction) rather than relying on
+# -DCMAKE_RC_COMPILER alone.
 if(WIN32)
-    if(DEFINED CMAKE_RC_COMPILER)
-        message(STATUS "Using user-specified RC compiler (CMAKE_RC_COMPILER): ${CMAKE_RC_COMPILER}")
-    elseif(DEFINED ENV{RC})
+    if(DEFINED CACHE{CMAKE_RC_COMPILER} AND NOT DEFINED CACHE{TASKSMACK_AUTO_RC_COMPILER})
+        get_filename_component(_TASKSMACK_RC_CACHED_NAME "$CACHE{CMAKE_RC_COMPILER}" NAME)
+        if(_TASKSMACK_RC_CACHED_NAME MATCHES "^[Rr][Cc]\\.[Ee][Xx][Ee]$")
+            unset(CMAKE_RC_COMPILER CACHE)
+        endif()
+    endif()
+
+    set(_TASKSMACK_RC_IS_OVERRIDE FALSE)
+    if(DEFINED CACHE{CMAKE_RC_COMPILER} AND
+       (NOT DEFINED CACHE{TASKSMACK_AUTO_RC_COMPILER} OR
+        NOT "$CACHE{CMAKE_RC_COMPILER}" STREQUAL "${TASKSMACK_AUTO_RC_COMPILER}"))
+        set(_TASKSMACK_RC_IS_OVERRIDE TRUE)
+    endif()
+
+    if(DEFINED ENV{RC})
         message(STATUS "Using user-specified RC compiler (RC environment variable): $ENV{RC}")
+    elseif(_TASKSMACK_RC_IS_OVERRIDE)
+        message(STATUS "Using user-specified RC compiler (CMAKE_RC_COMPILER): $CACHE{CMAKE_RC_COMPILER}")
     else()
         # HINTS so LLVM_ROOT (what the Windows presets/CI use to locate Clang -- see
         # CMakePresets.json / .github/actions/setup-windows-llvm) is checked before PATH,
         # matching the LLVM-tool discovery in cmake/StaticAnalysis.cmake:19-33. Without
         # this, llvm-rc.exe sitting right next to the selected clang.exe could be missed
-        # if LLVM's bin directory isn't separately on PATH, falling back to the
-        # problematic rc.exe or failing configuration outright.
+        # if LLVM's bin directory isn't separately on PATH.
         find_program(LLVM_RC_FOUND llvm-rc
             HINTS
                 "$ENV{LLVM_ROOT}/bin"
@@ -61,25 +97,30 @@ if(WIN32)
                 "C:/Program Files/LLVM/bin"
         )
         if(LLVM_RC_FOUND)
-            set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND})
+            # CACHE ... FORCE, not a plain set(): CMake's own project()/enable_language(RC)
+            # machinery consults the CACHE entry directly to decide whether a compiler is
+            # already "determined" for this build tree, so a plain-scope set() here would
+            # not actually evict a stale CACHE{CMAKE_RC_COMPILER} value (e.g. rc.exe left
+            # over from before this fix existed) -- confirmed by reproducing the #746 hang
+            # again on a simulated stale tree until this FORCE was added.
+            set(CMAKE_RC_COMPILER ${LLVM_RC_FOUND} CACHE FILEPATH "RC compiler" FORCE)
+            set(TASKSMACK_AUTO_RC_COMPILER ${LLVM_RC_FOUND} CACHE INTERNAL
+                "Last RC compiler path auto-selected by CMakeLists.txt; used to detect stale cache entries.")
             message(STATUS "Found RC compiler: ${CMAKE_RC_COMPILER}")
         else()
-            find_program(RC_COMPILER_FOUND rc.exe)
-            if(RC_COMPILER_FOUND)
-                set(CMAKE_RC_COMPILER ${RC_COMPILER_FOUND})
-                message(STATUS "Found RC compiler alternative: ${CMAKE_RC_COMPILER}")
-            else()
-                # No RC compiler found anywhere. CONTRIBUTING.md documents LLVM (which
-                # includes llvm-rc) as a required prerequisite, installed automatically by
-                # tools/setup-dev.ps1 -- so this only happens on a broken/incomplete dev
-                # environment, never on a legitimately RC-less platform. Fail loudly instead
-                # of silently shipping an .exe missing its icon, version info, and
-                # DPI-awareness manifest; this matches the FATAL_ERROR checks below for the
-                # .rc.in/manifest templates, which are equally "required for Windows builds."
-                message(FATAL_ERROR "No RC compiler found (tried llvm-rc, rc.exe on PATH). "
-                                     "Install LLVM (see CONTRIBUTING.md's Windows Pre-Requisites), "
-                                     "e.g. by running tools/setup-dev.ps1.")
-            endif()
+            # LLVM (which includes llvm-rc) is a required prerequisite, installed
+            # automatically by tools/setup-dev.ps1 -- so this only happens on a
+            # broken/incomplete dev environment, never on a legitimately RC-less
+            # platform. Fail loudly instead of silently falling back to a tool known to
+            # hang (see the top of this block) or shipping an .exe missing its icon,
+            # version info, and DPI-awareness manifest; this matches the FATAL_ERROR
+            # checks below for the .rc.in/manifest templates, which are equally
+            # "required for Windows builds."
+            message(FATAL_ERROR "llvm-rc not found (searched LLVM_ROOT/bin, standard LLVM install "
+                                 "locations, and PATH). Install LLVM (see CONTRIBUTING.md's Windows "
+                                 "Pre-Requisites), e.g. by running tools/setup-dev.ps1. To use a "
+                                 "different RC compiler instead, pass -DCMAKE_RC_COMPILER=<path> or "
+                                 "set the RC environment variable.")
         endif()
     endif()
 endif()

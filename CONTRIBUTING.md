@@ -126,18 +126,27 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 - FreeType 2.13+ (font rendering library) - typically auto-detected or fetched if not found
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon, version
-info, DPI-awareness manifest) into `TaskSmack.exe`. `CMakeLists.txt` prefers `llvm-rc`
+info, DPI-awareness manifest) into `TaskSmack.exe`. `CMakeLists.txt` requires `llvm-rc`
 (installed alongside `clang`/`clang++`, so no setup beyond the LLVM install above is
-needed) over the Windows SDK's own `rc.exe`, falling back to `rc.exe` on `PATH` only if
-`llvm-rc` isn't found, and failing configuration outright if neither is available. The
-Visual Studio Build Tools workload and Windows SDK are still required prerequisites
-(installed by `tools/setup-dev.ps1`, above) -- Clang still needs the MSVC toolchain and
-Windows SDK headers/libraries to compile Windows C++ code at all -- but **you no longer
-need to run from inside a Visual Studio Developer Command Prompt** (`vcvarsall.bat`)
-just to get a working RC compiler, unlike some other Clang+MSVC-resource-compiler
-setups. To pin a specific RC compiler yourself, pass `-DCMAKE_RC_COMPILER=<path>` to
-`cmake --preset ...` or set the `RC` environment variable before configuring; either one
-is honored as-is and skips this auto-detection.
+needed) instead of the Windows SDK's own `rc.exe`, and fails configuration outright with
+an actionable error if `llvm-rc` can't be found -- there is no silent fallback to
+`rc.exe`, since that's the exact RC compiler known to hang indefinitely on this project
+(#746). The Visual Studio Build Tools workload and Windows SDK are still required
+prerequisites (installed by `tools/setup-dev.ps1`, above) -- Clang still needs the MSVC
+toolchain and Windows SDK headers/libraries to compile Windows C++ code at all -- but
+**you no longer need to run from inside a Visual Studio Developer Command Prompt**
+(`vcvarsall.bat`) just to get a working RC compiler, unlike some other
+Clang+MSVC-resource-compiler setups. To use a different RC compiler (e.g. `rc.exe`)
+instead, opt in explicitly by passing `-DCMAKE_RC_COMPILER=<path>` to `cmake --preset
+...` or setting the `RC` environment variable before configuring; either one is honored
+as-is and skips auto-detection. `RC` is the more durable choice for pinning `rc.exe`
+specifically: on a build tree that predates this fix (or on the very first configure of
+a brand-new one), `CMakeLists.txt` can't yet tell an intentional `-DCMAKE_RC_COMPILER=`
+override of `rc.exe` apart from a stale cached value from before, and -- since `rc.exe`
+is the one tool with a confirmed hang -- resolves that specific ambiguity in favor of
+safety by re-detecting `llvm-rc` instead. `RC` isn't affected by this at all and always
+wins. Any other RC compiler passed via `-DCMAKE_RC_COMPILER=` (i.e. not named `rc.exe`)
+doesn't hit this ambiguity and is always honored as pinned.
 
 Install Python + jinja2:
 
