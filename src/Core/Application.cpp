@@ -397,8 +397,10 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         windowSpec.VSync = m_Spec.VSync;
         // Custom title bar by default everywhere; opt-in escape hatch to native OS/compositor
         // decorations on native Wayland only (#745). VideoBackend::initialize() above must run
-        // before this check.
-        windowSpec.Borderless = !(m_Spec.ForceNativeDecorationsOnWayland && VideoBackend::isWayland());
+        // before this check. Decision logic lives in the pure, unit-tested
+        // VideoBackend::shouldUseBorderlessTitleBar().
+        windowSpec.Borderless =
+            VideoBackend::shouldUseBorderlessTitleBar(m_Spec.ForceNativeDecorationsOnWayland, VideoBackend::isWayland());
 
         m_Window = std::make_unique<Window>(windowSpec);
     }
