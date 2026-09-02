@@ -199,7 +199,11 @@ struct WindowRect
         }
     }
 
-    if (y > titleBarHeight)
+    // titleBarHeight is an exclusive upper bound: ShellLayer::onRender() positions the
+    // content window's top edge at exactly y == titleBarHeight, so that row already belongs
+    // to content, not the title bar -- treat it as such here too, or native Wayland would
+    // make it DRAGGABLE and steal its clicks from the content/tab area.
+    if (y >= titleBarHeight)
     {
         return SDL_HITTEST_NORMAL;
     }

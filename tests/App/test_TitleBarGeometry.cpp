@@ -535,6 +535,52 @@ TEST(ComputeWindowHitTestTest, EmptyTitleRow_NativeWayland_ReturnsDraggable)
               SDL_HITTEST_DRAGGABLE);
 }
 
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_JustAboveHeight_StillDraggable_NativeWayland)
+{
+    // One pixel inside the title-bar row: still the title bar's row, so still draggable.
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NativeWayland)
+{
+    // titleBarHeight is an exclusive upper bound: ShellLayer's content window starts at
+    // exactly y == titleBarHeight, so this row must not be draggable, or native Wayland
+    // would steal its clicks from the first content/tab row (see #750 review).
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NonWayland)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
 TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
 {
     EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
