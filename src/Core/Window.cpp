@@ -317,8 +317,11 @@ auto Window::getPosition() const -> std::pair<int, int>
 
 bool Window::supportsPositioning() noexcept
 {
-    const char* driver = SDL_GetCurrentVideoDriver();
-    return driver != nullptr && std::string_view(driver) != "wayland";
+    // Routed through VideoBackend rather than querying SDL_GetCurrentVideoDriver() directly here,
+    // per AGENTS.md's rule that backend decisions go through the cached VideoBackend abstraction.
+    // Safe: every caller runs after Application's constructor, which calls VideoBackend::initialize()
+    // right after SDL_Init.
+    return !VideoBackend::isWayland();
 }
 
 void Window::setSize(int width, int height)

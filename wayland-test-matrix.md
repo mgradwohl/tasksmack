@@ -19,7 +19,11 @@ Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which 
 
 ### Automated Unit Tests (CI/CD - Required for Merge)
 
-All platform-specific functionality is validated by automated unit tests that run on every build:
+`tests/Core/test_VideoBackend.cpp` validates `VideoBackend`'s classification and capability
+queries -- the policy that gates platform-specific behavior. It does **not** exercise `Window`
+maximize/restore or `TitleBarLayer` drag/resize behavior directly; those depend on live SDL
+window/compositor state and are covered by the manual matrix below instead (drag on native
+Wayland specifically is tracked as still broken, issue #744).
 
 #### VideoBackend Detection Tests (tests/Core/test_VideoBackend.cpp)
 
@@ -193,10 +197,10 @@ Test toggle maximize/restore:
 
 **All of the following must pass for this PR to be merged:**
 
-1. ✅ Code review passes (`/code-review` and `/tasksmack-review` skills)
-2. ✅ Compilation succeeds (no warnings with clang-tidy)
-3. ✅ Unit tests pass (if any added)
-4. ✅ No regressions on Windows
+1. ⬜ Code review passes (`/code-review` and `/tasksmack-review` skills) -- still under active review
+2. ✅ Compilation succeeds, no clang-tidy warnings, on Linux; ⬜ blocked on Windows (#746)
+3. ✅ Unit tests pass on Linux (1284/1284); not yet run on Windows
+4. ⬜ No regressions on Windows -- currently fails: `build-windows-debug` hangs indefinitely (#746)
 
 **Before closing #382, the following evidence must be attached:**
 

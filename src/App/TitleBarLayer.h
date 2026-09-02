@@ -4,7 +4,10 @@
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 
+#include <SDL3/SDL_mouse.h>
+
 #include <cstdint>
+#include <tuple>
 
 struct SDL_Cursor;
 
@@ -132,10 +135,10 @@ class TitleBarLayer : public Core::Layer
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
     void endWindowInteraction();
 
-    /// Get the current mouse position using backend-appropriate method.
-    /// On native Wayland, uses window-local coordinates to avoid unreliable global state.
-    /// On other backends, uses global coordinates for consistency.
-    [[nodiscard]] auto getCurrentMousePosition() -> std::pair<int, int>;
+    /// Query the current mouse position and button mask together, using whichever SDL query is
+    /// reliable for the active backend (see VideoBackend::supportsGlobalMouseState()): the local
+    /// query on native Wayland, the global query elsewhere. Returns {x, y, buttonMask}.
+    [[nodiscard]] static auto queryMouseState() -> std::tuple<int, int, SDL_MouseButtonFlags>;
 
     void createSystemCursors();
     void destroySystemCursors();

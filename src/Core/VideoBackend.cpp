@@ -127,9 +127,9 @@ bool VideoBackend::supportsClientSideMaximize() noexcept
 
 bool VideoBackend::supportsGlobalMouseState() noexcept
 {
-    // All backends support it, but on Wayland it may be unreliable during drag operations.
-    // This is primarily informational for the drag/resize layer.
-    return true;
+    // SDL_GetGlobalMouseState() is unreliable on native Wayland; the drag/resize layer must use
+    // the window-local query there instead. X11, XWayland, and Windows all support it.
+    return s_Backend != Backend::Wayland;
 }
 
 std::string_view VideoBackend::driverName() noexcept
