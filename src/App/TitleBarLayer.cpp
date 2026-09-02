@@ -915,10 +915,10 @@ void TitleBarLayer::updateResizeCursor()
         // (once focus is genuinely restored, e.g. the pointer actually left the
         // window to hover another app) picks up exactly where this one left off.
         //
-        // Diagnostic: log only on transition into this branch, so a build can confirm
-        // whether it fires only around WM-owned interactions (expected) or continuously,
-        // even during plain hover (would mean this branch, not the interaction case, is
-        // starving the real hover-detection path below -- see #749 follow-up).
+        // Diagnostic: log only on transition into this branch. Added during the #749
+        // follow-up investigation into a WSLg no-resize-cursor report, which turned out to
+        // be a WSL session issue rather than this code path; kept to help diagnose any
+        // future genuine Wayland-compositor cursor report.
         if (!m_HasLoggedFocusMismatch || !m_LastLoggedFocusMismatch)
         {
             spdlog::debug("updateResizeCursor: SDL_GetMouseFocus() != our window (holding cached edge={})", static_cast<int>(prevEdge));
@@ -975,15 +975,20 @@ void TitleBarLayer::updateResizeCursor()
                     edge = ResizeEdge::None;
                 }
             }
-            // Diagnostic: state already changed this frame (gated by stateUnchanged above), so
-            // this can't spam -- confirms whether real hover samples reach detectResizeEdge() at
-            // all, and what edge they resolve to, on a live Wayland/WSLg build (#749 follow-up).
-            spdlog::debug("updateResizeCursor: hover sample ({}, {}) in {}x{} window -> edge={}",
-                          mouseLocalX,
-                          mouseLocalY,
-                          windowWidth,
-                          windowHeight,
-                          static_cast<int>(edge));
+            // Diagnostic: log only edge transitions, not every changed hover sample --
+            // moving the pointer changes coordinates far more often than it crosses an
+            // edge boundary, and logging every sample risks distorting the very
+            // resize/drag behavior being diagnosed. Added during the #749 follow-up
+            // investigation (see comment above); kept for future Wayland diagnostics.
+            if (edge != prevEdge)
+            {
+                spdlog::debug("updateResizeCursor: hover sample ({}, {}) in {}x{} window -> edge={}",
+                              mouseLocalX,
+                              mouseLocalY,
+                              windowWidth,
+                              windowHeight,
+                              static_cast<int>(edge));
+            }
             m_CachedHoverEdge = edge;
         }
         // State unchanged: edge == m_CachedHoverEdge, falls through to apply.

@@ -348,8 +348,16 @@ void ShellLayer::renderStatusBar() const
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, statusBarHeight));
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    const ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
-                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav;
+    // When native OS decorations replace the custom title bar (see #745), TitleBarLayer is
+    // skipped and this status bar becomes the only place Settings/Help can be reached -- keep
+    // it keyboard-navigable in that mode so those buttons stay reachable without a mouse.
+    const bool showStatusBarControls = !Core::Application::get().getWindow().isBorderless();
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (!showStatusBarControls)
+    {
+        windowFlags |= ImGuiWindowFlags_NoNav;
+    }
 
     // Use theme colors for status bar
     const auto& theme = UI::Theme::get();
@@ -379,7 +387,7 @@ void ShellLayer::renderStatusBar() const
         // When native OS decorations replace the custom title bar (see #745), its
         // Settings/Help buttons don't exist -- surface equivalents here so those stay
         // reachable. Hidden otherwise since the title bar already provides them.
-        if (!Core::Application::get().getWindow().isBorderless())
+        if (showStatusBarControls)
         {
             ImGui::SameLine();
             if (ImGui::SmallButton(ICON_FA_GEAR "##StatusBarSettings"))

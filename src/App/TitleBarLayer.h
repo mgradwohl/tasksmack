@@ -183,10 +183,10 @@ class TitleBarLayer : public Core::Layer
     bool m_HasCursorSample = false;
 
     // Diagnostic-only: last logged SDL_GetMouseFocus()-mismatch state, so
-    // updateResizeCursor() logs a transition instead of spamming every frame. See #749
-    // follow-up: this branch was suspected (based on reading SDL3's Wayland event source)
-    // to hold reliably only around WM-owned interactions, not during plain hover -- this
-    // logging exists to confirm or rule that out on real Wayland/WSLg hardware.
+    // updateResizeCursor() logs a transition instead of spamming every frame. Added during
+    // the #749 follow-up investigation into a WSLg no-resize-cursor report -- that specific
+    // report turned out to be a WSL session issue, not this code path, but the logging is
+    // kept to help diagnose any future genuine Wayland-compositor cursor report.
     bool m_LastLoggedFocusMismatch = false;
     bool m_HasLoggedFocusMismatch = false;
 
