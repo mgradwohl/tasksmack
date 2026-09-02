@@ -549,5 +549,120 @@ TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
               SDL_HITTEST_NORMAL);
 }
 
+// ========== computeResizeCursorUpdate: active resize takes priority ==========
+
+TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/true,
+                                             /*resizeEdge=*/ResizeEdge::Right,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Left);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Right);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: WM/compositor focus mismatch ==========
+
+TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
+{
+    // Even with a hover sample available, focus mismatch must win: hold the cached edge and
+    // never touch the cursor (see #699, #749, #750 review).
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/true,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::Right,
+                                             /*cachedEdge=*/ResizeEdge::Left);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Left);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouch)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/true,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: real hover sample (focus restored) ==========
+
+TEST(ComputeResizeCursorUpdateTest, HoverSample_UpdatesCacheAndAppliesNewEdge)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::TopLeft,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::TopLeft);
+    EXPECT_TRUE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, HoverSample_LeavesEdge_RestoresDefaultCursor)
+{
+    // The pointer left the border this frame: apply None once to restore the default cursor,
+    // and cache the new (None) edge so it isn't reapplied every subsequent frame.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Right);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_TRUE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: state-unchanged fast path ==========
+
+TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NonNoneCachedEdge_ReappliesWithoutCacheWrite)
+{
+    // No new hover sample this frame (mouse/window state unchanged) -- ImGui may have reset
+    // the cursor, so still reapply the cached edge, but there's nothing new to cache.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Bottom);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Bottom);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NoneCachedEdge_NoCursorTouch)
+{
+    // Nothing to do at all: avoid a needless SDL_SetCursor call when neither the cache nor
+    // the resolved edge indicate a border.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, PureFunction_DeterministicAcrossRepeatedCalls)
+{
+    const auto first = computeResizeCursorUpdate(false, ResizeEdge::None, false, true, ResizeEdge::TopRight, ResizeEdge::None);
+    const auto second = computeResizeCursorUpdate(false, ResizeEdge::None, false, true, ResizeEdge::TopRight, ResizeEdge::None);
+    EXPECT_EQ(first.resolvedEdge, second.resolvedEdge);
+    EXPECT_EQ(first.updateCachedEdge, second.updateCachedEdge);
+    EXPECT_EQ(first.applyCursor, second.applyCursor);
+}
+
 } // namespace
 } // namespace App

@@ -336,10 +336,13 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-    // Title bar drag area returns SDL_HITTEST_NORMAL (see hitTestCallback), so
-    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered on all platforms. Use SDL's built-in
-    // clicks field for double-click detection and the existing client-side drag/resize
-    // interaction for window movement.
+    // On Windows and X11/XWayland, the title bar drag area returns SDL_HITTEST_NORMAL
+    // (see hitTestCallback), so SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here
+    // via SDL's built-in clicks field for double-click detection and the existing
+    // client-side drag/resize interaction for window movement. On native Wayland the drag
+    // area returns SDL_HITTEST_DRAGGABLE instead, so SDL consumes the button-down there and
+    // this handler never runs for that area -- drag and double-click-to-maximize are the
+    // compositor's responsibility on that backend (see hitTestCallback and #744).
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -894,27 +897,19 @@ void TitleBarLayer::updateResizeCursor()
         return;
     }
 
-    // Seed from the cache so the state-unchanged fast-path still reaches the
-    // cursor-apply step at the end (ImGui may reset the cursor each frame).
     const ResizeEdge prevEdge = m_CachedHoverEdge;
-    ResizeEdge edge = m_CachedHoverEdge;
+    const bool isResizing = (m_InteractionMode == InteractionMode::Resize);
+    // SDL_GetMouseFocus() can transiently disagree with reality while the WM/compositor owns
+    // an active hit-test-triggered resize or drag (border SDL_HITTEST_RESIZE_* / title-bar
+    // SDL_HITTEST_DRAGGABLE on native Wayland) -- see #699, #749, and the #750 review. The
+    // policy for what to do about it lives in computeResizeCursorUpdate() below.
+    const bool focusMismatch = !isResizing && (SDL_GetMouseFocus() != sdlWindow);
 
-    if (m_InteractionMode == InteractionMode::Resize)
+    bool hoverSampleAvailable = false;
+    ResizeEdge hoverEdge = ResizeEdge::None;
+
+    if (focusMismatch)
     {
-        edge = m_Resize.edge;
-    }
-    else if (SDL_GetMouseFocus() != sdlWindow)
-    {
-        // SDL_GetMouseFocus() can transiently disagree with reality while the
-        // WM/compositor owns an active hit-test-triggered resize or drag (border
-        // SDL_HITTEST_RESIZE_* / title-bar SDL_HITTEST_DRAGGABLE on native Wayland) --
-        // calling SDL_SetCursor() here, even to reapply the same cached cursor every
-        // frame, would fight the WM's own cursor rendering during that interaction
-        // (see #699, #749, and #750 review). Return without touching the cursor at
-        // all; m_CachedHoverEdge is untouched too, so the next real hover sample
-        // (once focus is genuinely restored, e.g. the pointer actually left the
-        // window to hover another app) picks up exactly where this one left off.
-        //
         // Diagnostic: log only on transition into this branch. Added during the #749
         // follow-up investigation into a WSLg no-resize-cursor report, which turned out to
         // be a WSL session issue rather than this code path; kept to help diagnose any
@@ -925,9 +920,8 @@ void TitleBarLayer::updateResizeCursor()
             m_LastLoggedFocusMismatch = true;
             m_HasLoggedFocusMismatch = true;
         }
-        return;
     }
-    else
+    else if (!isResizing)
     {
         if (!m_HasLoggedFocusMismatch || m_LastLoggedFocusMismatch)
         {
@@ -961,18 +955,18 @@ void TitleBarLayer::updateResizeCursor()
             m_LastCursorWindowHeight = windowHeight;
             m_LastCursorWindowMaximized = isMaximized;
             m_HasCursorSample = true;
+            hoverSampleAvailable = true;
 
             const bool insideWindow =
                 (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
-            edge = ResizeEdge::None;
             if (insideWindow)
             {
-                edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
+                hoverEdge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
                 // Suppress the resize cursor over title-bar controls: on Windows all
                 // resize is client-side, but controls should still show the default cursor.
-                if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
+                if (hoverEdge != ResizeEdge::None && isPointInControlArea(localX, localY))
                 {
-                    edge = ResizeEdge::None;
+                    hoverEdge = ResizeEdge::None;
                 }
             }
             // Diagnostic: log only edge transitions, not every changed hover sample --
@@ -980,30 +974,26 @@ void TitleBarLayer::updateResizeCursor()
             // edge boundary, and logging every sample risks distorting the very
             // resize/drag behavior being diagnosed. Added during the #749 follow-up
             // investigation (see comment above); kept for future Wayland diagnostics.
-            if (edge != prevEdge)
+            if (hoverEdge != prevEdge)
             {
                 spdlog::debug("updateResizeCursor: hover sample ({}, {}) in {}x{} window -> edge={}",
                               mouseLocalX,
                               mouseLocalY,
                               windowWidth,
                               windowHeight,
-                              static_cast<int>(edge));
+                              static_cast<int>(hoverEdge));
             }
-            m_CachedHoverEdge = edge;
         }
-        // State unchanged: edge == m_CachedHoverEdge, falls through to apply.
     }
 
-    // Set a resize cursor while on a border. Restore the default only when
-    // leaving one so ImGui-provided cursors (text inputs, splitters, etc.) are
-    // not overridden while the pointer is away from window borders.
-    if (edge != ResizeEdge::None)
+    const auto update = computeResizeCursorUpdate(isResizing, m_Resize.edge, focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
+    if (update.updateCachedEdge)
     {
-        applyCursorForEdge(edge);
+        m_CachedHoverEdge = update.resolvedEdge;
     }
-    else if (prevEdge != ResizeEdge::None)
+    if (update.applyCursor)
     {
-        applyCursorForEdge(ResizeEdge::None);
+        applyCursorForEdge(update.resolvedEdge);
     }
 }
 

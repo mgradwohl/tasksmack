@@ -207,4 +207,54 @@ struct WindowRect
     return computeTitleBarAreaHitTest(/*isInControlArea=*/false, isNativeWayland);
 }
 
+/// Outcome of computeResizeCursorUpdate: what TitleBarLayer::updateResizeCursor() should do
+/// with its cached hover edge and the SDL cursor for one frame.
+struct ResizeCursorUpdate
+{
+    ResizeEdge resolvedEdge = ResizeEdge::None; ///< The edge this frame resolves to.
+    bool updateCachedEdge = false;              ///< Whether the caller should cache resolvedEdge.
+    bool applyCursor = false;                   ///< Whether the caller should call SDL_SetCursor (via applyCursorForEdge).
+};
+
+/// Pure decision for TitleBarLayer::updateResizeCursor(), given already-queried state. Pure
+/// header-only, like the hit-test helpers above, so the policy -- active resize vs.
+/// WM/compositor-focus mismatch vs. real hover (including the state-unchanged fast path) --
+/// is directly unit-testable without a live SDL_Window. See #699, #749, and the #750 review:
+/// during a focus mismatch, the cached edge must be held and SDL_SetCursor must not be called
+/// at all, not even to reapply the same cursor, or the WM/compositor's own cursor rendering
+/// gets fought during an active border resize or title-bar drag.
+[[nodiscard]] inline auto computeResizeCursorUpdate(const bool isResizing,
+                                                    const ResizeEdge resizeEdge,
+                                                    const bool focusMismatch,
+                                                    const bool hoverSampleAvailable,
+                                                    const ResizeEdge hoverEdge,
+                                                    const ResizeEdge cachedEdge) -> ResizeCursorUpdate
+{
+    if (focusMismatch)
+    {
+        return {.resolvedEdge = cachedEdge, .updateCachedEdge = false, .applyCursor = false};
+    }
+
+    ResizeEdge edge = cachedEdge;
+    bool updateCache = false;
+    if (isResizing)
+    {
+        edge = resizeEdge;
+    }
+    else if (hoverSampleAvailable)
+    {
+        edge = hoverEdge;
+        updateCache = true;
+    }
+    // else: state unchanged (not resizing, no new hover sample) -- reuse cachedEdge so the
+    // cursor-apply step below still runs every frame (ImGui may reset the cursor), even
+    // though there is nothing new to cache.
+
+    // Always (re)apply a non-None edge. Apply None only when leaving a non-None cached edge,
+    // so ImGui-provided cursors (text inputs, splitters, etc.) are not overridden while the
+    // pointer is away from window borders and nothing changed.
+    const bool applyCursor = (edge != ResizeEdge::None) || (cachedEdge != ResizeEdge::None);
+    return {.resolvedEdge = edge, .updateCachedEdge = updateCache, .applyCursor = applyCursor};
+}
+
 } // namespace App
