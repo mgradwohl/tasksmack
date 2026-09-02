@@ -134,7 +134,7 @@ class TitleBarLayer : public Core::Layer
     };
 
     void beginWindowInteraction(const SDL_Event& event);
-    void handleTitleBarDoubleClick(const SDL_Event& event);
+    void handleTitleBarDoubleClick(const SDL_Event& event) const;
     void updateWindowInteraction();
     void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);

@@ -448,7 +448,7 @@ auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int wind
     return ResizeEdge::None;
 }
 
-void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event)
+void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
 {
     auto& window = Core::Application::get().getWindow();
     SDL_Window* sdlWindow = window.getHandle();
