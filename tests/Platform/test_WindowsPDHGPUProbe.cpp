@@ -253,6 +253,7 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
         {.name = L"pid_201_luid_not-a-luid_engtype_3D", .doubleValue = 14.0},
         {.name = L"garbage_pid_202_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 16.0},
         {.name = L"pid_203_luid_0xGG_0x1junk_phys_0_eng_0_engtype_3D", .doubleValue = 17.0},
+        {.name = L"pid_204_junk_luid_0x0_0x1_phys_0", .doubleValue = 18.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
 

@@ -107,9 +107,11 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
 
     // Extract LUID (for GPU identification)
     // Format: luid_0x00000000_0x0000D3A0 or luid_0x00000000_0x0000
+    // luid_ must immediately follow the PID token's trailing underscore; searching further
+    // ahead would accept malformed names like "pid_123_junk_luid_...".
     const std::string luidPrefix = "luid_";
-    auto luidPos = instanceName.find(luidPrefix);
-    if (luidPos == std::string::npos)
+    const auto luidPos = pidEnd + 1;
+    if (instanceName.compare(luidPos, luidPrefix.length(), luidPrefix) != 0)
     {
         return result;
     }
@@ -156,23 +158,20 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     {
         return result;
     }
-    if (luidPos == 0 || instanceName[luidPos - 1] != '_')
-    {
-        return result;
-    }
-    const bool hasPhysSuffix = instanceName.find("_phys_", luidEnd) != std::string::npos;
-    const bool hasEngineSuffix = instanceName.find("_engtype_", luidEnd) != std::string::npos;
-    if (!hasPhysSuffix && !hasEngineSuffix)
+    const auto physSuffixPos = instanceName.find("_phys_", luidEnd);
+    const auto engineSuffixPos = instanceName.find("_engtype_", luidEnd);
+    if (physSuffixPos == std::string::npos && engineSuffixPos == std::string::npos)
     {
         return result;
     }
 
-    // Extract engine type (if present - GPU Process Memory doesn't have this)
-    const std::string engtypePrefix = "engtype_";
-    auto engtypePos = instanceName.find(engtypePrefix);
-    if (engtypePos != std::string::npos)
+    // Extract engine type (if present - GPU Process Memory doesn't have this). Anchored to
+    // the "_engtype_" occurrence found after the LUID above, not searched from the start of
+    // the string, so a malformed name can't smuggle in an earlier bogus "engtype_" token.
+    if (engineSuffixPos != std::string::npos)
     {
-        result.engineType = instanceName.substr(engtypePos + engtypePrefix.length());
+        const std::string engtypePrefix = "engtype_";
+        result.engineType = instanceName.substr(engineSuffixPos + 1 + engtypePrefix.length());
     }
 
     // Instance is valid if we got a PID (engine type is optional for memory counters)
