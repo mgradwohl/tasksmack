@@ -98,7 +98,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
 
     std::string pidStr = instanceName.substr(pidStart, pidEnd - pidStart);
     auto [ptr, ec] = std::from_chars(pidStr.data(), pidStr.data() + pidStr.size(), result.pid);
-    if (ec != std::errc{})
+    if (ec != std::errc{} || ptr != (pidStr.data() + pidStr.size()))
     {
         return result;
     }
@@ -107,20 +107,26 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     // Format: luid_0x00000000_0x0000D3A0 or luid_0x00000000_0x0000
     const std::string luidPrefix = "luid_";
     auto luidPos = instanceName.find(luidPrefix);
-    if (luidPos != std::string::npos)
+    if (luidPos == std::string::npos)
     {
-        auto luidStart = luidPos + luidPrefix.length();
-        // LUID ends at _phys_, _engtype_, or end of string
-        auto luidEnd = instanceName.find("_phys_", luidStart);
-        if (luidEnd == std::string::npos)
-        {
-            luidEnd = instanceName.find("_engtype_", luidStart);
-        }
-        if (luidEnd == std::string::npos)
-        {
-            luidEnd = instanceName.length();
-        }
-        result.gpuLuid = instanceName.substr(luidStart, luidEnd - luidStart);
+        return result;
+    }
+
+    auto luidStart = luidPos + luidPrefix.length();
+    // LUID ends at _phys_, _engtype_, or end of string
+    auto luidEnd = instanceName.find("_phys_", luidStart);
+    if (luidEnd == std::string::npos)
+    {
+        luidEnd = instanceName.find("_engtype_", luidStart);
+    }
+    if (luidEnd == std::string::npos)
+    {
+        luidEnd = instanceName.length();
+    }
+    result.gpuLuid = instanceName.substr(luidStart, luidEnd - luidStart);
+    if (result.gpuLuid.empty())
+    {
+        return result;
     }
 
     // Extract engine type (if present - GPU Process Memory doesn't have this)

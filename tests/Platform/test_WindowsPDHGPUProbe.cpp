@@ -205,6 +205,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
     m_scenario->items[impl->utilizationCounter] = {
         {.name = L"garbage_no_pid_here", .doubleValue = 10.0},
         {.name = L"", .doubleValue = 5.0},
+        {.name = L"pid_12x_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 12.0},
+        {.name = L"pid_123_junk", .doubleValue = 13.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
 
@@ -295,15 +297,24 @@ TEST(WindowsPDHGPUProbeInstanceCacheTest, CacheClearsPastLimitWithoutLosingCorre
 {
     Impl impl;
 
+    std::size_t maxObservedSize = 0;
     for (std::size_t i = 0; i <= Impl::MAX_INSTANCE_CACHE_ENTRIES; ++i)
     {
         const std::wstring name = L"pid_" + std::to_wstring(i + 1) + L"_luid_0x0_0x1_phys_0_eng_0_engtype_3D";
         const auto& cached = impl.instanceFor(name);
         EXPECT_TRUE(cached.valid);
         EXPECT_EQ(cached.pid, static_cast<std::int32_t>(i + 1));
+        maxObservedSize = std::max(maxObservedSize, impl.instanceCache.size());
     }
 
+    // Add one more unique name to force the clear guard path:
+    // size() > MAX_INSTANCE_CACHE_ENTRIES before insertion.
+    const auto& afterClearCandidate = impl.instanceFor(L"pid_99999_luid_0x0_0x1_phys_0_eng_0_engtype_3D");
+    EXPECT_TRUE(afterClearCandidate.valid);
+    EXPECT_EQ(afterClearCandidate.pid, 99999);
+
     EXPECT_LE(impl.instanceCache.size(), Impl::MAX_INSTANCE_CACHE_ENTRIES + 1);
+    EXPECT_LT(impl.instanceCache.size(), maxObservedSize);
 
     const auto& reparsed = impl.instanceFor(L"pid_1_luid_0x0_0x1_phys_0_eng_0_engtype_3D");
     EXPECT_TRUE(reparsed.valid);
