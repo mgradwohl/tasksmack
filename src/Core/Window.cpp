@@ -409,7 +409,7 @@ void Window::maximize()
         {
             // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
             // This avoids the unreliability of client-side usable-bounds queries on Wayland.
-            spdlog::info("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+            spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
             SDL_MaximizeWindow(m_Handle);
             m_IsMaximizedBorderless = true;
             return;
@@ -461,7 +461,7 @@ void Window::restore()
         if (!VideoBackend::supportsClientSideMaximize())
         {
             // Native Wayland: use compositor-managed restore via SDL_RestoreWindow
-            spdlog::info("Window::restore: Native Wayland detected; using compositor-managed restore");
+            spdlog::debug("Window::restore: Native Wayland detected; using compositor-managed restore");
             SDL_RestoreWindow(m_Handle);
             m_IsMaximizedBorderless = false;
             return;

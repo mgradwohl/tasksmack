@@ -13,7 +13,7 @@ The implementation uses backend capability gating (`Core::VideoBackend`) to prov
 2. **X11/XWayland:** Client-side maximize/restore, global-coordinate drag (existing behavior preserved)
 3. **Windows:** Client-side interactions (existing behavior preserved)
 
-XWayland is detected (both `WAYLAND_DISPLAY` and `DISPLAY` set) and treated as X11 for fallback compatibility.
+Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which env vars happen to be set. Native Wayland is `driver == "wayland"`, checked first -- this matters because `DISPLAY` is commonly set on a Wayland session too (e.g. XWayland running for other apps), so testers should not assume "DISPLAY is set" means an X11/XWayland run. XWayland fallback is `driver == "x11"` *and* `WAYLAND_DISPLAY` set; plain X11 is `driver == "x11"` with `WAYLAND_DISPLAY` unset.
 
 ## Test Matrix
 
@@ -25,17 +25,16 @@ All platform-specific functionality is validated by automated unit tests that ru
 
 These tests verify the backend detection and capability query system that gates all platform-specific behavior.
 
-**Test Coverage:**
-- ✅ `test_InitializeOnce` - VideoBackend initialization is idempotent
-- ✅ `test_BackendQueriesAreConsistent` - Exactly one backend is true at a time
-- ✅ `test_DriverNameIsPopulated` - Driver name is always available
-- ✅ `test_ClientSideMaximizeSupportedOnNonWayland` - Wayland doesn't support client-side maximize; others do
-- ✅ `test_GlobalMouseStateSupportedOnAllBackends` - All backends report global mouse state support
-- ✅ `test_XWaylandDetectionLogic` - Wayland and XWayland are mutually exclusive
-- ✅ `test_WindowBehaviorOnWayland` - Native Wayland: no client-side maximize, correct driver name
-- ✅ `test_WindowBehaviorOnX11` - X11: client-side maximize, correct driver name
-- ✅ `test_WindowBehaviorOnXWayland` - XWayland: client-side maximize (X11 compat), wayland driver name
-- ✅ `test_WindowBehaviorOnWindows` - Windows: client-side maximize, correct driver name
+**Test Coverage** (7 `TEST_F` cases; SDL gives no seam to inject a fake driver, so
+these check cross-backend invariants rather than asserting a specific backend on
+every platform):
+- `InitializeIsIdempotent` - calling `initialize()` twice doesn't change the result
+- `DriverNameIsNotEmptyAfterInitialize` - driver name is always available once initialized
+- `BackendFlagsAreMutuallyExclusive` - at most one of `isWayland`/`isX11`/`isXWaylandFallback`/`isWindows` is true
+- `NativeWaylandIsNeverClassifiedAsXWaylandFallback` - regression test for the native-Wayland-vs-XWayland bug fixed in this PR; self-skips unless the actual driver is `"wayland"`
+- `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
+- `SupportsGlobalMouseStateIsAlwaysTrue`
+- `IsWindowsIsFalseOnNonWindowsBuilds` (Linux/macOS builds only)
 
 **Run Unit Tests:**
 ```bash

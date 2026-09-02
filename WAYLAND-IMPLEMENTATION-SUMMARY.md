@@ -34,11 +34,11 @@ class VideoBackend {
 };
 ```
 
-**Backend Detection Logic:**
-- **Native Wayland:** Only `WAYLAND_DISPLAY` set
-- **X11:** `SDL_GetCurrentVideoDriver()` returns "x11"
-- **XWayland Fallback:** Both `WAYLAND_DISPLAY` and `DISPLAY` set (first-class fallback)
-- **Windows:** `SDL_GetCurrentVideoDriver()` returns "windows"
+**Backend Detection Logic:** driven by `SDL_GetCurrentVideoDriver()`, not by which env vars are set:
+- **Native Wayland:** driver is `"wayland"` -- this is checked first, regardless of whether `DISPLAY` also happens to be set (common on real Wayland sessions running XWayland for other apps)
+- **X11:** driver is `"x11"` and `WAYLAND_DISPLAY` is unset
+- **XWayland Fallback:** driver is `"x11"` *and* `WAYLAND_DISPLAY` is set (this is the case this PR's Copilot review caught as a bug: a native-Wayland driver was being misclassified as XWayland)
+- **Windows:** driver is `"windows"`
 
 ### 2. Window Maximize/Restore Split
 
@@ -99,7 +99,7 @@ std::pair<int, int> TitleBarLayer::getCurrentMousePosition() {
 
 ### 4. XWayland Fallback Policy
 
-Both `WAYLAND_DISPLAY` and `DISPLAY` environment variables set indicates XWayland (X11 on Wayland), treated like X11 for backward compatibility. No regression to client-side behavior.
+XWayland is `SDL_GetCurrentVideoDriver() == "x11"` with `WAYLAND_DISPLAY` also set -- not "both `WAYLAND_DISPLAY` and `DISPLAY` set" (an earlier, incorrect description; `DISPLAY` is commonly set on native Wayland sessions too, via XWayland running for other apps, so it can't be part of the discriminator). Treated like X11 for backward compatibility. No regression to client-side behavior.
 
 ### 5. User-Facing Safety Valve
 
@@ -123,18 +123,17 @@ Allows users to disable the custom title bar on Wayland if compositor behavior r
 
 **File:** `tests/Core/test_VideoBackend.cpp`
 
-10 comprehensive tests covering:
+7 tests (see the file for exact names/assertions -- SDL gives no seam to inject a fake
+driver, so these check cross-backend invariants rather than asserting a specific
+backend on every platform):
 
-1. ✅ Initialization idempotency
-2. ✅ Backend query consistency
-3. ✅ Driver name population
-4. ✅ Client-side maximize capability by backend
-5. ✅ Global mouse state support
-6. ✅ XWayland/Wayland mutual exclusivity
-7. ✅ Wayland-specific behavior
-8. ✅ X11-specific behavior
-9. ✅ XWayland-specific behavior
-10. ✅ Windows-specific behavior
+1. `InitializeIsIdempotent`
+2. `DriverNameIsNotEmptyAfterInitialize`
+3. `BackendFlagsAreMutuallyExclusive`
+4. `NativeWaylandIsNeverClassifiedAsXWaylandFallback` (regression test for the bug fixed in this PR; self-skips off a real Wayland driver)
+5. `SupportsClientSideMaximizeIsFalseOnlyOnWayland`
+6. `SupportsGlobalMouseStateIsAlwaysTrue`
+7. `IsWindowsIsFalseOnNonWindowsBuilds`
 
 ## Build System Improvements
 
