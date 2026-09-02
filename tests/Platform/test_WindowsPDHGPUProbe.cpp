@@ -271,6 +271,26 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 15.0);
 }
 
+TEST_F(WindowsPDHGPUProbeInjectedTest, SimplifiedFormatWithoutPhysSuffixIsParsed)
+{
+    // Some drivers emit "pid_<N>_luid_<...>_engtype_<T>" with no "_phys_" segment at all;
+    // this is the only path through parseInstanceName() that accepts that shape, so it needs
+    // its own positive coverage alongside the malformed-simplified-format cases above.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_600_luid_0x0_0x1_engtype_3D", .doubleValue = 33.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto results = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results[0].pid, 600);
+    EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 33.0);
+    ASSERT_EQ(results[0].activeEngines.size(), 1U);
+    EXPECT_EQ(results[0].activeEngines[0], "3D");
+}
+
 TEST_F(WindowsPDHGPUProbeInjectedTest, SamePidDifferentLuidAggregatesSeparately)
 {
     auto impl = makeInjectedImpl();
