@@ -81,13 +81,14 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     ParsedInstance result;
     constexpr std::string_view luidHexPrefix{"0x"};
 
-    // Look for pid_ prefix
+    // Instance names always start with the pid_ token; searching mid-string would let
+    // malformed names like "garbage_pid_200_..." slip through as valid.
     const std::string pidPrefix = "pid_";
-    auto pidPos = instanceName.find(pidPrefix);
-    if (pidPos == std::string::npos)
+    if (!instanceName.starts_with(pidPrefix))
     {
         return result;
     }
+    constexpr std::size_t pidPos = 0;
 
     // Extract PID (ends at next underscore)
     auto pidStart = pidPos + pidPrefix.length();
@@ -140,7 +141,18 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     {
         return result;
     }
-    if (luidHigh.size() == luidHexPrefix.size() || luidLow.size() == luidHexPrefix.size())
+    // Require both halves to be complete hex integers (not just "0x"-prefixed text) so
+    // malformed values like "0xGG_0x1junk" are rejected rather than emitted as GPU IDs.
+    const std::string_view luidHighDigits = luidHigh.substr(luidHexPrefix.size());
+    const std::string_view luidLowDigits = luidLow.substr(luidHexPrefix.size());
+    unsigned long long luidHighValue = 0;
+    unsigned long long luidLowValue = 0;
+    const auto [luidHighPtr, luidHighEc] =
+        std::from_chars(luidHighDigits.data(), luidHighDigits.data() + luidHighDigits.size(), luidHighValue, 16);
+    const auto [luidLowPtr, luidLowEc] =
+        std::from_chars(luidLowDigits.data(), luidLowDigits.data() + luidLowDigits.size(), luidLowValue, 16);
+    if (luidHighEc != std::errc{} || luidHighPtr != luidHighDigits.data() + luidHighDigits.size() || luidLowEc != std::errc{} ||
+        luidLowPtr != luidLowDigits.data() + luidLowDigits.size())
     {
         return result;
     }

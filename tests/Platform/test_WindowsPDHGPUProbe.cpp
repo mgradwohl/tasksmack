@@ -70,6 +70,8 @@ struct FakeScenario
     int collectCallCount = 0;
     std::unordered_map<PDH_HCOUNTER, std::vector<FakeItem>> items;
     std::unordered_map<PDH_HCOUNTER, int> extraMoreDataRounds;
+    std::unordered_map<PDH_HCOUNTER, int> moreDataCallIndex;
+    std::unordered_map<PDH_HCOUNTER, std::vector<DWORD>> moreDataRequiredSizes;
     std::unordered_map<PDH_HCOUNTER, std::vector<DWORD>> seenBufferSizes;
     std::unordered_map<PDH_HCOUNTER, std::vector<void*>> seenBufferPointers;
     int getArrayCallCount = 0;
@@ -126,7 +128,13 @@ fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferS
     if (auto more = g_scenario->extraMoreDataRounds.find(counter); more != g_scenario->extraMoreDataRounds.end() && more->second > 0)
     {
         --more->second;
-        *bufferSize = static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) * (list.size() + 1));
+        // Each forced retry advertises a larger requirement than the last, simulating
+        // wildcard instances appearing between PdhCollectQueryData calls. A caller that
+        // reused an earlier (smaller) reported size instead of the latest one would
+        // under-allocate and fail on the eventual real read below.
+        const int callIndex = ++g_scenario->moreDataCallIndex[counter];
+        *bufferSize = static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) * (list.size() + static_cast<std::size_t>(callIndex)));
+        g_scenario->moreDataRequiredSizes[counter].push_back(*bufferSize);
         return static_cast<PDH_STATUS>(PDH_MORE_DATA);
     }
 
@@ -208,10 +216,16 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ResizesBufferOnPdhMoreDataThenSucceeds)
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 42.0);
     EXPECT_GE(m_scenario->getArrayCallCount, 3);
 
+    const auto& requiredSizes = m_scenario->moreDataRequiredSizes[utilizationCounter];
+    ASSERT_EQ(requiredSizes.size(), 2U);
+    EXPECT_LT(requiredSizes[0], requiredSizes[1]) << "each retry should report a larger requirement than the last";
+
     const auto firstReadSizes = m_scenario->seenBufferSizes[utilizationCounter];
     const auto firstReadPtrs = m_scenario->seenBufferPointers[utilizationCounter];
     ASSERT_FALSE(firstReadSizes.empty());
     ASSERT_EQ(firstReadSizes.size(), firstReadPtrs.size());
+    EXPECT_EQ(firstReadSizes.back(), requiredSizes.back())
+        << "the eventual successful read must use a buffer sized to the largest reported requirement, not an earlier one";
 
     m_scenario->seenBufferSizes[utilizationCounter].clear();
     m_scenario->seenBufferPointers[utilizationCounter].clear();
@@ -237,6 +251,8 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
         {.name = L"pid_12x_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 12.0},
         {.name = L"pid_123_junk", .doubleValue = 13.0},
         {.name = L"pid_201_luid_not-a-luid_engtype_3D", .doubleValue = 14.0},
+        {.name = L"garbage_pid_202_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 16.0},
+        {.name = L"pid_203_luid_0xGG_0x1junk_phys_0_eng_0_engtype_3D", .doubleValue = 17.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
 
