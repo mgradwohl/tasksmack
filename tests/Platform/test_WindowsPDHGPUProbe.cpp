@@ -194,8 +194,9 @@ class WindowsPDHGPUProbeInjectedTest : public ::testing::Test
 TEST_F(WindowsPDHGPUProbeInjectedTest, ResizesBufferOnPdhMoreDataThenSucceeds)
 {
     auto impl = makeInjectedImpl();
-    m_scenario->extraMoreDataRounds[impl->utilizationCounter] = 2;
-    m_scenario->items[impl->utilizationCounter] = {
+    const PDH_HCOUNTER utilizationCounter = impl->utilizationCounter;
+    m_scenario->extraMoreDataRounds[utilizationCounter] = 2;
+    m_scenario->items[utilizationCounter] = {
         {.name = L"pid_100_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 42.0},
     };
 
@@ -207,18 +208,18 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ResizesBufferOnPdhMoreDataThenSucceeds)
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 42.0);
     EXPECT_GE(m_scenario->getArrayCallCount, 3);
 
-    const auto firstReadSizes = m_scenario->seenBufferSizes[impl->utilizationCounter];
-    const auto firstReadPtrs = m_scenario->seenBufferPointers[impl->utilizationCounter];
+    const auto firstReadSizes = m_scenario->seenBufferSizes[utilizationCounter];
+    const auto firstReadPtrs = m_scenario->seenBufferPointers[utilizationCounter];
     ASSERT_FALSE(firstReadSizes.empty());
     ASSERT_EQ(firstReadSizes.size(), firstReadPtrs.size());
 
-    m_scenario->seenBufferSizes[impl->utilizationCounter].clear();
-    m_scenario->seenBufferPointers[impl->utilizationCounter].clear();
+    m_scenario->seenBufferSizes[utilizationCounter].clear();
+    m_scenario->seenBufferPointers[utilizationCounter].clear();
     const auto secondResults = probe.readProcessGPUCounters();
     ASSERT_EQ(secondResults.size(), 1U);
 
-    const auto secondReadSizes = m_scenario->seenBufferSizes[impl->utilizationCounter];
-    const auto secondReadPtrs = m_scenario->seenBufferPointers[impl->utilizationCounter];
+    const auto secondReadSizes = m_scenario->seenBufferSizes[utilizationCounter];
+    const auto secondReadPtrs = m_scenario->seenBufferPointers[utilizationCounter];
     ASSERT_FALSE(secondReadSizes.empty());
     ASSERT_EQ(secondReadSizes.size(), secondReadPtrs.size());
     EXPECT_GE(secondReadSizes.front(), static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W)));

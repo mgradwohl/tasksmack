@@ -144,7 +144,7 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
     {
         return result;
     }
-    if (luidStart < 5 || instanceName.compare(luidStart - 5, 5, "_luid") != 0)
+    if (luidPos == 0 || instanceName[luidPos - 1] != '_')
     {
         return result;
     }
@@ -267,6 +267,7 @@ struct PDHGPUProbe::Impl
 
     std::unordered_map<std::wstring, CachedInstance, WideStringHash, std::equal_to<>> instanceCache;
 
+    Impl() = default;
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
     Impl(Impl&&) = delete;
