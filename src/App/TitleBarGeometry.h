@@ -135,9 +135,11 @@ struct WindowRect
 /// the un-maximize threshold. maximizedWindowWidth <= 0 (e.g. a compositor race during
 /// window mapping) falls back to treating the mouse as horizontally centered (proportion
 /// 0.5) rather than dividing by zero, which would produce NaN/Inf and make the int cast
-/// below undefined behavior; the proportion is also clamped to [0, 1] so a mouse position
-/// captured outside the maximized window's bounds can't push the result far outside the
-/// restored window either.
+/// below undefined behavior; the proportion is also clamped to [0, 1] so the mouse stays
+/// within the restored window's horizontal span (between its left and right edges) even if
+/// the captured position was outside the maximized window's bounds -- this bounds where the
+/// mouse ends up relative to the restored window, not the restored window's absolute screen
+/// position, which is unconstrained.
 [[nodiscard]] inline auto computeRestoreFromMaximizedDragX(const int startMouseGlobalX,
                                                            const int maximizedWindowX,
                                                            const int maximizedWindowWidth,
