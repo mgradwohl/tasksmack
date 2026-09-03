@@ -599,7 +599,7 @@ TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
 
 TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/true,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
                                              /*resizeEdge=*/ResizeEdge::Right,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,
@@ -610,13 +610,46 @@ TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
     EXPECT_TRUE(r.applyCursor);
 }
 
+TEST(ComputeResizeCursorUpdateTest, ActiveDrag_IgnoresHoverSample_ResolvesToNone)
+{
+    // During a drag (isInteracting=true, resizeEdge=None -- TitleBarLayer clears m_Resize.edge
+    // when a drag starts), a hover sample computed this frame must be ignored even though one
+    // is available: real hover detection must not run at all while dragging, since the window
+    // moves under the pointer and the window-local coordinate can transiently cross into the
+    // resize-border zone, flipping in a resize cursor mid-drag (see the #750-follow-up review).
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::Right,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, ActiveDrag_ClearsStaleCachedResizeCursor)
+{
+    // A resize cursor cached from just before the drag started (e.g. the pointer was over a
+    // border a frame earlier) must be cleared once dragging begins, not left applied.
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Right);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
 // ========== computeResizeCursorUpdate: WM/compositor focus mismatch ==========
 
 TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
 {
     // Even with a hover sample available, focus mismatch must win: hold the cached edge and
     // never touch the cursor (see #699, #749, #750 review).
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/true,
                                              /*hoverSampleAvailable=*/true,
@@ -629,7 +662,7 @@ TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
 
 TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouch)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/true,
                                              /*hoverSampleAvailable=*/false,
@@ -644,7 +677,7 @@ TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouc
 
 TEST(ComputeResizeCursorUpdateTest, HoverSample_UpdatesCacheAndAppliesNewEdge)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/true,
@@ -659,7 +692,7 @@ TEST(ComputeResizeCursorUpdateTest, HoverSample_LeavesEdge_RestoresDefaultCursor
 {
     // The pointer left the border this frame: apply None once to restore the default cursor,
     // and cache the new (None) edge so it isn't reapplied every subsequent frame.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/true,
@@ -676,7 +709,7 @@ TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NonNoneCachedEdge_ReappliesWi
 {
     // No new hover sample this frame (mouse/window state unchanged) -- ImGui may have reset
     // the cursor, so still reapply the cached edge, but there's nothing new to cache.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,
@@ -691,7 +724,7 @@ TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NoneCachedEdge_NoCursorTouch)
 {
     // Nothing to do at all: avoid a needless SDL_SetCursor call when neither the cache nor
     // the resolved edge indicate a border.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,

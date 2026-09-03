@@ -221,13 +221,19 @@ struct ResizeCursorUpdate
 };
 
 /// Pure decision for TitleBarLayer::updateResizeCursor(), given already-queried state. Pure
-/// header-only, like the hit-test helpers above, so the policy -- active resize vs.
+/// header-only, like the hit-test helpers above, so the policy -- active resize/drag vs.
 /// WM/compositor-focus mismatch vs. real hover (including the state-unchanged fast path) --
 /// is directly unit-testable without a live SDL_Window. See #699, #749, and the #750 review:
 /// during a focus mismatch, the cached edge must be held and SDL_SetCursor must not be called
 /// at all, not even to reapply the same cursor, or the WM/compositor's own cursor rendering
 /// gets fought during an active border resize or title-bar drag.
-[[nodiscard]] inline auto computeResizeCursorUpdate(const bool isResizing,
+///
+/// isInteracting must be true for BOTH active resize and active drag, not just resize:
+/// during a client-side drag, real hover sampling must not run, or the window-local mouse
+/// coordinate transiently crossing into the resize-border zone as the window moves under the
+/// drag would flip in a resize cursor mid-drag. resizeEdge is None during a drag (no resize
+/// edge is active), which correctly resolves to no cursor override / a cache reset to None.
+[[nodiscard]] inline auto computeResizeCursorUpdate(const bool isInteracting,
                                                     const ResizeEdge resizeEdge,
                                                     const bool focusMismatch,
                                                     const bool hoverSampleAvailable,
@@ -241,7 +247,7 @@ struct ResizeCursorUpdate
 
     ResizeEdge edge = cachedEdge;
     bool updateCache = false;
-    if (isResizing)
+    if (isInteracting)
     {
         edge = resizeEdge;
     }
