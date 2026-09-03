@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string_view>
 
 namespace Core
@@ -65,10 +66,21 @@ class VideoBackend
     /// Return the current video driver name (for logging/debugging).
     [[nodiscard]] static std::string_view driverName() noexcept;
 
+    /// Test-only: clear the cached backend so the next initialize() call re-detects from the
+    /// live SDL state instead of being a no-op. Without this, a test that forces a specific
+    /// SDL_HINT_VIDEO_DRIVER and constructs a second Application/Window in the same test
+    /// binary would silently observe whichever backend the first initialize() call detected.
+    static void resetForTesting() noexcept;
+
   private:
     /// Detect the backend from the SDL video driver name and environment.
     [[nodiscard]] static Backend detectBackend();
 
+    // Guards all three statics below. Every caller today runs on the main/render thread by
+    // convention only, not by design (initialize() is called once from Application's
+    // constructor); the mutex makes that an actual guarantee rather than a hazard waiting for
+    // a future caller (e.g. a background-sampler-thread probe) to violate it.
+    static std::mutex s_Mutex;
     static Backend s_Backend;
     static bool s_Initialized;
     static std::string_view s_DriverName;
