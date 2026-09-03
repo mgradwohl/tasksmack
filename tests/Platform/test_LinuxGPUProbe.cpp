@@ -61,7 +61,9 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    EXPECT_TRUE(caps.hasPCIeMetrics);
+    // None of NVML, DRM, or ROCm provide cumulative PCIe byte counters (NVML/ROCm only expose
+    // rates; DRM doesn't expose PCIe throughput at all), so the OR'd composite is always false.
+    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_TRUE(caps.hasEngineUtilization);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);

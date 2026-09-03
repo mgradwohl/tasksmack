@@ -78,7 +78,9 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    EXPECT_TRUE(caps.hasPCIeMetrics);
+    // NVML only returns PCIe throughput as rates, not cumulative counters, so this probe
+    // deliberately reports the capability as unavailable rather than present-but-always-zero.
+    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);
     EXPECT_TRUE(caps.hasEngineUtilization);
