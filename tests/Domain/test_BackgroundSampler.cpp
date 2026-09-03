@@ -454,9 +454,13 @@ TEST(BackgroundSamplerTest, ZeroIntervalIsClamped)
     sampler.addSamplable(samplable);
 
     sampler.start();
-    std::this_thread::sleep_for(50ms);
+    // The sampler loop samples immediately on its first iteration, before waiting out the
+    // (clamped) interval, but a fixed 50ms sleep was racy against thread-startup/scheduling
+    // latency on a loaded CI runner -- poll instead, like the other tests in this file.
+    const bool sampled = waitFor([&] { return samplable->getSampleCount() >= 1; });
     sampler.stop();
 
+    EXPECT_TRUE(sampled);
     EXPECT_GE(samplable->getSampleCount(), 1);
 }
 
