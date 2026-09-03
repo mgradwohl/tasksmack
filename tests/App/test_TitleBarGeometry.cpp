@@ -301,6 +301,98 @@ TEST(ComputeResizeGeometryTest, BottomLeft_MinClampOnWidth_PinsRightEdge)
     EXPECT_EQ(r.y, 200);      // BottomLeft does not move y
 }
 
+// ========== computeRestoreFromMaximizedDragX ==========
+// Restoring a maximized window mid-drag should keep the mouse at the same proportional X
+// offset it had while maximized (see updateDrag's pendingRestore handling).
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtLeftEdge_RestoredAtSameGlobalX)
+{
+    // Mouse was at the maximized window's left edge (proportion 0) -- restored window's left
+    // edge should land exactly under the mouse.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/0,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 0);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtHorizontalCenter_RestoredCenteredUnderMouse)
+{
+    // Mouse at proportion 0.5 of a 1920-wide maximized window (global X 960) -- restored
+    // window (800 wide) should be centered under the mouse: 960 - 400 = 560.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/960,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 560);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtRightEdge_RestoredRightEdgeUnderMouse)
+{
+    // Proportion 1.0: restored window's right edge lands under the mouse.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/1920,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 1120);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, NonZeroMaximizedWindowX_OffsetsProportionCorrectly)
+{
+    // Maximized window starts at global X 100 (e.g. a secondary monitor); mouse at global X
+    // 1060 is proportion 0.5 of a 1920-wide window relative to that origin.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/1060,
+                                                        /*maximizedWindowX=*/100,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 660);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, ZeroMaximizedWidth_FallsBackToCenteredProportion_NoUBCast)
+{
+    // Regression test: maximizedWindowWidth <= 0 must not divide by zero (NaN/Inf -> UB on
+    // the int cast). Falls back to proportion 0.5: startMouseGlobalX - restoredWidth/2.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/500,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/0,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 100); // 500 - 400
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, NegativeMaximizedWidth_FallsBackToCenteredProportion)
+{
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/500,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/-1,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 100);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseOutsideMaximizedWindow_ProportionClampedNotExtrapolated)
+{
+    // startMouseGlobalX before maximizedWindowX would give a negative raw proportion --
+    // clamped to 0 rather than extrapolating past the window's left edge.
+    const int belowLeft = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/-500,
+                                                           /*maximizedWindowX=*/0,
+                                                           /*maximizedWindowWidth=*/1920,
+                                                           /*restoredWidth=*/800);
+    EXPECT_EQ(belowLeft, -500); // proportion clamped to 0.0 -> result == startMouseGlobalX
+
+    // Past the right edge clamps to proportion 1.0 rather than extrapolating further right.
+    const int pastRight = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/3000,
+                                                           /*maximizedWindowX=*/0,
+                                                           /*maximizedWindowWidth=*/1920,
+                                                           /*restoredWidth=*/800);
+    EXPECT_EQ(pastRight, 2200); // 3000 - 800
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, PureFunction_DeterministicAcrossRepeatedCalls)
+{
+    const int first = computeRestoreFromMaximizedDragX(777, 50, 1920, 1024);
+    const int second = computeRestoreFromMaximizedDragX(777, 50, 1920, 1024);
+    EXPECT_EQ(first, second);
+}
+
 // ========== computeTitleBarAreaHitTest ==========
 // See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
 // managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE

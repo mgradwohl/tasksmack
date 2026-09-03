@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL_video.h>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace App
@@ -124,6 +125,29 @@ struct WindowRect
     }
 
     return {.x = newX, .y = newY, .width = newWidth, .height = newHeight};
+}
+
+/// Pure geometry: given where the mouse was within a maximized window (as an offset of
+/// startMouseGlobalX from the window's left edge, maximizedWindowX) and the maximized
+/// window's width snapshot, compute the new left-edge X for the just-restored window
+/// (restoredWidth wide) so the mouse ends up at the same proportional offset it had while
+/// the window was maximized -- used when a drag that starts on a maximized window crosses
+/// the un-maximize threshold. maximizedWindowWidth <= 0 (e.g. a compositor race during
+/// window mapping) falls back to treating the mouse as horizontally centered (proportion
+/// 0.5) rather than dividing by zero, which would produce NaN/Inf and make the int cast
+/// below undefined behavior; the proportion is also clamped to [0, 1] so a mouse position
+/// captured outside the maximized window's bounds can't push the result far outside the
+/// restored window either.
+[[nodiscard]] inline auto computeRestoreFromMaximizedDragX(const int startMouseGlobalX,
+                                                           const int maximizedWindowX,
+                                                           const int maximizedWindowWidth,
+                                                           const int restoredWidth) -> int
+{
+    const float xProportion =
+        maximizedWindowWidth > 0
+            ? std::clamp(static_cast<float>(startMouseGlobalX - maximizedWindowX) / static_cast<float>(maximizedWindowWidth), 0.0F, 1.0F)
+            : 0.5F;
+    return startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
 }
 
 /// Decision for the empty title-bar drag area specifically (once the point is known to be

@@ -677,12 +677,11 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
             return;
         }
         // Threshold crossed — restore and rebase the drag origin.
-        const float xProportion =
-            static_cast<float>(m_Drag.startMouseGlobalX - m_Drag.maximizedWindowX) / static_cast<float>(m_Drag.maximizedWindowWidth);
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
         const auto [restoredX, restoredY] = window.getPosition();
         const auto [restoredWidth, restoredHeight] = window.getSize();
-        const int adjustedX = m_Drag.startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+        const int adjustedX =
+            computeRestoreFromMaximizedDragX(m_Drag.startMouseGlobalX, m_Drag.maximizedWindowX, m_Drag.maximizedWindowWidth, restoredWidth);
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
         Core::Application::get().signalWindowGeometryChanged();
         m_Drag.startWindowX = adjustedX;
