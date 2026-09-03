@@ -137,4 +137,9 @@ std::string_view VideoBackend::driverName() noexcept
     return s_DriverName;
 }
 
+bool VideoBackend::shouldUseBorderlessTitleBar(const bool forceNativeDecorationsOnWayland, const bool isWayland) noexcept
+{
+    return !(forceNativeDecorationsOnWayland && isWayland);
+}
+
 } // namespace Core

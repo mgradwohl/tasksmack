@@ -55,6 +55,13 @@ class VideoBackend
     /// Used for drag/resize operations; on Wayland this may be unreliable.
     [[nodiscard]] static bool supportsGlobalMouseState() noexcept;
 
+    /// Pure policy: should the window use the custom borderless title bar (true), or native
+    /// OS/compositor decorations (false)? Parameterized rather than reading live isWayland()
+    /// state, so it's directly unit-testable without live SDL video-backend state. See #745:
+    /// forceNativeDecorationsOnWayland is a user opt-in that only has an effect on native
+    /// Wayland; every other backend always stays borderless (custom title bar).
+    [[nodiscard]] static bool shouldUseBorderlessTitleBar(bool forceNativeDecorationsOnWayland, bool isWayland) noexcept;
+
     /// Return the current video driver name (for logging/debugging).
     [[nodiscard]] static std::string_view driverName() noexcept;
 

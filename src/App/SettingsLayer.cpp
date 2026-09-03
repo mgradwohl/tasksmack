@@ -7,6 +7,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/VideoBackend.h"
 #include "UI/AssetPath.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -118,6 +119,7 @@ void SettingsLayer::loadCurrentSettings()
     m_SelectedFontSizeIndex = findFontSizeIndex(settings.fontSize);
     m_SelectedRefreshRateIndex = findRefreshRateIndex(settings.refreshIntervalMs);
     m_SelectedHistoryIndex = findHistoryIndex(settings.maxHistorySeconds);
+    m_ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 }
 
 void SettingsLayer::applySettings()
@@ -181,6 +183,15 @@ void SettingsLayer::applySettings()
             Core::Application::get().raiseEvent(event);
         }
         spdlog::info("Settings: History duration changed to {} seconds", newHistorySeconds);
+    }
+
+    // Apply native-decorations preference (takes effect on next launch -- the window is
+    // only created once, at startup)
+    if (m_ForceNativeDecorationsOnWayland != settings.forceNativeWindowDecorationsOnWayland)
+    {
+        settings.forceNativeWindowDecorationsOnWayland = m_ForceNativeDecorationsOnWayland;
+        spdlog::info("Settings: Force native window decorations on Wayland changed to {} (takes effect on next launch)",
+                     m_ForceNativeDecorationsOnWayland);
     }
 
     // Save to disk
@@ -374,6 +385,18 @@ void SettingsLayer::renderSettingsDialog()
             (void) App::PlatformOpen::openWithSystemHandler(getThemesDir());
         }
         ImGui::PopStyleColor();
+
+#ifndef _WIN32
+        // Only meaningful on native Wayland -- the custom title bar's drag/resize
+        // implementation depends on compositor hand-off there in ways that don't apply
+        // to X11/XWayland (see #744, #749). Hidden elsewhere since it would have no effect.
+        if (Core::VideoBackend::isWayland())
+        {
+            ImGui::Spacing();
+            ImGui::Checkbox("Use native window decorations instead of the custom title bar", &m_ForceNativeDecorationsOnWayland);
+            ImGui::TextColored(theme.scheme().textMuted, "Takes effect after restarting TaskSmack.");
+        }
+#endif
 
         ImGui::Spacing();
         ImGui::Spacing();

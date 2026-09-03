@@ -342,6 +342,10 @@ void UserConfig::load()
         {
             m_Settings.windowMaximized = *val;
         }
+        if (auto val = config["window"]["force_native_decorations_on_wayland"].value<bool>())
+        {
+            m_Settings.forceNativeWindowDecorationsOnWayland = *val;
+        }
 
         // Privilege notice: suppress startup dialog if user dismissed it permanently
         if (auto val = config["ui"]["show_privilege_notice"].value<bool>())
@@ -432,6 +436,7 @@ void UserConfig::save()
         {"width", m_Settings.windowWidth},
         {"height", m_Settings.windowHeight},
         {"maximized", m_Settings.windowMaximized},
+        {"force_native_decorations_on_wayland", m_Settings.forceNativeWindowDecorationsOnWayland},
     };
 
     if (m_Settings.windowPosX.has_value())

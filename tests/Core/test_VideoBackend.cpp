@@ -66,6 +66,29 @@ TEST(ClassifyBackendTest, WindowsDriverClassifiesPerPlatform)
 #endif
 }
 
+// ========== ShouldUseBorderlessTitleBar ==========
+// See #745/#750 review: pure policy for whether the window uses the custom title bar (true) or
+// native OS/compositor decorations (false). Table-tested directly, independent of whichever real
+// video driver is active in the test process.
+
+TEST(ShouldUseBorderlessTitleBarTest, DefaultOff_AlwaysBorderlessRegardlessOfBackend)
+{
+    EXPECT_TRUE(VideoBackend::shouldUseBorderlessTitleBar(/*forceNativeDecorationsOnWayland=*/false, /*isWayland=*/true));
+    EXPECT_TRUE(VideoBackend::shouldUseBorderlessTitleBar(/*forceNativeDecorationsOnWayland=*/false, /*isWayland=*/false));
+}
+
+TEST(ShouldUseBorderlessTitleBarTest, OptIn_OnNativeWayland_DisablesBorderless)
+{
+    EXPECT_FALSE(VideoBackend::shouldUseBorderlessTitleBar(/*forceNativeDecorationsOnWayland=*/true, /*isWayland=*/true));
+}
+
+TEST(ShouldUseBorderlessTitleBarTest, OptIn_OnNonWayland_HasNoEffect)
+{
+    // X11, XWayland, and Windows: the opt-in setting is native-Wayland-only, so it must not
+    // disable the custom title bar on any other backend.
+    EXPECT_TRUE(VideoBackend::shouldUseBorderlessTitleBar(/*forceNativeDecorationsOnWayland=*/true, /*isWayland=*/false));
+}
+
 bool ensureVideoDriverInitialized()
 {
     if (SDL_Init(SDL_INIT_VIDEO))

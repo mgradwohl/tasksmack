@@ -82,6 +82,11 @@ class TitleBarLayer : public Core::Layer
         return m_IconBounds;
     }
 
+    /// True if (x, y) falls inside any title-bar button's bounds. Public (like the
+    /// individual bounds getters above) so the free-function hit-test callback can use
+    /// it directly.
+    [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
+
   private:
     enum class InteractionMode : std::uint8_t
     {
@@ -129,7 +134,7 @@ class TitleBarLayer : public Core::Layer
     };
 
     void beginWindowInteraction(const SDL_Event& event);
-    void handleTitleBarDoubleClick(const SDL_Event& event);
+    void handleTitleBarDoubleClick(const SDL_Event& event) const;
     void updateWindowInteraction();
     void updateDrag(int mx, int my, Core::Window& window, double& restoreMs, double& setPositionMs);
     void updateResize(int mx, int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs);
@@ -146,7 +151,6 @@ class TitleBarLayer : public Core::Layer
     void applyCursorForEdge(ResizeEdge edge);
 
     [[nodiscard]] static auto detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge;
-    [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
     void renderTitleBar();
     void renderSystemMenu();
@@ -177,6 +181,14 @@ class TitleBarLayer : public Core::Layer
     int m_LastCursorWindowHeight = 0;
     bool m_LastCursorWindowMaximized = false;
     bool m_HasCursorSample = false;
+
+    // Diagnostic-only: last logged SDL_GetMouseFocus()-mismatch state, so
+    // updateResizeCursor() logs a transition instead of spamming every frame. Added during
+    // the #749 follow-up investigation into a WSLg no-resize-cursor report -- that specific
+    // report turned out to be a WSL session issue, not this code path, but the logging is
+    // kept to help diagnose any future genuine Wayland-compositor cursor report.
+    bool m_LastLoggedFocusMismatch = false;
+    bool m_HasLoggedFocusMismatch = false;
 
     bool m_TraceEnabled = false;
 

@@ -71,6 +71,12 @@ struct UserSettings
     // Whether to show the reduced-privileges notice dialog on startup.
     // Set to false permanently via "Don't show again" in the dialog.
     bool showPrivilegeNotice = true;
+
+    // Opt-in escape hatch (default off -- the custom title bar is the default
+    // everywhere): use native OS/compositor window decorations instead of the custom
+    // borderless title bar. Only has an effect on native Wayland; read once at startup
+    // (Core::Application's constructor), so it takes effect on next launch. See #745.
+    bool forceNativeWindowDecorationsOnWayland = false;
 };
 
 /**

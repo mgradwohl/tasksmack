@@ -108,20 +108,22 @@ Test that borderless window maximize/restore works reliably:
 #### 2. **Window Dragging**
 Test that title-bar dragging is smooth and accurate:
 
-**Wayland (Native):**
-- [ ] Click and drag title bar to move window
-  - Expected: Window follows cursor smoothly, no jumps
-  - Verify: No global mouse state artifacts
-- [ ] Drag from maximized window (pending restore)
-  - Expected: Window restores and begins following cursor after ~5px threshold
-- [ ] Drag onto different monitor (multi-monitor)
+**Wayland (Native):** drag is delegated to the compositor (`SDL_HITTEST_DRAGGABLE` -> `xdg_toplevel_move()`, #744) rather than the client-side `updateDrag()` path X11/XWayland/Windows use -- the "~5px threshold before un-maximizing" and "no global mouse state artifacts" behaviors described for other platforms below do not apply here; the compositor owns the whole gesture once it starts.
+- [ ] Click and drag the empty title-bar area (not a button) to move window
+  - Expected: Window follows cursor smoothly via the compositor's own move gesture
+- [ ] Drag from a maximized window
+  - Expected: Compositor's own maximize/restore-on-drag behavior applies (varies by compositor -- note what actually happens)
+- [ ] Drag onto a different monitor (multi-monitor)
   - Expected: Window moves smoothly between monitors
-- [ ] Drag with window decorations hidden (if compositor supports)
-  - Expected: Drag still works via custom title bar
+- [ ] **Regression check: every title-bar button still works** (icon/system-menu, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`isPointInControlArea()` must be checked before returning `DRAGGABLE`).
+- [ ] Double-click the empty title-bar area
+  - Expected (accepted trade-off, not a bug): does NOT toggle maximize/restore on native Wayland, since the compositor consumes the button-down entirely. Use the maximize button instead.
 
 **X11/XWayland/Windows:**
 - [ ] Click and drag title bar (verify no regressions)
-  - Expected: Same smooth behavior as before
+  - Expected: Same smooth client-side behavior as before, including the maximized-drag restore threshold
+- [ ] Double-click the title bar
+  - Expected: Toggles maximize/restore (unaffected by the native-Wayland change above)
 
 #### 3. **Window Resizing (Edges)**
 Test that custom border resize works:
@@ -141,11 +143,17 @@ Test that custom border resize works:
 #### 4. **Double-Click Title Bar**
 Test toggle maximize/restore:
 
-**All Platforms:**
+**X11/XWayland/Windows:**
 - [ ] Double-click on empty area of title bar
   - Expected: If not maximized, window maximizes; if maximized, restores
 - [ ] Double-click while hovering over button (minimize/maximize/close)
   - Expected: Button action takes precedence (minimize/maximize/close)
+
+**Native Wayland:**
+- [ ] Double-click on empty area of title bar
+  - Expected (accepted trade-off, not a bug -- see #744): does nothing; the compositor consumes the button-down for the drag gesture before the app can see it as a double-click. Use the maximize button instead.
+- [ ] Double-click while hovering over a button (minimize/maximize/close)
+  - Expected: Button action still takes precedence and works normally (buttons stay `SDL_HITTEST_NORMAL` on every backend)
 
 #### 5. **Multi-Monitor Edge Cases**
 
@@ -258,13 +266,13 @@ export SDL_VIDEODRIVER=x11
 
 ## Known Limitations / Future Work
 
-- **Native Wayland:** Some compositors may have quirks with client-side drag initiation. There is currently no user-facing setting to fall back to native window decorations if a compositor's behavior is problematic (see issue #745).
+- **Native Wayland:** Title-bar dragging is delegated to the compositor via `SDL_HITTEST_DRAGGABLE` (see #744); as a consequence, double-click-to-maximize does not fire from the title bar there (the maximize button remains available). Users who hit compositor-specific drag/resize quirks can switch to native window decorations via Settings > Advanced > "Use native window decorations instead of the custom title bar" (see #745; native Wayland only, takes effect on next launch).
 - **Multi-DPI:** Resize behavior on multi-DPI setups may vary by compositor. Log output will indicate which backend is active.
 - **Touch input:** Not tested (future enhancement).
 
 ## Documentation References
 
 - Architecture: tasksmack.md - Custom Title Bar Behavior section
-- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::getCurrentMousePosition()`
-- Issue references: #593 (implementation), #382 (validation gate)
+- Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::getCurrentMousePosition()`, `TitleBarLayer::hitTestCallback()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
+- Issue references: #593 (implementation), #382 (validation gate), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression)
 - Related: #373 (custom title bar intro, historical context)

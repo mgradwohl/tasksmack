@@ -136,8 +136,15 @@ template<typename Fn> struct ScopeExit
 
 // Hit-test callback:
 // - Windows: always NORMAL; drag/resize handled entirely client-side (avoids modal move/resize stalls).
-// - Non-Windows: NORMAL for title bar and controls so SDL delivers mouse button events to the app;
-//   RESIZE_* for window edges so the WM handles native resize. Drag is handled client-side too.
+// - X11/XWayland: NORMAL for title bar and controls so SDL delivers mouse button events to the
+//   app and drag is handled client-side (matches Windows); RESIZE_* for window edges so the WM
+//   handles native resize.
+// - Native Wayland: same RESIZE_* border handling, but the title-bar drag area itself returns
+//   DRAGGABLE (compositor-managed drag, since client-side SDL_SetWindowPosition() doesn't work
+//   there -- #744). SDL consumes the button-down event entirely for any non-NORMAL hit-test
+//   result, so this file's onSDLEvent()-driven click/drag/double-click handling never runs for
+//   that area on native Wayland -- only the compositor sees the press. Buttons stay NORMAL on
+//   every backend so DRAGGABLE never consumes their clicks.
 SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, void* data)
 {
 #ifdef _WIN32
@@ -167,60 +174,28 @@ SDL_HitTestResult hitTestCallback(SDL_Window* sdlWindow, const SDL_Point* area, 
     }
 
     const bool isMaximized = ((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_MAXIMIZED) != 0);
-    if (!isMaximized)
-    {
-        if (y >= static_cast<float>(windowHeight) - RESIZE_BORDER_THICKNESS)
-        {
-            if (x < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            }
-            if (x >= static_cast<float>(windowWidth) - RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_BOTTOM;
-        }
 
-        if (x < RESIZE_BORDER_THICKNESS)
-        {
-            if (y < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_TOPLEFT;
-            }
-            return SDL_HITTEST_RESIZE_LEFT;
-        }
-        if (x >= static_cast<float>(windowWidth) - RESIZE_BORDER_THICKNESS)
-        {
-            if (y < RESIZE_BORDER_THICKNESS)
-            {
-                return SDL_HITTEST_RESIZE_TOPRIGHT;
-            }
-            return SDL_HITTEST_RESIZE_RIGHT;
-        }
-
-        if (y < RESIZE_BORDER_THICKNESS)
-        {
-            const auto& helpBounds = layer->getHelpBounds();
-            if (helpBounds.maxX > helpBounds.minX && x >= helpBounds.minX)
-            {
-                return SDL_HITTEST_NORMAL;
-            }
-            return SDL_HITTEST_RESIZE_TOP;
-        }
-    }
-
-    if (y > titleBarHeight)
-    {
-        return SDL_HITTEST_NORMAL;
-    }
-
-    // Title bar drag area — return NORMAL so SDL delivers mouse button events
-    // to the app. Drag is handled client-side in beginWindowInteraction /
-    // updateWindowInteraction, mirroring the Windows path. This ensures
-    // SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for
-    // double-click maximize/restore detection.
-    return SDL_HITTEST_NORMAL;
+    // The actual decision tree lives in computeWindowHitTest() (TitleBarGeometry.h), pure and
+    // header-only so its ordering -- buttons must be excluded before any resize-border check,
+    // since a button can sit within RESIZE_BORDER_THICKNESS of a window edge -- is directly
+    // unit-testable without live SDL_Window/TitleBarLayer state (see #750 review). On native
+    // Wayland the empty drag area hands off to the compositor (#744): client-side
+    // SDL_SetWindowPosition() during a drag doesn't work there, and since SDL consumes the
+    // button-down event entirely for any non-NORMAL result, this file's onSDLEvent()-driven
+    // click/drag/double-click handling never runs for that area there -- only the compositor
+    // sees the press, which means double-click-to-maximize doesn't fire from the title bar on
+    // native Wayland (the maximize button remains available). X11/XWayland/Windows stay NORMAL
+    // so SDL_EVENT_MOUSE_BUTTON_DOWN with clicks==2 is delivered reliably for double-click
+    // maximize/restore detection there.
+    return computeWindowHitTest(x,
+                                y,
+                                windowWidth,
+                                windowHeight,
+                                titleBarHeight,
+                                RESIZE_BORDER_THICKNESS,
+                                isMaximized,
+                                layer->isPointInControlArea(x, y),
+                                Core::VideoBackend::isWayland());
 #endif
 }
 
@@ -361,10 +336,13 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
         }
     }
 
-    // Title bar drag area returns SDL_HITTEST_NORMAL (see hitTestCallback), so
-    // SDL_EVENT_MOUSE_BUTTON_DOWN is delivered on all platforms. Use SDL's built-in
-    // clicks field for double-click detection and the existing client-side drag/resize
-    // interaction for window movement.
+    // On Windows and X11/XWayland, the title bar drag area returns SDL_HITTEST_NORMAL
+    // (see hitTestCallback), so SDL_EVENT_MOUSE_BUTTON_DOWN is delivered and handled here
+    // via SDL's built-in clicks field for double-click detection and the existing
+    // client-side drag/resize interaction for window movement. On native Wayland the drag
+    // area returns SDL_HITTEST_DRAGGABLE instead, so SDL consumes the button-down there and
+    // this handler never runs for that area -- drag and double-click-to-maximize are the
+    // compositor's responsibility on that backend (see hitTestCallback and #744).
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && event->button.button == SDL_BUTTON_LEFT)
     {
         if (event->button.clicks == 2)
@@ -439,7 +417,7 @@ auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int wind
     return ResizeEdge::None;
 }
 
-void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event)
+void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
 {
     auto& window = Core::Application::get().getWindow();
     SDL_Window* sdlWindow = window.getHandle();
@@ -827,6 +805,21 @@ void TitleBarLayer::createSystemCursors()
     m_EwResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
     m_NeswResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NESW_RESIZE);
     m_NwseResizeCursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NWSE_RESIZE);
+
+    // Diagnostic: SDL_CreateSystemCursor() returns nullptr on failure (e.g. a cursor theme
+    // missing a directional resize shape), and applyCursorForEdge() silently falls back to the
+    // default cursor whenever its target cursor is null -- indistinguishable at the UI level
+    // from "no resize cursor at all". Surface creation failures explicitly (see #749 follow-up).
+    if (m_NsResizeCursor == nullptr || m_EwResizeCursor == nullptr || m_NeswResizeCursor == nullptr || m_NwseResizeCursor == nullptr)
+    {
+        spdlog::warn("TitleBarLayer: one or more resize-cursor shapes failed to create (ns={} ew={} nesw={} nwse={}); "
+                     "SDL error: {}",
+                     m_NsResizeCursor != nullptr,
+                     m_EwResizeCursor != nullptr,
+                     m_NeswResizeCursor != nullptr,
+                     m_NwseResizeCursor != nullptr,
+                     SDL_GetError());
+    }
 }
 
 void TitleBarLayer::destroySystemCursors()
@@ -904,36 +897,39 @@ void TitleBarLayer::updateResizeCursor()
         return;
     }
 
-#ifndef _WIN32
-    // On non-Windows the hit-test callback returns SDL_HITTEST_RESIZE_* for border
-    // regions, so the window manager owns both the resize operation and its cursor.
-    // When the WM grabs the pointer for a resize, SDL_GetMouseFocus() may stop
-    // returning our window, which would incorrectly trigger a reset to the default
-    // cursor and fight the WM-drawn resize cursor. Skip client-side cursor management
-    // entirely on non-Windows — the WM keeps the correct resize cursor via hit-test.
-    // (Client-side resize on Windows uses InteractionMode::Resize and is handled below.)
-    (void) sdlWindow;
-    return;
-#endif
-
-    // Seed from the cache so the state-unchanged fast-path still reaches the
-    // cursor-apply step at the end (ImGui may reset the cursor each frame).
     const ResizeEdge prevEdge = m_CachedHoverEdge;
-    ResizeEdge edge = m_CachedHoverEdge;
+    const bool isResizing = (m_InteractionMode == InteractionMode::Resize);
+    // SDL_GetMouseFocus() can transiently disagree with reality while the WM/compositor owns
+    // an active hit-test-triggered resize or drag (border SDL_HITTEST_RESIZE_* / title-bar
+    // SDL_HITTEST_DRAGGABLE on native Wayland) -- see #699, #749, and the #750 review. The
+    // policy for what to do about it lives in computeResizeCursorUpdate() below.
+    const bool focusMismatch = !isResizing && (SDL_GetMouseFocus() != sdlWindow);
 
-    if (m_InteractionMode == InteractionMode::Resize)
+    bool hoverSampleAvailable = false;
+    ResizeEdge hoverEdge = ResizeEdge::None;
+
+    if (focusMismatch)
     {
-        edge = m_Resize.edge;
+        // Diagnostic: log only on transition into this branch. Added during the #749
+        // follow-up investigation into a WSLg no-resize-cursor report, which turned out to
+        // be a WSL session issue rather than this code path; kept to help diagnose any
+        // future genuine Wayland-compositor cursor report.
+        if (!m_HasLoggedFocusMismatch || !m_LastLoggedFocusMismatch)
+        {
+            spdlog::debug("updateResizeCursor: SDL_GetMouseFocus() != our window (holding cached edge={})", static_cast<int>(prevEdge));
+            m_LastLoggedFocusMismatch = true;
+            m_HasLoggedFocusMismatch = true;
+        }
     }
-    else if (SDL_GetMouseFocus() != sdlWindow)
+    else if (!isResizing)
     {
-        // Pointer is over another window (or has left ours) — no resize edge.
-        edge = ResizeEdge::None;
-        m_CachedHoverEdge = edge;
-        m_HasCursorSample = false;
-    }
-    else
-    {
+        if (!m_HasLoggedFocusMismatch || m_LastLoggedFocusMismatch)
+        {
+            spdlog::debug("updateResizeCursor: SDL_GetMouseFocus() matches our window (real hover detection active)");
+            m_LastLoggedFocusMismatch = false;
+            m_HasLoggedFocusMismatch = true;
+        }
+
         // Use window-local coordinates from SDL_GetMouseState. Global
         // coordinates (SDL_GetGlobalMouseState) are unreliable on Wayland —
         // including WSLg — where compositors do not expose the global cursor
@@ -959,35 +955,45 @@ void TitleBarLayer::updateResizeCursor()
             m_LastCursorWindowHeight = windowHeight;
             m_LastCursorWindowMaximized = isMaximized;
             m_HasCursorSample = true;
+            hoverSampleAvailable = true;
 
             const bool insideWindow =
                 (localX >= 0.0F && localY >= 0.0F && localX < static_cast<float>(windowWidth) && localY < static_cast<float>(windowHeight));
-            edge = ResizeEdge::None;
             if (insideWindow)
             {
-                edge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
+                hoverEdge = detectResizeEdge(localX, localY, windowWidth, windowHeight, isMaximized);
                 // Suppress the resize cursor over title-bar controls: on Windows all
                 // resize is client-side, but controls should still show the default cursor.
-                if (edge != ResizeEdge::None && isPointInControlArea(localX, localY))
+                if (hoverEdge != ResizeEdge::None && isPointInControlArea(localX, localY))
                 {
-                    edge = ResizeEdge::None;
+                    hoverEdge = ResizeEdge::None;
                 }
             }
-            m_CachedHoverEdge = edge;
+            // Diagnostic: log only edge transitions, not every changed hover sample --
+            // moving the pointer changes coordinates far more often than it crosses an
+            // edge boundary, and logging every sample risks distorting the very
+            // resize/drag behavior being diagnosed. Added during the #749 follow-up
+            // investigation (see comment above); kept for future Wayland diagnostics.
+            if (hoverEdge != prevEdge)
+            {
+                spdlog::debug("updateResizeCursor: hover sample ({}, {}) in {}x{} window -> edge={}",
+                              mouseLocalX,
+                              mouseLocalY,
+                              windowWidth,
+                              windowHeight,
+                              static_cast<int>(hoverEdge));
+            }
         }
-        // State unchanged: edge == m_CachedHoverEdge, falls through to apply.
     }
 
-    // Set a resize cursor while on a border. Restore the default only when
-    // leaving one so ImGui-provided cursors (text inputs, splitters, etc.) are
-    // not overridden while the pointer is away from window borders.
-    if (edge != ResizeEdge::None)
+    const auto update = computeResizeCursorUpdate(isResizing, m_Resize.edge, focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
+    if (update.updateCachedEdge)
     {
-        applyCursorForEdge(edge);
+        m_CachedHoverEdge = update.resolvedEdge;
     }
-    else if (prevEdge != ResizeEdge::None)
+    if (update.applyCursor)
     {
-        applyCursorForEdge(ResizeEdge::None);
+        applyCursorForEdge(update.resolvedEdge);
     }
 }
 

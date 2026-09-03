@@ -172,6 +172,7 @@ auto runApp() -> int
     appSpec.Width = std::clamp(settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.Height = std::clamp(settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.VSync = true;
+    appSpec.ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 
     auto app = std::make_unique<Core::Application>(appSpec);
     Core::Application::setInstance(std::move(app));
@@ -193,8 +194,13 @@ auto runApp() -> int
     // Push UI layer (initializes ImGui/ImPlot backends)
     appRef.pushLayer<UI::UILayer>();
 
-    // Push title bar layer (custom window chrome)
-    appRef.pushLayer<App::TitleBarLayer>();
+    // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
+    // use instead (opt-in, native Wayland only; see #745), since the OS/compositor already draws
+    // a title bar in that case and ShellLayer reserves no space for a second one.
+    if (appRef.getWindow().isBorderless())
+    {
+        appRef.pushLayer<App::TitleBarLayer>();
+    }
 
     // Push shell layer (docking workspace with panels)
     appRef.pushLayer<App::ShellLayer>();

@@ -301,5 +301,414 @@ TEST(ComputeResizeGeometryTest, BottomLeft_MinClampOnWidth_PinsRightEdge)
     EXPECT_EQ(r.y, 200);      // BottomLeft does not move y
 }
 
+// ========== computeTitleBarAreaHitTest ==========
+// See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
+// managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE
+// result consumes the click before the app ever sees it (button clicks would stop working).
+
+TEST(ComputeTitleBarAreaHitTestTest, ControlArea_AlwaysNormal_RegardlessOfBackend)
+{
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/true), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/true, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NativeWayland_ReturnsDraggable)
+{
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/true), SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeTitleBarAreaHitTestTest, EmptyDragArea_NonWayland_ReturnsNormal)
+{
+    // X11, XWayland, and Windows all keep the client-side drag path.
+    EXPECT_EQ(computeTitleBarAreaHitTest(/*isInControlArea=*/false, /*isNativeWayland=*/false), SDL_HITTEST_NORMAL);
+}
+
+// ========== computeWindowHitTest ==========
+// See #750 review: a title-bar button can sit within resizeBorderThickness of a window edge
+// (the close button's rightmost pixels reach the window's right edge; the icon's top pixels sit
+// inside the top resize strip), so the control-area check must win over every resize-border
+// branch below it -- this exercises the *ordering* itself, not just the terminal helper.
+
+constexpr int WIN_W = 1200;
+constexpr int WIN_H = 800;
+constexpr float TITLE_BAR_H = 40.0F;
+constexpr float BORDER = 8.0F;
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsOverRightEdgeOverlap)
+{
+    // Close button's rightmost pixel: geometrically inside the right resize-border strip.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsRightEdgeResize)
+{
+    // Sanity check: absent the control-area guard, that same point is genuinely a resize edge.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_RIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsOverTopEdgeOverlap)
+{
+    // Icon's top pixels: geometrically inside the top resize-border strip.
+    EXPECT_EQ(computeWindowHitTest(20.0F,
+                                   5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, SamePoint_NotControlArea_IsTopEdgeResize)
+{
+    EXPECT_EQ(computeWindowHitTest(20.0F,
+                                   5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOP);
+}
+
+TEST(ComputeWindowHitTestTest, ControlArea_WinsEvenWhenMaximized)
+{
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/true,
+                                   /*isInControlArea=*/true,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomLeftCorner_ReturnsResizeBottomLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOMLEFT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomRightCorner_ReturnsResizeBottomRight)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) - 1.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOMRIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_BottomEdgeMiddle_ReturnsResizeBottom)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   static_cast<float>(WIN_H) - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_BOTTOM);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_TopLeftCorner_ReturnsResizeTopLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   0.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOPLEFT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_TopRightCorner_ReturnsResizeTopRight)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) - 1.0F,
+                                   0.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_TOPRIGHT);
+}
+
+TEST(ComputeWindowHitTestTest, NotControlArea_LeftEdgeMiddle_ReturnsResizeLeft)
+{
+    EXPECT_EQ(computeWindowHitTest(0.0F,
+                                   TITLE_BAR_H + 50.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_RESIZE_LEFT);
+}
+
+TEST(ComputeWindowHitTestTest, Maximized_SuppressesResizeBorders_EvenNearEdge)
+{
+    // Same point that returned RESIZE_RIGHT when not maximized (see above) falls through to the
+    // title-row decision once maximized, since border resize is disabled while maximized.
+    EXPECT_EQ(computeWindowHitTest(WIN_W - 1.0F,
+                                   20.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/true,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_NonWayland_ReturnsNormal)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, EmptyTitleRow_NativeWayland_ReturnsDraggable)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 5.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_JustAboveHeight_StillDraggable_NativeWayland)
+{
+    // One pixel inside the title-bar row: still the title bar's row, so still draggable.
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H - 1.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NativeWayland)
+{
+    // titleBarHeight is an exclusive upper bound: ShellLayer's content window starts at
+    // exactly y == titleBarHeight, so this row must not be draggable, or native Wayland
+    // would steal its clicks from the first content/tab row (see #750 review).
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, TitleBarBoundary_ExactlyAtHeight_ReturnsNormal_NonWayland)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/false),
+              SDL_HITTEST_NORMAL);
+}
+
+TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
+{
+    EXPECT_EQ(computeWindowHitTest(static_cast<float>(WIN_W) / 2.0F,
+                                   TITLE_BAR_H + 100.0F,
+                                   WIN_W,
+                                   WIN_H,
+                                   TITLE_BAR_H,
+                                   BORDER,
+                                   /*isMaximized=*/false,
+                                   /*isInControlArea=*/false,
+                                   /*isNativeWayland=*/true),
+              SDL_HITTEST_NORMAL);
+}
+
+// ========== computeResizeCursorUpdate: active resize takes priority ==========
+
+TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/true,
+                                             /*resizeEdge=*/ResizeEdge::Right,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Left);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Right);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: WM/compositor focus mismatch ==========
+
+TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
+{
+    // Even with a hover sample available, focus mismatch must win: hold the cached edge and
+    // never touch the cursor (see #699, #749, #750 review).
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/true,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::Right,
+                                             /*cachedEdge=*/ResizeEdge::Left);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Left);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouch)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/true,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: real hover sample (focus restored) ==========
+
+TEST(ComputeResizeCursorUpdateTest, HoverSample_UpdatesCacheAndAppliesNewEdge)
+{
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::TopLeft,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::TopLeft);
+    EXPECT_TRUE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, HoverSample_LeavesEdge_RestoresDefaultCursor)
+{
+    // The pointer left the border this frame: apply None once to restore the default cursor,
+    // and cache the new (None) edge so it isn't reapplied every subsequent frame.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Right);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_TRUE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+// ========== computeResizeCursorUpdate: state-unchanged fast path ==========
+
+TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NonNoneCachedEdge_ReappliesWithoutCacheWrite)
+{
+    // No new hover sample this frame (mouse/window state unchanged) -- ImGui may have reset
+    // the cursor, so still reapply the cached edge, but there's nothing new to cache.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Bottom);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::Bottom);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NoneCachedEdge_NoCursorTouch)
+{
+    // Nothing to do at all: avoid a needless SDL_SetCursor call when neither the cache nor
+    // the resolved edge indicate a border.
+    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, PureFunction_DeterministicAcrossRepeatedCalls)
+{
+    const auto first = computeResizeCursorUpdate(false, ResizeEdge::None, false, true, ResizeEdge::TopRight, ResizeEdge::None);
+    const auto second = computeResizeCursorUpdate(false, ResizeEdge::None, false, true, ResizeEdge::TopRight, ResizeEdge::None);
+    EXPECT_EQ(first.resolvedEdge, second.resolvedEdge);
+    EXPECT_EQ(first.updateCachedEdge, second.updateCachedEdge);
+    EXPECT_EQ(first.applyCursor, second.applyCursor);
+}
+
 } // namespace
 } // namespace App
