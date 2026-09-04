@@ -835,7 +835,7 @@ TEST(ComputeResizeCursorUpdateTest, PureFunction_DeterministicAcrossRepeatedCall
     EXPECT_EQ(first.applyCursor, second.applyCursor);
 }
 
-// ========== computeIsPointInBounds / computeIsPointInAnyBounds (#769) ==========
+// ========== computeIsPointInBounds (#769) ==========
 // Extracted from TitleBarLayer::isPointInControlArea()'s free-function isInsideBounds()
 // helper, so it's testable without linking TitleBarLayer.cpp (real ImGui/SDL calls
 // throughout - same reason test_ProcessesPanel.cpp doesn't link ProcessesPanel.cpp).
@@ -868,29 +868,6 @@ TEST(ComputeIsPointInBoundsTest, DefaultConstructedBoundsNeverMatch)
     // computed yet (e.g. before the first render) must never claim a hit.
     const ButtonBounds unset{};
     EXPECT_FALSE(computeIsPointInBounds(0.0F, 0.0F, unset));
-}
-
-TEST(ComputeIsPointInAnyBoundsTest, MatchesWhenPointInsideAnyBounds)
-{
-    const std::array<ButtonBounds, 6> allBounds{
-        ButtonBounds{.minX = 0.0F, .maxX = 10.0F, .minY = 0.0F, .maxY = 10.0F},    // icon
-        ButtonBounds{},                                                            // help (unset)
-        ButtonBounds{},                                                            // settings (unset)
-        ButtonBounds{},                                                            // minimize (unset)
-        ButtonBounds{.minX = 100.0F, .maxX = 120.0F, .minY = 0.0F, .maxY = 20.0F}, // maximize
-        ButtonBounds{},                                                            // close (unset)
-    };
-
-    EXPECT_TRUE(computeIsPointInAnyBounds(5.0F, 5.0F, allBounds));    // inside icon
-    EXPECT_TRUE(computeIsPointInAnyBounds(110.0F, 10.0F, allBounds)); // inside maximize
-    EXPECT_FALSE(computeIsPointInAnyBounds(50.0F, 50.0F, allBounds)); // inside none
-}
-
-TEST(ComputeIsPointInAnyBoundsTest, AllUnsetNeverMatches)
-{
-    const std::array<ButtonBounds, 6> allUnset{};
-    EXPECT_FALSE(computeIsPointInAnyBounds(0.0F, 0.0F, allUnset));
-    EXPECT_FALSE(computeIsPointInAnyBounds(500.0F, 500.0F, allUnset));
 }
 
 // ========== computeDetectResizeEdge (#769) ==========

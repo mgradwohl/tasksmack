@@ -5,7 +5,6 @@
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 
 namespace App
@@ -44,21 +43,6 @@ struct ButtonBounds
         return false;
     }
     return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
-}
-
-/// Pure "is (x, y) inside any of these buttons' bounds" test - the decision behind
-/// TitleBarLayer::isPointInControlArea(). Takes the bounds as an explicit array instead of
-/// reading TitleBarLayer members, so it's directly unit-testable.
-[[nodiscard]] inline auto computeIsPointInAnyBounds(const float x, const float y, const std::array<ButtonBounds, 6>& allBounds) -> bool
-{
-    for (const auto& bounds : allBounds)
-    {
-        if (computeIsPointInBounds(x, y, bounds))
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 /// Pure decision for TitleBarLayer::detectResizeEdge(): which window edge/corner (x, y) is

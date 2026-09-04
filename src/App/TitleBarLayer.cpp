@@ -16,7 +16,6 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <ratio>
@@ -46,10 +45,9 @@ auto TitleBarLayer::height() -> float
 namespace
 {
 // The point-in-bounds test and resize-edge detection now live in TitleBarGeometry.h
-// (computeIsPointInBounds/computeIsPointInAnyBounds, computeDetectResizeEdge) so they're
-// directly unit-testable without linking this file - see #769. The resize-perf-tracing
-// env-var check below now reuses Core::isEnvFlagEnabled() instead of its own duplicate
-// case-insensitive parser.
+// (computeIsPointInBounds, computeDetectResizeEdge) so they're directly unit-testable
+// without linking this file - see #769. The resize-perf-tracing env-var check below now
+// reuses Core::isEnvFlagEnabled() instead of its own duplicate case-insensitive parser.
 
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
@@ -327,9 +325,11 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
-    const std::array<ButtonBounds, 6> allBounds{
-        m_IconBounds, m_HelpBounds, m_SettingsBounds, m_MinimizeBounds, m_MaximizeBounds, m_CloseBounds};
-    return computeIsPointInAnyBounds(x, y, allBounds);
+    // Called from the mouse-move hot path (updateResizeCursor(), hitTestCallback()) - test
+    // each bound directly rather than building a std::array<ButtonBounds, 6> copy per call.
+    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointInBounds(x, y, m_HelpBounds) ||
+           computeIsPointInBounds(x, y, m_SettingsBounds) || computeIsPointInBounds(x, y, m_MinimizeBounds) ||
+           computeIsPointInBounds(x, y, m_MaximizeBounds) || computeIsPointInBounds(x, y, m_CloseBounds);
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
