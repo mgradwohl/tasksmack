@@ -157,6 +157,7 @@ add_executable(TaskSmackTests
     App/test_UserConfigPersistence.cpp
     App/test_ActiveTab.cpp
     App/test_PriorityHelpers.cpp
+    App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_SingletonLayers.cpp

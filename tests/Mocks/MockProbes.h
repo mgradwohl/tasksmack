@@ -7,6 +7,7 @@
 #pragma once
 
 #include "Platform/IPowerProbe.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
@@ -400,6 +401,155 @@ class MockPowerProbe : public Platform::IPowerProbe
   private:
     Platform::PowerCounters m_Counters;
     Platform::PowerCapabilities m_Capabilities;
+};
+
+// =============================================================================
+// Mock Process Actions
+// =============================================================================
+
+/// Mock implementation of IProcessActions for testing.
+/// Allows controlled injection of per-method results/capabilities and tracks the pid
+/// (and, for setPriority, nice value) each method was last called with, plus a call count.
+class MockProcessActions : public Platform::IProcessActions
+{
+  public:
+    void setCapabilities(Platform::ProcessActionCapabilities caps)
+    {
+        m_Capabilities = caps;
+    }
+
+    void setTerminateResult(Platform::ProcessActionResult result)
+    {
+        m_TerminateResult = std::move(result);
+    }
+
+    void setKillResult(Platform::ProcessActionResult result)
+    {
+        m_KillResult = std::move(result);
+    }
+
+    void setStopResult(Platform::ProcessActionResult result)
+    {
+        m_StopResult = std::move(result);
+    }
+
+    void setResumeResult(Platform::ProcessActionResult result)
+    {
+        m_ResumeResult = std::move(result);
+    }
+
+    void setPriorityResult(Platform::ProcessActionResult result)
+    {
+        m_SetPriorityResult = std::move(result);
+    }
+
+    [[nodiscard]] Platform::ProcessActionCapabilities actionCapabilities() const override
+    {
+        return m_Capabilities;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult terminate(int32_t pid) override
+    {
+        m_LastTerminatePid = pid;
+        ++m_TerminateCount;
+        return m_TerminateResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult kill(int32_t pid) override
+    {
+        m_LastKillPid = pid;
+        ++m_KillCount;
+        return m_KillResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult stop(int32_t pid) override
+    {
+        m_LastStopPid = pid;
+        ++m_StopCount;
+        return m_StopResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult resume(int32_t pid) override
+    {
+        m_LastResumePid = pid;
+        ++m_ResumeCount;
+        return m_ResumeResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult setPriority(int32_t pid, int32_t nice) override
+    {
+        m_LastSetPriorityPid = pid;
+        m_LastSetPriorityNice = nice;
+        ++m_SetPriorityCount;
+        return m_SetPriorityResult;
+    }
+
+    [[nodiscard]] int32_t lastTerminatePid() const
+    {
+        return m_LastTerminatePid;
+    }
+    [[nodiscard]] int32_t lastKillPid() const
+    {
+        return m_LastKillPid;
+    }
+    [[nodiscard]] int32_t lastStopPid() const
+    {
+        return m_LastStopPid;
+    }
+    [[nodiscard]] int32_t lastResumePid() const
+    {
+        return m_LastResumePid;
+    }
+    [[nodiscard]] int32_t lastSetPriorityPid() const
+    {
+        return m_LastSetPriorityPid;
+    }
+    [[nodiscard]] int32_t lastSetPriorityNice() const
+    {
+        return m_LastSetPriorityNice;
+    }
+
+    [[nodiscard]] int terminateCount() const
+    {
+        return m_TerminateCount;
+    }
+    [[nodiscard]] int killCount() const
+    {
+        return m_KillCount;
+    }
+    [[nodiscard]] int stopCount() const
+    {
+        return m_StopCount;
+    }
+    [[nodiscard]] int resumeCount() const
+    {
+        return m_ResumeCount;
+    }
+    [[nodiscard]] int setPriorityCount() const
+    {
+        return m_SetPriorityCount;
+    }
+
+  private:
+    Platform::ProcessActionCapabilities m_Capabilities;
+    Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();
+    Platform::ProcessActionResult m_KillResult = Platform::ProcessActionResult::ok();
+    Platform::ProcessActionResult m_StopResult = Platform::ProcessActionResult::ok();
+    Platform::ProcessActionResult m_ResumeResult = Platform::ProcessActionResult::ok();
+    Platform::ProcessActionResult m_SetPriorityResult = Platform::ProcessActionResult::ok();
+
+    int32_t m_LastTerminatePid = 0;
+    int32_t m_LastKillPid = 0;
+    int32_t m_LastStopPid = 0;
+    int32_t m_LastResumePid = 0;
+    int32_t m_LastSetPriorityPid = 0;
+    int32_t m_LastSetPriorityNice = 0;
+
+    int m_TerminateCount = 0;
+    int m_KillCount = 0;
+    int m_StopCount = 0;
+    int m_ResumeCount = 0;
+    int m_SetPriorityCount = 0;
 };
 
 // =============================================================================

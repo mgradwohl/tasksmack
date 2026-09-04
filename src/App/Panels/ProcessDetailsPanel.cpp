@@ -96,9 +96,12 @@ using Detail::PRIORITY_SLIDER_WIDTH;
 using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
 
 // Constructor (inside App namespace)
-ProcessDetailsPanel::ProcessDetailsPanel()
+ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Platform::makeProcessActions())
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
     : Panel("Process Details"),
-      m_ProcessActions(Platform::makeProcessActions()),
+      m_ProcessActions(std::move(processActions)),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
 {}
 
@@ -1817,24 +1820,6 @@ void ProcessDetailsPanel::trimHistory(double nowSeconds)
     }
 }
 
-const char* ProcessDetailsPanel::actionVerb(ProcessAction action)
-{
-    switch (action)
-    {
-    case ProcessAction::Terminate:
-        return "terminate";
-    case ProcessAction::Kill:
-        return "kill";
-    case ProcessAction::Stop:
-        return "stop";
-    case ProcessAction::Resume:
-        return "resume";
-    case ProcessAction::None:
-        break;
-    }
-    return "";
-}
-
 void ProcessDetailsPanel::renderActions()
 {
     const auto& theme = UI::Theme::get();
@@ -1876,7 +1861,7 @@ void ProcessDetailsPanel::renderConfirmDialog()
     if (ImGui::BeginPopupModal("Confirm Action", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("Are you sure you want to %s process '%s' (PID %d)?",
-                    actionVerb(m_ConfirmAction),
+                    Detail::actionVerb(m_ConfirmAction),
                     m_CachedSnapshot.name.c_str(),
                     m_SelectedPid);
         ImGui::Spacing();
@@ -1904,40 +1889,13 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
 void ProcessDetailsPanel::dispatchConfirmedAction()
 {
-    // Explicit error default (ProcessActionResult::success does have a default
-    // member initializer, so this isn't uninitialized-read UB either way) rather
-    // than a bare default-constructed result: ProcessAction::None can't be reached
-    // today (m_ConfirmAction and m_ShowConfirmDialog are always set together by
-    // the action buttons below), but this keeps that invariant from being a
-    // silent "reports success" bug if a future change ever violates it.
-    Platform::ProcessActionResult result = Platform::ProcessActionResult::error("No action selected");
-
-    switch (m_ConfirmAction)
-    {
-    case ProcessAction::Terminate:
-        result = m_ProcessActions->terminate(m_SelectedPid);
-        break;
-    case ProcessAction::Kill:
-        result = m_ProcessActions->kill(m_SelectedPid);
-        break;
-    case ProcessAction::Stop:
-        result = m_ProcessActions->stop(m_SelectedPid);
-        break;
-    case ProcessAction::Resume:
-        result = m_ProcessActions->resume(m_SelectedPid);
-        break;
-    case ProcessAction::None:
-        break;
-    }
-
-    if (result.success)
-    {
-        m_LastActionResult = std::string("Success: ") + actionVerb(m_ConfirmAction) + " sent to PID " + std::to_string(m_SelectedPid);
-    }
-    else
-    {
-        m_LastActionResult = "Error: " + result.errorMessage;
-    }
+    // m_ProcessActions can be null: the injection constructor doesn't reject a null
+    // unique_ptr (m_ActionCapabilities already handles that case), so guard here too rather
+    // than dereferencing unconditionally.
+    const Platform::ProcessActionResult result = m_ProcessActions
+                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, m_SelectedPid)
+                                                   : Platform::ProcessActionResult::error("Process actions unavailable");
+    m_LastActionResult = Detail::formatActionResultMessage(m_ConfirmAction, m_SelectedPid, result);
     m_ActionResultTimer = 5.0F;
 }
 
