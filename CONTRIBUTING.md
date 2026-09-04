@@ -1079,13 +1079,17 @@ and one category is deliberately left manual. See #89 for the history.
 account/repo-level security settings):
 
 1. **Required**, or the workflow can't open PRs at all: enable Settings → Actions → General →
-   Workflow permissions → "Allow GitHub Actions to create and approve pull requests". This repo
-   currently has it disabled (`can_approve_pull_request_reviews: false` via the
-   `actions/permissions/workflow` API) -- `renovate.yml` will fail on every run until it's on.
+   Workflow permissions → "Allow GitHub Actions to create and approve pull requests". Verify it's
+   on via `gh api repos/mgradwohl/tasksmack/actions/permissions/workflow` --
+   `can_approve_pull_request_reviews` must be `true`; `renovate.yml` fails on every run while
+   it's `false`.
 2. **Recommended**, or CI silently won't run on Renovate's PRs: PRs opened with the default
    `GITHUB_TOKEN` don't trigger other workflows (`ci.yml` included) -- GitHub's loop-prevention
-   behavior for the built-in token. Add a fine-grained PAT (repo contents: write, pull requests:
-   write) as the `RENOVATE_TOKEN` repository secret so CI actually gates these PRs like any
+   behavior for the built-in token. Add a fine-grained PAT scoped to just this repo, with
+   Contents, Pull requests, and **Workflows** (needed because the LLVM entry edits
+   `LLVM_SEMVER_VERSION` inside `ci.yml` itself, and GitHub blocks pushes touching
+   `.github/workflows/*` without this scope even with Contents:write) all set to "Read and
+   write", as the `RENOVATE_TOKEN` repository secret so CI actually gates these PRs like any
    other. Until that's set up, manually re-run/trigger CI (e.g. push an empty commit, or close
    and reopen the PR) on any Renovate PR before merging it.
 

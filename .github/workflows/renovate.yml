@@ -51,5 +51,8 @@ jobs:
           # run on those PRs until a fine-grained PAT (contents:write, pull-requests:write) is
           # added as the RENOVATE_TOKEN repo secret. See CONTRIBUTING.md.
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
-          RENOVATE_DRY_RUN: ${{ inputs.dryRun || 'disabled' }}
+          # inputs.* is only populated for workflow_dispatch runs; this workflow also runs on
+          # schedule, where referencing inputs.dryRun directly risks undefined-context behavior.
+          # The && short-circuits before inputs.dryRun is ever evaluated on non-dispatch triggers.
+          RENOVATE_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dryRun) || 'disabled' }}
           LOG_LEVEL: info

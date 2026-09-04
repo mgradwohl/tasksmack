@@ -15,8 +15,14 @@
   dependencyDashboard: true,
   labels: ['dependencies', 'ci'],
   commitMessagePrefix: 'build(deps):',
-  // Staggered from Dependabot (Monday) and the osv-scanner vulnerability scan (Sunday 06:00 UTC).
-  schedule: ['before 6am on wednesday'],
+  // Deliberately no Renovate-side `schedule` here: .github/workflows/renovate.yml's cron
+  // trigger already fully controls when this runs (staggered from Dependabot/Monday and
+  // osv-scanner/Sunday). A Renovate-side schedule window is a separate, client-side check on
+  // top of that -- if the two ever drifted even slightly (e.g. a delayed Actions run landing a
+  // minute after the window closes), Renovate would silently skip proposing anything despite
+  // the workflow reporting a normal green run. It would also incorrectly restrict manual
+  // workflow_dispatch runs to the same narrow window, defeating the point of offering on-demand
+  // dispatch for testing.
   prConcurrentLimit: 5,
   rangeStrategy: 'pin',
 
