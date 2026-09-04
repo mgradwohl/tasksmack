@@ -327,9 +327,9 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
-    const std::array<ButtonBounds, 6> allBounds{
-        m_IconBounds, m_HelpBounds, m_SettingsBounds, m_MinimizeBounds, m_MaximizeBounds, m_CloseBounds};
-    return computeIsPointInAnyBounds(x, y, allBounds);
+    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointInBounds(x, y, m_HelpBounds) ||
+           computeIsPointInBounds(x, y, m_SettingsBounds) || computeIsPointInBounds(x, y, m_MinimizeBounds) ||
+           computeIsPointInBounds(x, y, m_MaximizeBounds) || computeIsPointInBounds(x, y, m_CloseBounds);
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
