@@ -346,10 +346,10 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 // Template helper for extracting history fields - reduces code duplication
 template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
 {
-    // Explicit trailing return type: CodeQL's cpp/missing-return check flagged this lambda's
-    // deduced-return-type body against the dependent `sample.*field` expression. That's a false
-    // positive (-Werror=return-type passes clean on both compilers), but spelling out `-> float`
-    // removes any ambiguity for static analysis too, not just the compiler.
+    // Explicit trailing return type: a static analyzer flagged this lambda's deduced-return-type
+    // body against the dependent `sample.*field` expression as a possible missing return, even
+    // though it's a single unconditional return statement. Spelling out `-> float` removes the
+    // ambiguity.
     return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) -> float { return static_cast<float>(sample.*field); });
 }
 
