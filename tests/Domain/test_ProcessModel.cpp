@@ -2105,18 +2105,14 @@ TEST(ProcessModelTest, ProcessTreeHierarchyIsCorrectlyBuilt)
 TEST(ProcessModelTest, ProcessTreeHandlesPidReuseCorrectly)
 {
     auto probe = std::make_unique<MockProcessProbe>();
-    // A parent process dies, and its PID is reused by a completely unrelated process.
-    // Child processes still pointing to the old parent PID should NOT be linked to the new process.
+    // A parent process dies, and its PID is reused by a completely unrelated process within the
+    // same sampling interval. Child processes still pointing to the old parent PID must NOT be
+    // linked to the new process, since that would misattach them to an unrelated process (#595).
 
-    // In this snapshot, pid=1 is the new process (start time 2000).
-    // proc_2 points to parentPid=1, but its start time is 1000, which means its parent
-    // was the OLD process with pid=1, not this new one. Our model builds trees using
-    // PID only, but it should technically map correctly. Wait, our tree building in ProcessModel
-    // maps by PID. Let's see if the test passes or if we need to fix ProcessModel to map by uniqueKey.
-    // Actually, ProcessModel maps by PID currently. If there's PID reuse in the exact same snapshot,
-    // the OS wouldn't return two processes with the same PID. So we just need to ensure the tree
-    // builds correctly for the current snapshot state.
-
+    // pid=1 is the *new* process (start time 2000, i.e. it started after this snapshot's older
+    // processes). proc_2 (start time 1000) reports parentPid=1, but since a real parent must
+    // start at or before its child, pid=1's current holder cannot be proc_2's actual parent --
+    // that was a different, already-exited process that used to hold PID 1.
     probe->setCounters(
         {makeCounter(1, "new_proc", 'R', 1000, 500, 2000, 1024, 0), makeCounter(2, "child_proc", 'R', 1000, 500, 1000, 1024, 1)});
     probe->setTotalCpuTime(100000);
@@ -2127,10 +2123,50 @@ TEST(ProcessModelTest, ProcessTreeHandlesPidReuseCorrectly)
     const auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 2);
 
-    // In the current implementation, we just link by PID. So new_proc will have child_proc as a child.
-    // This is standard OS behavior since the OS only reports parentPid.
+    // new_proc must NOT have child_proc linked as a child -- the start-time ordering rules
+    // out pid=1's current holder as the real parent, so child_proc is treated as unparented.
     EXPECT_EQ(snaps[0].pid, 1);
-    EXPECT_EQ(snaps[0].childrenIndices.size(), 1);
+    EXPECT_TRUE(snaps[0].childrenIndices.empty());
+}
+
+TEST(ProcessModelTest, ProcessTreeLinksChildWhenParentStartedFirst)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    // Normal (non-reuse) case: parent genuinely started before its child, so the start-time
+    // guard added for #595 must not reject a legitimate parent/child link.
+    probe->setCounters(
+        {makeCounter(1, "parent_proc", 'R', 1000, 500, 1000, 1024, 0), makeCounter(2, "child_proc", 'R', 1000, 500, 2000, 1024, 1)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+
+    EXPECT_EQ(snaps[0].pid, 1);
+    ASSERT_EQ(snaps[0].childrenIndices.size(), 1);
+    EXPECT_EQ(snaps[0].childrenIndices[0], 1);
+}
+
+TEST(ProcessModelTest, ProcessTreeLinksChildWhenStartTimesUnavailable)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    // When a probe can't report start times (startTimeTicks == 0 for both), the guard has no
+    // data to validate against and must fall back to linking by PID alone rather than silently
+    // dropping every parent/child relationship.
+    probe->setCounters(
+        {makeCounter(1, "parent_proc", 'R', 1000, 500, 0, 1024, 0), makeCounter(2, "child_proc", 'R', 1000, 500, 0, 1024, 1)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+
+    EXPECT_EQ(snaps[0].pid, 1);
+    ASSERT_EQ(snaps[0].childrenIndices.size(), 1);
     EXPECT_EQ(snaps[0].childrenIndices[0], 1);
 }
 
