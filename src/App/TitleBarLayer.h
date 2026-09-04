@@ -48,7 +48,7 @@ class TitleBarLayer : public Core::Layer
     /// height
     [[nodiscard]] static auto height() -> float;
 
-    // Cached button bounds for hit testing (public for hit test callback)
+    // Cached button bounds for hit testing.
     struct ButtonBounds
     {
         float minX = 0.0F;
@@ -57,34 +57,8 @@ class TitleBarLayer : public Core::Layer
         float maxY = 0.0F;
     };
 
-    [[nodiscard]] auto getHelpBounds() const -> const ButtonBounds&
-    {
-        return m_HelpBounds;
-    }
-    [[nodiscard]] auto getSettingsBounds() const -> const ButtonBounds&
-    {
-        return m_SettingsBounds;
-    }
-    [[nodiscard]] auto getMinimizeBounds() const -> const ButtonBounds&
-    {
-        return m_MinimizeBounds;
-    }
-    [[nodiscard]] auto getMaximizeBounds() const -> const ButtonBounds&
-    {
-        return m_MaximizeBounds;
-    }
-    [[nodiscard]] auto getCloseBounds() const -> const ButtonBounds&
-    {
-        return m_CloseBounds;
-    }
-    [[nodiscard]] auto getIconBounds() const -> const ButtonBounds&
-    {
-        return m_IconBounds;
-    }
-
-    /// True if (x, y) falls inside any title-bar button's bounds. Public (like the
-    /// individual bounds getters above) so the free-function hit-test callback can use
-    /// it directly.
+    /// True if (x, y) falls inside any title-bar button's bounds. Public so the
+    /// free-function hit-test callback can use it directly.
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
 
   private:

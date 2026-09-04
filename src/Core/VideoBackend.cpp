@@ -3,11 +3,13 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <mutex>
 #include <string_view>
 
 namespace Core
 {
 
+std::mutex VideoBackend::s_Mutex;
 VideoBackend::Backend VideoBackend::s_Backend = VideoBackend::Backend::Unknown;
 bool VideoBackend::s_Initialized = false;
 std::string_view VideoBackend::s_DriverName;
@@ -84,6 +86,7 @@ VideoBackend::Backend VideoBackend::detectBackend()
 
 void VideoBackend::initialize()
 {
+    const std::scoped_lock lock(s_Mutex);
     if (s_Initialized)
     {
         return;
@@ -98,23 +101,35 @@ void VideoBackend::initialize()
     spdlog::info("VideoBackend initialized: backend={} driver={}", static_cast<int>(s_Backend), s_DriverName);
 }
 
+void VideoBackend::resetForTesting() noexcept
+{
+    const std::scoped_lock lock(s_Mutex);
+    s_Backend = Backend::Unknown;
+    s_Initialized = false;
+    s_DriverName = {};
+}
+
 bool VideoBackend::isWayland() noexcept
 {
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend == Backend::Wayland;
 }
 
 bool VideoBackend::isX11() noexcept
 {
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend == Backend::X11;
 }
 
 bool VideoBackend::isXWaylandFallback() noexcept
 {
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend == Backend::XWaylandFallback;
 }
 
 bool VideoBackend::isWindows() noexcept
 {
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend == Backend::Windows;
 }
 
@@ -122,6 +137,7 @@ bool VideoBackend::supportsClientSideMaximize() noexcept
 {
     // Native Wayland doesn't support client-side maximize/restore reliably;
     // prefer compositor-managed state. X11, XWayland, and Windows do support it.
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend != Backend::Wayland;
 }
 
@@ -129,11 +145,13 @@ bool VideoBackend::supportsGlobalMouseState() noexcept
 {
     // SDL_GetGlobalMouseState() is unreliable on native Wayland; the drag/resize layer must use
     // the window-local query there instead. X11, XWayland, and Windows all support it.
+    const std::scoped_lock lock(s_Mutex);
     return s_Backend != Backend::Wayland;
 }
 
 std::string_view VideoBackend::driverName() noexcept
 {
+    const std::scoped_lock lock(s_Mutex);
     return s_DriverName;
 }
 

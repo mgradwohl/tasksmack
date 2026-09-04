@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL_video.h>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace App
@@ -126,6 +127,31 @@ struct WindowRect
     return {.x = newX, .y = newY, .width = newWidth, .height = newHeight};
 }
 
+/// Pure geometry: given where the mouse was within a maximized window (as an offset of
+/// startMouseGlobalX from the window's left edge, maximizedWindowX) and the maximized
+/// window's width snapshot, compute the new left-edge X for the just-restored window
+/// (restoredWidth wide) so the mouse ends up at the same proportional offset it had while
+/// the window was maximized -- used when a drag that starts on a maximized window crosses
+/// the un-maximize threshold. maximizedWindowWidth <= 0 (e.g. a compositor race during
+/// window mapping) falls back to treating the mouse as horizontally centered (proportion
+/// 0.5) rather than dividing by zero, which would produce NaN/Inf and make the int cast
+/// below undefined behavior; the proportion is also clamped to [0, 1] so the mouse stays
+/// within the restored window's horizontal span (between its left and right edges) even if
+/// the captured position was outside the maximized window's bounds -- this bounds where the
+/// mouse ends up relative to the restored window, not the restored window's absolute screen
+/// position, which is unconstrained.
+[[nodiscard]] inline auto computeRestoreFromMaximizedDragX(const int startMouseGlobalX,
+                                                           const int maximizedWindowX,
+                                                           const int maximizedWindowWidth,
+                                                           const int restoredWidth) -> int
+{
+    const float xProportion =
+        maximizedWindowWidth > 0
+            ? std::clamp(static_cast<float>(startMouseGlobalX - maximizedWindowX) / static_cast<float>(maximizedWindowWidth), 0.0F, 1.0F)
+            : 0.5F;
+    return startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+}
+
 /// Decision for the empty title-bar drag area specifically (once the point is known to be
 /// in the title-bar row, not a resize border, and not a button). Pure/header-only, like
 /// computeResizeGeometry above, so it's directly unit-testable without live SDL_Window or
@@ -221,13 +247,19 @@ struct ResizeCursorUpdate
 };
 
 /// Pure decision for TitleBarLayer::updateResizeCursor(), given already-queried state. Pure
-/// header-only, like the hit-test helpers above, so the policy -- active resize vs.
+/// header-only, like the hit-test helpers above, so the policy -- active resize/drag vs.
 /// WM/compositor-focus mismatch vs. real hover (including the state-unchanged fast path) --
 /// is directly unit-testable without a live SDL_Window. See #699, #749, and the #750 review:
 /// during a focus mismatch, the cached edge must be held and SDL_SetCursor must not be called
 /// at all, not even to reapply the same cursor, or the WM/compositor's own cursor rendering
 /// gets fought during an active border resize or title-bar drag.
-[[nodiscard]] inline auto computeResizeCursorUpdate(const bool isResizing,
+///
+/// isInteracting must be true for BOTH active resize and active drag, not just resize:
+/// during a client-side drag, real hover sampling must not run, or the window-local mouse
+/// coordinate transiently crossing into the resize-border zone as the window moves under the
+/// drag would flip in a resize cursor mid-drag. resizeEdge is None during a drag (no resize
+/// edge is active), which correctly resolves to no cursor override / a cache reset to None.
+[[nodiscard]] inline auto computeResizeCursorUpdate(const bool isInteracting,
                                                     const ResizeEdge resizeEdge,
                                                     const bool focusMismatch,
                                                     const bool hoverSampleAvailable,
@@ -241,7 +273,7 @@ struct ResizeCursorUpdate
 
     ResizeEdge edge = cachedEdge;
     bool updateCache = false;
-    if (isResizing)
+    if (isInteracting)
     {
         edge = resizeEdge;
     }

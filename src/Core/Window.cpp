@@ -321,7 +321,12 @@ bool Window::supportsPositioning() noexcept
     // per AGENTS.md's rule that backend decisions go through the cached VideoBackend abstraction.
     // Safe: every caller runs after Application's constructor, which calls VideoBackend::initialize()
     // right after SDL_Init.
-    return !VideoBackend::isWayland();
+    //
+    // driverName().empty() is the "SDL_GetCurrentVideoDriver() returned nullptr" case
+    // (VideoBackend::detectBackend() maps that to Backend::Unknown, same as any unrecognized
+    // driver name) -- explicitly treated as unsupported here, matching the pre-VideoBackend
+    // behavior, since applying a persisted window position with no confirmed driver is unsafe.
+    return !VideoBackend::driverName().empty() && !VideoBackend::isWayland();
 }
 
 void Window::setSize(int width, int height)

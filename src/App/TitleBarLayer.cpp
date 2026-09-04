@@ -677,12 +677,11 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
             return;
         }
         // Threshold crossed — restore and rebase the drag origin.
-        const float xProportion =
-            static_cast<float>(m_Drag.startMouseGlobalX - m_Drag.maximizedWindowX) / static_cast<float>(m_Drag.maximizedWindowWidth);
         timedOp(m_TraceEnabled, restoreMs, [&] { window.restore(); });
         const auto [restoredX, restoredY] = window.getPosition();
         const auto [restoredWidth, restoredHeight] = window.getSize();
-        const int adjustedX = m_Drag.startMouseGlobalX - static_cast<int>(xProportion * static_cast<float>(restoredWidth));
+        const int adjustedX =
+            computeRestoreFromMaximizedDragX(m_Drag.startMouseGlobalX, m_Drag.maximizedWindowX, m_Drag.maximizedWindowWidth, restoredWidth);
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(adjustedX, restoredY); });
         Core::Application::get().signalWindowGeometryChanged();
         m_Drag.startWindowX = adjustedX;
@@ -898,12 +897,16 @@ void TitleBarLayer::updateResizeCursor()
     }
 
     const ResizeEdge prevEdge = m_CachedHoverEdge;
-    const bool isResizing = (m_InteractionMode == InteractionMode::Resize);
+    // Both active resize AND active drag must skip real hover sampling below: during a
+    // client-side drag the window moves under the pointer, so the window-local mouse
+    // coordinate can transiently cross into the resize-border zone and flip in a resize
+    // cursor mid-drag if hover detection keeps running (see the #750-follow-up review).
+    const bool isInteracting = (m_InteractionMode != InteractionMode::None);
     // SDL_GetMouseFocus() can transiently disagree with reality while the WM/compositor owns
     // an active hit-test-triggered resize or drag (border SDL_HITTEST_RESIZE_* / title-bar
     // SDL_HITTEST_DRAGGABLE on native Wayland) -- see #699, #749, and the #750 review. The
     // policy for what to do about it lives in computeResizeCursorUpdate() below.
-    const bool focusMismatch = !isResizing && (SDL_GetMouseFocus() != sdlWindow);
+    const bool focusMismatch = !isInteracting && (SDL_GetMouseFocus() != sdlWindow);
 
     bool hoverSampleAvailable = false;
     ResizeEdge hoverEdge = ResizeEdge::None;
@@ -921,7 +924,7 @@ void TitleBarLayer::updateResizeCursor()
             m_HasLoggedFocusMismatch = true;
         }
     }
-    else if (!isResizing)
+    else if (!isInteracting)
     {
         if (!m_HasLoggedFocusMismatch || m_LastLoggedFocusMismatch)
         {
@@ -986,7 +989,7 @@ void TitleBarLayer::updateResizeCursor()
         }
     }
 
-    const auto update = computeResizeCursorUpdate(isResizing, m_Resize.edge, focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
+    const auto update = computeResizeCursorUpdate(isInteracting, m_Resize.edge, focusMismatch, hoverSampleAvailable, hoverEdge, prevEdge);
     if (update.updateCachedEdge)
     {
         m_CachedHoverEdge = update.resolvedEdge;

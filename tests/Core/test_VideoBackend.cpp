@@ -154,6 +154,28 @@ TEST_F(VideoBackendTest, BackendFlagsAreMutuallyExclusive)
     EXPECT_LE(trueFlags, 1) << "At most one backend flag should be true for driver '" << VideoBackend::driverName() << "'";
 }
 
+TEST_F(VideoBackendTest, ResetForTestingAllowsReinitialization)
+{
+    // Without resetForTesting(), initialize() is a no-op after the first successful call --
+    // a latent trap for any future test that forces a specific driver and expects a second
+    // initialize() in the same process to actually re-detect it. Capture the live state,
+    // reset, verify it's cleared, then re-initialize and confirm it matches again (also
+    // restores global state for any VideoBackendTest that runs after this one).
+    const std::string_view driverBefore = VideoBackend::driverName();
+    const bool waylandBefore = VideoBackend::isWayland();
+
+    VideoBackend::resetForTesting();
+    EXPECT_TRUE(VideoBackend::driverName().empty());
+    EXPECT_FALSE(VideoBackend::isWayland());
+    EXPECT_FALSE(VideoBackend::isX11());
+    EXPECT_FALSE(VideoBackend::isXWaylandFallback());
+    EXPECT_FALSE(VideoBackend::isWindows());
+
+    VideoBackend::initialize();
+    EXPECT_EQ(VideoBackend::driverName(), driverBefore);
+    EXPECT_EQ(VideoBackend::isWayland(), waylandBefore);
+}
+
 // Regression test for the bug fixed in this PR: detectBackend() must never classify a
 // driver that SDL itself reports as "wayland" (native Wayland) as XWayland fallback.
 TEST_F(VideoBackendTest, NativeWaylandIsNeverClassifiedAsXWaylandFallback)

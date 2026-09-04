@@ -301,6 +301,98 @@ TEST(ComputeResizeGeometryTest, BottomLeft_MinClampOnWidth_PinsRightEdge)
     EXPECT_EQ(r.y, 200);      // BottomLeft does not move y
 }
 
+// ========== computeRestoreFromMaximizedDragX ==========
+// Restoring a maximized window mid-drag should keep the mouse at the same proportional X
+// offset it had while maximized (see updateDrag's pendingRestore handling).
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtLeftEdge_RestoredAtSameGlobalX)
+{
+    // Mouse was at the maximized window's left edge (proportion 0) -- restored window's left
+    // edge should land exactly under the mouse.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/0,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 0);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtHorizontalCenter_RestoredCenteredUnderMouse)
+{
+    // Mouse at proportion 0.5 of a 1920-wide maximized window (global X 960) -- restored
+    // window (800 wide) should be centered under the mouse: 960 - 400 = 560.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/960,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 560);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseAtRightEdge_RestoredRightEdgeUnderMouse)
+{
+    // Proportion 1.0: restored window's right edge lands under the mouse.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/1920,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 1120);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, NonZeroMaximizedWindowX_OffsetsProportionCorrectly)
+{
+    // Maximized window starts at global X 100 (e.g. a secondary monitor); mouse at global X
+    // 1060 is proportion 0.5 of a 1920-wide window relative to that origin.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/1060,
+                                                        /*maximizedWindowX=*/100,
+                                                        /*maximizedWindowWidth=*/1920,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 660);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, ZeroMaximizedWidth_FallsBackToCenteredProportion_NoUBCast)
+{
+    // Regression test: maximizedWindowWidth <= 0 must not divide by zero (NaN/Inf -> UB on
+    // the int cast). Falls back to proportion 0.5: startMouseGlobalX - restoredWidth/2.
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/500,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/0,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 100); // 500 - 400
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, NegativeMaximizedWidth_FallsBackToCenteredProportion)
+{
+    const int result = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/500,
+                                                        /*maximizedWindowX=*/0,
+                                                        /*maximizedWindowWidth=*/-1,
+                                                        /*restoredWidth=*/800);
+    EXPECT_EQ(result, 100);
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, MouseOutsideMaximizedWindow_ProportionClampedNotExtrapolated)
+{
+    // startMouseGlobalX before maximizedWindowX would give a negative raw proportion --
+    // clamped to 0 rather than extrapolating past the window's left edge.
+    const int belowLeft = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/-500,
+                                                           /*maximizedWindowX=*/0,
+                                                           /*maximizedWindowWidth=*/1920,
+                                                           /*restoredWidth=*/800);
+    EXPECT_EQ(belowLeft, -500); // proportion clamped to 0.0 -> result == startMouseGlobalX
+
+    // Past the right edge clamps to proportion 1.0 rather than extrapolating further right.
+    const int pastRight = computeRestoreFromMaximizedDragX(/*startMouseGlobalX=*/3000,
+                                                           /*maximizedWindowX=*/0,
+                                                           /*maximizedWindowWidth=*/1920,
+                                                           /*restoredWidth=*/800);
+    EXPECT_EQ(pastRight, 2200); // 3000 - 800
+}
+
+TEST(ComputeRestoreFromMaximizedDragXTest, PureFunction_DeterministicAcrossRepeatedCalls)
+{
+    const int first = computeRestoreFromMaximizedDragX(777, 50, 1920, 1024);
+    const int second = computeRestoreFromMaximizedDragX(777, 50, 1920, 1024);
+    EXPECT_EQ(first, second);
+}
+
 // ========== computeTitleBarAreaHitTest ==========
 // See #744: on native Wayland, the empty title-bar drag area must return DRAGGABLE (compositor-
 // managed drag), but title-bar buttons must stay NORMAL on every backend, since a DRAGGABLE
@@ -599,7 +691,7 @@ TEST(ComputeWindowHitTestTest, BelowTitleBar_NotBorderNotControl_ReturnsNormal)
 
 TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/true,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
                                              /*resizeEdge=*/ResizeEdge::Right,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,
@@ -610,13 +702,46 @@ TEST(ComputeResizeCursorUpdateTest, ActiveResize_UsesResizeEdge_NoCacheUpdate)
     EXPECT_TRUE(r.applyCursor);
 }
 
+TEST(ComputeResizeCursorUpdateTest, ActiveDrag_IgnoresHoverSample_ResolvesToNone)
+{
+    // During a drag (isInteracting=true, resizeEdge=None -- TitleBarLayer clears m_Resize.edge
+    // when a drag starts), a hover sample computed this frame must be ignored even though one
+    // is available: real hover detection must not run at all while dragging, since the window
+    // moves under the pointer and the window-local coordinate can transiently cross into the
+    // resize-border zone, flipping in a resize cursor mid-drag (see the #750-follow-up review).
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/true,
+                                             /*hoverEdge=*/ResizeEdge::Right,
+                                             /*cachedEdge=*/ResizeEdge::None);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_FALSE(r.applyCursor);
+}
+
+TEST(ComputeResizeCursorUpdateTest, ActiveDrag_ClearsStaleCachedResizeCursor)
+{
+    // A resize cursor cached from just before the drag started (e.g. the pointer was over a
+    // border a frame earlier) must be cleared once dragging begins, not left applied.
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/true,
+                                             /*resizeEdge=*/ResizeEdge::None,
+                                             /*focusMismatch=*/false,
+                                             /*hoverSampleAvailable=*/false,
+                                             /*hoverEdge=*/ResizeEdge::None,
+                                             /*cachedEdge=*/ResizeEdge::Right);
+    EXPECT_EQ(r.resolvedEdge, ResizeEdge::None);
+    EXPECT_FALSE(r.updateCachedEdge);
+    EXPECT_TRUE(r.applyCursor);
+}
+
 // ========== computeResizeCursorUpdate: WM/compositor focus mismatch ==========
 
 TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
 {
     // Even with a hover sample available, focus mismatch must win: hold the cached edge and
     // never touch the cursor (see #699, #749, #750 review).
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/true,
                                              /*hoverSampleAvailable=*/true,
@@ -629,7 +754,7 @@ TEST(ComputeResizeCursorUpdateTest, FocusMismatch_HoldsCachedEdge_NoCursorTouch)
 
 TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouch)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/true,
                                              /*hoverSampleAvailable=*/false,
@@ -644,7 +769,7 @@ TEST(ComputeResizeCursorUpdateTest, FocusMismatch_NoCachedEdge_StillNoCursorTouc
 
 TEST(ComputeResizeCursorUpdateTest, HoverSample_UpdatesCacheAndAppliesNewEdge)
 {
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/true,
@@ -659,7 +784,7 @@ TEST(ComputeResizeCursorUpdateTest, HoverSample_LeavesEdge_RestoresDefaultCursor
 {
     // The pointer left the border this frame: apply None once to restore the default cursor,
     // and cache the new (None) edge so it isn't reapplied every subsequent frame.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/true,
@@ -676,7 +801,7 @@ TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NonNoneCachedEdge_ReappliesWi
 {
     // No new hover sample this frame (mouse/window state unchanged) -- ImGui may have reset
     // the cursor, so still reapply the cached edge, but there's nothing new to cache.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,
@@ -691,7 +816,7 @@ TEST(ComputeResizeCursorUpdateTest, StateUnchanged_NoneCachedEdge_NoCursorTouch)
 {
     // Nothing to do at all: avoid a needless SDL_SetCursor call when neither the cache nor
     // the resolved edge indicate a border.
-    const auto r = computeResizeCursorUpdate(/*isResizing=*/false,
+    const auto r = computeResizeCursorUpdate(/*isInteracting=*/false,
                                              /*resizeEdge=*/ResizeEdge::None,
                                              /*focusMismatch=*/false,
                                              /*hoverSampleAvailable=*/false,

@@ -8,18 +8,25 @@
 namespace App::AdaptiveIntervalUtils
 {
 
-/// Adaptive refresh-interval policy used by ProcessesPanel, extracted so it can be
-/// unit-tested without linking the panel's ImGui rendering code. Scales `baseInterval` up
-/// (slower) while the user is actively resizing/dragging the window or while this tab isn't
-/// visible, and enforces Domain::Sampling::REFRESH_INTERVAL_MIN_MS as a floor on the base
-/// interval before scaling.
-[[nodiscard]] inline std::chrono::milliseconds
-chooseAdaptiveProcessInterval(std::chrono::milliseconds baseInterval, bool isActiveTab, bool interactionRedrawActive)
+namespace Detail
 {
-    const auto baseMs = std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
+
+/// Shared adaptive refresh-interval policy behind chooseAdaptiveProcessInterval and
+/// chooseAdaptiveSystemInterval below: scales `baseInterval` up (slower) while the user is
+/// actively resizing/dragging the window (3x) or while the owning tab isn't visible (2x),
+/// clamped to Domain::Sampling::REFRESH_INTERVAL_MAX_MS. `clampBaseToMin` selects whether
+/// `baseInterval` itself is floored to REFRESH_INTERVAL_MIN_MS first -- the two public
+/// wrappers pass their own historical behavior through this parameter (ProcessesPanel always
+/// clamped, SystemMetricsPanel never has) rather than this extraction silently unifying them;
+/// neither behavior has been judged correct here, so both are preserved exactly.
+[[nodiscard]] inline std::chrono::milliseconds
+chooseAdaptiveInterval(std::chrono::milliseconds baseInterval, bool isActiveTab, bool interactionRedrawActive, bool clampBaseToMin)
+{
+    const auto baseMs = clampBaseToMin ? std::max(baseInterval.count(), static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS))
+                                       : baseInterval.count();
 
     // During active resize/move interactions, dramatically reduce update frequency to preserve UI responsiveness.
-    // ProcessModel refresh includes expensive probe work; batching updates prevents stalls during interaction.
+    // Model refreshes include expensive probe work; batching updates prevents stalls during interaction.
     if (interactionRedrawActive)
     {
         // 3x multiplier during interaction: defer model updates while user is actively resizing/dragging
@@ -38,6 +45,17 @@ chooseAdaptiveProcessInterval(std::chrono::milliseconds baseInterval, bool isAct
     return std::chrono::milliseconds(baseMs);
 }
 
+} // namespace Detail
+
+/// Adaptive refresh-interval policy used by ProcessesPanel, extracted so it can be
+/// unit-tested without linking the panel's ImGui rendering code. Enforces
+/// Domain::Sampling::REFRESH_INTERVAL_MIN_MS as a floor on the base interval before scaling.
+[[nodiscard]] inline std::chrono::milliseconds
+chooseAdaptiveProcessInterval(std::chrono::milliseconds baseInterval, bool isActiveTab, bool interactionRedrawActive)
+{
+    return Detail::chooseAdaptiveInterval(baseInterval, isActiveTab, interactionRedrawActive, /*clampBaseToMin=*/true);
+}
+
 /// Adaptive refresh-interval policy used by SystemMetricsPanel, matching
 /// chooseAdaptiveProcessInterval's cadence strategy (3x during interaction, 2x while
 /// inactive).
@@ -50,19 +68,7 @@ chooseAdaptiveProcessInterval(std::chrono::milliseconds baseInterval, bool isAct
 [[nodiscard]] inline std::chrono::milliseconds
 chooseAdaptiveSystemInterval(std::chrono::milliseconds baseInterval, bool isActiveTab, bool interactionRedrawActive)
 {
-    const auto baseMs = baseInterval.count();
-    if (interactionRedrawActive)
-    {
-        // 3x multiplier during active resize/move: defer expensive model refreshes.
-        // Clamp to REFRESH_INTERVAL_MAX_MS so the scaled value never exceeds the guardrail.
-        return std::chrono::milliseconds(std::min(baseMs * 3LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
-    }
-    if (!isActiveTab)
-    {
-        // 2x multiplier when tab is not visible
-        return std::chrono::milliseconds(std::min(baseMs * 2LL, static_cast<long long>(Domain::Sampling::REFRESH_INTERVAL_MAX_MS)));
-    }
-    return baseInterval;
+    return Detail::chooseAdaptiveInterval(baseInterval, isActiveTab, interactionRedrawActive, /*clampBaseToMin=*/false);
 }
 
 } // namespace App::AdaptiveIntervalUtils

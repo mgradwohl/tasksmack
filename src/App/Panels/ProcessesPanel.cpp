@@ -279,7 +279,10 @@ void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
-    // Stop sampler thread before releasing the model (callback holds a raw pointer to it).
+    // Order doesn't matter for safety here, same as the destructor above: BackgroundSampler
+    // observes m_ProcessModel via a weak_ptr, so it's never left holding a dangling pointer
+    // regardless of which is reset first. Stopping the sampler first still avoids a sample()
+    // call racing the rest of this teardown.
     if (m_Sampler)
     {
         m_Sampler->stop();
