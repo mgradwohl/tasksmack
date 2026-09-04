@@ -48,14 +48,8 @@ class TitleBarLayer : public Core::Layer
     /// height
     [[nodiscard]] static auto height() -> float;
 
-    // Cached button bounds for hit testing.
-    struct ButtonBounds
-    {
-        float minX = 0.0F;
-        float maxX = 0.0F;
-        float minY = 0.0F;
-        float maxY = 0.0F;
-    };
+    // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
+    using ButtonBounds = App::ButtonBounds;
 
     /// True if (x, y) falls inside any title-bar button's bounds. Public so the
     /// free-function hit-test callback can use it directly.
