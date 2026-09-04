@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <optional>
@@ -435,13 +436,23 @@ void renderGpuSection(RenderContext& ctx)
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }
+        // Keep pushing a bar (stable column count) whenever the capability is present, so the
+        // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient
+        // per-poll read failure - but show "N/A" instead of a misleading "0%" for a sample that
+        // failed to read the sensor (see fanSpeedAvailable's comment in GPUSnapshot.h).
         if (caps.hasFanSpeed)
         {
-            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedPercent),
-                                      .label = "GPU Fan Speed",
-                                      .tooltipText = {},
-                                      .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
-                                      .color = theme.scheme().gpuFan});
+            gpuThermalBars.push_back(snap.fanSpeedAvailable
+                                         ? NowBar{.valueText = std::format("{}%", snap.fanSpeedPercent),
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = {},
+                                                  .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
+                                                  .color = theme.scheme().gpuFan}
+                                         : NowBar{.valueText = "N/A",
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = "GPU Fan Speed: unavailable this sample",
+                                                  .value01 = 0.0,
+                                                  .color = theme.scheme().textMuted});
         }
 
         // Use max bar count across both charts for x-axis alignment
@@ -479,7 +490,10 @@ void renderGpuSection(RenderContext& ctx)
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
 
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
-            // Note: Fan speed is already a percentage (0-100%), no max needed
+            // Note: Fan speed is already a percentage, no max needed for normalization - but
+            // unlike temp/power it isn't clamped to 100 (see GPUModel::computeSnapshot), so a
+            // reading above the chart's locked 0-100 range renders clipped at the top; an
+            // unavailable sample is NaN (a gap in the line), not a misleading 0%.
 
             auto gpuThermalPlot = [&]()
             {
@@ -572,7 +586,21 @@ void renderGpuSection(RenderContext& ctx)
                                 if (*idxVal >= fanTimeData.offset)
                                 {
                                     const size_t fanIdx = *idxVal - fanTimeData.offset;
-                                    ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanData[fanIdx]));
+                                    // NaN marks a sample where the fan couldn't be read (see the
+                                    // GPUModel::publish() comment) - show that as unavailable
+                                    // rather than casting NaN to an unsigned int.
+                                    if (std::isnan(fanData[fanIdx]))
+                                    {
+                                        ImGui::TextColored(theme.scheme().textMuted, "Fan: N/A");
+                                    }
+                                    else
+                                    {
+                                        // Format the float directly rather than narrowing to unsigned int: this PR
+                                        // intentionally leaves fanSpeedPercent unclamped (see GPUModel::computeSnapshot),
+                                        // so a corrupted-input value can exceed unsigned int's range, and casting an
+                                        // out-of-range float to an integer type is undefined behavior.
+                                        ImGui::TextColored(theme.scheme().gpuFan, "Fan: %.0f%%", static_cast<double>(fanData[fanIdx]));
+                                    }
                                 }
                             }
                             ImGui::EndTooltip();

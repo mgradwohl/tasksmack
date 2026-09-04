@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -197,7 +198,11 @@ void GPUModel::publish()
             publishedHistory.decoder.push_back(static_cast<float>(sample.decoderUtilPercent));
             publishedHistory.temperature.push_back(static_cast<float>(sample.temperatureC));
             publishedHistory.power.push_back(static_cast<float>(sample.powerDrawWatts));
-            publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedPercent));
+            // A sample where the fan couldn't be read (fanSpeedAvailable == false) is stored as
+            // NaN rather than 0.0F, so the history chart shows a gap instead of a misleading
+            // flat "0%" indistinguishable from a genuine idle-fan reading.
+            publishedHistory.fanSpeed.push_back(sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent)
+                                                                         : std::numeric_limits<float>::quiet_NaN());
         }
     }
     m_PublicationVersion = publication->version;
@@ -312,11 +317,19 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 
     // Fan speed: normalize the vendor-native raw reading against the device's own max here in
     // Domain, not in the Platform probe, matching memoryUsedPercent/powerUtilPercent above (see
-    // #734 review discussion -- GPUCounters holds unconverted raw values only).
-    if (current.fanSpeedMaxRaw > 0)
+    // #734 review discussion -- GPUCounters holds unconverted raw values only). Left unclamped
+    // to 100, like memoryUsedPercent/powerUtilPercent above: a raw reading above the device's
+    // reported max is itself useful signal (sensor drift, transient overspeed), not something to
+    // silently cap.
+    snapshot.fanSpeedAvailable = current.fanSpeedMaxRaw > 0;
+    if (snapshot.fanSpeedAvailable)
     {
-        const auto percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
-        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(std::min<std::uint64_t>(percent, 100ULL));
+        const std::uint64_t percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
+        // Cap at uint32_t's range rather than at 100 via the existing narrow-or-fallback helper:
+        // a wildly out-of-range percent (e.g. a corrupted fanSpeedMaxRaw of 1) would otherwise
+        // silently truncate/wrap to an arbitrary small value on a plain narrowing cast, hiding
+        // exactly the sensor-drift/overspeed signal this computation is meant to preserve.
+        snapshot.fanSpeedPercent = Numeric::narrowOr<std::uint32_t>(percent, std::numeric_limits<std::uint32_t>::max());
     }
 
     // Compute rates from deltas (only if we have previous data and valid time delta)
@@ -333,6 +346,15 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 // Template helper for extracting history fields - reduces code duplication
 template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
 {
+    return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) { return static_cast<float>(sample.*field); });
+}
+
+// Underlying lock/find/reserve/loop shared by getHistoryField() (a plain member pointer, for
+// the common single-field case) and any accessor - like fanSpeedHistory() below - whose float
+// value depends on more than one field (e.g. substituting NaN when fanSpeedAvailable is false)
+// and so can't be expressed as `sample.*field`.
+template<typename Projection> std::vector<float> GPUModel::getHistoryFieldByProjection(std::string_view gpuId, Projection project) const
+{
     const std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
@@ -344,7 +366,7 @@ template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::st
     result.reserve(it->second.size());
     for (size_t i = 0; i < it->second.size(); ++i)
     {
-        result.push_back(static_cast<float>(it->second[i].*field));
+        result.push_back(project(it->second[i]));
     }
     return result;
 }
@@ -386,7 +408,14 @@ std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedPercent);
+    // Not a plain getHistoryField() like the other accessors: a sample where the fan couldn't
+    // be read (fanSpeedAvailable == false) must come back as NaN, not its default 0.0F, or a
+    // caller of this accessor sees the same misleading flat "0%" that publish()'s
+    // GPUPublication::histories path was fixed to avoid.
+    return getHistoryFieldByProjection(
+        gpuId,
+        [](const GPUSnapshot& sample)
+        { return sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN(); });
 }
 
 std::vector<double> GPUModel::historyTimestamps() const

@@ -49,6 +49,12 @@ struct GPUSnapshot
 
     // Fan
     std::uint32_t fanSpeedPercent = 0; // Computed by Domain from fanSpeedRaw/fanSpeedMaxRaw
+    // True only when this sample actually carried a fan reading (fanSpeedMaxRaw > 0). A probe
+    // can advertise GPUCapabilities::hasFanSpeed (the sensor/symbol is available in general) yet
+    // still fail to read it on a given poll (e.g. a transient RSMI call failure); without this
+    // flag that looks identical to a genuine 0% reading. UI should gate display on this, not just
+    // on the capability, to avoid showing a misleading "0%" for an unavailable sample.
+    bool fanSpeedAvailable = false;
 
     // PCIe bandwidth (rates computed from deltas)
     double pcieTxBytesPerSec = 0.0;

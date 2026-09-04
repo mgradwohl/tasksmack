@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <thread>
 
@@ -190,10 +191,14 @@ TEST(GPUModelTest, FanSpeedPercentIsComputedFromRawAndMax)
 
     // 170 * 100 / 255 = 66 (integer division)
     EXPECT_EQ(snaps[0].fanSpeedPercent, 66U);
+    EXPECT_TRUE(snaps[0].fanSpeedAvailable);
 }
 
-TEST(GPUModelTest, FanSpeedPercentClampsWhenRawExceedsMax)
+TEST(GPUModelTest, FanSpeedPercentIsNotClampedWhenRawExceedsMax)
 {
+    // Left unclamped, matching memoryUsedPercent/powerUtilPercent: a raw reading above the
+    // device's reported max (sensor drift, transient overspeed) is itself useful signal, not
+    // something Domain should silently cap.
     auto probe = std::make_unique<MockGPUProbe>();
     auto counters = makeGPUCounters("GPU0");
     counters.fanSpeedRaw = 300;
@@ -206,14 +211,17 @@ TEST(GPUModelTest, FanSpeedPercentClampsWhenRawExceedsMax)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
 
-    EXPECT_EQ(snaps[0].fanSpeedPercent, 100U);
+    // 300 * 100 / 255 = 117 (integer division)
+    EXPECT_EQ(snaps[0].fanSpeedPercent, 117U);
+    EXPECT_TRUE(snaps[0].fanSpeedAvailable);
 }
 
-TEST(GPUModelTest, FanSpeedPercentIsZeroWhenMaxUnavailable)
+TEST(GPUModelTest, FanSpeedPercentIsZeroAndUnavailableWhenMaxUnavailable)
 {
-    // fanSpeedMaxRaw == 0 means the probe couldn't determine a max (e.g. ROCm's optional
-    // rsmi_dev_fan_speed_max_get symbol wasn't loaded); Domain must not divide by zero or
-    // report a misleading percentage in that case.
+    // fanSpeedMaxRaw == 0 means the probe couldn't determine a max this poll (e.g. ROCm's
+    // optional rsmi_dev_fan_speed_max_get symbol wasn't loaded, or a transient call failure).
+    // Domain must not divide by zero, and must mark the sample as unavailable rather than
+    // reporting a percentage indistinguishable from a genuine 0% reading.
     auto probe = std::make_unique<MockGPUProbe>();
     auto counters = makeGPUCounters("GPU0");
     counters.fanSpeedRaw = 170;
@@ -227,6 +235,51 @@ TEST(GPUModelTest, FanSpeedPercentIsZeroWhenMaxUnavailable)
     ASSERT_EQ(snaps.size(), 1);
 
     EXPECT_EQ(snaps[0].fanSpeedPercent, 0U);
+    EXPECT_FALSE(snaps[0].fanSpeedAvailable);
+}
+
+TEST(GPUModelTest, FanSpeedHistoryMarksUnavailableSamplesAsNaN)
+{
+    // An unavailable sample must come back as NaN, not 0.0F, from both the published history
+    // (what GpuSection's chart/tooltip actually consume) and the fanSpeedHistory() accessor -
+    // otherwise a caller can't tell "fan genuinely at 0%" from "couldn't read the fan this poll".
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    auto available = makeGPUCounters("GPU0");
+    available.fanSpeedRaw = 170;
+    available.fanSpeedMaxRaw = 255;
+    probe->withGPUCounters("GPU0", available);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto unavailable = makeGPUCounters("GPU0");
+    unavailable.fanSpeedRaw = 170;
+    unavailable.fanSpeedMaxRaw = 0;
+    // A second, independent model+probe for the unavailable case: MockGPUProbe's counters are
+    // fixed at construction, and it was already moved into the first model above.
+    auto secondProbe = std::make_unique<MockGPUProbe>();
+    secondProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", unavailable);
+    Domain::GPUModel unavailableModel(std::move(secondProbe));
+    unavailableModel.refresh();
+
+    const auto publication = unavailableModel.publication();
+    const auto historyIt = publication->histories.find("GPU0");
+    ASSERT_NE(historyIt, publication->histories.end());
+    ASSERT_EQ(historyIt->second.fanSpeed.size(), 1);
+    EXPECT_TRUE(std::isnan(historyIt->second.fanSpeed[0]));
+
+    const auto fanHistory = unavailableModel.fanSpeedHistory("GPU0");
+    ASSERT_EQ(fanHistory.size(), 1);
+    EXPECT_TRUE(std::isnan(fanHistory[0]));
+
+    // Sanity check the available-sample sibling model is NOT NaN, so this test would actually
+    // fail if fanSpeedAvailable stopped being honored.
+    const auto availableFanHistory = model.fanSpeedHistory("GPU0");
+    ASSERT_EQ(availableFanHistory.size(), 1);
+    EXPECT_FALSE(std::isnan(availableFanHistory[0]));
+    EXPECT_FLOAT_EQ(availableFanHistory[0], 66.0F);
 }
 
 // =============================================================================
