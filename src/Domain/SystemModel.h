@@ -136,13 +136,17 @@ class SystemModel : public ISamplable
     // Per-interface network history (keyed by interface name)
     std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceRxHistory;
     std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceTxHistory;
-    // Refresh generation at which each interface name was last seen in a live sample, so a
-    // name absent for longer than the whole history window (at which point its buffers hold
-    // nothing but zero padding) can be pruned instead of retained forever -- otherwise a
-    // machine with churning interfaces (container veth*/br-*, VPN reconnects, WiFi cycling)
-    // leaks one HistoryBuffer pair per distinct interface name ever seen (#776).
-    std::unordered_map<std::string, std::uint64_t> m_InterfaceLastSeenGeneration;
-    std::uint64_t m_CurrentGeneration = 0;
+    // Wall-clock time (nowSeconds, same clock as m_Timestamps) each interface name was last
+    // seen in a live sample, so a name absent for longer than the configured history window
+    // (at which point its buffers hold nothing but zero padding) can be pruned instead of
+    // retained forever -- otherwise a machine with churning interfaces (container veth*/br-*,
+    // VPN reconnects, WiFi cycling) leaks one HistoryBuffer pair per distinct interface name
+    // ever seen (#776). Deliberately time-based, matching trimHistory()'s own cutoff, rather
+    // than counting refresh cycles: historyCapacityForSeconds() sizes ring buffers for the
+    // fastest *supported* refresh cadence, not the actual one, so a cycle-count threshold
+    // could retain stale entries far longer than m_MaxHistorySeconds at any slower cadence
+    // (e.g. ~10x longer at the default 1s refresh / 5 minute window).
+    std::unordered_map<std::string, double> m_InterfaceLastSeenSeconds;
     HistoryBuffer<double> m_Timestamps;
     std::vector<HistoryBuffer<float>> m_PerCoreHistory;
 
