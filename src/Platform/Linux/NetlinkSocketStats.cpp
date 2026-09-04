@@ -331,7 +331,30 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
     }
     catch (const std::exception& e)
     {
-        spdlog::debug("Netlink warm-up query threw: {}", e.what());
+        // The logging call itself can allocate (message formatting) and thus throw under the
+        // same OOM condition this guard exists for; catching it here too, instead of just the
+        // query above, keeps this whole catch path non-throwing so it can never re-escape and
+        // leak m_Socket (the concern this outer try/catch was added for -- see the comment on
+        // the enclosing try block).
+        try
+        {
+            spdlog::debug("Netlink warm-up query threw: {}", e.what());
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here,
+                    // must not throw
+        {}
+    }
+    catch (...)
+    {
+        // Non-std::exception throw (unlikely, but the surrounding try/catch's entire purpose
+        // is to guarantee this constructor can't leak m_Socket on any exception).
+        try
+        {
+            spdlog::debug("Netlink warm-up query threw a non-standard exception");
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here,
+                    // must not throw
+        {}
     }
 
     // Set available - the socket is considered functional if it was created and bound,
