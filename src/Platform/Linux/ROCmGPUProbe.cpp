@@ -471,7 +471,10 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
         {
             std::int64_t fanSpeed = 0;
             result = m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &fanSpeed);
-            if (result == RSMI_STATUS_SUCCESS && fanSpeed > 0)
+            // fanSpeed == 0 is a legitimate reading (fan stopped / 0% duty on an idle GPU), not
+            // a missing value, so it must still be stored -- only reject a negative value, which
+            // would indicate a buggy/corrupted driver rather than "not spinning".
+            if (result == RSMI_STATUS_SUCCESS && fanSpeed >= 0)
             {
                 std::uint64_t maxFanSpeed = 0;
                 result = m_Impl->rsmi_dev_fan_speed_max_get(deviceIdx, 0, &maxFanSpeed);

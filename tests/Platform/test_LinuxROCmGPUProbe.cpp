@@ -137,7 +137,10 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_EQ(counters[1].fanSpeedMaxRaw, 0U);
 
     EXPECT_EQ(counters[2].gpuId, "amd_2");
-    EXPECT_EQ(counters[2].fanSpeedRaw, 51U);
+    // Legitimate 0 reading (fan stopped / 0% duty) must still be stored as a real sample --
+    // fanSpeedMaxRaw must be populated too, not left at 0 as if the metric were unavailable
+    // (regression coverage for a "fanSpeed > 0" guard that used to misclassify this as missing).
+    EXPECT_EQ(counters[2].fanSpeedRaw, 0U);
     EXPECT_EQ(counters[2].fanSpeedMaxRaw, 255U);
     EXPECT_EQ(counters[2].pcieTxBytes, 0U);
     EXPECT_EQ(counters[2].pcieRxBytes, 0U);

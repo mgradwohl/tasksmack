@@ -141,7 +141,7 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
      .hasGpuFrequency = true,
      .memoryFrequency = makeFrequencies(1U, 0U, 1500000000ULL),
      .hasMemoryFrequency = true,
-     .fanSpeed = 51, // 51/255 -> 20%
+     .fanSpeed = 0, // Legitimate 0% duty (fan stopped on an idle GPU), not "unavailable"
      .hasFanSpeed = true},
 }};
 
