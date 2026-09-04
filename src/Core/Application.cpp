@@ -359,11 +359,26 @@ template<typename Call> void guardLayerCall(const std::unique_ptr<Layer>& layer,
     }
     catch (const std::exception& e)
     {
-        spdlog::error("Layer '{}' threw during {}: {}", layer->getName(), phase, e.what());
+        // The logging call itself can allocate (message formatting) and thus throw under the
+        // same OOM condition this guard exists for; catching it here too keeps this whole
+        // handler non-throwing so it can never re-escape and defeat the guard's entire purpose.
+        try
+        {
+            spdlog::error("Layer '{}' threw during {}: {}", layer->getName(), phase, e.what());
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here,
+                    // must not throw
+        {}
     }
     catch (...)
     {
-        spdlog::error("Layer '{}' threw an unknown exception during {}", layer->getName(), phase);
+        try
+        {
+            spdlog::error("Layer '{}' threw an unknown exception during {}", layer->getName(), phase);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: logging is best-effort here,
+                    // must not throw
+        {}
     }
 }
 

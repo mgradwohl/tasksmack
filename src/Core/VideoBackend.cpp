@@ -150,10 +150,21 @@ bool VideoBackend::supportsGlobalMouseState() noexcept
     return s_Backend != Backend::Wayland;
 }
 
-std::string VideoBackend::driverName()
+std::string VideoBackend::driverName() noexcept
 {
-    const std::scoped_lock lock(s_Mutex);
-    return s_DriverName;
+    // Some call sites are noexcept themselves (e.g. Window::supportsPositioning()), so a copy
+    // that threw here (std::bad_alloc under OOM) would std::terminate() the whole process for
+    // what's meant to be a best-effort driver-name query. Catch and degrade to an empty string
+    // instead, matching how the rest of this class treats an unknown/unavailable driver.
+    try
+    {
+        const std::scoped_lock lock(s_Mutex);
+        return s_DriverName;
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 bool VideoBackend::shouldUseBorderlessTitleBar(const bool forceNativeDecorationsOnWayland, const bool isWayland) noexcept

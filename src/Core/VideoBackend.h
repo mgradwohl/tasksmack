@@ -67,8 +67,11 @@ class VideoBackend
     /// Return the current video driver name (for logging/debugging). Returns an owning copy,
     /// not a view into s_DriverName: a view could be invalidated by a later resetForTesting()/
     /// initialize() call that mutates s_DriverName out from under it (#789 follow-up review).
-    /// Not noexcept: the copy can allocate and throw std::bad_alloc.
-    [[nodiscard]] static std::string driverName();
+    /// noexcept despite the copy being able to allocate: some call sites (e.g.
+    /// Window::supportsPositioning()) are themselves noexcept, so an escaping std::bad_alloc
+    /// here would std::terminate() the process for a best-effort query -- the implementation
+    /// catches internally and degrades to an empty string instead.
+    [[nodiscard]] static std::string driverName() noexcept;
 
     /// Test-only: clear the cached backend so the next initialize() call re-detects from the
     /// live SDL state instead of being a no-op. Without this, a test that forces a specific
