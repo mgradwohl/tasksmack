@@ -64,8 +64,11 @@ class VideoBackend
     /// Wayland; every other backend always stays borderless (custom title bar).
     [[nodiscard]] static bool shouldUseBorderlessTitleBar(bool forceNativeDecorationsOnWayland, bool isWayland) noexcept;
 
-    /// Return the current video driver name (for logging/debugging).
-    [[nodiscard]] static std::string_view driverName() noexcept;
+    /// Return the current video driver name (for logging/debugging). Returns an owning copy,
+    /// not a view into s_DriverName: a view could be invalidated by a later resetForTesting()/
+    /// initialize() call that mutates s_DriverName out from under it (#789 follow-up review).
+    /// Not noexcept: the copy can allocate and throw std::bad_alloc.
+    [[nodiscard]] static std::string driverName();
 
     /// Test-only: clear the cached backend so the next initialize() call re-detects from the
     /// live SDL state instead of being a no-op. Without this, a test that forces a specific

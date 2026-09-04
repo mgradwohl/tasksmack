@@ -150,7 +150,7 @@ bool VideoBackend::supportsGlobalMouseState() noexcept
     return s_Backend != Backend::Wayland;
 }
 
-std::string_view VideoBackend::driverName() noexcept
+std::string VideoBackend::driverName()
 {
     const std::scoped_lock lock(s_Mutex);
     return s_DriverName;
