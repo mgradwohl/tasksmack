@@ -442,20 +442,17 @@ void renderGpuSection(RenderContext& ctx)
         // failed to read the sensor (see fanSpeedAvailable's comment in GPUSnapshot.h).
         if (caps.hasFanSpeed)
         {
-            NowBar fanBar{.valueText = {}, .label = "GPU Fan Speed", .tooltipText = {}, .value01 = 0.0, .color = {}};
-            if (snap.fanSpeedAvailable)
-            {
-                fanBar.valueText = std::format("{}%", snap.fanSpeedPercent);
-                fanBar.value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent));
-                fanBar.color = theme.scheme().gpuFan;
-            }
-            else
-            {
-                fanBar.valueText = "N/A";
-                fanBar.tooltipText = "GPU Fan Speed: unavailable this sample";
-                fanBar.color = theme.scheme().textMuted;
-            }
-            gpuThermalBars.push_back(fanBar);
+            gpuThermalBars.push_back(snap.fanSpeedAvailable
+                                         ? NowBar{.valueText = std::format("{}%", snap.fanSpeedPercent),
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = {},
+                                                  .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
+                                                  .color = theme.scheme().gpuFan}
+                                         : NowBar{.valueText = "N/A",
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = "GPU Fan Speed: unavailable this sample",
+                                                  .value01 = 0.0,
+                                                  .color = theme.scheme().textMuted});
         }
 
         // Use max bar count across both charts for x-axis alignment
