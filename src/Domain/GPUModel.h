@@ -166,6 +166,10 @@ class GPUModel : public ISamplable
 
     // Helper template: extract a field from GPU history and return as float vector
     template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(std::string_view gpuId, FieldPtr field) const;
+    // Underlying helper shared with getHistoryField(): a per-sample projection instead of a
+    // plain member pointer, for accessors whose value depends on more than one field.
+    template<typename Projection>
+    [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
     void publish();
 };
 

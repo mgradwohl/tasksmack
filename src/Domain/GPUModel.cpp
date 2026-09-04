@@ -346,6 +346,15 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 // Template helper for extracting history fields - reduces code duplication
 template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
 {
+    return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) { return static_cast<float>(sample.*field); });
+}
+
+// Underlying lock/find/reserve/loop shared by getHistoryField() (a plain member pointer, for
+// the common single-field case) and any accessor - like fanSpeedHistory() below - whose float
+// value depends on more than one field (e.g. substituting NaN when fanSpeedAvailable is false)
+// and so can't be expressed as `sample.*field`.
+template<typename Projection> std::vector<float> GPUModel::getHistoryFieldByProjection(std::string_view gpuId, Projection project) const
+{
     const std::shared_lock lock(m_Mutex);
     auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
@@ -357,7 +366,7 @@ template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::st
     result.reserve(it->second.size());
     for (size_t i = 0; i < it->second.size(); ++i)
     {
-        result.push_back(static_cast<float>(it->second[i].*field));
+        result.push_back(project(it->second[i]));
     }
     return result;
 }
@@ -403,21 +412,10 @@ std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
     // be read (fanSpeedAvailable == false) must come back as NaN, not its default 0.0F, or a
     // caller of this accessor sees the same misleading flat "0%" that publish()'s
     // GPUPublication::histories path was fixed to avoid.
-    const std::shared_lock lock(m_Mutex);
-    auto it = m_Histories.find(gpuId);
-    if (it == m_Histories.end())
-    {
-        return {};
-    }
-
-    std::vector<float> result;
-    result.reserve(it->second.size());
-    for (size_t i = 0; i < it->second.size(); ++i)
-    {
-        const auto& sample = it->second[i];
-        result.push_back(sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN());
-    }
-    return result;
+    return getHistoryFieldByProjection(
+        gpuId,
+        [](const GPUSnapshot& sample)
+        { return sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN(); });
 }
 
 std::vector<double> GPUModel::historyTimestamps() const
