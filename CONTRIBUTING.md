@@ -328,6 +328,50 @@ probe->withProcess(123, "test_process").withCpuTime(123, 1000, 500).withMemory(1
 probe->setTotalCpuTime(100000);
 ```
 
+For `Platform::IProcessActions` (process kill/terminate/stop/resume/setPriority), use
+`TestMocks::MockProcessActions` in the same header: it lets each action's result be configured
+independently (`setKillResult(...)`, etc.) and tracks the last pid (and, for `setPriority`, the
+nice value) and call count per method, so a test can assert both what was called and with what
+argument.
+
+### Testing App/UI code that needs a live ImGui context
+
+`TaskSmackTests` does not link the real ImGui/ImPlot library object code (no `imgui`/`implot`
+library target, no live window or GL context) - only their headers are on the include path. This
+means a `.cpp` file that calls real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions (window setup,
+widget rendering, font atlas baking, etc.) cannot be added to `TaskSmackTests`' source list: it
+will fail to *link*, not just to run correctly, with undefined references to those symbols. This
+is why `TitleBarLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`, `SystemMetricsPanel.cpp`,
+and `UILayer.cpp` are not linked into `TaskSmackTests` even though their headers are tested.
+
+Two established ways to get real coverage of such a file's logic anyway:
+
+1. **Extract the pure decision logic into a small header**, taking every input as an explicit
+   parameter instead of reading member/global state, and `#include` it back into the original
+   `.cpp`. The original file keeps a thin wrapper that supplies the live inputs (mouse position,
+   SDL window state, etc.); the header holds the actual decision and gets tested directly. See
+   `App/TitleBarGeometry.h` (`computeWindowHitTest`, `computeDetectResizeEdge`,
+   `computeIsPointInAnyBounds`, ...), `App/Panels/ProcessDetailsPanel_ActionHelpers.h`
+   (`dispatchProcessAction`), and `UI/DpiScale.h`/`UI/MonospaceFontPath.h` for the pattern. When
+   the extracted logic needs to probe the filesystem or environment, take an injectable predicate
+   (`std::function<bool(const std::filesystem::path&)>` etc.) the same way `UI::selectAssetsDir()`
+   (`AssetPath.h`) already does, rather than hard-coding a real filesystem/env call into the
+   testable function.
+2. **Link the real file directly, if it turns out not to need the ImGui *library* at all.** Not
+   every file that `#include`s `imgui.h` actually calls into ImGui - some only use its type
+   declarations (e.g. `ImTextureID`, `ImVec2`) for their own return types. `UI/IconLoader.cpp` is
+   linked into `TaskSmackTests` (see `tests/CMakeLists.txt`) for exactly this reason: it only
+   needs `imgui.h` for types, and its OpenGL calls resolve against `glad_gl_core_33`, which *is*
+   already linked. Before reaching for extraction, check whether the file actually calls any
+   `ImGui::`/`ImPlot::` function - if it doesn't, linking it directly gives real coverage of the
+   actual production code instead of a parallel copy.
+
+Before writing either kind of test, check whether the logic already exists as a shared, tested
+helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
+turned out to be a byte-for-byte duplicate of the already-shared, already-tested
+`Core::isEnvFlagEnabled()` (`Core/EnvUtils.h`); deleting the duplicate and reusing the shared
+helper was strictly better than writing a third copy of the same test.
+
 ## VS Code
 
 Recommended extensions:
