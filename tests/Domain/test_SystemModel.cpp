@@ -1202,7 +1202,7 @@ TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
     const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
     for (std::size_t i = 0; i < capacity + 2; ++i)
     {
-        model.updateFromCounters(countersWithoutWlan, 3.0 + static_cast<double>(i) * 0.01);
+        model.updateFromCounters(countersWithoutWlan, 3.0 + (static_cast<double>(i) * 0.01));
     }
 
     // wlan0's entry must be fully pruned (empty, not merely zero-padded), so the map doesn't
