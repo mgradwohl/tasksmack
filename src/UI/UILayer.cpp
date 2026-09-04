@@ -5,7 +5,9 @@
 #include "Core/Layer.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
+#include "UI/DpiScale.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/MonospaceFontPath.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
@@ -17,64 +19,24 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
-#include <array>
 #include <filesystem>
 
 namespace
 {
-// Convert typographic points to pixels based on display DPI
-// Standard: 1 point = 1/72 inch, base DPI assumed 96 (Windows/Linux standard)
+// Convert typographic points to pixels based on display DPI - math lives in
+// UI::computePointsToPixels() (DpiScale.h) so it's directly unit-testable; this wrapper just
+// supplies the live SDL display scale, which needs a real window (see #770).
 float pointsToPixels(float points)
 {
-    constexpr float BASE_DPI = 96.0F;
-
-    // Get display scale from SDL
     float scale = 1.0F;
     SDL_Window* window = Core::Application::get().getWindow().getHandle();
     if (window != nullptr)
     {
         scale = SDL_GetWindowDisplayScale(window);
     }
-
-    // pixels = points * (DPI / 72), where effective DPI = BASE_DPI * scale
-    return points * (BASE_DPI * scale) / 72.0F;
+    return UI::computePointsToPixels(points, scale);
 }
 
-// Best-effort system monospace font discovery (platform-specific, prefers widely available defaults)
-std::filesystem::path getMonospaceFontPath()
-{
-#ifdef _WIN32
-    // Prefer Consolas, fall back to Cascadia Mono if available
-    constexpr std::array<const wchar_t*, 2> CANDIDATES = {
-        L"C:/Windows/Fonts/consola.ttf",
-        L"C:/Windows/Fonts/CascadiaMono.ttf",
-    };
-    for (const auto* candidate : CANDIDATES)
-    {
-        std::filesystem::path path(candidate);
-        if (std::filesystem::exists(path))
-        {
-            return path;
-        }
-    }
-#else
-    // Prefer DejaVu Sans Mono, fall back to Liberation Mono
-    constexpr std::array<const char*, 2> CANDIDATES = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    };
-    for (const auto* candidate : CANDIDATES)
-    {
-        std::filesystem::path path(candidate);
-        if (std::filesystem::exists(path))
-        {
-            return path;
-        }
-    }
-#endif
-
-    return {};
-}
 } // namespace
 
 namespace UI
@@ -97,7 +59,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
 
     auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
     auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
-    const auto monospaceFontPath = getMonospaceFontPath();
+    const auto monospaceFontPath = findMonospaceFontPath();
 
     // Check if icon font exists
     const bool hasIconFont = std::filesystem::exists(iconFontPath);
