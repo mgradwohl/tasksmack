@@ -2,6 +2,7 @@
 
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
+#include "Core/Layer.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
@@ -340,6 +341,32 @@ void ensureXdgRuntimeDir()
     spdlog::info("Using XDG_RUNTIME_DIR='{}'", *chosen);
 }
 #endif
+
+// A layer that throws is caught and logged here rather than left to unwind out of the main
+// loop: for a long-running monitor, one bad frame or one bad event should not call
+// std::terminate() and take down the whole process. Note this is a best-effort mitigation,
+// not a full guarantee: layers pair raw ImGui::Begin()/End() calls (not RAII), so an exception
+// thrown between them still leaves ImGui's window stack unbalanced for the rest of this frame;
+// the assertion ImGui uses to detect that is compiled out in NDEBUG (Release) builds but active
+// in Debug. Shared by renderFrame(), raiseEvent(), and the SDL event passthrough loop in run()
+// so every per-frame/per-event layer callback degrades the same way instead of only some of
+// them (#778).
+template<typename Call> void guardLayerCall(const std::unique_ptr<Layer>& layer, std::string_view phase, const Call& call)
+{
+    try
+    {
+        call();
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::error("Layer '{}' threw during {}: {}", layer->getName(), phase, e.what());
+    }
+    catch (...)
+    {
+        spdlog::error("Layer '{}' threw an unknown exception during {}", layer->getName(), phase);
+    }
+}
+
 } // namespace
 
 Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec))
@@ -516,7 +543,7 @@ void Application::run()
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
-                layer->onSDLEvent(&sdlEvent);
+                guardLayerCall(layer, "onSDLEvent", [&] { layer->onSDLEvent(&sdlEvent); });
             }
 
             // Translate window close events to our event system for clean shutdown coordination
@@ -740,28 +767,6 @@ void Application::renderFrame(float deltaTime,
         postLayerDurations.reserve(m_LayerStack.size());
     }
 
-    // A layer that throws is caught and logged here rather than left to unwind out of the main
-    // loop: for a long-running monitor, one bad frame should not call std::terminate() and take
-    // down the whole process. Note this is a best-effort mitigation, not a full guarantee: layers
-    // pair raw ImGui::Begin()/End() calls (not RAII), so an exception thrown between them still
-    // leaves ImGui's window stack unbalanced for the rest of this frame; the assertion ImGui uses
-    // to detect that is compiled out in NDEBUG (Release) builds but active in Debug.
-    const auto guardLayerCall = [](const std::unique_ptr<Layer>& layer, std::string_view phase, const auto& call)
-    {
-        try
-        {
-            call();
-        }
-        catch (const std::exception& e)
-        {
-            spdlog::error("Layer '{}' threw during {}: {}", layer->getName(), phase, e.what());
-        }
-        catch (...)
-        {
-            spdlog::error("Layer '{}' threw an unknown exception during {}", layer->getName(), phase);
-        }
-    };
-
     const auto updateStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     // Update all layers
     for (const auto& layer : m_LayerStack)
@@ -898,7 +903,7 @@ void Application::raiseEvent(Event& event)
     // Dispatch to layers in reverse order (topmost first)
     for (auto& layer : std::views::reverse(m_LayerStack))
     {
-        layer->onEvent(event);
+        guardLayerCall(layer, "onEvent", [&] { layer->onEvent(event); });
         if (event.isHandled())
         {
             break;
