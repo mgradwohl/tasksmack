@@ -15,7 +15,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <utility>
 
@@ -89,8 +93,15 @@ TEST(IconLoaderTest, LoadTextureWithNonImageFileReturnsInvalidTexture)
     // any GL call. Write a small guaranteed-non-image temp file rather than using __FILE__:
     // __FILE__ may be a relative path (compiler-flag dependent) and isn't guaranteed to still
     // be an on-disk path at test-run time, while temp_directory_path() keeps this hermetic
-    // across toolchains and working directories.
-    const std::filesystem::path notAnImage = std::filesystem::temp_directory_path() / "tasksmack_iconloader_test_not_an_image.tmp";
+    // across toolchains and working directories. The name is suffixed with a timestamp plus a
+    // per-process monotonic counter (mirroring ScopedTempDir's approach, without a Linux-only
+    // getpid() dependency) so concurrent test runs sharing the OS temp directory (e.g. parallel
+    // CI jobs, a coverage run) can't collide on the same path.
+    static std::atomic<std::uint64_t> counter{0};
+    const auto uniqueSuffix =
+        std::format("{}_{}", std::chrono::steady_clock::now().time_since_epoch().count(), counter.fetch_add(1, std::memory_order_relaxed));
+    const std::filesystem::path notAnImage =
+        std::filesystem::temp_directory_path() / std::format("tasksmack_iconloader_test_not_an_image_{}.tmp", uniqueSuffix);
     {
         std::ofstream out(notAnImage, std::ios::binary);
         out << "not an image";
