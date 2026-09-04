@@ -573,20 +573,21 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         // present as "no recent data" via netRxHistoryForInterface()/netTxHistoryForInterface()),
         // but retaining it forever would grow these maps without bound on a machine with
         // churning interfaces (#776). Matches trimHistory()'s own wall-clock cutoff below.
+        // Erases in place while iterating m_InterfaceLastSeenSeconds rather than collecting
+        // stale names into a scratch vector first: that vector's own allocation could throw
+        // right under the memory pressure this pruning exists to relieve, silently skipping
+        // the whole pass for the one refresh cycle it matters most.
+        for (auto it = m_InterfaceLastSeenSeconds.begin(); it != m_InterfaceLastSeenSeconds.end();)
         {
-            std::vector<std::string> staleInterfaces;
-            for (const auto& [name, lastSeen] : m_InterfaceLastSeenSeconds)
+            if ((nowSeconds - it->second) > m_MaxHistorySeconds)
             {
-                if ((nowSeconds - lastSeen) > m_MaxHistorySeconds)
-                {
-                    staleInterfaces.push_back(name);
-                }
+                m_PerInterfaceRxHistory.erase(it->first);
+                m_PerInterfaceTxHistory.erase(it->first);
+                it = m_InterfaceLastSeenSeconds.erase(it);
             }
-            for (const auto& name : staleInterfaces)
+            else
             {
-                m_PerInterfaceRxHistory.erase(name);
-                m_PerInterfaceTxHistory.erase(name);
-                m_InterfaceLastSeenSeconds.erase(name);
+                ++it;
             }
         }
 

@@ -57,7 +57,7 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
 {
     if (!m_Probe)
     {
-        spdlog::warn("StorageModel::sample called with null probe");
+        spdlog::warn("StorageModel::sampleAt called with null probe");
         return;
     }
 
@@ -159,23 +159,23 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         // churning removable/USB storage (#777). Matches trimHistory()'s own wall-clock cutoff
         // below. m_DiskOrder must stay in lockstep with the history maps -- publish() indexes
         // them with .at(), which would throw if a name survived in m_DiskOrder after being
-        // erased from the maps.
+        // erased from the maps. Erases in place while iterating m_DiskLastSeenSeconds rather
+        // than collecting stale names into a scratch vector first: that vector's own allocation
+        // could throw right under the memory pressure this pruning exists to relieve, silently
+        // skipping the whole pass for the one refresh cycle it matters most.
+        for (auto it = m_DiskLastSeenSeconds.begin(); it != m_DiskLastSeenSeconds.end();)
         {
-            std::vector<std::string> staleDisks;
-            for (const auto& [name, lastSeen] : m_DiskLastSeenSeconds)
+            if ((nowSeconds - it->second) > m_MaxHistorySeconds)
             {
-                if ((nowSeconds - lastSeen) > m_MaxHistorySeconds)
-                {
-                    staleDisks.push_back(name);
-                }
+                m_DiskReadHistory.erase(it->first);
+                m_DiskWriteHistory.erase(it->first);
+                m_DiskStates.erase(it->first);
+                std::erase(m_DiskOrder, it->first);
+                it = m_DiskLastSeenSeconds.erase(it);
             }
-            for (const auto& name : staleDisks)
+            else
             {
-                m_DiskReadHistory.erase(name);
-                m_DiskWriteHistory.erase(name);
-                m_DiskStates.erase(name);
-                m_DiskLastSeenSeconds.erase(name);
-                std::erase(m_DiskOrder, name);
+                ++it;
             }
         }
 
