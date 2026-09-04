@@ -345,6 +345,15 @@ struct PDHGPUProbe::Impl
 
     bool loadPDH()
     {
+        // Defensive guard: today loadPDH() is only ever called once (from the constructor), so
+        // pdhModule is always null here, but a future retry-on-failure/hot-reload path calling
+        // this twice would otherwise overwrite the handle without a matching FreeLibrary,
+        // leaking one DLL reference count (#781).
+        if (pdhModule != nullptr)
+        {
+            return true;
+        }
+
         pdhModule = LoadLibraryW(L"pdh.dll");
         if (pdhModule == nullptr)
         {

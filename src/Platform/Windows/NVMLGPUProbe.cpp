@@ -47,6 +47,15 @@ NVMLGPUProbe::~NVMLGPUProbe()
 
 bool NVMLGPUProbe::loadNVML()
 {
+    // Defensive guard: today loadNVML() is only ever called once (from the constructor), so
+    // m_NVMLHandle is always null here, but a future retry-on-failure/hot-reload path calling
+    // this twice would otherwise overwrite the handle without a matching FreeLibrary, leaking
+    // one DLL reference count (#781).
+    if (m_NVMLHandle != nullptr)
+    {
+        return true;
+    }
+
     // NVIDIA installs NVML in System32. Restrict the search to that trusted
     // directory so a portable installation cannot load an adjacent DLL.
     m_NVMLHandle = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
