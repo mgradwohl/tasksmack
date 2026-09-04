@@ -436,17 +436,23 @@ void renderGpuSection(RenderContext& ctx)
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }
-        // Gate on the per-sample fanSpeedAvailable flag too, not just the capability: the
-        // capability says the sensor is generally available, but a given poll can still fail to
-        // read it (e.g. a transient RSMI call failure), which would otherwise render as a
-        // misleading "0%" indistinguishable from a genuine idle reading.
-        if (caps.hasFanSpeed && snap.fanSpeedAvailable)
+        // Keep pushing a bar (stable column count) whenever the capability is present, so the
+        // now-bar layout doesn't jitter frame-to-frame as fanSpeedAvailable flips on a transient
+        // per-poll read failure - but show "N/A" instead of a misleading "0%" for a sample that
+        // failed to read the sensor (see fanSpeedAvailable's comment in GPUSnapshot.h).
+        if (caps.hasFanSpeed)
         {
-            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedPercent),
-                                      .label = "GPU Fan Speed",
-                                      .tooltipText = {},
-                                      .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
-                                      .color = theme.scheme().gpuFan});
+            gpuThermalBars.push_back(snap.fanSpeedAvailable
+                                         ? NowBar{.valueText = std::format("{}%", snap.fanSpeedPercent),
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = {},
+                                                  .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
+                                                  .color = theme.scheme().gpuFan}
+                                         : NowBar{.valueText = "N/A",
+                                                  .label = "GPU Fan Speed",
+                                                  .tooltipText = "GPU Fan Speed: unavailable this sample",
+                                                  .value01 = 0.0,
+                                                  .color = theme.scheme().textMuted});
         }
 
         // Use max bar count across both charts for x-axis alignment

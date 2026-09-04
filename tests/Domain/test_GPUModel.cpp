@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <thread>
 
@@ -235,6 +236,50 @@ TEST(GPUModelTest, FanSpeedPercentIsZeroAndUnavailableWhenMaxUnavailable)
 
     EXPECT_EQ(snaps[0].fanSpeedPercent, 0U);
     EXPECT_FALSE(snaps[0].fanSpeedAvailable);
+}
+
+TEST(GPUModelTest, FanSpeedHistoryMarksUnavailableSamplesAsNaN)
+{
+    // An unavailable sample must come back as NaN, not 0.0F, from both the published history
+    // (what GpuSection's chart/tooltip actually consume) and the fanSpeedHistory() accessor -
+    // otherwise a caller can't tell "fan genuinely at 0%" from "couldn't read the fan this poll".
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    auto available = makeGPUCounters("GPU0");
+    available.fanSpeedRaw = 170;
+    available.fanSpeedMaxRaw = 255;
+    probe->withGPUCounters("GPU0", available);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto unavailable = makeGPUCounters("GPU0");
+    unavailable.fanSpeedRaw = 170;
+    unavailable.fanSpeedMaxRaw = 0;
+    // A second, independent model+probe for the unavailable case: MockGPUProbe's counters are
+    // fixed at construction, and it was already moved into the first model above.
+    auto secondProbe = std::make_unique<MockGPUProbe>();
+    secondProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", unavailable);
+    Domain::GPUModel unavailableModel(std::move(secondProbe));
+    unavailableModel.refresh();
+
+    const auto publication = unavailableModel.publication();
+    const auto historyIt = publication->histories.find("GPU0");
+    ASSERT_NE(historyIt, publication->histories.end());
+    ASSERT_EQ(historyIt->second.fanSpeed.size(), 1);
+    EXPECT_TRUE(std::isnan(historyIt->second.fanSpeed[0]));
+
+    const auto fanHistory = unavailableModel.fanSpeedHistory("GPU0");
+    ASSERT_EQ(fanHistory.size(), 1);
+    EXPECT_TRUE(std::isnan(fanHistory[0]));
+
+    // Sanity check the available-sample sibling model is NOT NaN, so this test would actually
+    // fail if fanSpeedAvailable stopped being honored.
+    const auto availableFanHistory = model.fanSpeedHistory("GPU0");
+    ASSERT_EQ(availableFanHistory.size(), 1);
+    EXPECT_FALSE(std::isnan(availableFanHistory[0]));
+    EXPECT_FLOAT_EQ(availableFanHistory[0], 66.0F);
 }
 
 // =============================================================================

@@ -325,12 +325,11 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     if (snapshot.fanSpeedAvailable)
     {
         const std::uint64_t percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
-        // Cap at uint32_t's range rather than at 100: a wildly out-of-range percent (e.g. a
-        // corrupted fanSpeedMaxRaw of 1) would otherwise silently truncate/wrap to an arbitrary
-        // small value when narrowed below, hiding exactly the sensor-drift/overspeed signal this
-        // computation is meant to preserve.
-        constexpr std::uint64_t MAX_UINT32 = std::numeric_limits<std::uint32_t>::max();
-        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(std::min(percent, MAX_UINT32));
+        // Cap at uint32_t's range rather than at 100 via the existing narrow-or-fallback helper:
+        // a wildly out-of-range percent (e.g. a corrupted fanSpeedMaxRaw of 1) would otherwise
+        // silently truncate/wrap to an arbitrary small value on a plain narrowing cast, hiding
+        // exactly the sensor-drift/overspeed signal this computation is meant to preserve.
+        snapshot.fanSpeedPercent = Numeric::narrowOr<std::uint32_t>(percent, std::numeric_limits<std::uint32_t>::max());
     }
 
     // Compute rates from deltas (only if we have previous data and valid time delta)
@@ -400,7 +399,25 @@ std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedPercent);
+    // Not a plain getHistoryField() like the other accessors: a sample where the fan couldn't
+    // be read (fanSpeedAvailable == false) must come back as NaN, not its default 0.0F, or a
+    // caller of this accessor sees the same misleading flat "0%" that publish()'s
+    // GPUPublication::histories path was fixed to avoid.
+    const std::shared_lock lock(m_Mutex);
+    auto it = m_Histories.find(gpuId);
+    if (it == m_Histories.end())
+    {
+        return {};
+    }
+
+    std::vector<float> result;
+    result.reserve(it->second.size());
+    for (size_t i = 0; i < it->second.size(); ++i)
+    {
+        const auto& sample = it->second[i];
+        result.push_back(sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN());
+    }
+    return result;
 }
 
 std::vector<double> GPUModel::historyTimestamps() const
