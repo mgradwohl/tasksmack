@@ -143,6 +143,7 @@ add_executable(TaskSmackTests
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
     UI/test_WidgetsHeader.cpp
+    UI/test_IconLoader.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -177,6 +178,10 @@ add_executable(TaskSmackTests
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
+    # IconLoader.cpp only needs imgui.h for type declarations (no ImGui:: calls) and its GL
+    # calls resolve against glad_gl_core_33 (linked below) - unlike Theme.cpp it doesn't need
+    # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
+    ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
@@ -192,6 +197,7 @@ target_include_directories(TaskSmackTests PRIVATE
     ${implot_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}/gladsources/include  # For glad/gl.h
 )
+target_include_directories(TaskSmackTests SYSTEM PRIVATE ${stb_SOURCE_DIR})  # For IconLoader.cpp
 
 target_link_libraries(TaskSmackTests PRIVATE
     gtest
