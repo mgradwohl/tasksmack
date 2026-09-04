@@ -101,7 +101,7 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
      .hasGpuFrequency = true,
      .memoryFrequency = makeFrequencies(2U, 1U, 2000000000ULL),
      .hasMemoryFrequency = true,
-     .fanSpeed = 1700,
+     .fanSpeed = 170, // 170/255 -> 66%
      .hasFanSpeed = true},
     {.name = "Mock AMD GPU 1",
      .hasName = false,
@@ -141,7 +141,7 @@ const std::array<MockRocmDevice, 3> MOCK_DEVICES{{
      .hasGpuFrequency = true,
      .memoryFrequency = makeFrequencies(1U, 0U, 1500000000ULL),
      .hasMemoryFrequency = true,
-     .fanSpeed = 1200,
+     .fanSpeed = 51, // 51/255 -> 20%
      .hasFanSpeed = true},
 }};
 
@@ -343,6 +343,22 @@ extern "C"
         }
 
         *fanSpeed = device->fanSpeed;
+        return RSMI_STATUS_SUCCESS;
+    }
+
+    rsmi_status_t rsmi_dev_fan_speed_max_get(std::uint32_t deviceIndex, std::uint32_t /*sensorIndex*/, std::uint64_t* maxSpeed)
+    {
+        const auto* device = safeDevice(deviceIndex);
+        if (device == nullptr)
+        {
+            return RSMI_STATUS_INVALID_ARGS;
+        }
+        if (!device->hasFanSpeed)
+        {
+            return RSMI_STATUS_NOT_FOUND;
+        }
+
+        *maxSpeed = 255; // RSMI_MAX_FAN_SPEED
         return RSMI_STATUS_SUCCESS;
     }
 

@@ -4,6 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -143,6 +144,7 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
+    rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
 
     bool loadROCmSMI();
@@ -206,6 +208,7 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     LOAD_ROCM_FUNC(rsmi_dev_power_cap_get);
     LOAD_ROCM_FUNC(rsmi_dev_gpu_clk_freq_get);
     LOAD_ROCM_FUNC(rsmi_dev_fan_speed_get);
+    LOAD_ROCM_FUNC(rsmi_dev_fan_speed_max_get);
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
@@ -449,12 +452,21 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.memoryClockMHz = static_cast<std::uint32_t>(memFreq.frequency[memFreq.current] / 1000000); // Convert Hz to MHz
         }
 
-        // Fan speed (sensor 0, in RPM)
+        // Fan speed (sensor 0). rsmi_dev_fan_speed_get() returns a raw value relative to
+        // RSMI_MAX_FAN_SPEED, not RPM (rsmi_dev_fan_rpms_get() is the RPM query, a different
+        // function) -- see #734. Normalize against the device's actual max so the stored
+        // value is always a 0-100 percentage, consistent with the NVML probes.
         std::int64_t fanSpeed = 0;
         result = m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &fanSpeed);
-        if (result == RSMI_STATUS_SUCCESS)
+        if (result == RSMI_STATUS_SUCCESS && fanSpeed > 0)
         {
-            counter.fanSpeedRPMPercent = static_cast<std::uint32_t>(fanSpeed);
+            std::uint64_t maxFanSpeed = 0;
+            result = m_Impl->rsmi_dev_fan_speed_max_get(deviceIdx, 0, &maxFanSpeed);
+            if (result == RSMI_STATUS_SUCCESS && maxFanSpeed > 0)
+            {
+                const auto percent = static_cast<std::uint64_t>(fanSpeed) * 100ULL / maxFanSpeed;
+                counter.fanSpeedPercent = static_cast<std::uint32_t>(std::min<std::uint64_t>(percent, 100ULL));
+            }
         }
 
         // PCIe throughput: Not directly available via ROCm SMI

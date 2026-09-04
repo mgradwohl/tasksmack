@@ -197,7 +197,7 @@ void GPUModel::publish()
             publishedHistory.decoder.push_back(static_cast<float>(sample.decoderUtilPercent));
             publishedHistory.temperature.push_back(static_cast<float>(sample.temperatureC));
             publishedHistory.power.push_back(static_cast<float>(sample.powerDrawWatts));
-            publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedRPMPercent));
+            publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedPercent));
         }
     }
     m_PublicationVersion = publication->version;
@@ -295,7 +295,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.powerLimitWatts = current.powerLimitWatts;
     snapshot.gpuClockMHz = current.gpuClockMHz;
     snapshot.memoryClockMHz = current.memoryClockMHz;
-    snapshot.fanSpeedRPMPercent = current.fanSpeedRPMPercent;
+    snapshot.fanSpeedPercent = current.fanSpeedPercent;
     snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
@@ -378,7 +378,7 @@ std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
 
 std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedRPMPercent);
+    return getHistoryField(gpuId, &GPUSnapshot::fanSpeedPercent);
 }
 
 std::vector<double> GPUModel::historyTimestamps() const

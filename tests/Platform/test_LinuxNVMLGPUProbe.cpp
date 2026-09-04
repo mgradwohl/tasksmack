@@ -138,7 +138,7 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_DOUBLE_EQ(counters[0].powerLimitWatts, 250.0);
     EXPECT_EQ(counters[0].gpuClockMHz, 1800U);
     EXPECT_EQ(counters[0].memoryClockMHz, 9000U);
-    EXPECT_EQ(counters[0].fanSpeedRPMPercent, 40U);
+    EXPECT_EQ(counters[0].fanSpeedPercent, 40U);
     // nvmlDeviceGetPcieThroughput() returns a rate (KB/s over a ~20ms window), not a
     // cumulative counter, so the probe deliberately leaves these at their zero default
     // rather than populate a field GPUModel treats as cumulative with mismatched data.

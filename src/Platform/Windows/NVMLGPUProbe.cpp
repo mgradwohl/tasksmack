@@ -368,7 +368,7 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
         result = m_NVML.DeviceGetFanSpeed(device, &fanSpeed);
         if (result == NVML_SUCCESS)
         {
-            counter.fanSpeedRPMPercent = fanSpeed;
+            counter.fanSpeedPercent = fanSpeed;
         }
 
         // PCIe throughput: NVML returns rates (KB/s), not cumulative counters.

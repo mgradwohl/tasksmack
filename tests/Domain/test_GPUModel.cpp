@@ -667,7 +667,7 @@ TEST(GPUModelTest, FanSpeedHistoryReturnsCorrectValues)
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     auto counters = makeGPUCounters("GPU0");
-    counters.fanSpeedRPMPercent = 40;
+    counters.fanSpeedPercent = 40;
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
 
     Domain::GPUModel model(std::move(probe));
@@ -675,7 +675,7 @@ TEST(GPUModelTest, FanSpeedHistoryReturnsCorrectValues)
 
     // Update fan speed and refresh
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    counters.fanSpeedRPMPercent = 95;
+    counters.fanSpeedPercent = 95;
     rawProbe->withGPUCounters("GPU0", counters);
     model.refresh();
 
