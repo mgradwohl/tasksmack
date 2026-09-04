@@ -1043,6 +1043,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
+- **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the LLVM toolchain version pin -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
@@ -1068,6 +1069,74 @@ Dependabot updates GitHub Actions and Python dependencies weekly.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
+
+### Keeping Dependencies Current
+
+Three automated mechanisms cover different parts of "is this pinned version stale/vulnerable,"
+and one category is deliberately left manual. See #89 for the history.
+
+**One-time setup for `renovate.yml`** (two steps, neither done automatically since both are
+account/repo-level security settings):
+
+1. **Required**, or the workflow can't open PRs at all: enable Settings → Actions → General →
+   Workflow permissions → "Allow GitHub Actions to create and approve pull requests". Verify it's
+   on via `gh api repos/mgradwohl/tasksmack/actions/permissions/workflow` --
+   `can_approve_pull_request_reviews` must be `true`; `renovate.yml` fails on every run while
+   it's `false`.
+2. **Recommended**, or CI silently won't run on Renovate's PRs: PRs opened with the default
+   `GITHUB_TOKEN` don't trigger other workflows (`ci.yml` included) -- GitHub's loop-prevention
+   behavior for the built-in token. Add a fine-grained PAT scoped to just this repo, with
+   Contents, Pull requests, Issues (needed because `dependencyDashboard: true` in
+   `renovate.json5` has Renovate create/update a tracking issue), and **Workflows** (needed
+   because the LLVM entry edits `LLVM_SEMVER_VERSION` inside `ci.yml` itself, and GitHub blocks
+   pushes touching `.github/workflows/*` without this scope even with Contents:write) all set to
+   "Read and write", as the `RENOVATE_TOKEN` repository secret so CI actually gates these PRs
+   like any other. Until that's set up, manually re-run/trigger CI (e.g. push an empty commit, or
+   close and reopen the PR) on any Renovate PR before merging it.
+
+**Libraries and code we pull in** (i.e. actual dependencies):
+
+| Source | Freshness (new releases) | Vulnerabilities (CVEs) |
+|---|---|---|
+| GitHub Actions (`uses: owner/action@sha`) | Dependabot (weekly, Monday) | `dependency-review.yml` (PR-time) |
+| Python packages (`requirements.txt`) | Dependabot (weekly, Monday) | `dependency-review.yml` + `osv-scanner.yml` (weekly) |
+| C++ `FetchContent` libraries (`cmake/Dependencies.cmake`, `tests/CMakeLists.txt`, `benchmarks/CMakeLists.txt`) | `renovate.yml` (weekly, Wednesday) | `osv-scanner.yml` (weekly) |
+
+Renovate is configured in `.github/renovate.json5`, restricted (via `enabledManagers`) to a
+custom regex manager so it never also tries to manage the ecosystems Dependabot already covers.
+It matches this project's `GIT_TAG <sha>  # <tag> - pinned to SHA for supply chain security`
+convention and always proposes another full SHA pin, never a floating tag/branch. Each dependency
+needs its own `versioningTemplate` because tag conventions differ (`vX.Y.Z` semver for most,
+`release-X.Y.Z` for SDL3, `VER-X-Y-Z` for freetype, `vX.Y.Zb-docking` for imgui, which
+deliberately restricts matches to this project's tracked docking branch rather than mainline
+releases). `nothings/stb` is intentionally excluded: it's pinned to a raw commit with no
+upstream tags at all, so there's nothing to compare against -- left as an occasional manual
+check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before merge.
+
+**Tools we build with** (cmake, LLVM/clang, Python, ninja, ccache, git -- see
+`tools/check-prereqs.sh`): these split into two categories that are handled differently.
+
+- *Versions CI/setup scripts actually pin*: LLVM is pinned in three places --
+  `.github/workflows/ci.yml` (`LLVM_VERSION` for Linux's major version, `LLVM_SEMVER_VERSION`
+  for Windows' exact version), `tools/setup-dev.sh` (`LLVM_VERSION`), and
+  `tools/setup-dev.ps1` (`$LlvmVersion`). `renovate.json5` automates the Windows semver pin
+  across `ci.yml` and `tools/setup-dev.ps1` together (grouped into one PR so they can't drift
+  out of sync), restricted to minor/patch bumps only -- a major LLVM bump (e.g. 22 → 23) stays
+  a deliberate, manually-tracked decision (see #752), since it touches all three files plus the
+  Linux apt-repo codename and typically needs real validation (new compiler warnings,
+  clang-tidy behavior changes, Windows package availability). Python's interpreter version
+  (`actions/setup-python`'s `python-version: '3.14'`) and `ccache`
+  (`hendrikmuhs/ccache-action@sha`) are both GitHub Action references, so Dependabot already
+  covers them. `cmake`/`ninja`/`git` aren't explicitly version-pinned anywhere in CI --
+  whatever the `ubuntu-24.04`/`windows-2025` runner images ship is used as-is.
+- *`check-prereqs.sh`'s `MIN_*` floors* (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
+  `MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these are **not** automated,
+  by design. They're minimum-requirement floors checked against whatever a contributor already
+  has installed locally, not artifacts to fetch a newer version of. Raising a floor is a
+  project-policy decision (e.g. "we now use a C++23-modules feature that needs clang 23"), not
+  a freshness check -- there's no code-level trigger that would tell a bot when to bump one, and
+  doing so on a schedule risks breaking contributors' environments with no warning. Bump these
+  by hand when there's an actual reason to.
 
 ### Release Artifacts
 
