@@ -1,6 +1,7 @@
 /// @file test_StorageModel.cpp
 /// @brief Unit tests for Domain::StorageModel
 
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
 #include "Mocks/MockDiskProbe.h"
@@ -641,6 +642,62 @@ TEST(StorageModelTest, PerDiskHistoryDiskDisappearsPreservesAlignment)
     ASSERT_NE(it, history.end());
     EXPECT_DOUBLE_EQ(it->readBytesPerSec.back(), 0.0);
     EXPECT_DOUBLE_EQ(it->writeBytesPerSec.back(), 0.0);
+}
+
+// Regression test for #777: per-disk state/history maps must not retain an entry forever
+// once its device has been gone longer than the whole history window (removable/USB storage
+// churn over a long-running session). Uses the minimum history window and back-to-back
+// sample() calls (generation-based pruning doesn't depend on wall-clock time) so the test
+// doesn't need real sleeps to exercise the prune threshold.
+TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+
+    StorageModel model(std::move(mockProbeOwned));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    // Sample 1: both disks present.
+    Platform::SystemDiskCounters counters;
+    Platform::DiskCounters sda;
+    sda.deviceName = "sda";
+    sda.sectorSize = 512;
+    sda.readsCompleted = 100;
+    sda.readSectors = 1000;
+    counters.disks.push_back(sda);
+    Platform::DiskCounters sdb;
+    sdb.deviceName = "sdb";
+    sdb.sectorSize = 512;
+    sdb.readsCompleted = 50;
+    sdb.readSectors = 500;
+    counters.disks.push_back(sdb);
+    mockProbe->setNextCounters(counters);
+    model.sample();
+
+    // sdb has just been seen, so it should have a real entry.
+    {
+        const auto history = model.perDiskHistory();
+        const auto it = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
+        EXPECT_NE(it, history.end());
+    }
+
+    // sdb disappears (e.g. USB drive unplugged) for longer than the entire history window.
+    counters.disks.clear();
+    counters.disks.push_back(sda);
+    mockProbe->setNextCounters(counters);
+    const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    for (std::size_t i = 0; i < capacity + 2; ++i)
+    {
+        model.sample();
+    }
+
+    // sdb's entry must be fully pruned, so the maps don't retain one entry per device name
+    // forever; sda, present every sample, must be unaffected.
+    const auto history = model.perDiskHistory();
+    const auto sdbIt = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sdb"; });
+    EXPECT_EQ(sdbIt, history.end());
+    const auto sdaIt = std::ranges::find_if(history, [](const PerDiskHistory& e) { return e.deviceName == "sda"; });
+    EXPECT_NE(sdaIt, history.end());
 }
 
 TEST(StorageModelTest, PerDiskHistoryNewDiskAppearsBackfillsPlaceholders)

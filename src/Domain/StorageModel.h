@@ -109,6 +109,13 @@ class StorageModel : public ISamplable
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskReadHistory;
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
+    // Refresh generation at which each device name was last seen in a live sample, so a
+    // name absent for longer than the whole history window (at which point its histories hold
+    // nothing but zero padding) can be pruned instead of retained forever -- otherwise a
+    // machine with churning removable/USB storage leaks one entry per distinct device name
+    // ever seen, across m_DiskStates/m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder (#777).
+    std::unordered_map<std::string, std::uint64_t> m_DiskLastSeenGeneration;
+    std::uint64_t m_CurrentGeneration = 0;
     std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
     std::uint64_t m_PublicationVersion = 0;
     std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
