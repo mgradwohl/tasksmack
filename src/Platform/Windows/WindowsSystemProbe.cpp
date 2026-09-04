@@ -135,8 +135,12 @@ WindowsSystemProbe::WindowsSystemProbe()
         const LSTATUS sizeStatus =
             RegGetValueW(HKEY_LOCAL_MACHINE, cpuKeyPath, cpuValueName, RRF_RT_REG_SZ, nullptr, nullptr, &cpuBufferSize);
         std::vector<wchar_t> cpuBuffer(cpuBufferSize / sizeof(wchar_t));
+        // Derive the byte size back from the actually-allocated buffer rather than reusing
+        // the raw registry-reported cpuBufferSize, which may be one wchar_t larger than
+        // cpuBuffer.size() * sizeof(wchar_t) due to the truncating division above.
+        auto cpuBufferBytes = static_cast<DWORD>(cpuBuffer.size() * sizeof(wchar_t));
         if (sizeStatus == ERROR_SUCCESS && !cpuBuffer.empty() &&
-            RegGetValueW(HKEY_LOCAL_MACHINE, cpuKeyPath, cpuValueName, RRF_RT_REG_SZ, nullptr, cpuBuffer.data(), &cpuBufferSize) ==
+            RegGetValueW(HKEY_LOCAL_MACHINE, cpuKeyPath, cpuValueName, RRF_RT_REG_SZ, nullptr, cpuBuffer.data(), &cpuBufferBytes) ==
                 ERROR_SUCCESS)
         {
             m_CpuModel = WinString::wideToUtf8(cpuBuffer.data());
