@@ -50,13 +50,17 @@ void StorageModel::applyHistoryCapacity()
 
 void StorageModel::sample()
 {
+    sampleAt(std::chrono::steady_clock::now());
+}
+
+void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
+{
     if (!m_Probe)
     {
         spdlog::warn("StorageModel::sample called with null probe");
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
     // Use absolute time (since epoch) to match SystemModel's timestamp format
     const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
@@ -112,7 +116,6 @@ void StorageModel::sample()
         // get a zero placeholder so every ring buffer stays aligned with m_Timestamps.
         std::unordered_set<std::string> presentDisks;
         presentDisks.reserve(snapshot.disks.size());
-        ++m_CurrentGeneration;
         for (const auto& disk : snapshot.disks)
         {
             const auto& name = disk.deviceName;
@@ -137,7 +140,7 @@ void StorageModel::sample()
             }
             m_DiskReadHistory[name].push(disk.readBytesPerSec);
             m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
-            m_DiskLastSeenGeneration[name] = m_CurrentGeneration;
+            m_DiskLastSeenSeconds[name] = nowSeconds;
         }
         // Append a zero placeholder for known disks absent from this sample.
         for (const auto& name : m_DiskOrder)
@@ -149,19 +152,19 @@ void StorageModel::sample()
             }
         }
 
-        // Prune disks absent for longer than the whole history window: by that point their
+        // Prune disks absent for longer than the configured history window: by that point their
         // histories hold nothing but the 0.0 padding just pushed above, so removing the entry
         // changes nothing observable, but retaining it forever would grow m_DiskStates/
         // m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder without bound on a machine with
-        // churning removable/USB storage (#777). m_DiskOrder must stay in lockstep with the
-        // history maps -- publish() indexes them with .at(), which would throw if a name
-        // survived in m_DiskOrder after being erased from the maps.
+        // churning removable/USB storage (#777). Matches trimHistory()'s own wall-clock cutoff
+        // below. m_DiskOrder must stay in lockstep with the history maps -- publish() indexes
+        // them with .at(), which would throw if a name survived in m_DiskOrder after being
+        // erased from the maps.
         {
-            const std::size_t historyCapacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
             std::vector<std::string> staleDisks;
-            for (const auto& [name, lastSeen] : m_DiskLastSeenGeneration)
+            for (const auto& [name, lastSeen] : m_DiskLastSeenSeconds)
             {
-                if ((m_CurrentGeneration - lastSeen) > historyCapacity)
+                if ((nowSeconds - lastSeen) > m_MaxHistorySeconds)
                 {
                     staleDisks.push_back(name);
                 }
@@ -171,7 +174,7 @@ void StorageModel::sample()
                 m_DiskReadHistory.erase(name);
                 m_DiskWriteHistory.erase(name);
                 m_DiskStates.erase(name);
-                m_DiskLastSeenGeneration.erase(name);
+                m_DiskLastSeenSeconds.erase(name);
                 std::erase(m_DiskOrder, name);
             }
         }

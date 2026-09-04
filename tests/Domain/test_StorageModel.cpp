@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <thread>
 
@@ -645,10 +646,15 @@ TEST(StorageModelTest, PerDiskHistoryDiskDisappearsPreservesAlignment)
 }
 
 // Regression test for #777: per-disk state/history maps must not retain an entry forever
-// once its device has been gone longer than the whole history window (removable/USB storage
-// churn over a long-running session). Uses the minimum history window and back-to-back
-// sample() calls (generation-based pruning doesn't depend on wall-clock time) so the test
-// doesn't need real sleeps to exercise the prune threshold.
+// once its device has been gone longer than the configured history window (removable/USB
+// storage churn over a long-running session). Pruning is time-based (matching trimHistory()'s
+// own wall-clock cutoff), not a sample()-call count, so uses sampleAt() to inject an explicit
+// "now" far enough in the future to exercise the prune threshold directly, rather than a real
+// multi-second sleep or a long loop. (An earlier version of this test looped hundreds of
+// sample() calls back-to-back because the prune threshold was call-count-based; that was
+// itself a bug caught in review -- historyCapacityForSeconds() sizes ring buffers for the
+// fastest *supported* cadence, not the actual one, so a call-count threshold retained stale
+// entries far longer than the window at any slower cadence.)
 TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
 {
     auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
@@ -672,7 +678,8 @@ TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
     sdb.readSectors = 500;
     counters.disks.push_back(sdb);
     mockProbe->setNextCounters(counters);
-    model.sample();
+    const auto sample1Time = std::chrono::steady_clock::now();
+    model.sampleAt(sample1Time);
 
     // sdb has just been seen, so it should have a real entry.
     {
@@ -685,11 +692,9 @@ TEST(StorageModelTest, PerDiskHistoryPrunedAfterExtendedAbsence)
     counters.disks.clear();
     counters.disks.push_back(sda);
     mockProbe->setNextCounters(counters);
-    const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
-    for (std::size_t i = 0; i < capacity + 2; ++i)
-    {
-        model.sample();
-    }
+    const auto sample2Time = sample1Time + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                               std::chrono::duration<double>(Domain::Sampling::HISTORY_SECONDS_MIN + 1.0));
+    model.sampleAt(sample2Time);
 
     // sdb's entry must be fully pruned, so the maps don't retain one entry per device name
     // forever; sda, present every sample, must be unaffected.
