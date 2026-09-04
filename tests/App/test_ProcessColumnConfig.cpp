@@ -107,12 +107,25 @@ TEST(ProcessColumnSettingsTest, ToggleVisibilityFlipsState)
 TEST(ProcessColumnSettingsTest, ToggleVisibilityOnlyAffectsTargetColumn)
 {
     ProcessColumnSettings settings;
-    const bool memBefore = settings.isVisible(ProcessColumn::MemPercent);
+    const auto count = processColumnCount();
+    std::vector<bool> before(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        before[i] = settings.isVisible(static_cast<ProcessColumn>(i));
+    }
 
     settings.toggleVisible(ProcessColumn::CpuPercent);
 
     // Toggling one column must not disturb any other column's visibility.
-    EXPECT_EQ(settings.isVisible(ProcessColumn::MemPercent), memBefore);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const auto col = static_cast<ProcessColumn>(i);
+        if (col == ProcessColumn::CpuPercent)
+        {
+            continue;
+        }
+        EXPECT_EQ(settings.isVisible(col), before[i]) << "column index " << i << " was disturbed";
+    }
 }
 
 TEST(ProcessColumnSettingsTest, BoundaryConditions)
