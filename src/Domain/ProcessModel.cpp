@@ -341,9 +341,23 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             if (parentPid > 0)
             {
                 auto parentIt = pidToIndex.find(parentPid);
-                if (parentIt != pidToIndex.end())
+                if (parentIt != pidToIndex.end() && parentIt->second != i)
                 {
-                    newSnapshots[parentIt->second].childrenIndices.push_back(i);
+                    // Guard against PID reuse: pidToIndex maps parentPid to whichever *currently
+                    // running* process now holds that PID, which may no longer be the process that
+                    // actually forked this child if the original parent has since exited and the PID
+                    // was recycled by an unrelated process between the two /proc reads that produced
+                    // this batch. A real parent must have started at or before its child, so reject
+                    // candidates that started later. startTimeTicks is 0 when a probe couldn't
+                    // determine start time; skip the check rather than drop a legitimate link when
+                    // that data isn't available.
+                    const std::uint64_t candidateParentStart = counters[parentIt->second].startTimeTicks;
+                    const std::uint64_t childStart = counters[i].startTimeTicks;
+                    const bool startTimesKnown = candidateParentStart != 0 && childStart != 0;
+                    if (!startTimesKnown || candidateParentStart <= childStart)
+                    {
+                        newSnapshots[parentIt->second].childrenIndices.push_back(i);
+                    }
                 }
             }
         }
