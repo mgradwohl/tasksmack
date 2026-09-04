@@ -346,7 +346,11 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 // Template helper for extracting history fields - reduces code duplication
 template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
 {
-    return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) { return static_cast<float>(sample.*field); });
+    // Explicit trailing return type: CodeQL's cpp/missing-return check flagged this lambda's
+    // deduced-return-type body against the dependent `sample.*field` expression (a false
+    // positive - -Werror=return-type passes clean on both compilers) - spelling out `-> float`
+    // removes any ambiguity for static analysis, not just the compiler.
+    return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) -> float { return static_cast<float>(sample.*field); });
 }
 
 // Underlying lock/find/reserve/loop shared by getHistoryField() (a plain member pointer, for
@@ -414,7 +418,7 @@ std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
     // GPUPublication::histories path was fixed to avoid.
     return getHistoryFieldByProjection(
         gpuId,
-        [](const GPUSnapshot& sample)
+        [](const GPUSnapshot& sample) -> float
         { return sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent) : std::numeric_limits<float>::quiet_NaN(); });
 }
 
