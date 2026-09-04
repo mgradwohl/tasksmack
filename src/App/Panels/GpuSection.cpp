@@ -598,7 +598,11 @@ void renderGpuSection(RenderContext& ctx)
                                     }
                                     else
                                     {
-                                        ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanData[fanIdx]));
+                                        // Format the float directly rather than narrowing to unsigned int: this PR
+                                        // intentionally leaves fanSpeedPercent unclamped (see GPUModel::computeSnapshot),
+                                        // so a corrupted-input value can exceed unsigned int's range, and casting an
+                                        // out-of-range float to an integer type is undefined behavior.
+                                        ImGui::TextColored(theme.scheme().gpuFan, "Fan: %.0f%%", static_cast<double>(fanData[fanIdx]));
                                     }
                                 }
                             }
