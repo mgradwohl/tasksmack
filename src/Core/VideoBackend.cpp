@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <mutex>
+#include <string>
 #include <string_view>
 
 namespace Core
@@ -12,7 +13,7 @@ namespace Core
 std::mutex VideoBackend::s_Mutex;
 VideoBackend::Backend VideoBackend::s_Backend = VideoBackend::Backend::Unknown;
 bool VideoBackend::s_Initialized = false;
-std::string_view VideoBackend::s_DriverName;
+std::string VideoBackend::s_DriverName;
 
 VideoBackend::Backend VideoBackend::classifyBackend(const std::string_view driverName, const bool waylandDisplaySet) noexcept
 {
@@ -106,7 +107,7 @@ void VideoBackend::resetForTesting() noexcept
     const std::scoped_lock lock(s_Mutex);
     s_Backend = Backend::Unknown;
     s_Initialized = false;
-    s_DriverName = {};
+    s_DriverName.clear();
 }
 
 bool VideoBackend::isWayland() noexcept
@@ -149,10 +150,21 @@ bool VideoBackend::supportsGlobalMouseState() noexcept
     return s_Backend != Backend::Wayland;
 }
 
-std::string_view VideoBackend::driverName() noexcept
+std::string VideoBackend::driverName() noexcept
 {
-    const std::scoped_lock lock(s_Mutex);
-    return s_DriverName;
+    // Some call sites are noexcept themselves (e.g. Window::supportsPositioning()), so a copy
+    // that threw here (std::bad_alloc under OOM) would std::terminate() the whole process for
+    // what's meant to be a best-effort driver-name query. Catch and degrade to an empty string
+    // instead, matching how the rest of this class treats an unknown/unavailable driver.
+    try
+    {
+        const std::scoped_lock lock(s_Mutex);
+        return s_DriverName;
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 bool VideoBackend::shouldUseBorderlessTitleBar(const bool forceNativeDecorationsOnWayland, const bool isWayland) noexcept

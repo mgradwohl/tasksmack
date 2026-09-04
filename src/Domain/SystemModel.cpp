@@ -551,6 +551,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             };
             ensureAligned(m_PerInterfaceRxHistory, name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
             ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+            m_InterfaceLastSeenSeconds[name] = nowSeconds;
         }
         // Push 0.0F placeholder for known interfaces absent from this sample.
         // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
@@ -563,6 +564,30 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             {
                 rxBuf.push(0.0F);
                 m_PerInterfaceTxHistory.at(name).push(0.0F);
+            }
+        }
+
+        // Prune interfaces absent for longer than the configured history window: by that point
+        // their buffers hold nothing but the 0.0F padding just pushed above, so removing the
+        // entry changes nothing observable (a fully zero-padded buffer and a missing key both
+        // present as "no recent data" via netRxHistoryForInterface()/netTxHistoryForInterface()),
+        // but retaining it forever would grow these maps without bound on a machine with
+        // churning interfaces (#776). Matches trimHistory()'s own wall-clock cutoff below.
+        // Erases in place while iterating m_InterfaceLastSeenSeconds rather than collecting
+        // stale names into a scratch vector first: that vector's own allocation could throw
+        // right under the memory pressure this pruning exists to relieve, silently skipping
+        // the whole pass for the one refresh cycle it matters most.
+        for (auto it = m_InterfaceLastSeenSeconds.begin(); it != m_InterfaceLastSeenSeconds.end();)
+        {
+            if ((nowSeconds - it->second) > m_MaxHistorySeconds)
+            {
+                m_PerInterfaceRxHistory.erase(it->first);
+                m_PerInterfaceTxHistory.erase(it->first);
+                it = m_InterfaceLastSeenSeconds.erase(it);
+            }
+            else
+            {
+                ++it;
             }
         }
 

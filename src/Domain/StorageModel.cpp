@@ -50,13 +50,17 @@ void StorageModel::applyHistoryCapacity()
 
 void StorageModel::sample()
 {
+    sampleAt(std::chrono::steady_clock::now());
+}
+
+void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
+{
     if (!m_Probe)
     {
-        spdlog::warn("StorageModel::sample called with null probe");
+        spdlog::warn("StorageModel::sampleAt called with null probe");
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
     // Use absolute time (since epoch) to match SystemModel's timestamp format
     const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
@@ -136,6 +140,7 @@ void StorageModel::sample()
             }
             m_DiskReadHistory[name].push(disk.readBytesPerSec);
             m_DiskWriteHistory[name].push(disk.writeBytesPerSec);
+            m_DiskLastSeenSeconds[name] = nowSeconds;
         }
         // Append a zero placeholder for known disks absent from this sample.
         for (const auto& name : m_DiskOrder)
@@ -145,6 +150,43 @@ void StorageModel::sample()
                 m_DiskReadHistory[name].push(0.0);
                 m_DiskWriteHistory[name].push(0.0);
             }
+        }
+
+        // Prune disks absent for longer than the configured history window: by that point their
+        // histories hold nothing but the 0.0 padding just pushed above, so removing the entry
+        // changes nothing observable, but retaining it forever would grow m_DiskStates/
+        // m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder without bound on a machine with
+        // churning removable/USB storage (#777). Matches trimHistory()'s own wall-clock cutoff
+        // below. m_DiskOrder must stay in lockstep with the history maps -- publish() indexes
+        // them with .at(), which would throw if a name survived in m_DiskOrder after being
+        // erased from the maps. Erases in place while iterating m_DiskLastSeenSeconds rather
+        // than collecting stale names into a scratch vector first: that vector's own allocation
+        // could throw right under the memory pressure this pruning exists to relieve, silently
+        // skipping the whole pass for the one refresh cycle it matters most.
+        bool anyDiskPruned = false;
+        for (auto it = m_DiskLastSeenSeconds.begin(); it != m_DiskLastSeenSeconds.end();)
+        {
+            if ((nowSeconds - it->second) > m_MaxHistorySeconds)
+            {
+                m_DiskReadHistory.erase(it->first);
+                m_DiskWriteHistory.erase(it->first);
+                m_DiskStates.erase(it->first);
+                it = m_DiskLastSeenSeconds.erase(it);
+                anyDiskPruned = true;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        if (anyDiskPruned)
+        {
+            // Single O(N) pass over m_DiskOrder instead of an O(N) std::erase() per stale disk
+            // in the loop above, which made the whole prune step O(N*M) for M stale disks
+            // against an m_DiskOrder of size N -- quadratic in exactly the churny-storage
+            // scenario this pruning targets. m_DiskReadHistory has already had the stale names
+            // removed above, so "no longer present there" is precisely the prune condition.
+            std::erase_if(m_DiskOrder, [this](const std::string& name) { return !m_DiskReadHistory.contains(name); });
         }
 
         // Move snapshot into the history ring after all per-disk iteration is complete,

@@ -126,7 +126,16 @@ SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 
 SystemMetricsPanel::~SystemMetricsPanel()
 {
+    // Mirrors onDetach()'s order/completeness (#782): BackgroundSampler observes the models via
+    // weak_ptr, so destruction order among these six members isn't itself a safety requirement
+    // today, but keeping the destructor in sync with onDetach() means that invariant doesn't
+    // have to be re-verified by hand if a future member's safety ever does depend on order.
     m_Sampler.reset();
+    m_GPUPublication.reset();
+    m_StoragePublication.reset();
+    m_SystemPublication.reset();
+    m_GPUModel.reset();
+    m_StorageModel.reset();
     m_Model.reset();
 }
 

@@ -19,6 +19,8 @@
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
+#include <string>
+
 namespace Core
 {
 namespace
@@ -133,7 +135,7 @@ class VideoBackendTest : public ::testing::Test
 
 TEST_F(VideoBackendTest, InitializeIsIdempotent)
 {
-    const std::string_view driverBefore = VideoBackend::driverName();
+    const std::string driverBefore = VideoBackend::driverName();
     const bool waylandBefore = VideoBackend::isWayland();
 
     VideoBackend::initialize();
@@ -161,7 +163,7 @@ TEST_F(VideoBackendTest, ResetForTestingAllowsReinitialization)
     // initialize() in the same process to actually re-detect it. Capture the live state,
     // reset, verify it's cleared, then re-initialize and confirm it matches again (also
     // restores global state for any VideoBackendTest that runs after this one).
-    const std::string_view driverBefore = VideoBackend::driverName();
+    const std::string driverBefore = VideoBackend::driverName();
     const bool waylandBefore = VideoBackend::isWayland();
 
     VideoBackend::resetForTesting();
