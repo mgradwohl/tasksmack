@@ -40,6 +40,47 @@ struct WindowsDiskProbe::Impl
     {
         std::string instanceName;             // e.g. "0 C:" - kept for stable UI display
         HANDLE handle = INVALID_HANDLE_VALUE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - Win32 handle type
+
+        DiskHandle() = default;
+        explicit DiskHandle(HANDLE h) : handle(h)
+        {}
+
+        DiskHandle(const DiskHandle&) = delete;
+        DiskHandle& operator=(const DiskHandle&) = delete;
+
+        DiskHandle(DiskHandle&& other) noexcept
+            : instanceName(std::move(other.instanceName)), handle(std::exchange(other.handle, INVALID_HANDLE_VALUE))
+        {}
+
+        DiskHandle& operator=(DiskHandle&& other) noexcept
+        {
+            if (this != &other)
+            {
+                close();
+                instanceName = std::move(other.instanceName);
+                handle = std::exchange(other.handle, INVALID_HANDLE_VALUE);
+            }
+            return *this;
+        }
+
+        // RAII ownership: closes the handle on stack unwind (e.g. if name conversion or
+        // vector growth throws mid-construction) as well as on normal teardown, so a
+        // failure partway through enumerating disks can't leak this handle or any earlier
+        // ones already stored in Impl::disks.
+        ~DiskHandle()
+        {
+            close();
+        }
+
+      private:
+        void close()
+        {
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(handle);
+                handle = INVALID_HANDLE_VALUE;
+            }
+        }
     };
 
     std::vector<DiskHandle> disks;
@@ -156,20 +197,12 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                     HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex);
                     if (handle != INVALID_HANDLE_VALUE)
                     {
-                        Impl::DiskHandle diskHandle;
+                        // DiskHandle takes RAII ownership of the handle immediately, before
+                        // the name conversion or push_back below run, so either one throwing
+                        // closes the handle automatically on unwind instead of leaking it.
+                        Impl::DiskHandle diskHandle(handle);
                         diskHandle.instanceName = WinString::wideToUtf8(instanceName);
-                        diskHandle.handle = handle;
-                        try
-                        {
-                            m_Impl->disks.push_back(std::move(diskHandle));
-                        }
-                        catch (...)
-                        {
-                            // push_back can throw while growing the vector; the handle isn't
-                            // owned by anything else yet, so close it before propagating.
-                            CloseHandle(handle);
-                            throw;
-                        }
+                        m_Impl->disks.push_back(std::move(diskHandle));
                     }
                 }
                 else
