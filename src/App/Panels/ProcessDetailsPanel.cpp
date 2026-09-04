@@ -1889,7 +1889,12 @@ void ProcessDetailsPanel::renderConfirmDialog()
 
 void ProcessDetailsPanel::dispatchConfirmedAction()
 {
-    const Platform::ProcessActionResult result = Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, m_SelectedPid);
+    // m_ProcessActions can be null: the injection constructor doesn't reject a null
+    // unique_ptr (m_ActionCapabilities already handles that case), so guard here too rather
+    // than dereferencing unconditionally.
+    const Platform::ProcessActionResult result = m_ProcessActions
+                                                   ? Detail::dispatchProcessAction(*m_ProcessActions, m_ConfirmAction, m_SelectedPid)
+                                                   : Platform::ProcessActionResult::error("Process actions unavailable");
     m_LastActionResult = Detail::formatActionResultMessage(m_ConfirmAction, m_SelectedPid, result);
     m_ActionResultTimer = 5.0F;
 }

@@ -438,7 +438,7 @@ class MockProcessActions : public Platform::IProcessActions
         m_ResumeResult = std::move(result);
     }
 
-    void setSetPriorityResult(Platform::ProcessActionResult result)
+    void setPriorityResult(Platform::ProcessActionResult result)
     {
         m_SetPriorityResult = std::move(result);
     }
