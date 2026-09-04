@@ -59,7 +59,20 @@ class Application
     T& pushLayer(Args&&... args) // NOLINT(cpp/unused-local-variable,cpp/unused-static-variable) - args used in std::forward pack expansion
     {
         auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
-        layer->onAttach();
+        try
+        {
+            layer->onAttach();
+        }
+        catch (...)
+        {
+            // onAttach() can throw after partially initializing the layer (e.g. UILayer creates
+            // ImGui/ImPlot contexts before font/theme loading that can throw), so it must not be
+            // treated as attached. Pop it back off without calling onDetach() -- onDetach()
+            // assumes full initialization and could touch backends/resources onAttach() never
+            // reached. The exception is rethrown so callers still see the failure (#779).
+            m_LayerStack.pop_back();
+            throw;
+        }
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast) - Type is guaranteed by template
         return static_cast<T&>(*layer);
     }

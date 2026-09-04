@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <string_view>
 
 namespace Core
@@ -63,8 +64,14 @@ class VideoBackend
     /// Wayland; every other backend always stays borderless (custom title bar).
     [[nodiscard]] static bool shouldUseBorderlessTitleBar(bool forceNativeDecorationsOnWayland, bool isWayland) noexcept;
 
-    /// Return the current video driver name (for logging/debugging).
-    [[nodiscard]] static std::string_view driverName() noexcept;
+    /// Return the current video driver name (for logging/debugging). Returns an owning copy,
+    /// not a view into s_DriverName: a view could be invalidated by a later resetForTesting()/
+    /// initialize() call that mutates s_DriverName out from under it (#780 follow-up).
+    /// noexcept despite the copy being able to allocate: some call sites (e.g.
+    /// Window::supportsPositioning()) are themselves noexcept, so an escaping std::bad_alloc
+    /// here would std::terminate() the process for a best-effort query -- the implementation
+    /// catches internally and degrades to an empty string instead.
+    [[nodiscard]] static std::string driverName() noexcept;
 
     /// Test-only: clear the cached backend so the next initialize() call re-detects from the
     /// live SDL state instead of being a no-op. Without this, a test that forces a specific
@@ -83,7 +90,12 @@ class VideoBackend
     static std::mutex s_Mutex;
     static Backend s_Backend;
     static bool s_Initialized;
-    static std::string_view s_DriverName;
+    // Owning storage, not a view: SDL_GetCurrentVideoDriver()'s returned pointer is only valid
+    // until SDL_Quit(), and nothing in production code re-detects or clears this around that
+    // call, so a std::string_view here could dangle after shutdown in any process with more
+    // than one Application/Window lifecycle (the test suite already exercises that via the
+    // stack-allocated Application path) -- #780.
+    static std::string s_DriverName;
 };
 
 } // namespace Core

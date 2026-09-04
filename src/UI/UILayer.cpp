@@ -190,60 +190,83 @@ void UILayer::onAttach()
     ImGui::CreateContext();
     ImPlot::CreateContext();
 
-    spdlog::info("ImGui FreeType backend enabled (IMGUI_ENABLE_FREETYPE)");
-
-    ImGuiIO& imguiIO = ImGui::GetIO();
-    imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
-
-    // Disable ImGui's default INI file - we store layout state in TOML config
-    imguiIO.IniFilename = nullptr;
-
-    // Pre-bake fonts for all size presets
-    // Locate assets directory once (searches build dir and FHS install paths)
-    const auto assetsDir = findAssetsDir();
-    loadAllFonts(assetsDir);
-
-    // Load themes from TOML files (built-ins)
-    auto themesDir = assetsDir / "themes";
-    Theme::get().loadThemes(themesDir);
-    spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
-
-    // Optional: load user-provided themes from the same directory as config.toml (../themes)
-    const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
-    if (std::filesystem::exists(userThemesDir))
+    // Everything past context creation can throw (font/theme file I/O below, and in principle
+    // the backend Init calls), and Application::pushLayer() pops a layer whose onAttach() threw
+    // without calling onDetach() on it (onDetach() assumes full initialization -- see #779). So
+    // this function must be exception-safe on its own: unwind exactly what it managed to set up
+    // before rethrowing, mirroring Core::Window's constructor. backendsInitialized tracks
+    // whether the ImGui_Impl*_Init calls below succeeded, so the catch block only calls their
+    // Shutdown counterparts when there's actually something to shut down.
+    bool backendsInitialized = false;
+    try
     {
-        Theme::get().loadThemes(userThemesDir);
-    }
+        spdlog::info("ImGui FreeType backend enabled (IMGUI_ENABLE_FREETYPE)");
 
-    // Apply default/fallback theme colors (user config will override later)
-    Theme::get().applyImGuiStyle();
+        ImGuiIO& imguiIO = ImGui::GetIO();
+        imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
 
-    // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
-    // NOTE: This alpha override is required by ImGui for multi-viewport support - not a theme color
-    ImGuiStyle& style = ImGui::GetStyle();
-    if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
-    {
-        style.WindowRounding = 0.0F;
-        style.Colors[ImGuiCol_WindowBg].w = 1.0F; // NOLINT: Required by ImGui viewports
-    }
+        // Disable ImGui's default INI file - we store layout state in TOML config
+        imguiIO.IniFilename = nullptr;
 
-    // Setup Platform/Renderer backends
-    SDL_Window* window = Core::Application::get().getWindow().getHandle();
-    ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+        // Pre-bake fonts for all size presets
+        // Locate assets directory once (searches build dir and FHS install paths)
+        const auto assetsDir = findAssetsDir();
+        loadAllFonts(assetsDir);
 
-    // Seed the cached pixel size and set the initial OpenGL viewport.
-    // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
-    // eliminating the per-frame SDL_GetWindowSizeInPixels() query that beginFrame() used.
-    if (window != nullptr)
-    {
-        SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
-        if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
+        // Load themes from TOML files (built-ins)
+        auto themesDir = assetsDir / "themes";
+        Theme::get().loadThemes(themesDir);
+        spdlog::info("Loaded {} themes", Theme::get().discoveredThemes().size());
+
+        // Optional: load user-provided themes from the same directory as config.toml (../themes)
+        const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
+        if (std::filesystem::exists(userThemesDir))
         {
-            glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+            Theme::get().loadThemes(userThemesDir);
         }
+
+        // Apply default/fallback theme colors (user config will override later)
+        Theme::get().applyImGuiStyle();
+
+        // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
+        // NOTE: This alpha override is required by ImGui for multi-viewport support - not a theme color
+        ImGuiStyle& style = ImGui::GetStyle();
+        if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
+        {
+            style.WindowRounding = 0.0F;
+            style.Colors[ImGuiCol_WindowBg].w = 1.0F; // NOLINT: Required by ImGui viewports
+        }
+
+        // Setup Platform/Renderer backends
+        SDL_Window* window = Core::Application::get().getWindow().getHandle();
+        ImGui_ImplSDL3_InitForOpenGL(window, Core::Application::get().getWindow().getGLContext());
+        ImGui_ImplOpenGL3_Init("#version 330 core");
+        backendsInitialized = true;
+
+        // Seed the cached pixel size and set the initial OpenGL viewport.
+        // All subsequent resize-driven glViewport calls happen in onEvent(WindowResizedEvent),
+        // eliminating the per-frame SDL_GetWindowSizeInPixels() query that beginFrame() used.
+        if (window != nullptr)
+        {
+            SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
+            if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
+            {
+                glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+            }
+        }
+    }
+    catch (...)
+    {
+        if (backendsInitialized)
+        {
+            ImGui_ImplOpenGL3_Shutdown();
+            ImGui_ImplSDL3_Shutdown();
+        }
+        ImPlot::DestroyContext();
+        ImGui::DestroyContext();
+        throw;
     }
 
     spdlog::info("ImGui initialized successfully");

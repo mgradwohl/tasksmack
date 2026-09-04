@@ -21,6 +21,7 @@
 
 #include <cstdlib>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -167,6 +168,37 @@ class EventTrackingLayer : public Core::Layer
     std::vector<std::string>* m_DispatchLog;
 };
 
+/// Layer whose onEvent() always throws, to verify raiseEvent() can't be crashed by a
+/// misbehaving layer (#778) and that dispatch continues to the remaining layers afterward.
+class ThrowingLayer : public Core::Layer
+{
+  public:
+    explicit ThrowingLayer(const std::string& name) : Layer(name)
+    {}
+
+    void onEvent(Core::Event& /*event*/) override
+    {
+        throw std::runtime_error("ThrowingLayer::onEvent always throws");
+    }
+};
+
+/// Layer whose onAttach() always throws, to verify pushLayer() pops a half-initialized
+/// layer back off the stack instead of leaving it there (#779). onDetach() logs to
+/// g_DetachOrder like TrackedLayer so a test can assert it was never called.
+class ThrowingOnAttachLayer : public Core::Layer
+{
+  public:
+    explicit ThrowingOnAttachLayer(const std::string& name) : Layer(name)
+    {}
+
+    void onAttach() override
+    {
+        throw std::runtime_error("ThrowingOnAttachLayer::onAttach always throws");
+    }
+
+    void onDetach() override;
+};
+
 /// Static vector to track layer detach order across Application destruction
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<std::string> g_DetachOrder;
@@ -183,6 +215,11 @@ class TrackedLayer : public Core::Layer
         g_DetachOrder.push_back(getName());
     }
 };
+
+void ThrowingOnAttachLayer::onDetach()
+{
+    g_DetachOrder.push_back(getName());
+}
 
 } // namespace
 
@@ -472,6 +509,45 @@ TEST(ApplicationTest, DestructorDetachesLayers)
     EXPECT_EQ(g_DetachOrder[0], "Layer3");
     EXPECT_EQ(g_DetachOrder[1], "Layer2");
     EXPECT_EQ(g_DetachOrder[2], "Layer1");
+}
+
+// Regression test for #779: pushLayer() must pop a half-initialized layer back off the
+// stack when onAttach() throws, rather than leaving it there for a later detachAllLayers()/
+// destructor pass to mistakenly treat as fully attached.
+TEST(ApplicationTest, PushLayerPopsHalfInitializedLayerWhenOnAttachThrows)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    g_DetachOrder.clear();
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "PushLayerThrowTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        EXPECT_THROW(app.pushLayer<ThrowingOnAttachLayer>("Bad"), std::runtime_error);
+
+        // A layer pushed afterward must attach normally -- the failed push didn't corrupt
+        // the stack (e.g. leave a stale/half-initialized entry, or a mismatched size).
+        app.pushLayer<TrackedLayer>("Good");
+
+        app.detachAllLayers();
+
+        // "Bad" never finished attaching, so onDetach() must never be called for it -- if the
+        // failed layer had been left in the stack, detachAllLayers() would have called
+        // onDetach() on it here, since it unconditionally iterates the whole layer stack.
+        ASSERT_EQ(g_DetachOrder.size(), 1U);
+        EXPECT_EQ(g_DetachOrder[0], "Good");
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
 }
 
 // =============================================================================
@@ -908,6 +984,42 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
         EXPECT_TRUE(event.isHandled());
         // Bottom should not have received the event because Top handled it.
         EXPECT_EQ(bottom.receivedEventNames.size(), 0U);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+// Regression test for #778: a layer that throws from onEvent() must not crash the whole
+// process (raiseEvent() previously had no exception guard, unlike onUpdate/onRender/
+// onPostRender, so this would have called std::terminate() before the fix). Dispatch must
+// also continue to the remaining layers after the throwing one is caught and logged.
+TEST(ApplicationTest, RaiseEventDoesNotCrashWhenLayerThrows)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "RaiseEventThrowingLayerTest";
+
+    try
+    {
+        Core::Application app(spec);
+
+        // Top throws on every event; Bottom is a normal tracking layer below it in the stack.
+        // Reverse-order dispatch means Top is invoked first.
+        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
+        app.pushLayer<ThrowingLayer>("Top");
+
+        Core::WindowCloseEvent event;
+        EXPECT_NO_THROW(app.raiseEvent(event));
+
+        // Bottom must still have received the event: dispatch continues past the layer that
+        // threw instead of aborting the whole loop.
+        EXPECT_EQ(bottom.receivedEventNames.size(), 1U);
     }
     catch (const std::exception& e)
     {
