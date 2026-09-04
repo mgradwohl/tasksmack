@@ -342,7 +342,7 @@ means a `.cpp` file that calls real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functio
 widget rendering, font atlas baking, etc.) cannot be added to `TaskSmackTests`' source list: it
 will fail to *link*, not just to run correctly, with undefined references to those symbols. This
 is why `TitleBarLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`, `SystemMetricsPanel.cpp`,
-and `UILayer.cpp` are not linked into `TaskSmackTests` even though their headers are tested.
+and `UILayer.cpp` are not linked into `TaskSmackTests`.
 
 Two established ways to get real coverage of such a file's logic anyway:
 
