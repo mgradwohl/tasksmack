@@ -35,16 +35,21 @@ TEST(IconLoaderTest, DefaultConstructedTextureIsInvalid)
 TEST(IconLoaderTest, MoveConstructFromDefaultLeavesBothInvalid)
 {
     Texture source;
+    // NOLINTNEXTLINE(bugprone-use-after-move) - checking the moved-from object's public
+    // post-move state (m_Id reset to 0) is exactly the point here.
     const Texture moved(std::move(source));
     EXPECT_FALSE(moved.valid());
+    EXPECT_FALSE(source.valid());
 }
 
-TEST(IconLoaderTest, MoveAssignFromDefaultLeavesTargetInvalid)
+TEST(IconLoaderTest, MoveAssignFromDefaultLeavesBothInvalid)
 {
     Texture source;
     Texture target;
+    // NOLINTNEXTLINE(bugprone-use-after-move) - see above.
     target = std::move(source);
     EXPECT_FALSE(target.valid());
+    EXPECT_FALSE(source.valid());
 }
 
 TEST(IconLoaderTest, SelfMoveAssignIsSafe)
@@ -66,8 +71,14 @@ TEST(IconLoaderTest, LoadTextureWithEmptyPathReturnsInvalidTexture)
 
 TEST(IconLoaderTest, LoadTextureWithNonexistentFileReturnsInvalidTexture)
 {
-    // stbi_load() returns nullptr for a nonexistent file before any GL call is made.
-    const Texture tex = loadTexture(std::filesystem::path{"this/path/definitely/does/not/exist_12345.png"});
+    // stbi_load() returns nullptr for a nonexistent file before any GL call is made. Assert
+    // the path is actually absent first so this can't silently become the live-GL success
+    // path (needing a context this test binary doesn't create) if it ever existed on some
+    // machine/CI image.
+    const std::filesystem::path nonexistent{"this/path/definitely/does/not/exist_12345.png"};
+    ASSERT_FALSE(std::filesystem::exists(nonexistent));
+
+    const Texture tex = loadTexture(nonexistent);
     EXPECT_FALSE(tex.valid());
 }
 
