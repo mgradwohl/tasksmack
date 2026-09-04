@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <system_error>
 #include <utility>
 
 namespace UI
@@ -87,6 +88,23 @@ TEST(IconLoaderTest, LoadTextureWithNonexistentFileReturnsInvalidTexture)
     EXPECT_FALSE(tex.valid());
 }
 
+namespace
+{
+// Best-effort RAII cleanup for the temp file below: removes it on scope exit regardless of
+// whether an ASSERT_* macro returns early or an exception unwinds the stack, instead of only
+// on the test's normal fall-through path.
+struct ScopedTempFile
+{
+    std::filesystem::path path;
+
+    ~ScopedTempFile()
+    {
+        std::error_code ec;
+        std::filesystem::remove(path, ec); // best-effort; a failed cleanup isn't a test failure
+    }
+};
+} // namespace
+
 TEST(IconLoaderTest, LoadTextureWithNonImageFileReturnsInvalidTexture)
 {
     // A file that exists but isn't a valid image also fails inside stbi_load(), still before
@@ -95,23 +113,22 @@ TEST(IconLoaderTest, LoadTextureWithNonImageFileReturnsInvalidTexture)
     // be an on-disk path at test-run time, while temp_directory_path() keeps this hermetic
     // across toolchains and working directories. The name is suffixed with a timestamp plus a
     // per-process monotonic counter (mirroring ScopedTempDir's approach, without a Linux-only
-    // getpid() dependency) so concurrent test runs sharing the OS temp directory (e.g. parallel
-    // CI jobs, a coverage run) can't collide on the same path.
+    // getpid() dependency): collisions are only practically ruled out within this process, not
+    // guaranteed impossible against a different process landing on the exact same tick+counter
+    // pair, but that's astronomically unlikely for a single-shot test file.
     static std::atomic<std::uint64_t> counter{0};
     const auto uniqueSuffix =
         std::format("{}_{}", std::chrono::steady_clock::now().time_since_epoch().count(), counter.fetch_add(1, std::memory_order_relaxed));
-    const std::filesystem::path notAnImage =
-        std::filesystem::temp_directory_path() / std::format("tasksmack_iconloader_test_not_an_image_{}.tmp", uniqueSuffix);
+    const ScopedTempFile notAnImage{.path = std::filesystem::temp_directory_path() /
+                                            std::format("tasksmack_iconloader_test_not_an_image_{}.tmp", uniqueSuffix)};
     {
-        std::ofstream out(notAnImage, std::ios::binary);
+        std::ofstream out(notAnImage.path, std::ios::binary);
         out << "not an image";
     }
-    ASSERT_TRUE(std::filesystem::exists(notAnImage));
+    ASSERT_TRUE(std::filesystem::exists(notAnImage.path));
 
-    const Texture tex = loadTexture(notAnImage);
+    const Texture tex = loadTexture(notAnImage.path);
     EXPECT_FALSE(tex.valid());
-
-    std::filesystem::remove(notAnImage);
 }
 
 } // namespace
