@@ -208,21 +208,20 @@ inline ParsedInstance parseInstanceName(const std::string& instanceName)
                 return result;
             }
             suffix.remove_prefix(engtypeToken.size());
-            if (suffix.empty())
-            {
-                return result;
-            }
+            // Some drivers (observed on Intel Arc) leave the type blank for engine indices
+            // they haven't assigned a name to yet, e.g. "..._eng_10_engtype_" with nothing
+            // after the trailing underscore. That's still a well-formed, valid instance -
+            // just one PDH hasn't given an engine-type label to - so it stays valid with an
+            // empty engineType rather than being dropped entirely.
             result.engineType = std::string(suffix);
         }
     }
     else if (suffix.starts_with(engtypeToken))
     {
         // Simplified format: pid_1234_luid_..._engtype_<type> with no _phys_ segment.
+        // An empty type after the prefix is treated the same as the _phys_ branch above:
+        // valid instance, unnamed engine type.
         suffix.remove_prefix(engtypeToken.size());
-        if (suffix.empty())
-        {
-            return result;
-        }
         result.engineType = std::string(suffix);
     }
     else

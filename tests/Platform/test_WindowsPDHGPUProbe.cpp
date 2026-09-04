@@ -269,8 +269,6 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
         {.name = L"pid_209_luid_0x0_0x1junk_phys_0_eng_0_engtype_3D", .doubleValue = 23.0},
         {.name = L"pid_204_junk_luid_0x0_0x1_phys_0", .doubleValue = 18.0},
         {.name = L"pid_205_luid_0x0_0x1_phys_", .doubleValue = 19.0},
-        {.name = L"pid_206_luid_0x0_0x1_engtype_", .doubleValue = 20.0},
-        {.name = L"pid_207_luid_0x0_0x1_phys_0_eng_0_engtype_", .doubleValue = 21.0},
         {.name = L"pid_208_luid_0x0_0x1_phys_x_eng_0_engtype_3D", .doubleValue = 22.0},
         {.name = L"pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D", .doubleValue = 15.0},
     };
@@ -282,6 +280,33 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MalformedInstanceNamesAreSkippedWithoutCr
     ASSERT_EQ(results.size(), 1U);
     EXPECT_EQ(results[0].pid, 200);
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 15.0);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, EmptyEngineTypeSuffixIsValidWithUnnamedEngine)
+{
+    // Real-world Intel Arc driver instance names observed via `Get-Counter -ListSet "GPU
+    // Engine"`: several engine indices (e.g. eng_7 through eng_13) report a trailing
+    // "_engtype_" with nothing after it because Windows hasn't assigned that engine index a
+    // named type yet. These are well-formed, valid PDH instances - dropping them undercounts
+    // total GPU utilization for any process using those engines. Both the "_phys_..._eng_N_
+    // engtype_" and the simplified "_engtype_" (no "_phys_") shapes must accept an empty type.
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_206_luid_0x0_0x1_engtype_", .doubleValue = 20.0},
+        {.name = L"pid_207_luid_0x0_0x1_phys_0_eng_0_engtype_", .doubleValue = 21.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    auto results = probe.readProcessGPUCounters();
+    std::ranges::sort(results, {}, &ProcessGPUCounters::pid);
+
+    ASSERT_EQ(results.size(), 2U);
+    EXPECT_EQ(results[0].pid, 206);
+    EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 20.0);
+    EXPECT_TRUE(results[0].activeEngines.empty());
+    EXPECT_EQ(results[1].pid, 207);
+    EXPECT_DOUBLE_EQ(results[1].gpuUtilPercent, 21.0);
+    EXPECT_TRUE(results[1].activeEngines.empty());
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, SimplifiedFormatWithoutPhysSuffixIsParsed)
