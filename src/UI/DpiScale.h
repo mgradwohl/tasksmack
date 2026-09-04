@@ -10,7 +10,7 @@ namespace UI
 /// Convert typographic points to pixels given a display scale factor.
 /// Standard: 1 point = 1/72 inch; base DPI assumed 96 (Windows/Linux standard), so
 /// effective DPI = 96 * scale.
-[[nodiscard]] constexpr float computePointsToPixels(const float points, const float scale) noexcept
+[[nodiscard]] constexpr float computePointsToPixels(float points, float scale) noexcept
 {
     constexpr float BASE_DPI = 96.0F;
     return points * (BASE_DPI * scale) / 72.0F;

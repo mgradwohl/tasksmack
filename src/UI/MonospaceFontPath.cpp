@@ -35,14 +35,18 @@ std::filesystem::path findMonospaceFontPath()
     };
 #endif
 
-    // Use the error_code overload so filesystem errors (e.g. permission denied) are treated
-    // as a non-match rather than propagating as exceptions.
-    return selectMonospaceFontPath(CANDIDATES,
-                                   [](const std::filesystem::path& p)
-                                   {
-                                       std::error_code ec;
-                                       return std::filesystem::exists(p, ec);
-                                   });
+    // The installed-font set doesn't change over the process lifetime, so cache the resolved
+    // path rather than re-probing the filesystem on every call.
+    static const std::filesystem::path RESOLVED = selectMonospaceFontPath(CANDIDATES,
+                                                                          [](const std::filesystem::path& p)
+                                                                          {
+                                                                              // Use the error_code overload so filesystem errors (e.g.
+                                                                              // permission denied) are treated as a non-match rather than
+                                                                              // propagating as exceptions.
+                                                                              std::error_code ec;
+                                                                              return std::filesystem::exists(p, ec);
+                                                                          });
+    return RESOLVED;
 }
 
 } // namespace UI
