@@ -163,6 +163,7 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         // than collecting stale names into a scratch vector first: that vector's own allocation
         // could throw right under the memory pressure this pruning exists to relieve, silently
         // skipping the whole pass for the one refresh cycle it matters most.
+        bool anyDiskPruned = false;
         for (auto it = m_DiskLastSeenSeconds.begin(); it != m_DiskLastSeenSeconds.end();)
         {
             if ((nowSeconds - it->second) > m_MaxHistorySeconds)
@@ -170,13 +171,22 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
                 m_DiskReadHistory.erase(it->first);
                 m_DiskWriteHistory.erase(it->first);
                 m_DiskStates.erase(it->first);
-                std::erase(m_DiskOrder, it->first);
                 it = m_DiskLastSeenSeconds.erase(it);
+                anyDiskPruned = true;
             }
             else
             {
                 ++it;
             }
+        }
+        if (anyDiskPruned)
+        {
+            // Single O(N) pass over m_DiskOrder instead of an O(N) std::erase() per stale disk
+            // in the loop above, which made the whole prune step O(N*M) for M stale disks
+            // against an m_DiskOrder of size N -- quadratic in exactly the churny-storage
+            // scenario this pruning targets. m_DiskReadHistory has already had the stale names
+            // removed above, so "no longer present there" is precisely the prune condition.
+            std::erase_if(m_DiskOrder, [this](const std::string& name) { return !m_DiskReadHistory.contains(name); });
         }
 
         // Move snapshot into the history ring after all per-disk iteration is complete,
