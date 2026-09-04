@@ -53,6 +53,71 @@ namespace Platform
 namespace
 {
 
+/// RAII wrapper for a Win32 HANDLE — guarantees CloseHandle() runs on every exit path
+/// (including an exception unwinding the stack between acquisition and an explicit
+/// CloseHandle call), not just the normal fall-through path (#774). Uses nullptr as its
+/// "no handle" sentinel because every API it wraps here (OpenProcess, OpenProcessToken)
+/// documents nullptr as its failure return -- unlike WindowsDiskProbe.cpp's separate
+/// DiskHandle, which wraps CreateFileW and correctly uses that API's own failure sentinel,
+/// INVALID_HANDLE_VALUE, instead.
+class ScopedHandle
+{
+  public:
+    ScopedHandle() = default;
+    explicit ScopedHandle(HANDLE hIn) noexcept : m_Handle(hIn)
+    {}
+    ScopedHandle(const ScopedHandle&) = delete;
+    ScopedHandle& operator=(const ScopedHandle&) = delete;
+    ScopedHandle(ScopedHandle&& other) noexcept : m_Handle(other.m_Handle)
+    {
+        other.m_Handle = nullptr;
+    }
+    ScopedHandle& operator=(ScopedHandle&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            m_Handle = other.m_Handle;
+            other.m_Handle = nullptr;
+        }
+        return *this;
+    }
+    ~ScopedHandle() noexcept
+    {
+        reset();
+    }
+
+    // NOLINTNEXTLINE(google-explicit-constructor) - implicit conversion lets a ScopedHandle
+    // be passed directly to HANDLE-taking Win32 APIs at every use site.
+    [[nodiscard]] operator HANDLE() const noexcept
+    {
+        return m_Handle;
+    }
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return m_Handle != nullptr;
+    }
+    /// For APIs that write the handle through an out-param (e.g. OpenProcessToken's PHANDLE):
+    /// releases any handle already held, then returns the address to write the new one into.
+    [[nodiscard]] HANDLE* put() noexcept
+    {
+        reset();
+        return &m_Handle;
+    }
+
+  private:
+    void reset() noexcept
+    {
+        if (m_Handle != nullptr)
+        {
+            CloseHandle(m_Handle);
+            m_Handle = nullptr;
+        }
+    }
+
+    HANDLE m_Handle = nullptr;
+};
+
 /// Convert FILETIME to 100-nanosecond intervals (ticks)
 [[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
 {
@@ -108,8 +173,8 @@ namespace
         return {};
     }
 
-    HANDLE hToken = nullptr;
-    if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken) == 0)
+    ScopedHandle hToken;
+    if (OpenProcessToken(hProcess, TOKEN_QUERY, hToken.put()) == 0)
     {
         return {};
     }
@@ -119,22 +184,21 @@ namespace
     GetTokenInformation(hToken, TokenUser, nullptr, 0, &tokenInfoLen);
     if (tokenInfoLen == 0)
     {
-        CloseHandle(hToken);
         return {};
     }
 
-    // Allocate buffer and get token user
+    // Allocate buffer and get token user. hToken is released automatically (ScopedHandle) on
+    // every exit path below, including if this allocation throws std::bad_alloc (#774's leak
+    // class, one level deeper than getProcessDetails' own hProcess/hQueryInfo).
     std::vector<BYTE> tokenInfo(tokenInfoLen);
     if (GetTokenInformation(hToken, TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
     {
-        CloseHandle(hToken);
         return {};
     }
 
     // Look up the user name from the SID
     if (tokenInfo.size() < sizeof(TOKEN_USER))
     {
-        CloseHandle(hToken);
         return {};
     }
 
@@ -149,11 +213,9 @@ namespace
 
     if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
     {
-        CloseHandle(hToken);
         return {};
     }
 
-    CloseHandle(hToken);
     return WinString::wideToUtf8(userName.data());
 }
 
@@ -397,16 +459,33 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // a single cache entry.
     // Only cache lookups and inserts are serialised; the expensive version-info I/O
     // is performed outside the lock so concurrent threads do not stall each other.
+    // Capped and cleared on overflow, matching PDHGPUProbeImpl::instanceCache in this same file
+    // family: an unbounded cache here would grow for the life of this long-running, background-
+    // resident process on a system with high churn of distinct executable paths (#775). The cap
+    // is approximate, not a hard ceiling: concurrent callers can each pass the size check before
+    // any of them clears/inserts, so the map can briefly exceed the limit by a handful of entries
+    // under contention -- acceptable for a soft memory-growth bound.
+    static constexpr std::size_t MAX_PUBLISHER_CACHE_ENTRIES = 16384;
     static std::mutex s_cacheMutex;
     static std::unordered_map<std::wstring, std::string> s_cache;
     std::wstring cacheKey(imagePath);
     std::ranges::transform(
         cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    // Swapped out (not cleared) under the lock: swap is O(1), so the O(n) deallocation of up to
+    // MAX_PUBLISHER_CACHE_ENTRIES entries happens via this local's destructor after the lock is
+    // released, instead of stalling other threads' lookups for the duration of the clear.
+    std::unordered_map<std::wstring, std::string> overflowedCache;
     {
         std::scoped_lock const lock(s_cacheMutex);
         if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
         {
             return it->second;
+        }
+        if (s_cache.size() > MAX_PUBLISHER_CACHE_ENTRIES)
+        {
+            // swap, not move-assign: guarantees s_cache is left empty (a moved-from map's state
+            // is otherwise valid-but-unspecified), so the cap reliably resets on every overflow.
+            std::swap(overflowedCache, s_cache);
         }
     }
 
@@ -834,8 +913,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     // A handle is only needed to refresh TTL-cached details. Non-cacheable entries
     // (startTimeTicks == 0) are kernel pseudo-processes like Idle that OpenProcess can never
     // access, and TTL backoff cannot be remembered for them — skip the attempt entirely.
-    HANDLE hProcess = canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
-    if (hProcess == nullptr)
+    const ScopedHandle hProcess(canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
+    if (!hProcess.valid())
     {
         // Can't access this process (protected/system). Push the TTLs forward so we don't retry
         // OpenProcess every sample; the bulk snapshot still provides fresh counters regardless.
@@ -923,16 +1002,11 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         // Expensive classification metadata changes rarely; refresh only on heavy cadence.
         // Open a PROCESS_QUERY_INFORMATION handle — required by GetGuiResources — and share
         // it with classifyProcessType to avoid two consecutive OpenProcess calls for the same PID.
-        HANDLE hQueryInfo = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        const ScopedHandle hQueryInfo(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
         counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
 
         // Classify process type (App / Background Process / Windows Process)
         counters.processType = classifyProcessType(hQueryInfo, static_cast<DWORD>(pid), counters.command);
-
-        if (hQueryInfo != nullptr)
-        {
-            CloseHandle(hQueryInfo);
-        }
     }
 
     if (refreshHeavyDetails)
@@ -960,7 +1034,6 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         }
     }
 
-    CloseHandle(hProcess);
     return true;
 }
 
@@ -972,47 +1045,13 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     // NOLINTNEXTLINE(misc-include-cleaner) - TOKEN_ELEVATION is defined in windows.h via winnt.h
     bool reducedPrivileges = true; // Conservative default: assume non-elevated
 
-    // RAII wrapper for the process token handle — ensures CloseHandle is called on all paths.
-    struct TokenHandle
-    {
-        HANDLE h = nullptr;
-        TokenHandle() = default;
-        explicit TokenHandle(HANDLE hIn) noexcept : h(hIn)
-        {}
-        TokenHandle(const TokenHandle&) = delete;
-        TokenHandle& operator=(const TokenHandle&) = delete;
-        TokenHandle(TokenHandle&& other) noexcept : h(other.h)
-        {
-            other.h = nullptr;
-        }
-        TokenHandle& operator=(TokenHandle&& other) noexcept
-        {
-            if (this != &other)
-            {
-                if (h != nullptr)
-                {
-                    CloseHandle(h);
-                }
-                h = other.h;
-                other.h = nullptr;
-            }
-            return *this;
-        }
-        ~TokenHandle() noexcept
-        {
-            if (h != nullptr)
-            {
-                CloseHandle(h);
-            }
-        }
-    };
-
-    TokenHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token.h) != FALSE)
+    // ScopedHandle ensures CloseHandle is called on all paths.
+    ScopedHandle token;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
     {
         TOKEN_ELEVATION elevation{};
         DWORD dwSize = sizeof(elevation);
-        if (GetTokenInformation(token.h, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &dwSize) != FALSE)
         {
             reducedPrivileges = (elevation.TokenIsElevated == 0);
         }
@@ -1240,13 +1279,29 @@ bool WindowsProcessProbe::detectNetworkCounters()
     HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
     if (iphlp == nullptr)
     {
-        iphlp = LoadLibraryW(L"iphlpapi.dll");
-        if (iphlp == nullptr)
+        // Defensive guard: today this branch runs at most once (this whole function is only
+        // ever called once, from the constructor via m_HasNetworkCounters), so m_IphlpModule is
+        // always null on first entry here. A future retry path re-entering it would otherwise
+        // call LoadLibraryW again and overwrite m_IphlpModule without a matching FreeLibrary,
+        // leaking one DLL reference count (same latent class as #781). Only the library load
+        // itself needs guarding this way: the GetProcAddress lookups and the privilege probe
+        // below must still run on every call (not short-circuited by this guard) so a privilege
+        // change is correctly reflected on a hypothetical retry instead of replaying a stale
+        // access-denied result.
+        if (m_IphlpModule != nullptr)
         {
-            return false;
+            iphlp = m_IphlpModule;
         }
-        // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
-        m_IphlpModule = iphlp;
+        else
+        {
+            iphlp = LoadLibraryW(L"iphlpapi.dll");
+            if (iphlp == nullptr)
+            {
+                return false;
+            }
+            // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
+            m_IphlpModule = iphlp;
+        }
     }
 
     m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");
