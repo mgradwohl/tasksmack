@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsPanel_ActionHelpers.h"
 
 #include <cstdint>
 #include <deque>
@@ -21,6 +22,13 @@ class ProcessDetailsPanel : public Panel
 {
   public:
     ProcessDetailsPanel();
+
+    /// Construct with an injected IProcessActions implementation instead of the real
+    /// platform one. Intended for tests (a mock IProcessActions) - production code should
+    /// use the default constructor, which is the composition-root call to
+    /// Platform::makeProcessActions().
+    explicit ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions);
+
     ~ProcessDetailsPanel() override = default;
 
     ProcessDetailsPanel(const ProcessDetailsPanel&) = delete;
@@ -54,23 +62,19 @@ class ProcessDetailsPanel : public Panel
         return m_SelectedPid;
     }
 
-  private:
-    /// Action pending confirmation in the "Confirm Action" popup. An enum instead of a
-    /// free-form string gives compiler-checked exhaustiveness in the dispatch switch and
-    /// avoids a string-compare per confirmation-popup frame.
-    enum class ProcessAction : std::uint8_t
+    /// What process actions the underlying IProcessActions supports. Exposed publicly so
+    /// tests constructing this panel with an injected mock can assert the capability flags
+    /// were actually pulled from it.
+    [[nodiscard]] const Platform::ProcessActionCapabilities& actionCapabilities() const
     {
-        None,
-        Terminate,
-        Kill,
-        Stop,
-        Resume,
-    };
+        return m_ActionCapabilities;
+    }
 
-    /// Human-readable verb for ProcessAction, used in confirmation/result messages.
-    /// Returns a `const char*` (not std::string_view) since callers need a null-terminated
-    /// string for both ImGui::Text()'s printf-style "%s" and std::string concatenation.
-    [[nodiscard]] static const char* actionVerb(ProcessAction action);
+  private:
+    /// Action pending confirmation in the "Confirm Action" popup - see
+    /// ProcessDetailsPanel_ActionHelpers.h for why this is a type alias rather than a
+    /// member enum.
+    using ProcessAction = Detail::ProcessAction;
 
     static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc);
