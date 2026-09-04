@@ -143,6 +143,8 @@ add_executable(TaskSmackTests
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
     UI/test_WidgetsHeader.cpp
+    UI/test_MonospaceFontPath.cpp
+    UI/test_DpiScale.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -177,6 +179,7 @@ add_executable(TaskSmackTests
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
