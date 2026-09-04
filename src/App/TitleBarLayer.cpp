@@ -3,6 +3,7 @@
 #include "App/TitleBarGeometry.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
+#include "Core/EnvUtils.h"
 #include "Core/Layer.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
@@ -15,11 +16,9 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <ratio>
-#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -45,50 +44,10 @@ auto TitleBarLayer::height() -> float
 
 namespace
 {
-[[nodiscard]] bool isResizePerfTracingEnabled() noexcept
-{
-    const char* value = SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF");
-    if (value == nullptr)
-    {
-        return false;
-    }
-
-    const std::string_view text(value);
-    if (text.empty())
-    {
-        return false;
-    }
-
-    const auto ciEqual = [](const std::string_view a, const std::string_view b) noexcept
-    {
-        if (a.size() != b.size())
-        {
-            return false;
-        }
-
-        for (std::size_t i = 0; i < a.size(); ++i)
-        {
-            if (static_cast<char>(std::tolower(static_cast<unsigned char>(a[i]))) != b[i])
-            {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    return !ciEqual(text, "0") && !ciEqual(text, "false") && !ciEqual(text, "off") && !ciEqual(text, "no");
-}
-
-// Helper to check if point is inside bounds
-bool isInsideBounds(float x, float y, const TitleBarLayer::ButtonBounds& bounds)
-{
-    // Bounds must be valid (non-zero width)
-    if (bounds.maxX <= bounds.minX)
-    {
-        return false;
-    }
-    return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
-}
+// The point-in-bounds test and resize-edge detection now live in TitleBarGeometry.h
+// (computeIsPointInBounds, computeDetectResizeEdge) so they're directly unit-testable
+// without linking this file - see #769. The resize-perf-tracing env-var check below now
+// reuses Core::isEnvFlagEnabled() instead of its own duplicate case-insensitive parser.
 
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
@@ -252,7 +211,7 @@ void TitleBarLayer::onAttach()
         spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
     }
 
-    m_TraceEnabled = isResizePerfTracingEnabled();
+    m_TraceEnabled = Core::isEnvFlagEnabled(SDL_getenv("TASKSMACK_TRACE_RESIZE_PERF"));
 
     // Set up hit test for window dragging
     setupHitTest();
@@ -366,55 +325,16 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
-    return isInsideBounds(x, y, m_IconBounds) || isInsideBounds(x, y, m_HelpBounds) || isInsideBounds(x, y, m_SettingsBounds) ||
-           isInsideBounds(x, y, m_MinimizeBounds) || isInsideBounds(x, y, m_MaximizeBounds) || isInsideBounds(x, y, m_CloseBounds);
+    // Called from the mouse-move hot path (updateResizeCursor(), hitTestCallback()) - test
+    // each bound directly rather than building a std::array<ButtonBounds, 6> copy per call.
+    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointInBounds(x, y, m_HelpBounds) ||
+           computeIsPointInBounds(x, y, m_SettingsBounds) || computeIsPointInBounds(x, y, m_MinimizeBounds) ||
+           computeIsPointInBounds(x, y, m_MaximizeBounds) || computeIsPointInBounds(x, y, m_CloseBounds);
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
 {
-    if (isMaximized)
-    {
-        return ResizeEdge::None;
-    }
-
-    const bool nearLeft = x < RESIZE_BORDER_THICKNESS;
-    const bool nearRight = x >= (static_cast<float>(windowWidth) - RESIZE_BORDER_THICKNESS);
-    const bool nearTop = y < RESIZE_BORDER_THICKNESS;
-    const bool nearBottom = y >= (static_cast<float>(windowHeight) - RESIZE_BORDER_THICKNESS);
-
-    if (nearTop && nearLeft)
-    {
-        return ResizeEdge::TopLeft;
-    }
-    if (nearTop && nearRight)
-    {
-        return ResizeEdge::TopRight;
-    }
-    if (nearBottom && nearLeft)
-    {
-        return ResizeEdge::BottomLeft;
-    }
-    if (nearBottom && nearRight)
-    {
-        return ResizeEdge::BottomRight;
-    }
-    if (nearLeft)
-    {
-        return ResizeEdge::Left;
-    }
-    if (nearRight)
-    {
-        return ResizeEdge::Right;
-    }
-    if (nearTop)
-    {
-        return ResizeEdge::Top;
-    }
-    if (nearBottom)
-    {
-        return ResizeEdge::Bottom;
-    }
-    return ResizeEdge::None;
+    return computeDetectResizeEdge(x, y, windowWidth, windowHeight, isMaximized, RESIZE_BORDER_THICKNESS);
 }
 
 void TitleBarLayer::handleTitleBarDoubleClick(const SDL_Event& event) const
