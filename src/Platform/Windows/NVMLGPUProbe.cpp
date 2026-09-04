@@ -65,12 +65,16 @@ bool NVMLGPUProbe::loadNVML()
         return false;
     }
 
-    // Load function pointers
+    // Load function pointers. On a missing symbol, unloadNVML() first (rather than just
+    // `return false`): otherwise m_NVMLHandle stays non-null after a partial load, and the
+    // "already loaded" guard above would then report success on a later retry despite this
+    // function's pointers never having been fully resolved.
 #define LOAD_NVML_FUNC(name)                                                                                                               \
     m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
     if (m_NVML.name == nullptr)                                                                                                            \
     {                                                                                                                                      \
         spdlog::warn("NVMLGPUProbe: Failed to load nvml" #name);                                                                           \
+        unloadNVML();                                                                                                                      \
         return false;                                                                                                                      \
     }
 
@@ -93,6 +97,7 @@ bool NVMLGPUProbe::loadNVML()
     if (m_NVML.SystemGetDriverVersion == nullptr)
     {
         spdlog::warn("NVMLGPUProbe: Failed to load nvmlSystemGetDriverVersion");
+        unloadNVML();
         return false;
     }
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)

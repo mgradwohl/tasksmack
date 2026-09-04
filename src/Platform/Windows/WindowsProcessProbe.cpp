@@ -55,7 +55,11 @@ namespace
 
 /// RAII wrapper for a Win32 HANDLE — guarantees CloseHandle() runs on every exit path
 /// (including an exception unwinding the stack between acquisition and an explicit
-/// CloseHandle call), not just the normal fall-through path (#774).
+/// CloseHandle call), not just the normal fall-through path (#774). Uses nullptr as its
+/// "no handle" sentinel because every API it wraps here (OpenProcess, OpenProcessToken)
+/// documents nullptr as its failure return -- unlike WindowsDiskProbe.cpp's separate
+/// DiskHandle, which wraps CreateFileW and correctly uses that API's own failure sentinel,
+/// INVALID_HANDLE_VALUE, instead.
 class ScopedHandle
 {
   public:
@@ -83,12 +87,8 @@ class ScopedHandle
         reset();
     }
 
-    [[nodiscard]] HANDLE get() const noexcept
-    {
-        return m_Handle;
-    }
     // NOLINTNEXTLINE(google-explicit-constructor) - implicit conversion lets a ScopedHandle
-    // be passed directly to HANDLE-taking Win32 APIs without a get() call at every use site.
+    // be passed directly to HANDLE-taking Win32 APIs at every use site.
     [[nodiscard]] operator HANDLE() const noexcept
     {
         return m_Handle;
@@ -461,13 +461,20 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
     // is performed outside the lock so concurrent threads do not stall each other.
     // Capped and cleared on overflow, matching PDHGPUProbeImpl::instanceCache in this same file
     // family: an unbounded cache here would grow for the life of this long-running, background-
-    // resident process on a system with high churn of distinct executable paths (#775).
+    // resident process on a system with high churn of distinct executable paths (#775). The cap
+    // is approximate, not a hard ceiling: concurrent callers can each pass the size check before
+    // any of them clears/inserts, so the map can briefly exceed the limit by a handful of entries
+    // under contention -- acceptable for a soft memory-growth bound.
     static constexpr std::size_t MAX_PUBLISHER_CACHE_ENTRIES = 16384;
     static std::mutex s_cacheMutex;
     static std::unordered_map<std::wstring, std::string> s_cache;
     std::wstring cacheKey(imagePath);
     std::ranges::transform(
         cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    // Swapped out (not cleared) under the lock: swap is O(1), so the O(n) deallocation of up to
+    // MAX_PUBLISHER_CACHE_ENTRIES entries happens via this local's destructor after the lock is
+    // released, instead of stalling other threads' lookups for the duration of the clear.
+    std::unordered_map<std::wstring, std::string> overflowedCache;
     {
         std::scoped_lock const lock(s_cacheMutex);
         if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
@@ -476,7 +483,9 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
         }
         if (s_cache.size() > MAX_PUBLISHER_CACHE_ENTRIES)
         {
-            s_cache.clear();
+            // swap, not move-assign: guarantees s_cache is left empty (a moved-from map's state
+            // is otherwise valid-but-unspecified), so the cap reliably resets on every overflow.
+            std::swap(overflowedCache, s_cache);
         }
     }
 
@@ -1267,25 +1276,32 @@ void WindowsProcessProbe::attributeEnergyToProcesses(std::vector<ProcessCounters
 
 bool WindowsProcessProbe::detectNetworkCounters()
 {
-    // Defensive guard: today this is only ever called once (from the constructor via
-    // m_HasNetworkCounters), so m_IphlpModule is always null here, but a future retry path
-    // calling this twice would otherwise overwrite the handle without a matching FreeLibrary,
-    // leaking one DLL reference count (same latent class as #781).
-    if (m_IphlpModule != nullptr)
-    {
-        return m_GetPerTcpConnectionEStats != nullptr && m_SetPerTcpConnectionEStats != nullptr;
-    }
-
     HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
     if (iphlp == nullptr)
     {
-        iphlp = LoadLibraryW(L"iphlpapi.dll");
-        if (iphlp == nullptr)
+        // Defensive guard: today this branch runs at most once (this whole function is only
+        // ever called once, from the constructor via m_HasNetworkCounters), so m_IphlpModule is
+        // always null on first entry here. A future retry path re-entering it would otherwise
+        // call LoadLibraryW again and overwrite m_IphlpModule without a matching FreeLibrary,
+        // leaking one DLL reference count (same latent class as #781). Only the library load
+        // itself needs guarding this way: the GetProcAddress lookups and the privilege probe
+        // below must still run on every call (not short-circuited by this guard) so a privilege
+        // change is correctly reflected on a hypothetical retry instead of replaying a stale
+        // access-denied result.
+        if (m_IphlpModule != nullptr)
         {
-            return false;
+            iphlp = m_IphlpModule;
         }
-        // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
-        m_IphlpModule = iphlp;
+        else
+        {
+            iphlp = LoadLibraryW(L"iphlpapi.dll");
+            if (iphlp == nullptr)
+            {
+                return false;
+            }
+            // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
+            m_IphlpModule = iphlp;
+        }
     }
 
     m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");
