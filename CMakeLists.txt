@@ -58,6 +58,7 @@ set(TASKSMACK_SOURCES
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
     src/UI/AssetPath.cpp
+    src/UI/MonospaceFontPath.cpp
     src/UI/UILayer.cpp
     src/UI/RenderMetrics.cpp
     src/UI/Theme.cpp

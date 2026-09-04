@@ -144,6 +144,8 @@ add_executable(TaskSmackTests
     UI/test_ThemeHeader.cpp
     UI/test_WidgetsHeader.cpp
     UI/test_IconLoader.cpp
+    UI/test_MonospaceFontPath.cpp
+    UI/test_DpiScale.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -183,6 +185,7 @@ add_executable(TaskSmackTests
     # calls resolve against glad_gl_core_33 (linked below) - unlike Theme.cpp it doesn't need
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
