@@ -555,7 +555,10 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
     caps.hasFanSpeed = true;
-    caps.hasPCIeMetrics = true;
+    // NVML only returns PCIe throughput as rates, not cumulative counters, so
+    // pcieTxBytes/pcieRxBytes are deliberately left at 0 (see the comment where counters
+    // are populated above) -- report the capability as unavailable, not present-but-zero.
+    caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = true;
     // Per-process metrics available if we have the required functions
     caps.hasPerProcessMetrics = (m_NVML.DeviceGetComputeRunningProcesses != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);
