@@ -27,7 +27,7 @@ TEST(IconLoaderTest, DefaultConstructedTextureIsInvalid)
 {
     const Texture tex;
     EXPECT_FALSE(tex.valid());
-    EXPECT_EQ(tex.textureId(), static_cast<ImTextureID>(0));
+    EXPECT_EQ(tex.textureId(), ImTextureID{});
     EXPECT_FLOAT_EQ(tex.size().x, 0.0F);
     EXPECT_FLOAT_EQ(tex.size().y, 0.0F);
 }
