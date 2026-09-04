@@ -10,16 +10,47 @@
 
 #include "Platform/StorageTypes.h"
 #include "Platform/Windows/WindowsDiskProbe.h"
+#include "Platform/Windows/WindowsDiskProbeMath.h"
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <thread>
 
 namespace Platform
 {
 namespace
 {
+
+// =============================================================================
+// clampNonNegativeQuadPart: pure math, no hardware required. A buggy or virtualized
+// disk driver can report a negative IOCTL_DISK_PERFORMANCE byte/time count; this must
+// clamp to 0 rather than reinterpreting the sign bit as a huge magnitude.
+// =============================================================================
+
+TEST(ClampNonNegativeQuadPartTest, PositiveValuePassesThrough)
+{
+    EXPECT_EQ(clampNonNegativeQuadPart(12345), 12345ULL);
+}
+
+TEST(ClampNonNegativeQuadPartTest, ZeroPassesThrough)
+{
+    EXPECT_EQ(clampNonNegativeQuadPart(0), 0ULL);
+}
+
+TEST(ClampNonNegativeQuadPartTest, NegativeValueClampsToZero)
+{
+    EXPECT_EQ(clampNonNegativeQuadPart(-1), 0ULL);
+    EXPECT_EQ(clampNonNegativeQuadPart(std::numeric_limits<int64_t>::min()), 0ULL);
+}
+
+TEST(ClampNonNegativeQuadPartTest, LargePositiveValueDoesNotWrap)
+{
+    constexpr auto largeValue = std::numeric_limits<int64_t>::max();
+    EXPECT_EQ(clampNonNegativeQuadPart(largeValue), static_cast<uint64_t>(largeValue));
+}
 
 // =============================================================================
 // Construction and Basic Operations

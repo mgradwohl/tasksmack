@@ -4,7 +4,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <cstdint>
 #include <memory>
 
 // clang-format off
@@ -23,6 +22,7 @@
 #pragma comment(lib, "pdh.lib")
 
 #include "WinString.h"
+#include "WindowsDiskProbeMath.h"
 
 #include <optional>
 #include <string>
@@ -309,14 +309,14 @@ SystemDiskCounters WindowsDiskProbe::read()
         // contract DiskCounters documents and that StorageModel::computeDiskSnapshot
         // relies on for its own delta-then-rate computation - unlike PDH's PhysicalDisk
         // object, which only exposes pre-computed rates.
-        disk.readSectors = static_cast<uint64_t>(perf.BytesRead.QuadPart) / disk.sectorSize;
-        disk.writeSectors = static_cast<uint64_t>(perf.BytesWritten.QuadPart) / disk.sectorSize;
+        disk.readSectors = clampNonNegativeQuadPart(perf.BytesRead.QuadPart) / disk.sectorSize;
+        disk.writeSectors = clampNonNegativeQuadPart(perf.BytesWritten.QuadPart) / disk.sectorSize;
         disk.readsCompleted = perf.ReadCount;
         disk.writesCompleted = perf.WriteCount;
 
         // ReadTime/WriteTime are cumulative, in 100-nanosecond units; convert to milliseconds.
-        disk.readTimeMs = static_cast<uint64_t>(perf.ReadTime.QuadPart) / 10000ULL;
-        disk.writeTimeMs = static_cast<uint64_t>(perf.WriteTime.QuadPart) / 10000ULL;
+        disk.readTimeMs = clampNonNegativeQuadPart(perf.ReadTime.QuadPart) / 10000ULL;
+        disk.writeTimeMs = clampNonNegativeQuadPart(perf.WriteTime.QuadPart) / 10000ULL;
 
         // DISK_PERFORMANCE has no direct cumulative "device busy" counter, so approximate
         // it as the sum of cumulative read+write service time. Under concurrent I/O (queue
