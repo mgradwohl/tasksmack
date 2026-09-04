@@ -240,9 +240,19 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ## Testing
 
 - Framework: Google Test in `tests/` mirroring `src/` structure
-- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`
+- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
+- `TaskSmackTests` does not link real ImGui/ImPlot library object code (headers only, no
+  window/GL context) — a `.cpp` calling real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions
+  fails to *link* if added to its source list (e.g. `TitleBarLayer.cpp`, `ProcessesPanel.cpp`,
+  `ProcessDetailsPanel.cpp`, `UILayer.cpp`). Two ways around it, see CONTRIBUTING.md "Testing
+  App/UI code that needs a live ImGui context" for detail:
+  1. Extract the pure decision logic (all inputs as explicit params) into a small header, tested
+     directly — `App/TitleBarGeometry.h`, `App/Panels/ProcessDetailsPanel_ActionHelpers.h`,
+     `UI/DpiScale.h`/`UI/MonospaceFontPath.h`.
+  2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), it may link
+     fine as-is — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
 
 ### Test Organization
 ```cpp
