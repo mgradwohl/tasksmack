@@ -23,6 +23,81 @@ enum class ResizeEdge : std::uint8_t
     BottomRight,
 };
 
+/// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
+/// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
+/// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.
+struct ButtonBounds
+{
+    float minX = 0.0F;
+    float maxX = 0.0F;
+    float minY = 0.0F;
+    float maxY = 0.0F;
+};
+
+/// Pure point-in-rect test for a single button's bounds. No member state - directly
+/// unit-testable, like the other geometry helpers in this header.
+[[nodiscard]] inline auto computeIsPointInBounds(const float x, const float y, const ButtonBounds& bounds) -> bool
+{
+    if (bounds.maxX <= bounds.minX)
+    {
+        return false;
+    }
+    return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+/// Pure decision for TitleBarLayer::detectResizeEdge(): which window edge/corner (x, y) is
+/// near, given the window size and resize-border thickness. isMaximized short-circuits to
+/// None since a maximized window has no resize borders. Directly unit-testable, like the
+/// hit-test helpers below.
+[[nodiscard]] inline auto computeDetectResizeEdge(
+    const float x, const float y, const int windowWidth, const int windowHeight, const bool isMaximized, const float resizeBorderThickness)
+    -> ResizeEdge
+{
+    if (isMaximized)
+    {
+        return ResizeEdge::None;
+    }
+
+    const bool nearLeft = x < resizeBorderThickness;
+    const bool nearRight = x >= (static_cast<float>(windowWidth) - resizeBorderThickness);
+    const bool nearTop = y < resizeBorderThickness;
+    const bool nearBottom = y >= (static_cast<float>(windowHeight) - resizeBorderThickness);
+
+    if (nearTop && nearLeft)
+    {
+        return ResizeEdge::TopLeft;
+    }
+    if (nearTop && nearRight)
+    {
+        return ResizeEdge::TopRight;
+    }
+    if (nearBottom && nearLeft)
+    {
+        return ResizeEdge::BottomLeft;
+    }
+    if (nearBottom && nearRight)
+    {
+        return ResizeEdge::BottomRight;
+    }
+    if (nearLeft)
+    {
+        return ResizeEdge::Left;
+    }
+    if (nearRight)
+    {
+        return ResizeEdge::Right;
+    }
+    if (nearTop)
+    {
+        return ResizeEdge::Top;
+    }
+    if (nearBottom)
+    {
+        return ResizeEdge::Bottom;
+    }
+    return ResizeEdge::None;
+}
+
 /// Geometry returned by computeResizeGeometry — clamped new window rect.
 struct WindowRect
 {
