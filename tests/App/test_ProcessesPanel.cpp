@@ -12,6 +12,23 @@
 // ProcessesPanel.cpp brings in ImGui dependencies that are complex to satisfy in tests.
 // The tree-building algorithm is tested indirectly through integration tests.
 // These tests focus on ProcessColumnSettings which is fully testable.
+//
+// Re #415's "column visibility toggles (runtime behavior)" task: the actual runtime flow is
+// ImGui's own table column hide/show UI (right-click column header), gated per-column by
+// ImGuiTableColumnFlags_NoHide when !canHide (ProcessesPanel.cpp, TableSetupColumn call) and
+// synced back into ProcessColumnSettings via setVisible() from ImGui::TableGetColumnFlags()
+// each frame (ProcessesPanel.cpp, renderContent()) - not via ProcessColumnSettings::
+// toggleVisible(), which no production code path actually calls. toggleVisible()'s own
+// flip/double-flip/all-columns behavior is already covered by ProcessColumnSettingsTest in
+// test_ProcessColumnConfig.cpp; the one genuinely new case here (toggling one column doesn't
+// disturb another) lives there now too, alongside the rest of that class's tests.
+//
+// Re #415's "process selection state management" task: ProcessesPanel::m_SelectedPid is set by
+// a single ImGui::Selectable click handler with no decision logic beyond "set to the clicked
+// pid" - there's nothing algorithmic there to unit test. The one place selection actually drives
+// nontrivial behavior is ProcessDetailsPanel::setSelectedPid() (clears ~18 history/state members
+// when the pid changes, no-ops otherwise), but that's gated behind the same ImGui-linking wall as
+// buildProcessTree() above, just in ProcessDetailsPanel.cpp instead of ProcessesPanel.cpp.
 
 namespace App
 {

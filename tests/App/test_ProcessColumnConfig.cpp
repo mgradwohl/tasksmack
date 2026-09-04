@@ -104,6 +104,19 @@ TEST(ProcessColumnSettingsTest, ToggleVisibilityFlipsState)
     EXPECT_EQ(settings.isVisible(ProcessColumn::Name), initial);
 }
 
+TEST(ProcessColumnSettingsTest, ToggleVisibilityOnlyAffectsTargetColumn)
+{
+    ProcessColumnSettings settings;
+    ProcessColumnSettings expected;
+    expected.toggleVisible(ProcessColumn::CpuPercent);
+
+    settings.toggleVisible(ProcessColumn::CpuPercent);
+
+    // Toggling one column must not disturb any other column's visibility: the resulting state
+    // must equal a fresh instance with only that one column flipped.
+    EXPECT_EQ(settings.visible, expected.visible);
+}
+
 TEST(ProcessColumnSettingsTest, BoundaryConditions)
 {
     ProcessColumnSettings settings;
