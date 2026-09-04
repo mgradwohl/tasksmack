@@ -7,6 +7,10 @@ name: OSV Dependency Scan
 # Syft's cmake cataloger reads FetchContent_Declare entries from CMakeLists.txt and
 # emits them into an SPDX-JSON SBOM without requiring a build.
 #
+# This only flags known CVEs against the currently pinned versions; it doesn't check whether
+# newer (non-vulnerable) releases are available. That's the Renovate workflow's job
+# (.github/renovate.json5, .github/workflows/renovate.yml) -- see #89.
+#
 # google/osv-scanner-action is a reusable workflow, not a step-level composite action.
 # The SBOM is generated and uploaded as an artifact by the first job, then downloaded
 # inside the reusable workflow via its download-artifact input.
