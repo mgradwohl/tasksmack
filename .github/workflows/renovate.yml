@@ -36,6 +36,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Needed for Renovate to create/update the Dependency Dashboard issue
+      # (dependencyDashboard: true in renovate.json5).
+      issues: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,8 +51,11 @@ jobs:
           # PRs opened with the default GITHUB_TOKEN don't trigger other workflows (ci.yml
           # included) -- GitHub's loop-prevention behavior for the built-in token. Falls back to
           # it so this workflow still runs and opens PRs with no setup, but CI won't actually
-          # run on those PRs until a fine-grained PAT (contents:write, pull-requests:write) is
-          # added as the RENOVATE_TOKEN repo secret. See CONTRIBUTING.md.
+          # run on those PRs until a fine-grained PAT is added as the RENOVATE_TOKEN repo secret.
+          # That PAT needs Contents, Pull requests, and Issues (dependency dashboard) repo
+          # permissions, PLUS Workflows -- this config also updates the LLVM pin in ci.yml
+          # itself, and GitHub rejects any push touching .github/workflows/* from a token
+          # without that scope, even with Contents:write. See CONTRIBUTING.md.
           RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
           # inputs.* is only populated for workflow_dispatch runs; this workflow also runs on
           # schedule, where referencing inputs.dryRun directly risks undefined-context behavior.
