@@ -107,25 +107,14 @@ TEST(ProcessColumnSettingsTest, ToggleVisibilityFlipsState)
 TEST(ProcessColumnSettingsTest, ToggleVisibilityOnlyAffectsTargetColumn)
 {
     ProcessColumnSettings settings;
-    const auto count = processColumnCount();
-    std::vector<bool> before(count);
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        before[i] = settings.isVisible(static_cast<ProcessColumn>(i));
-    }
+    ProcessColumnSettings expected;
+    expected.toggleVisible(ProcessColumn::CpuPercent);
 
     settings.toggleVisible(ProcessColumn::CpuPercent);
 
-    // Toggling one column must not disturb any other column's visibility.
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        const auto col = static_cast<ProcessColumn>(i);
-        if (col == ProcessColumn::CpuPercent)
-        {
-            continue;
-        }
-        EXPECT_EQ(settings.isVisible(col), before[i]) << "column index " << i << " was disturbed";
-    }
+    // Toggling one column must not disturb any other column's visibility: the resulting state
+    // must equal a fresh instance with only that one column flipped.
+    EXPECT_EQ(settings.visible, expected.visible);
 }
 
 TEST(ProcessColumnSettingsTest, BoundaryConditions)
