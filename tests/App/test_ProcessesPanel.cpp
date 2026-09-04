@@ -12,6 +12,13 @@
 // ProcessesPanel.cpp brings in ImGui dependencies that are complex to satisfy in tests.
 // The tree-building algorithm is tested indirectly through integration tests.
 // These tests focus on ProcessColumnSettings which is fully testable.
+//
+// Re #415's "process selection state management" task: ProcessesPanel::m_SelectedPid is set by
+// a single ImGui::Selectable click handler with no decision logic beyond "set to the clicked
+// pid" - there's nothing algorithmic there to unit test. The one place selection actually drives
+// nontrivial behavior is ProcessDetailsPanel::setSelectedPid() (clears ~18 history/state members
+// when the pid changes, no-ops otherwise), but that's gated behind the same ImGui-linking wall as
+// buildProcessTree() above, just in ProcessDetailsPanel.cpp instead of ProcessesPanel.cpp.
 
 namespace App
 {
@@ -84,6 +91,60 @@ TEST(ProcessesPanelTest, ColumnSettingsAllVisible)
     }
 
     EXPECT_EQ(visibleCount, static_cast<int>(processColumnCount()));
+}
+
+// ========== Column Visibility Toggle Tests ==========
+// toggleVisible() is the actual runtime behavior invoked when a user clicks a column-visibility
+// checkbox (setVisible() above is what persistence/config-loading uses instead).
+
+TEST(ProcessesPanelTest, ToggleVisibleFlipsFromDefault)
+{
+    ProcessColumnSettings settings;
+    const bool defaultVisible = settings.isVisible(ProcessColumn::User);
+
+    settings.toggleVisible(ProcessColumn::User);
+
+    EXPECT_EQ(settings.isVisible(ProcessColumn::User), !defaultVisible);
+}
+
+TEST(ProcessesPanelTest, ToggleVisibleTwiceReturnsToOriginal)
+{
+    ProcessColumnSettings settings;
+    const bool defaultVisible = settings.isVisible(ProcessColumn::CpuPercent);
+
+    settings.toggleVisible(ProcessColumn::CpuPercent);
+    settings.toggleVisible(ProcessColumn::CpuPercent);
+
+    EXPECT_EQ(settings.isVisible(ProcessColumn::CpuPercent), defaultVisible);
+}
+
+TEST(ProcessesPanelTest, ToggleVisibleOnlyAffectsTargetColumn)
+{
+    ProcessColumnSettings settings;
+    const bool memBefore = settings.isVisible(ProcessColumn::MemPercent);
+
+    settings.toggleVisible(ProcessColumn::CpuPercent);
+
+    // Toggling one column must not disturb any other column's visibility.
+    EXPECT_EQ(settings.isVisible(ProcessColumn::MemPercent), memBefore);
+}
+
+TEST(ProcessesPanelTest, ToggleVisibleWorksForEveryColumn)
+{
+    // Every column (including ones canHide=false forbids hiding through the UI menu) can still
+    // be flipped by toggleVisible() itself - the canHide gate lives in the menu-rendering code,
+    // not in ProcessColumnSettings, so this checks the primitive the UI builds on top of.
+    for (const auto col : allProcessColumns())
+    {
+        ProcessColumnSettings settings;
+        const bool before = settings.isVisible(col);
+
+        settings.toggleVisible(col);
+        EXPECT_EQ(settings.isVisible(col), !before) << "toggleVisible failed for column index " << static_cast<int>(toIndex(col));
+
+        settings.toggleVisible(col);
+        EXPECT_EQ(settings.isVisible(col), before) << "second toggleVisible failed for column index " << static_cast<int>(toIndex(col));
+    }
 }
 
 // ========== Column Info Tests ==========
