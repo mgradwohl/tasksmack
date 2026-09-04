@@ -190,10 +190,14 @@ TEST(GPUModelTest, FanSpeedPercentIsComputedFromRawAndMax)
 
     // 170 * 100 / 255 = 66 (integer division)
     EXPECT_EQ(snaps[0].fanSpeedPercent, 66U);
+    EXPECT_TRUE(snaps[0].fanSpeedAvailable);
 }
 
-TEST(GPUModelTest, FanSpeedPercentClampsWhenRawExceedsMax)
+TEST(GPUModelTest, FanSpeedPercentIsNotClampedWhenRawExceedsMax)
 {
+    // Left unclamped, matching memoryUsedPercent/powerUtilPercent: a raw reading above the
+    // device's reported max (sensor drift, transient overspeed) is itself useful signal, not
+    // something Domain should silently cap.
     auto probe = std::make_unique<MockGPUProbe>();
     auto counters = makeGPUCounters("GPU0");
     counters.fanSpeedRaw = 300;
@@ -206,14 +210,17 @@ TEST(GPUModelTest, FanSpeedPercentClampsWhenRawExceedsMax)
     auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 1);
 
-    EXPECT_EQ(snaps[0].fanSpeedPercent, 100U);
+    // 300 * 100 / 255 = 117 (integer division)
+    EXPECT_EQ(snaps[0].fanSpeedPercent, 117U);
+    EXPECT_TRUE(snaps[0].fanSpeedAvailable);
 }
 
-TEST(GPUModelTest, FanSpeedPercentIsZeroWhenMaxUnavailable)
+TEST(GPUModelTest, FanSpeedPercentIsZeroAndUnavailableWhenMaxUnavailable)
 {
-    // fanSpeedMaxRaw == 0 means the probe couldn't determine a max (e.g. ROCm's optional
-    // rsmi_dev_fan_speed_max_get symbol wasn't loaded); Domain must not divide by zero or
-    // report a misleading percentage in that case.
+    // fanSpeedMaxRaw == 0 means the probe couldn't determine a max this poll (e.g. ROCm's
+    // optional rsmi_dev_fan_speed_max_get symbol wasn't loaded, or a transient call failure).
+    // Domain must not divide by zero, and must mark the sample as unavailable rather than
+    // reporting a percentage indistinguishable from a genuine 0% reading.
     auto probe = std::make_unique<MockGPUProbe>();
     auto counters = makeGPUCounters("GPU0");
     counters.fanSpeedRaw = 170;
@@ -227,6 +234,7 @@ TEST(GPUModelTest, FanSpeedPercentIsZeroWhenMaxUnavailable)
     ASSERT_EQ(snaps.size(), 1);
 
     EXPECT_EQ(snaps[0].fanSpeedPercent, 0U);
+    EXPECT_FALSE(snaps[0].fanSpeedAvailable);
 }
 
 // =============================================================================

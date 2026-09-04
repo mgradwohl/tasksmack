@@ -435,7 +435,11 @@ void renderGpuSection(RenderContext& ctx)
                                       .value01 = UI::Format::percent01(powerPercent),
                                       .color = theme.scheme().gpuPower});
         }
-        if (caps.hasFanSpeed)
+        // Gate on the per-sample fanSpeedAvailable flag too, not just the capability: the
+        // capability says the sensor is generally available, but a given poll can still fail to
+        // read it (e.g. a transient RSMI call failure), which would otherwise render as a
+        // misleading "0%" indistinguishable from a genuine idle reading.
+        if (caps.hasFanSpeed && snap.fanSpeedAvailable)
         {
             gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedPercent),
                                       .label = "GPU Fan Speed",

@@ -312,11 +312,15 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 
     // Fan speed: normalize the vendor-native raw reading against the device's own max here in
     // Domain, not in the Platform probe, matching memoryUsedPercent/powerUtilPercent above (see
-    // #734 review discussion -- GPUCounters holds unconverted raw values only).
-    if (current.fanSpeedMaxRaw > 0)
+    // #734 review discussion -- GPUCounters holds unconverted raw values only). Left unclamped
+    // to 100, like memoryUsedPercent/powerUtilPercent above: a raw reading above the device's
+    // reported max is itself useful signal (sensor drift, transient overspeed), not something to
+    // silently cap.
+    snapshot.fanSpeedAvailable = current.fanSpeedMaxRaw > 0;
+    if (snapshot.fanSpeedAvailable)
     {
         const auto percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
-        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(std::min<std::uint64_t>(percent, 100ULL));
+        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(percent);
     }
 
     // Compute rates from deltas (only if we have previous data and valid time delta)
