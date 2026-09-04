@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <mutex>
+#include <string>
 #include <string_view>
 
 namespace Core
@@ -12,7 +13,7 @@ namespace Core
 std::mutex VideoBackend::s_Mutex;
 VideoBackend::Backend VideoBackend::s_Backend = VideoBackend::Backend::Unknown;
 bool VideoBackend::s_Initialized = false;
-std::string_view VideoBackend::s_DriverName;
+std::string VideoBackend::s_DriverName;
 
 VideoBackend::Backend VideoBackend::classifyBackend(const std::string_view driverName, const bool waylandDisplaySet) noexcept
 {
@@ -106,7 +107,7 @@ void VideoBackend::resetForTesting() noexcept
     const std::scoped_lock lock(s_Mutex);
     s_Backend = Backend::Unknown;
     s_Initialized = false;
-    s_DriverName = {};
+    s_DriverName.clear();
 }
 
 bool VideoBackend::isWayland() noexcept

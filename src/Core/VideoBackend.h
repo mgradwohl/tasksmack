@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <string_view>
 
 namespace Core
@@ -83,7 +84,12 @@ class VideoBackend
     static std::mutex s_Mutex;
     static Backend s_Backend;
     static bool s_Initialized;
-    static std::string_view s_DriverName;
+    // Owning storage, not a view: SDL_GetCurrentVideoDriver()'s returned pointer is only valid
+    // until SDL_Quit(), and nothing in production code re-detects or clears this around that
+    // call, so a std::string_view here could dangle after shutdown in any process with more
+    // than one Application/Window lifecycle (the test suite already exercises that via the
+    // stack-allocated Application path) -- #780.
+    static std::string s_DriverName;
 };
 
 } // namespace Core
