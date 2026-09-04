@@ -43,13 +43,9 @@ PDHGPUProbe::PDHGPUProbe() : m_Impl(std::make_unique<Impl>())
 PDHGPUProbe::PDHGPUProbe(std::unique_ptr<Impl> impl) : m_Impl(std::move(impl))
 {}
 
-PDHGPUProbe::~PDHGPUProbe()
-{
-    if (m_Impl)
-    {
-        m_Impl->shutdown();
-    }
-}
+// Impl's own destructor calls shutdown(); the unique_ptr<Impl> member destructor below
+// (implicit) is the single teardown point, so no explicit shutdown() call is needed here.
+PDHGPUProbe::~PDHGPUProbe() = default;
 
 PDHGPUProbe::PDHGPUProbe(PDHGPUProbe&&) noexcept = default;
 PDHGPUProbe& PDHGPUProbe::operator=(PDHGPUProbe&&) noexcept = default;
