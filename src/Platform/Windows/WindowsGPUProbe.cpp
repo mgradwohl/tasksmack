@@ -258,7 +258,8 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
         dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
-        dxgiCounter.fanSpeedPercent = nvmlCounter.fanSpeedPercent;
+        dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
+        dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
 
         // Use NVML GPU utilization (NVML provides the actual GPU utilization, DXGI doesn't)
         // Always use NVML utilization when available, even if it's 0 (which is valid at idle)

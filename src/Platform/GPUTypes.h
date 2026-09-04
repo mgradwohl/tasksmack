@@ -45,11 +45,15 @@ struct GPUCounters
     std::uint32_t gpuClockMHz = 0;
     std::uint32_t memoryClockMHz = 0;
 
-    // Fan speed as a percentage of maximum (0-100, 0 if not available).
-    // All probes normalize to this unit at the Platform boundary: NVML returns percentage
-    // directly, ROCm returns a raw value out of RSMI_MAX_FAN_SPEED that ROCmGPUProbe scales
-    // to 0-100 before storing it here (see #734).
-    std::uint32_t fanSpeedPercent = 0;
+    // Fan speed, raw (0 if not available) plus the device-reported max needed to normalize it.
+    // Vendors report fan speed in different native units (NVML: already 0-100%; ROCm: a value
+    // relative to RSMI_MAX_FAN_SPEED, not RPM despite older code here having assumed so -- see
+    // #734), so Platform stores both raw numbers unconverted and Domain computes the
+    // percentage (GPUSnapshot::fanSpeedPercent), consistent with how memoryUsedPercent and
+    // powerUtilPercent are derived from raw counter pairs. NVML probes set fanSpeedMaxRaw to
+    // 100 since their raw reading already is a percentage.
+    std::uint32_t fanSpeedRaw = 0;
+    std::uint32_t fanSpeedMaxRaw = 0;
 
     // PCIe throughput (cumulative bytes)
     std::uint64_t pcieTxBytes = 0;

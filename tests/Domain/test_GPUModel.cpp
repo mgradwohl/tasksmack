@@ -172,6 +172,63 @@ TEST(GPUModelTest, PowerUtilizationPercentIsComputed)
     EXPECT_DOUBLE_EQ(snaps[0].powerUtilPercent, 50.0);
 }
 
+TEST(GPUModelTest, FanSpeedPercentIsComputedFromRawAndMax)
+{
+    // Mirrors a ROCm-style probe: a raw sensor reading normalized against a device-reported
+    // max that isn't a round number, so the division isn't exact (see #734).
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto counters = makeGPUCounters("GPU0");
+    counters.fanSpeedRaw = 170;
+    counters.fanSpeedMaxRaw = 255;
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    // 170 * 100 / 255 = 66 (integer division)
+    EXPECT_EQ(snaps[0].fanSpeedPercent, 66U);
+}
+
+TEST(GPUModelTest, FanSpeedPercentClampsWhenRawExceedsMax)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto counters = makeGPUCounters("GPU0");
+    counters.fanSpeedRaw = 300;
+    counters.fanSpeedMaxRaw = 255;
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    EXPECT_EQ(snaps[0].fanSpeedPercent, 100U);
+}
+
+TEST(GPUModelTest, FanSpeedPercentIsZeroWhenMaxUnavailable)
+{
+    // fanSpeedMaxRaw == 0 means the probe couldn't determine a max (e.g. ROCm's optional
+    // rsmi_dev_fan_speed_max_get symbol wasn't loaded); Domain must not divide by zero or
+    // report a misleading percentage in that case.
+    auto probe = std::make_unique<MockGPUProbe>();
+    auto counters = makeGPUCounters("GPU0");
+    counters.fanSpeedRaw = 170;
+    counters.fanSpeedMaxRaw = 0;
+    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+
+    EXPECT_EQ(snaps[0].fanSpeedPercent, 0U);
+}
+
 // =============================================================================
 // PCIe Bandwidth Rate Tests
 // =============================================================================
@@ -667,7 +724,8 @@ TEST(GPUModelTest, FanSpeedHistoryReturnsCorrectValues)
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     auto counters = makeGPUCounters("GPU0");
-    counters.fanSpeedPercent = 40;
+    counters.fanSpeedRaw = 40;
+    counters.fanSpeedMaxRaw = 100;
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
 
     Domain::GPUModel model(std::move(probe));
@@ -675,7 +733,8 @@ TEST(GPUModelTest, FanSpeedHistoryReturnsCorrectValues)
 
     // Update fan speed and refresh
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    counters.fanSpeedPercent = 95;
+    counters.fanSpeedRaw = 95;
+    counters.fanSpeedMaxRaw = 100;
     rawProbe->withGPUCounters("GPU0", counters);
     model.refresh();
 
