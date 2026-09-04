@@ -47,6 +47,15 @@ NVMLGPUProbe::~NVMLGPUProbe()
 
 bool NVMLGPUProbe::loadNVML()
 {
+    // Defensive guard: today loadNVML() is only ever called once (from the constructor), so
+    // m_NVMLHandle is always null here, but a future retry-on-failure/hot-reload path calling
+    // this twice would otherwise overwrite the handle without a matching FreeLibrary, leaking
+    // one DLL reference count (#781).
+    if (m_NVMLHandle != nullptr)
+    {
+        return true;
+    }
+
     // NVIDIA installs NVML in System32. Restrict the search to that trusted
     // directory so a portable installation cannot load an adjacent DLL.
     m_NVMLHandle = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -56,12 +65,16 @@ bool NVMLGPUProbe::loadNVML()
         return false;
     }
 
-    // Load function pointers
+    // Load function pointers. On a missing symbol, unloadNVML() first (rather than just
+    // `return false`): otherwise m_NVMLHandle stays non-null after a partial load, and the
+    // "already loaded" guard above would then report success on a later retry despite this
+    // function's pointers never having been fully resolved.
 #define LOAD_NVML_FUNC(name)                                                                                                               \
     m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
     if (m_NVML.name == nullptr)                                                                                                            \
     {                                                                                                                                      \
         spdlog::warn("NVMLGPUProbe: Failed to load nvml" #name);                                                                           \
+        unloadNVML();                                                                                                                      \
         return false;                                                                                                                      \
     }
 
@@ -84,6 +97,7 @@ bool NVMLGPUProbe::loadNVML()
     if (m_NVML.SystemGetDriverVersion == nullptr)
     {
         spdlog::warn("NVMLGPUProbe: Failed to load nvmlSystemGetDriverVersion");
+        unloadNVML();
         return false;
     }
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)

@@ -134,10 +134,12 @@ namespace
     DWORD bytesReturned = 0;
     if (DeviceIoControl(handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
     {
+        // Capture the error and close the handle before the heap-allocating wideToUtf8()/warn()
+        // calls below, so an allocation failure there can't skip CloseHandle and leak the handle.
         const DWORD lastError = GetLastError();
+        CloseHandle(handle);
         spdlog::warn(
             "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", WinString::wideToUtf8(devicePath), lastError);
-        CloseHandle(handle);
         return INVALID_HANDLE_VALUE;
     }
 
