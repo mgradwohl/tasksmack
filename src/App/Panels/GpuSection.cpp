@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <optional>
@@ -483,7 +484,10 @@ void renderGpuSection(RenderContext& ctx)
             ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_TEMPERATURE_HALF "  Thermal & Power");
 
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
-            // Note: Fan speed is already a percentage (0-100%), no max needed
+            // Note: Fan speed is already a percentage, no max needed for normalization - but
+            // unlike temp/power it isn't clamped to 100 (see GPUModel::computeSnapshot), so a
+            // reading above the chart's locked 0-100 range renders clipped at the top; an
+            // unavailable sample is NaN (a gap in the line), not a misleading 0%.
 
             auto gpuThermalPlot = [&]()
             {
@@ -576,7 +580,17 @@ void renderGpuSection(RenderContext& ctx)
                                 if (*idxVal >= fanTimeData.offset)
                                 {
                                     const size_t fanIdx = *idxVal - fanTimeData.offset;
-                                    ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanData[fanIdx]));
+                                    // NaN marks a sample where the fan couldn't be read (see the
+                                    // GPUModel::publish() comment) - show that as unavailable
+                                    // rather than casting NaN to an unsigned int.
+                                    if (std::isnan(fanData[fanIdx]))
+                                    {
+                                        ImGui::TextColored(theme.scheme().textMuted, "Fan: N/A");
+                                    }
+                                    else
+                                    {
+                                        ImGui::TextColored(theme.scheme().gpuFan, "Fan: %u%%", static_cast<unsigned int>(fanData[fanIdx]));
+                                    }
                                 }
                             }
                             ImGui::EndTooltip();

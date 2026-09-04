@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -197,7 +198,11 @@ void GPUModel::publish()
             publishedHistory.decoder.push_back(static_cast<float>(sample.decoderUtilPercent));
             publishedHistory.temperature.push_back(static_cast<float>(sample.temperatureC));
             publishedHistory.power.push_back(static_cast<float>(sample.powerDrawWatts));
-            publishedHistory.fanSpeed.push_back(static_cast<float>(sample.fanSpeedPercent));
+            // A sample where the fan couldn't be read (fanSpeedAvailable == false) is stored as
+            // NaN rather than 0.0F, so the history chart shows a gap instead of a misleading
+            // flat "0%" indistinguishable from a genuine idle-fan reading.
+            publishedHistory.fanSpeed.push_back(sample.fanSpeedAvailable ? static_cast<float>(sample.fanSpeedPercent)
+                                                                         : std::numeric_limits<float>::quiet_NaN());
         }
     }
     m_PublicationVersion = publication->version;
@@ -319,8 +324,13 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.fanSpeedAvailable = current.fanSpeedMaxRaw > 0;
     if (snapshot.fanSpeedAvailable)
     {
-        const auto percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
-        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(percent);
+        const std::uint64_t percent = (static_cast<std::uint64_t>(current.fanSpeedRaw) * 100ULL) / current.fanSpeedMaxRaw;
+        // Cap at uint32_t's range rather than at 100: a wildly out-of-range percent (e.g. a
+        // corrupted fanSpeedMaxRaw of 1) would otherwise silently truncate/wrap to an arbitrary
+        // small value when narrowed below, hiding exactly the sensor-drift/overspeed signal this
+        // computation is meant to preserve.
+        constexpr std::uint64_t MAX_UINT32 = std::numeric_limits<std::uint32_t>::max();
+        snapshot.fanSpeedPercent = static_cast<std::uint32_t>(std::min(percent, MAX_UINT32));
     }
 
     // Compute rates from deltas (only if we have previous data and valid time delta)
