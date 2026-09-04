@@ -338,12 +338,14 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.memoryClockMHz = memClock;
         }
 
-        // Fan speed
+        // Fan speed: nvmlDeviceGetFanSpeed() already returns a 0-100 percentage, so the max is
+        // always 100 (see GPUCounters::fanSpeedRaw/fanSpeedMaxRaw; Domain computes the percent).
         unsigned int fanSpeed = 0;
         result = m_Impl->nvmlDeviceGetFanSpeed(device, &fanSpeed);
         if (result == NVML_SUCCESS)
         {
-            counter.fanSpeedRPMPercent = fanSpeed;
+            counter.fanSpeedRaw = fanSpeed;
+            counter.fanSpeedMaxRaw = 100;
         }
 
         // PCIe throughput: NVML returns rates (KB/s over a ~20ms sampling window), not
