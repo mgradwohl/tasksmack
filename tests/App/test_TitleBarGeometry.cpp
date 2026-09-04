@@ -835,5 +835,110 @@ TEST(ComputeResizeCursorUpdateTest, PureFunction_DeterministicAcrossRepeatedCall
     EXPECT_EQ(first.applyCursor, second.applyCursor);
 }
 
+// ========== computeIsPointInBounds / computeIsPointInAnyBounds (#769) ==========
+// Extracted from TitleBarLayer::isPointInControlArea()'s free-function isInsideBounds()
+// helper, so it's testable without linking TitleBarLayer.cpp (real ImGui/SDL calls
+// throughout - same reason test_ProcessesPanel.cpp doesn't link ProcessesPanel.cpp).
+
+TEST(ComputeIsPointInBoundsTest, PointInsideReturnsTrue)
+{
+    const ButtonBounds bounds{.minX = 10.0F, .maxX = 50.0F, .minY = 5.0F, .maxY = 25.0F};
+    EXPECT_TRUE(computeIsPointInBounds(30.0F, 15.0F, bounds));
+}
+
+TEST(ComputeIsPointInBoundsTest, PointOnEdgeIsInclusive)
+{
+    const ButtonBounds bounds{.minX = 10.0F, .maxX = 50.0F, .minY = 5.0F, .maxY = 25.0F};
+    EXPECT_TRUE(computeIsPointInBounds(10.0F, 5.0F, bounds));
+    EXPECT_TRUE(computeIsPointInBounds(50.0F, 25.0F, bounds));
+}
+
+TEST(ComputeIsPointInBoundsTest, PointOutsideReturnsFalse)
+{
+    const ButtonBounds bounds{.minX = 10.0F, .maxX = 50.0F, .minY = 5.0F, .maxY = 25.0F};
+    EXPECT_FALSE(computeIsPointInBounds(9.9F, 15.0F, bounds));
+    EXPECT_FALSE(computeIsPointInBounds(50.1F, 15.0F, bounds));
+    EXPECT_FALSE(computeIsPointInBounds(30.0F, 4.9F, bounds));
+    EXPECT_FALSE(computeIsPointInBounds(30.0F, 25.1F, bounds));
+}
+
+TEST(ComputeIsPointInBoundsTest, DefaultConstructedBoundsNeverMatch)
+{
+    // maxX == minX (both 0.0F) is the "unset" sentinel - a button whose bounds haven't been
+    // computed yet (e.g. before the first render) must never claim a hit.
+    const ButtonBounds unset{};
+    EXPECT_FALSE(computeIsPointInBounds(0.0F, 0.0F, unset));
+}
+
+TEST(ComputeIsPointInAnyBoundsTest, MatchesWhenPointInsideAnyBounds)
+{
+    const std::array<ButtonBounds, 6> allBounds{
+        ButtonBounds{.minX = 0.0F, .maxX = 10.0F, .minY = 0.0F, .maxY = 10.0F},    // icon
+        ButtonBounds{},                                                            // help (unset)
+        ButtonBounds{},                                                            // settings (unset)
+        ButtonBounds{},                                                            // minimize (unset)
+        ButtonBounds{.minX = 100.0F, .maxX = 120.0F, .minY = 0.0F, .maxY = 20.0F}, // maximize
+        ButtonBounds{},                                                            // close (unset)
+    };
+
+    EXPECT_TRUE(computeIsPointInAnyBounds(5.0F, 5.0F, allBounds));    // inside icon
+    EXPECT_TRUE(computeIsPointInAnyBounds(110.0F, 10.0F, allBounds)); // inside maximize
+    EXPECT_FALSE(computeIsPointInAnyBounds(50.0F, 50.0F, allBounds)); // inside none
+}
+
+TEST(ComputeIsPointInAnyBoundsTest, AllUnsetNeverMatches)
+{
+    const std::array<ButtonBounds, 6> allUnset{};
+    EXPECT_FALSE(computeIsPointInAnyBounds(0.0F, 0.0F, allUnset));
+    EXPECT_FALSE(computeIsPointInAnyBounds(500.0F, 500.0F, allUnset));
+}
+
+// ========== computeDetectResizeEdge (#769) ==========
+// Extracted from TitleBarLayer::detectResizeEdge().
+
+TEST(ComputeDetectResizeEdgeTest, MaximizedAlwaysReturnsNone)
+{
+    // Even a point deep in a corner returns None when maximized - there are no resize
+    // borders on a maximized window.
+    EXPECT_EQ(computeDetectResizeEdge(0.0F, 0.0F, 800, 600, /*isMaximized=*/true, 8.0F), ResizeEdge::None);
+}
+
+TEST(ComputeDetectResizeEdgeTest, InteriorPointReturnsNone)
+{
+    EXPECT_EQ(computeDetectResizeEdge(400.0F, 300.0F, 800, 600, false, 8.0F), ResizeEdge::None);
+}
+
+TEST(ComputeDetectResizeEdgeTest, EdgesAndCorners)
+{
+    constexpr float THICKNESS = 8.0F;
+    constexpr int W = 800;
+    constexpr int H = 600;
+
+    EXPECT_EQ(computeDetectResizeEdge(0.0F, 300.0F, W, H, false, THICKNESS), ResizeEdge::Left);
+    EXPECT_EQ(computeDetectResizeEdge(static_cast<float>(W) - 1.0F, 300.0F, W, H, false, THICKNESS), ResizeEdge::Right);
+    EXPECT_EQ(computeDetectResizeEdge(400.0F, 0.0F, W, H, false, THICKNESS), ResizeEdge::Top);
+    EXPECT_EQ(computeDetectResizeEdge(400.0F, static_cast<float>(H) - 1.0F, W, H, false, THICKNESS), ResizeEdge::Bottom);
+
+    EXPECT_EQ(computeDetectResizeEdge(0.0F, 0.0F, W, H, false, THICKNESS), ResizeEdge::TopLeft);
+    EXPECT_EQ(computeDetectResizeEdge(static_cast<float>(W) - 1.0F, 0.0F, W, H, false, THICKNESS), ResizeEdge::TopRight);
+    EXPECT_EQ(computeDetectResizeEdge(0.0F, static_cast<float>(H) - 1.0F, W, H, false, THICKNESS), ResizeEdge::BottomLeft);
+    EXPECT_EQ(computeDetectResizeEdge(static_cast<float>(W) - 1.0F, static_cast<float>(H) - 1.0F, W, H, false, THICKNESS),
+              ResizeEdge::BottomRight);
+}
+
+TEST(ComputeDetectResizeEdgeTest, ThicknessBoundaryIsExclusiveNearFarEdge)
+{
+    // x == resizeBorderThickness is just outside the "near left" zone (nearLeft uses <, not
+    // <=), so it must not be classified as an edge.
+    EXPECT_EQ(computeDetectResizeEdge(8.0F, 300.0F, 800, 600, false, 8.0F), ResizeEdge::None);
+}
+
+// Note: TitleBarLayer.cpp's resize-perf-tracing env-var check used to have its own private
+// "0"/"false"/"off"/"no" case-insensitive parser here. It was a byte-for-byte duplicate of
+// the already-shared, already-tested Core::isEnvFlagEnabled() (Core/EnvUtils.h, covered by
+// tests/Core/test_EnvUtils.cpp) - the same helper main.cpp already uses for this exact env
+// var. Deleted the duplicate and pointed TitleBarLayer.cpp at Core::isEnvFlagEnabled()
+// instead of re-testing the same logic a third time here.
+
 } // namespace
 } // namespace App
