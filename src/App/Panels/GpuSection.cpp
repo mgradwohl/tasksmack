@@ -437,10 +437,10 @@ void renderGpuSection(RenderContext& ctx)
         }
         if (caps.hasFanSpeed)
         {
-            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedRPMPercent),
+            gpuThermalBars.push_back({.valueText = std::format("{}%", snap.fanSpeedPercent),
                                       .label = "GPU Fan Speed",
                                       .tooltipText = {},
-                                      .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedRPMPercent)),
+                                      .value01 = UI::Format::percent01(static_cast<double>(snap.fanSpeedPercent)),
                                       .color = theme.scheme().gpuFan});
         }
 
