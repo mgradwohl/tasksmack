@@ -50,6 +50,12 @@ class StorageModel : public ISamplable
     /// Sample the probe and compute new snapshot (call from background thread).
     void sample() override;
 
+    /// Same as sample(), but with an explicit "now" instead of reading
+    /// std::chrono::steady_clock::now(), so time-dependent behavior (e.g. history pruning,
+    /// #777) can be tested deterministically without waiting out the real interval. Mirrors
+    /// SystemModel's updateFromCounters(counters, nowSeconds) test-injection pattern.
+    void sampleAt(std::chrono::steady_clock::time_point now);
+
     /// Get the latest snapshot (thread-safe, called from UI thread).
     [[nodiscard]] StorageSnapshot latestSnapshot() const;
 
@@ -109,6 +115,17 @@ class StorageModel : public ISamplable
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskReadHistory;
     std::unordered_map<std::string, HistoryBuffer<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
+    // Wall-clock time (nowSeconds, same clock as m_Timestamps) each device name was last seen
+    // in a live sample, so a name absent for longer than the configured history window (at
+    // which point its histories hold nothing but zero padding) can be pruned instead of
+    // retained forever -- otherwise a machine with churning removable/USB storage leaks one
+    // entry per distinct device name ever seen, across
+    // m_DiskStates/m_DiskReadHistory/m_DiskWriteHistory/m_DiskOrder (#777). Deliberately
+    // time-based, matching trimHistory()'s own cutoff, rather than counting sample() calls:
+    // historyCapacityForSeconds() sizes ring buffers for the fastest *supported* refresh
+    // cadence, not the actual one, so a call-count threshold could retain stale entries far
+    // longer than m_MaxHistorySeconds at any slower cadence.
+    std::unordered_map<std::string, double> m_DiskLastSeenSeconds;
     std::shared_ptr<const StoragePublication> m_Publication = std::make_shared<const StoragePublication>();
     std::uint64_t m_PublicationVersion = 0;
     std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
