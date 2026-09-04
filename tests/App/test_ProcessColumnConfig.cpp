@@ -104,6 +104,17 @@ TEST(ProcessColumnSettingsTest, ToggleVisibilityFlipsState)
     EXPECT_EQ(settings.isVisible(ProcessColumn::Name), initial);
 }
 
+TEST(ProcessColumnSettingsTest, ToggleVisibilityOnlyAffectsTargetColumn)
+{
+    ProcessColumnSettings settings;
+    const bool memBefore = settings.isVisible(ProcessColumn::MemPercent);
+
+    settings.toggleVisible(ProcessColumn::CpuPercent);
+
+    // Toggling one column must not disturb any other column's visibility.
+    EXPECT_EQ(settings.isVisible(ProcessColumn::MemPercent), memBefore);
+}
+
 TEST(ProcessColumnSettingsTest, BoundaryConditions)
 {
     ProcessColumnSettings settings;
