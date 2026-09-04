@@ -351,7 +351,7 @@ Two established ways to get real coverage of such a file's logic anyway:
    `.cpp`. The original file keeps a thin wrapper that supplies the live inputs (mouse position,
    SDL window state, etc.); the header holds the actual decision and gets tested directly. See
    `App/TitleBarGeometry.h` (`computeWindowHitTest`, `computeDetectResizeEdge`,
-   `computeIsPointInAnyBounds`, ...), `App/Panels/ProcessDetailsPanel_ActionHelpers.h`
+   `computeIsPointInBounds`, ...), `App/Panels/ProcessDetailsPanel_ActionHelpers.h`
    (`dispatchProcessAction`), and `UI/DpiScale.h`/`UI/MonospaceFontPath.h` for the pattern. When
    the extracted logic needs to probe the filesystem or environment, take an injectable predicate
    (`std::function<bool(const std::filesystem::path&)>` etc.) the same way `UI::selectAssetsDir()`
