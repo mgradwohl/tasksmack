@@ -143,6 +143,7 @@ struct ROCmGPUProbe::Impl
     rsmi_status_t (*rsmi_dev_power_cap_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_gpu_clk_freq_get)(std::uint32_t, rsmi_clk_type_t, rsmi_frequencies_t*) = nullptr;
     rsmi_status_t (*rsmi_dev_fan_speed_get)(std::uint32_t, std::uint32_t, std::int64_t*) = nullptr;
+    rsmi_status_t (*rsmi_dev_fan_speed_max_get)(std::uint32_t, std::uint32_t, std::uint64_t*) = nullptr;
     const char* (*rsmi_status_string)(rsmi_status_t) = nullptr;
 
     bool loadROCmSMI();
@@ -190,6 +191,14 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
         unloadROCmSMI();                                                                                                                   \
         return false;                                                                                                                      \
     }
+// Optional symbols degrade gracefully: if missing, the dependent metric is simply left
+// unavailable instead of taking down the entire probe (unlike LOAD_ROCM_FUNC above).
+#define LOAD_ROCM_FUNC_OPTIONAL(name)                                                                                                      \
+    name = reinterpret_cast<decltype(name)>(dlsym(rocmHandle, #name));                                                                     \
+    if (name == nullptr)                                                                                                                   \
+    {                                                                                                                                      \
+        spdlog::debug("ROCmGPUProbe: Optional function {} not available - {}", #name, dlerror());                                          \
+    }
 
     LOAD_ROCM_FUNC(rsmi_init);
     LOAD_ROCM_FUNC(rsmi_shut_down);
@@ -206,9 +215,11 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
     LOAD_ROCM_FUNC(rsmi_dev_power_cap_get);
     LOAD_ROCM_FUNC(rsmi_dev_gpu_clk_freq_get);
     LOAD_ROCM_FUNC(rsmi_dev_fan_speed_get);
+    LOAD_ROCM_FUNC_OPTIONAL(rsmi_dev_fan_speed_max_get);
     LOAD_ROCM_FUNC(rsmi_status_string);
 
 #undef LOAD_ROCM_FUNC
+#undef LOAD_ROCM_FUNC_OPTIONAL
     // NOLINTEND(concurrency-mt-unsafe,bugprone-macro-parentheses)
 
     // Initialize ROCm SMI (flags = 0 for default initialization)
@@ -449,12 +460,30 @@ std::vector<GPUCounters> ROCmGPUProbe::readGPUCounters()
             counter.memoryClockMHz = static_cast<std::uint32_t>(memFreq.frequency[memFreq.current] / 1000000); // Convert Hz to MHz
         }
 
-        // Fan speed (sensor 0, in RPM)
-        std::int64_t fanSpeed = 0;
-        result = m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &fanSpeed);
-        if (result == RSMI_STATUS_SUCCESS)
+        // Fan speed (sensor 0). rsmi_dev_fan_speed_get() returns a raw value relative to
+        // RSMI_MAX_FAN_SPEED, not RPM (rsmi_dev_fan_rpms_get() is the RPM query, a different
+        // function) -- see #734. Store both raw numbers unconverted; Domain (GPUModel)
+        // normalizes them to a percentage, consistent with how it derives memoryUsedPercent
+        // and powerUtilPercent from other raw counter pairs. The max-speed query is loaded
+        // optionally (LOAD_ROCM_FUNC_OPTIONAL): older/partial ROCm SMI builds that lack it just
+        // don't report fan speed, rather than losing the whole probe.
+        if (m_Impl->rsmi_dev_fan_speed_max_get != nullptr)
         {
-            counter.fanSpeedRPMPercent = static_cast<std::uint32_t>(fanSpeed);
+            std::int64_t fanSpeed = 0;
+            result = m_Impl->rsmi_dev_fan_speed_get(deviceIdx, 0, &fanSpeed);
+            // fanSpeed == 0 is a legitimate reading (fan stopped / 0% duty on an idle GPU), not
+            // a missing value, so it must still be stored -- only reject a negative value, which
+            // would indicate a buggy/corrupted driver rather than "not spinning".
+            if (result == RSMI_STATUS_SUCCESS && fanSpeed >= 0)
+            {
+                std::uint64_t maxFanSpeed = 0;
+                result = m_Impl->rsmi_dev_fan_speed_max_get(deviceIdx, 0, &maxFanSpeed);
+                if (result == RSMI_STATUS_SUCCESS && maxFanSpeed > 0)
+                {
+                    counter.fanSpeedRaw = static_cast<std::uint32_t>(fanSpeed);
+                    counter.fanSpeedMaxRaw = static_cast<std::uint32_t>(maxFanSpeed);
+                }
+            }
         }
 
         // PCIe throughput: Not directly available via ROCm SMI
@@ -497,7 +526,9 @@ GPUCapabilities ROCmGPUProbe::capabilities() const
     caps.hasHotspotTemp = true; // Junction temperature available
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
-    caps.hasFanSpeed = true;
+    // Only advertised when the optional max-speed symbol loaded (see readGPUCounters()) --
+    // without it we can't normalize the raw ROCm reading to a percentage, so nothing is reported.
+    caps.hasFanSpeed = m_Impl->rsmi_dev_fan_speed_max_get != nullptr;
     caps.hasPCIeMetrics = false;       // Not directly available via ROCm SMI
     caps.hasEngineUtilization = false; // Not available
     caps.hasPerProcessMetrics = false; // Major limitation: no per-process data
