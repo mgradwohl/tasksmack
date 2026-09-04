@@ -454,7 +454,15 @@ TEST(BackgroundSamplerTest, ZeroIntervalIsClamped)
     sampler.addSamplable(samplable);
 
     sampler.start();
-    std::this_thread::sleep_for(50ms);
+    // The sampler loop samples immediately on its first iteration, before waiting out the
+    // (clamped) interval, but a fixed 50ms sleep was racy against thread-startup/scheduling
+    // latency on a loaded CI runner -- poll instead, like the other tests in this file.
+    // waitFor()'s own return value isn't asserted on: it could return false right at the
+    // timeout boundary even if the sample lands immediately after the last predicate check
+    // (or while stop() is joining), which would be a false-negative test failure despite
+    // getSampleCount() being correct by the time stop() returns. It's still used to avoid an
+    // unconditional worst-case wait, just not as the pass/fail signal.
+    (void) waitFor([&] { return samplable->getSampleCount() >= 1; });
     sampler.stop();
 
     EXPECT_GE(samplable->getSampleCount(), 1);
