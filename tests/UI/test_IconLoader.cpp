@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <utility>
 
 namespace UI
@@ -85,11 +86,21 @@ TEST(IconLoaderTest, LoadTextureWithNonexistentFileReturnsInvalidTexture)
 TEST(IconLoaderTest, LoadTextureWithNonImageFileReturnsInvalidTexture)
 {
     // A file that exists but isn't a valid image also fails inside stbi_load(), still before
-    // any GL call - use this test file itself as guaranteed-not-an-image content.
-    const std::filesystem::path notAnImage = __FILE__;
+    // any GL call. Write a small guaranteed-non-image temp file rather than using __FILE__:
+    // __FILE__ may be a relative path (compiler-flag dependent) and isn't guaranteed to still
+    // be an on-disk path at test-run time, while temp_directory_path() keeps this hermetic
+    // across toolchains and working directories.
+    const std::filesystem::path notAnImage = std::filesystem::temp_directory_path() / "tasksmack_iconloader_test_not_an_image.tmp";
+    {
+        std::ofstream out(notAnImage, std::ios::binary);
+        out << "not an image";
+    }
     ASSERT_TRUE(std::filesystem::exists(notAnImage));
+
     const Texture tex = loadTexture(notAnImage);
     EXPECT_FALSE(tex.valid());
+
+    std::filesystem::remove(notAnImage);
 }
 
 } // namespace
