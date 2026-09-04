@@ -406,7 +406,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 
     // Guards against a buggy/corrupted driver reporting an implausible process count and
     // forcing a huge allocation; no real system runs anywhere near this many GPU contexts.
-    constexpr unsigned int kMaxPlausibleProcessCount = 65536;
+    constexpr unsigned int MAX_PLAUSIBLE_PROCESS_COUNT = 65536;
 
     for (const auto& [index, device] : m_DeviceHandles)
     {
@@ -422,7 +422,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             unsigned int computeCount = 0;
             nvmlReturn_t result = m_NVML.DeviceGetComputeRunningProcesses(device, &computeCount, nullptr);
-            if (computeCount > kMaxPlausibleProcessCount)
+            if (computeCount > MAX_PLAUSIBLE_PROCESS_COUNT)
             {
                 spdlog::warn("NVMLGPUProbe: DeviceGetComputeRunningProcesses reported implausible count {} on GPU {}, skipping",
                              computeCount,
@@ -470,7 +470,7 @@ std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
         {
             unsigned int graphicsCount = 0;
             nvmlReturn_t result = m_NVML.DeviceGetGraphicsRunningProcesses(device, &graphicsCount, nullptr);
-            if (graphicsCount > kMaxPlausibleProcessCount)
+            if (graphicsCount > MAX_PLAUSIBLE_PROCESS_COUNT)
             {
                 spdlog::warn("NVMLGPUProbe: DeviceGetGraphicsRunningProcesses reported implausible count {} on GPU {}, skipping",
                              graphicsCount,
@@ -557,7 +557,10 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
     caps.hasFanSpeed = true;
-    caps.hasPCIeMetrics = true;
+    // NVML only returns PCIe throughput as rates, not cumulative counters, so
+    // pcieTxBytes/pcieRxBytes are deliberately left at 0 (see the comment where counters
+    // are populated above) -- report the capability as unavailable, not present-but-zero.
+    caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = true;
     // Per-process metrics available if we have the required functions
     caps.hasPerProcessMetrics = (m_NVML.DeviceGetComputeRunningProcesses != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses != nullptr);

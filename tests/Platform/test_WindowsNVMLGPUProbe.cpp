@@ -144,7 +144,9 @@ TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
         EXPECT_TRUE(caps.hasPowerMetrics);
         EXPECT_TRUE(caps.hasClockSpeeds);
         EXPECT_TRUE(caps.hasFanSpeed);
-        EXPECT_TRUE(caps.hasPCIeMetrics);
+        // NVML only exposes PCIe throughput as rates, not the cumulative counters
+        // GPUTypes.h expects, so this probe deliberately reports the capability as false.
+        EXPECT_FALSE(caps.hasPCIeMetrics);
         EXPECT_TRUE(caps.supportsMultiGPU);
     }
 }

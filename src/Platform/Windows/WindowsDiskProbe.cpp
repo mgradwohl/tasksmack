@@ -4,7 +4,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <cstdint>
 #include <memory>
 
 // clang-format off
@@ -23,6 +22,7 @@
 #pragma comment(lib, "pdh.lib")
 
 #include "WinString.h"
+#include "WindowsDiskProbeMath.h"
 
 #include <optional>
 #include <string>
@@ -40,6 +40,47 @@ struct WindowsDiskProbe::Impl
     {
         std::string instanceName;             // e.g. "0 C:" - kept for stable UI display
         HANDLE handle = INVALID_HANDLE_VALUE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - Win32 handle type
+
+        DiskHandle() = default;
+        explicit DiskHandle(HANDLE h) : handle(h)
+        {}
+
+        DiskHandle(const DiskHandle&) = delete;
+        DiskHandle& operator=(const DiskHandle&) = delete;
+
+        DiskHandle(DiskHandle&& other) noexcept
+            : instanceName(std::move(other.instanceName)), handle(std::exchange(other.handle, INVALID_HANDLE_VALUE))
+        {}
+
+        DiskHandle& operator=(DiskHandle&& other) noexcept
+        {
+            if (this != &other)
+            {
+                close();
+                instanceName = std::move(other.instanceName);
+                handle = std::exchange(other.handle, INVALID_HANDLE_VALUE);
+            }
+            return *this;
+        }
+
+        // RAII ownership: closes the handle on stack unwind (e.g. if name conversion or
+        // vector growth throws mid-construction) as well as on normal teardown, so a
+        // failure partway through enumerating disks can't leak this handle or any earlier
+        // ones already stored in Impl::disks.
+        ~DiskHandle()
+        {
+            close();
+        }
+
+      private:
+        void close()
+        {
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(handle);
+                handle = INVALID_HANDLE_VALUE;
+            }
+        }
     };
 
     std::vector<DiskHandle> disks;
@@ -156,20 +197,12 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
                     HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex);
                     if (handle != INVALID_HANDLE_VALUE)
                     {
-                        Impl::DiskHandle diskHandle;
+                        // DiskHandle takes RAII ownership of the handle immediately, before
+                        // the name conversion or push_back below run, so either one throwing
+                        // closes the handle automatically on unwind instead of leaking it.
+                        Impl::DiskHandle diskHandle(handle);
                         diskHandle.instanceName = WinString::wideToUtf8(instanceName);
-                        diskHandle.handle = handle;
-                        try
-                        {
-                            m_Impl->disks.push_back(std::move(diskHandle));
-                        }
-                        catch (...)
-                        {
-                            // push_back can throw while growing the vector; the handle isn't
-                            // owned by anything else yet, so close it before propagating.
-                            CloseHandle(handle);
-                            throw;
-                        }
+                        m_Impl->disks.push_back(std::move(diskHandle));
                     }
                 }
                 else
@@ -186,19 +219,10 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
-WindowsDiskProbe::~WindowsDiskProbe()
-{
-    if (m_Impl)
-    {
-        for (const auto& disk : m_Impl->disks)
-        {
-            if (disk.handle != INVALID_HANDLE_VALUE)
-            {
-                CloseHandle(disk.handle);
-            }
-        }
-    }
-}
+// Impl::DiskHandle owns its HANDLE via RAII (closes on destruction), so destroying
+// m_Impl -- and with it the vector<DiskHandle> -- is the single teardown point; no
+// manual CloseHandle loop here, which would otherwise double-close each handle.
+WindowsDiskProbe::~WindowsDiskProbe() = default;
 
 SystemDiskCounters WindowsDiskProbe::read()
 {
@@ -276,14 +300,14 @@ SystemDiskCounters WindowsDiskProbe::read()
         // contract DiskCounters documents and that StorageModel::computeDiskSnapshot
         // relies on for its own delta-then-rate computation - unlike PDH's PhysicalDisk
         // object, which only exposes pre-computed rates.
-        disk.readSectors = static_cast<uint64_t>(perf.BytesRead.QuadPart) / disk.sectorSize;
-        disk.writeSectors = static_cast<uint64_t>(perf.BytesWritten.QuadPart) / disk.sectorSize;
+        disk.readSectors = clampNonNegativeQuadPart(perf.BytesRead.QuadPart) / disk.sectorSize;
+        disk.writeSectors = clampNonNegativeQuadPart(perf.BytesWritten.QuadPart) / disk.sectorSize;
         disk.readsCompleted = perf.ReadCount;
         disk.writesCompleted = perf.WriteCount;
 
         // ReadTime/WriteTime are cumulative, in 100-nanosecond units; convert to milliseconds.
-        disk.readTimeMs = static_cast<uint64_t>(perf.ReadTime.QuadPart) / 10000ULL;
-        disk.writeTimeMs = static_cast<uint64_t>(perf.WriteTime.QuadPart) / 10000ULL;
+        disk.readTimeMs = clampNonNegativeQuadPart(perf.ReadTime.QuadPart) / 10000ULL;
+        disk.writeTimeMs = clampNonNegativeQuadPart(perf.WriteTime.QuadPart) / 10000ULL;
 
         // DISK_PERFORMANCE has no direct cumulative "device busy" counter, so approximate
         // it as the sum of cumulative read+write service time. Under concurrent I/O (queue
