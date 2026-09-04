@@ -1,0 +1,180 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+
+  // Dependabot already covers GitHub Actions (.github/workflows/*) and Python packages
+  // (requirements.txt), both weekly on Mondays (see .github/dependabot.yml). This config is
+  // scoped to exactly the gap Dependabot doesn't cover: C++ libraries pulled in via CMake
+  // FetchContent (SHA-pinned in cmake/Dependencies.cmake, tests/CMakeLists.txt,
+  // benchmarks/CMakeLists.txt) and the LLVM toolchain version pinned for CI/local dev setup.
+  // See issue #89. enabledManagers is restricted to the custom regex manager so this bot never
+  // also tries to manage npm/pip/github-actions and produce duplicate or conflicting PRs
+  // against what Dependabot already does.
+  enabledManagers: ['custom.regex'],
+
+  dependencyDashboard: true,
+  labels: ['dependencies', 'ci'],
+  commitMessagePrefix: 'build(deps):',
+  // Staggered from Dependabot (Monday) and the osv-scanner vulnerability scan (Sunday 06:00 UTC).
+  schedule: ['before 6am on wednesday'],
+  prConcurrentLimit: 5,
+  rangeStrategy: 'pin',
+
+  customManagers: [
+    // ── cmake/Dependencies.cmake ──────────────────────────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/gabime/spdlog\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'gabime/spdlog',
+      packageNameTemplate: 'gabime/spdlog',
+      datasourceTemplate: 'github-tags',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/marzer/tomlplusplus\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'marzer/tomlplusplus',
+      packageNameTemplate: 'marzer/tomlplusplus',
+      datasourceTemplate: 'github-tags',
+    },
+    // Deliberately no entry for nothings/stb: it's pinned to a raw commit with no upstream
+    // tags at all, so there's no version to compare against. Left as an occasional manual
+    // check (header-only, rarely changes) -- see #89.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/libsdl-org/SDL\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>release-[0-9.]+)',
+      ],
+      depNameTemplate: 'libsdl-org/SDL',
+      packageNameTemplate: 'libsdl-org/SDL',
+      datasourceTemplate: 'github-tags',
+      // SDL3 tags releases as "release-X.Y.Z", not semver's "vX.Y.Z".
+      versioningTemplate: 'regex:^release-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/Dav1dde/glad\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'Dav1dde/glad',
+      packageNameTemplate: 'Dav1dde/glad',
+      datasourceTemplate: 'github-tags',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/freetype/freetype\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>VER-[0-9-]+)',
+      ],
+      depNameTemplate: 'freetype/freetype',
+      packageNameTemplate: 'freetype/freetype',
+      datasourceTemplate: 'github-tags',
+      // freetype tags releases as "VER-2-14-3", not "v2.14.3".
+      versioningTemplate: 'regex:^VER-(?<major>\\d+)-(?<minor>\\d+)-(?<patch>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/ocornut/imgui\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+[a-z]?-docking)',
+      ],
+      depNameTemplate: 'ocornut/imgui',
+      packageNameTemplate: 'ocornut/imgui',
+      datasourceTemplate: 'github-tags',
+      // This project tracks imgui's docking branch specifically (tags like "v1.92.9b-docking"),
+      // not mainline releases. The trailing "-docking" in the regex both parses the version and
+      // restricts matches to docking-branch tags -- a plain "v1.93.0" mainline tag won't match
+      // and won't be proposed.
+      versioningTemplate: 'regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?<build>[a-z]?)-docking$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Dependencies\\.cmake$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/epezent/implot\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'epezent/implot',
+      packageNameTemplate: 'epezent/implot',
+      datasourceTemplate: 'github-tags',
+      // implot's tags are 2-component ("v1.0"), not strict 3-component semver.
+      versioningTemplate: 'semver-coerce',
+    },
+
+    // ── tests/CMakeLists.txt ──────────────────────────────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tests/CMakeLists\\.txt$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/google/googletest\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'google/googletest',
+      packageNameTemplate: 'google/googletest',
+      datasourceTemplate: 'github-tags',
+    },
+
+    // ── benchmarks/CMakeLists.txt ─────────────────────────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^benchmarks/CMakeLists\\.txt$/'],
+      matchStrings: [
+        'GIT_REPOSITORY https://github\\.com/google/benchmark\\.git\\s+GIT_TAG (?<currentDigest>[0-9a-f]{40})\\s+# (?<currentValue>v[0-9.]+)',
+      ],
+      depNameTemplate: 'google/benchmark',
+      packageNameTemplate: 'google/benchmark',
+      datasourceTemplate: 'github-tags',
+    },
+
+    // ── LLVM toolchain (Windows exact semver pin only -- see packageRules below for why
+    //    major bumps are excluded, and why this doesn't also touch the Linux major-version
+    //    pins in ci.yml/tools/setup-dev.sh) ────────────────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
+      matchStrings: [
+        "LLVM_SEMVER_VERSION: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      // LLVM's git tags are named "llvmorg-22.1.7", not the bare "22.1.7" this repo pins.
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$LlvmVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+  ],
+
+  packageRules: [
+    {
+      // Bundle both Windows-LLVM-semver pin locations (ci.yml + tools/setup-dev.ps1) into one
+      // PR so they can't drift out of sync with each other.
+      matchPackageNames: ['llvm/llvm-project'],
+      groupName: 'LLVM toolchain (Windows pin)',
+    },
+    {
+      // Major LLVM bumps need real validation (new compiler warnings, clang-tidy behavior
+      // changes, Windows package availability) across 3 files (ci.yml, tools/setup-dev.sh,
+      // tools/setup-dev.ps1) and the apt-repo codename for Linux -- that's the same
+      // deliberate, tracked process already used for #752 (LLVM 23 upgrade), not something
+      // to auto-propose on a schedule.
+      matchPackageNames: ['llvm/llvm-project'],
+      matchUpdateTypes: ['major'],
+      enabled: false,
+    },
+  ],
+}
