@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -242,6 +243,37 @@ void querySocketsForFamily(int socket, int family, InetDiagRequest& req, std::ve
     }
 }
 
+/// RAII guard for a POSIX DIR* stream. Ensures closedir() runs on all paths, including
+/// exception paths (e.g. std::unordered_map insertion can throw on OOM), mirroring
+/// ProcParsing::FdGuard for regular file descriptors (#772).
+class DirGuard
+{
+  public:
+    explicit DirGuard(DIR* dir) noexcept : m_Dir(dir)
+    {}
+
+    ~DirGuard() noexcept
+    {
+        if (m_Dir != nullptr)
+        {
+            closedir(m_Dir);
+        }
+    }
+
+    DirGuard(const DirGuard&) = delete;
+    DirGuard& operator=(const DirGuard&) = delete;
+    DirGuard(DirGuard&&) = delete;
+    DirGuard& operator=(DirGuard&&) = delete;
+
+    [[nodiscard]] DIR* get() const noexcept
+    {
+        return m_Dir;
+    }
+
+  private:
+    DIR* m_Dir;
+};
+
 } // namespace
 
 NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
@@ -288,9 +320,19 @@ NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : m_C
 
     // Issue a best-effort INET_DIAG query as a warm-up / sanity check.
     // Note: availability is currently based solely on successful socket creation/bind;
-    // a failure in this initial query does NOT change m_Available.
-    std::vector<SocketStats> testResults;
-    querySockets(IPPROTO_TCP, testResults);
+    // a failure in this initial query does NOT change m_Available. Caught rather than
+    // propagated: an exception here (e.g. std::bad_alloc while collecting results) would
+    // otherwise abort construction after m_Socket is already open, leaking the fd since
+    // ~NetlinkSocketStats() never runs for an object that didn't finish constructing (#773).
+    try
+    {
+        std::vector<SocketStats> testResults;
+        querySockets(IPPROTO_TCP, testResults);
+    }
+    catch (const std::exception& e)
+    {
+        spdlog::debug("Netlink warm-up query threw: {}", e.what());
+    }
 
     // Set available - the socket is considered functional if it was created and bound,
     // even if there are no TCP sockets yet or the warm-up query fails.
@@ -446,9 +488,12 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
         // Scan /proc/[pid]/fd/ for socket symlinks
         const std::filesystem::path fdPath = procEntry.path() / "fd";
 
-        // Use opendir/readdir for efficiency (avoid exception overhead)
-        DIR* fdDir = opendir(fdPath.c_str());
-        if (fdDir == nullptr)
+        // Use opendir/readdir for efficiency (avoid exception overhead). The DIR* itself is
+        // still wrapped in DirGuard so it can't leak if inodeToPid[inode] below throws (e.g.
+        // std::bad_alloc on a rehash) -- the "avoid exception overhead" choice only opted out
+        // of std::filesystem::directory_iterator, not out of exception *safety* (#772).
+        const DirGuard fdDirGuard(opendir(fdPath.c_str()));
+        if (fdDirGuard.get() == nullptr)
         {
             continue; // Permission denied or process exited
         }
@@ -456,7 +501,7 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
         std::array<char, 256> linkTarget{};
 
         // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: single DIR* per thread
-        while (const struct dirent* entry = readdir(fdDir))
+        while (const struct dirent* entry = readdir(fdDirGuard.get()))
         {
             // Skip . and ..
             if (entry->d_name[0] == '.')
@@ -496,8 +541,6 @@ std::unordered_map<std::uint64_t, std::int32_t> buildInodeToPidMap()
                 inodeToPid[inode] = pid;
             }
         }
-
-        closedir(fdDir);
     }
 
     return inodeToPid;
