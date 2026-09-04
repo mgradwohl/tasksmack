@@ -1165,6 +1165,55 @@ TEST(SystemModelTest, PerInterfaceNetworkRatesHandleInterfaceRemoval)
     EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 1000.0);
 }
 
+// Regression test for #776: per-interface history maps must not retain an entry forever
+// once its interface has been gone longer than the whole history window (Docker/VPN/WiFi
+// interfaces churn over a long-running session). Uses the minimum history window so the
+// test doesn't need hundreds of iterations to exercise the prune threshold.
+TEST(SystemModelTest, PerInterfaceHistoryPrunedAfterExtendedAbsence)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    auto* rawProbe = probe.get();
+
+    Domain::SystemModel model(std::move(probe));
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+
+    auto iface1 = makeInterfaceCounters("eth0", 1000, 500);
+    auto iface2 = makeInterfaceCounters("wlan0", 2000, 1000);
+    auto countersWithBoth = makeSystemCounters(makeCpuCounters(100, 0, 50, 850),
+                                               makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024),
+                                               0,
+                                               {},
+                                               3000,
+                                               1500,
+                                               {iface1, iface2});
+    rawProbe->setCounters(countersWithBoth);
+    // History only starts accumulating once a previous sample exists to compute deltas
+    // against, so two calls are needed before any history buffer is populated.
+    model.updateFromCounters(countersWithBoth, 1.0);
+    model.updateFromCounters(countersWithBoth, 2.0);
+
+    // wlan0 has just been seen, so it should have real history.
+    EXPECT_FALSE(model.netRxHistoryForInterface("wlan0").empty());
+    EXPECT_FALSE(model.netTxHistoryForInterface("wlan0").empty());
+
+    // wlan0 disappears (e.g. Wi-Fi disabled) for longer than the entire history window.
+    auto countersWithoutWlan = makeSystemCounters(
+        makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1024ULL * 1024 * 1024, 512ULL * 1024 * 1024), 0, {}, 3000, 1500, {iface1});
+    const std::size_t capacity = Domain::Sampling::historyCapacityForSeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    for (std::size_t i = 0; i < capacity + 2; ++i)
+    {
+        model.updateFromCounters(countersWithoutWlan, 3.0 + static_cast<double>(i) * 0.01);
+    }
+
+    // wlan0's entry must be fully pruned (empty, not merely zero-padded), so the map doesn't
+    // retain one entry per interface name forever.
+    EXPECT_TRUE(model.netRxHistoryForInterface("wlan0").empty());
+    EXPECT_TRUE(model.netTxHistoryForInterface("wlan0").empty());
+
+    // eth0, still present every cycle, must be unaffected.
+    EXPECT_FALSE(model.netRxHistoryForInterface("eth0").empty());
+}
+
 TEST(SystemModelTest, PerInterfaceNetworkRatesWithVariableTimeDelta)
 {
     auto probe = std::make_unique<MockSystemProbe>();

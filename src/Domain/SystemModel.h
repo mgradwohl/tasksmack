@@ -8,6 +8,8 @@
 #include "SystemSnapshot.h"
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -134,6 +136,13 @@ class SystemModel : public ISamplable
     // Per-interface network history (keyed by interface name)
     std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceRxHistory;
     std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceTxHistory;
+    // Refresh generation at which each interface name was last seen in a live sample, so a
+    // name absent for longer than the whole history window (at which point its buffers hold
+    // nothing but zero padding) can be pruned instead of retained forever -- otherwise a
+    // machine with churning interfaces (container veth*/br-*, VPN reconnects, WiFi cycling)
+    // leaks one HistoryBuffer pair per distinct interface name ever seen (#776).
+    std::unordered_map<std::string, std::uint64_t> m_InterfaceLastSeenGeneration;
+    std::uint64_t m_CurrentGeneration = 0;
     HistoryBuffer<double> m_Timestamps;
     std::vector<HistoryBuffer<float>> m_PerCoreHistory;
 

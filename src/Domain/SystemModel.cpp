@@ -531,6 +531,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
         {
             return std::ranges::any_of(snap.networkInterfaces, [&name](const auto& ifaceSnap) { return ifaceSnap.name == name; });
         };
+        ++m_CurrentGeneration;
         for (const auto& ifaceSnap : snap.networkInterfaces)
         {
             const auto& name = ifaceSnap.name;
@@ -551,6 +552,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             };
             ensureAligned(m_PerInterfaceRxHistory, name).push(static_cast<float>(ifaceSnap.rxBytesPerSec));
             ensureAligned(m_PerInterfaceTxHistory, name).push(static_cast<float>(ifaceSnap.txBytesPerSec));
+            m_InterfaceLastSeenGeneration[name] = m_CurrentGeneration;
         }
         // Push 0.0F placeholder for known interfaces absent from this sample.
         // Iterating m_PerInterfaceRxHistory and mutating only the mapped values
@@ -563,6 +565,30 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters, doub
             {
                 rxBuf.push(0.0F);
                 m_PerInterfaceTxHistory.at(name).push(0.0F);
+            }
+        }
+
+        // Prune interfaces absent for longer than the whole history window: by that point
+        // their buffers hold nothing but the 0.0F padding just pushed above, so removing the
+        // entry changes nothing observable (a fully zero-padded buffer and a missing key both
+        // present as "no recent data" via netRxHistoryForInterface()/netTxHistoryForInterface()),
+        // but retaining it forever would grow these maps without bound on a machine with
+        // churning interfaces (#776).
+        {
+            const std::size_t historyCapacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+            std::vector<std::string> staleInterfaces;
+            for (const auto& [name, lastSeen] : m_InterfaceLastSeenGeneration)
+            {
+                if ((m_CurrentGeneration - lastSeen) > historyCapacity)
+                {
+                    staleInterfaces.push_back(name);
+                }
+            }
+            for (const auto& name : staleInterfaces)
+            {
+                m_PerInterfaceRxHistory.erase(name);
+                m_PerInterfaceTxHistory.erase(name);
+                m_InterfaceLastSeenGeneration.erase(name);
             }
         }
 
