@@ -219,19 +219,10 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
-WindowsDiskProbe::~WindowsDiskProbe()
-{
-    if (m_Impl)
-    {
-        for (const auto& disk : m_Impl->disks)
-        {
-            if (disk.handle != INVALID_HANDLE_VALUE)
-            {
-                CloseHandle(disk.handle);
-            }
-        }
-    }
-}
+// Impl::DiskHandle owns its HANDLE via RAII (closes on destruction), so destroying
+// m_Impl -- and with it the vector<DiskHandle> -- is the single teardown point; no
+// manual CloseHandle loop here, which would otherwise double-close each handle.
+WindowsDiskProbe::~WindowsDiskProbe() = default;
 
 SystemDiskCounters WindowsDiskProbe::read()
 {
