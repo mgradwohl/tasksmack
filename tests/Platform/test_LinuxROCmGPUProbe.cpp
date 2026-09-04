@@ -124,15 +124,24 @@ TEST(LinuxROCmGPUProbeTest, MockLibraryReturnsExpectedCountersAndFallbacks)
     EXPECT_DOUBLE_EQ(counters[0].powerLimitWatts, 220.0);
     EXPECT_EQ(counters[0].gpuClockMHz, 1500U);
     EXPECT_EQ(counters[0].memoryClockMHz, 2000U);
-    EXPECT_EQ(counters[0].fanSpeedRPMPercent, 1700U);
+    // ROCmMock reports a raw fan value of 170 and a mocked RSMI_MAX_FAN_SPEED of 255; ROCmGPUProbe
+    // stores both unconverted (Domain normalizes them to a percentage -- see #734).
+    EXPECT_EQ(counters[0].fanSpeedRaw, 170U);
+    EXPECT_EQ(counters[0].fanSpeedMaxRaw, 255U);
 
     EXPECT_EQ(counters[1].gpuId, "9001");
     EXPECT_EQ(counters[1].hotspotTempC, -1);
     EXPECT_EQ(counters[1].gpuClockMHz, 0U);
     EXPECT_EQ(counters[1].memoryClockMHz, 0U);
-    EXPECT_EQ(counters[1].fanSpeedRPMPercent, 0U);
+    EXPECT_EQ(counters[1].fanSpeedRaw, 0U); // hasFanSpeed=false in the mock
+    EXPECT_EQ(counters[1].fanSpeedMaxRaw, 0U);
 
     EXPECT_EQ(counters[2].gpuId, "amd_2");
+    // Legitimate 0 reading (fan stopped / 0% duty) must still be stored as a real sample --
+    // fanSpeedMaxRaw must be populated too, not left at 0 as if the metric were unavailable
+    // (regression coverage for a "fanSpeed > 0" guard that used to misclassify this as missing).
+    EXPECT_EQ(counters[2].fanSpeedRaw, 0U);
+    EXPECT_EQ(counters[2].fanSpeedMaxRaw, 255U);
     EXPECT_EQ(counters[2].pcieTxBytes, 0U);
     EXPECT_EQ(counters[2].pcieRxBytes, 0U);
     EXPECT_DOUBLE_EQ(counters[2].computeUtilPercent, 0.0);
