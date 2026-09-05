@@ -47,7 +47,7 @@ source .venv/bin/activate     # Use the project-local Python environment
 ./tools/check-prereqs.sh      # Verify environment after setup
 ```
 
-The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. It installs GLAD's hash-locked build dependencies and, unless `--minimal` is used, the development dependencies from `requirements.txt`. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling).
+The setup script supports Ubuntu and creates `.venv/` for Python 3.14 tooling without changing the system `python` commands. It installs GLAD's hash-locked build dependencies and, unless `--minimal` is used, the development dependencies from `requirements.txt`, plus the coverage/profiling toolchain: `llvm-cov`/`llvm-profdata`, `heaptrack` (see "Linux — Heap allocation profiling" below), and the FlameGraph scripts (see "Linux — CPU profiling" below), cloned to `~/opt/FlameGraph`. Use `--dry-run` to preview what will be installed without making changes, or `--minimal` to install only build tools (skipping coverage/profiling). `perf` itself is deliberately left as a manual step — it's coupled to the running kernel version, and `check-prereqs.sh` detects and prints the exact install command for it.
 
 ### Automated Setup (Windows)
 
@@ -664,6 +664,7 @@ python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/bench
 | `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance |
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
+| `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
 
 ### Memory Tracking
 
@@ -715,7 +716,21 @@ hotspot perf-data/perf-app-<timestamp>.data
 perf stat ./build/profile/bin/TaskSmackBenchmarks --benchmark_filter=BM_ProcessModel_Refresh
 ```
 
-**Flamegraph generation** requires the Brendan Gregg FlameGraph scripts:
+**Profile one benchmark at a time for accurate hotspot attribution.** Google Benchmark scales
+each benchmark's iteration count (not its wall-clock share) to fill `--benchmark_min_time`, so a
+cheap per-call benchmark gets looped far more times than an expensive one run alongside it. Since
+`perf`'s sampling is time-based, that gives the cheap benchmark equal or greater representation in
+the profile regardless of its real-world cost — confirmed directly: profiling the default
+multi-benchmark filter on a GPU-less machine attributed ~40% of total samples to near-zero-cost GPU
+no-op benchmarks, drowning out the genuinely expensive process/system-probe work measured alongside
+them. `profile-perf.sh bench` detects this automatically and warns (listing every matched
+benchmark) whenever `--bench-filter` matches more than one benchmark; pass a filter that matches
+exactly one (e.g. `--bench-filter 'BM_ProcessModel_Refresh$'`) to get a clean, single-function
+capture.
+
+**Flamegraph generation** requires the Brendan Gregg FlameGraph scripts, which
+`tools/setup-dev.sh` clones to `~/opt/FlameGraph` automatically (unless run with `--minimal`).
+To set up manually instead:
 ```bash
 git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph
 export PATH="$HOME/opt/FlameGraph:$PATH"
@@ -742,7 +757,7 @@ Use `tools/profile-heap.sh` to find hot-path heap allocations that don't show up
 in CPU profiles. Approximately 2–3× runtime overhead (vs. Valgrind's ~50×).
 
 ```bash
-# Install
+# Install (already done for you by tools/setup-dev.sh, unless run with --minimal)
 sudo apt install heaptrack
 
 # App trace

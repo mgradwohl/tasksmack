@@ -161,6 +161,38 @@ fi
 
 [[ -x "${BINARY}" ]] || die "Binary not found or not executable: ${BINARY}. Build with: cmake --build --preset ${PRESET}"
 
+# In bench mode, warn if the filter matches multiple benchmarks. Google Benchmark scales
+# iteration count (not time) to fill --benchmark_min_time per benchmark, so a cheap
+# per-call benchmark gets looped far more times than an expensive one to fill the same
+# time slot. Since perf sampling is time-based, that gives the cheap benchmark equal (or
+# greater) representation in the profile regardless of its real-world importance --
+# confirmed directly: profiling the default multi-benchmark filter on a GPU-less machine
+# attributed ~40% of total samples to near-zero-cost GPU no-op benchmarks, drowning out
+# the genuinely expensive process/system-probe work being measured alongside them.
+if [[ "${MODE}" = "bench" ]]; then
+    BENCH_LIST_ERR="$(mktemp)"
+    trap 'rm -f "${BENCH_LIST_ERR}"' EXIT
+    BENCH_LIST_STATUS=0
+    BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>"${BENCH_LIST_ERR}")" || BENCH_LIST_STATUS=$?
+    if [[ "${BENCH_LIST_STATUS}" -ne 0 ]]; then
+        die "Failed to list benchmarks from ${BINARY} (exit ${BENCH_LIST_STATUS}): $(cat "${BENCH_LIST_ERR}")"
+    fi
+    rm -f "${BENCH_LIST_ERR}"
+    trap - EXIT
+    BENCH_MATCH_COUNT="$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)"
+    if [[ "${BENCH_MATCH_COUNT}" -eq 0 ]]; then
+        die "--bench-filter '${BENCH_FILTER}' matches no benchmarks. Capturing would only measure benchmark startup/shutdown noise. Run '${BINARY} --benchmark_list_tests=true' to see valid names."
+    elif [[ "${BENCH_MATCH_COUNT}" -gt 1 ]]; then
+        echo "WARNING: --bench-filter '${BENCH_FILTER}' matches ${BENCH_MATCH_COUNT} benchmarks:" >&2
+        printf '%s\n' "${BENCH_MATCHES}" | sed 's/^/  - /' >&2
+        echo "  Profiling several benchmarks together can produce misleading relative" >&2
+        echo "  percentages when their per-call costs differ a lot (see the comment above" >&2
+        echo "  this check). For accurate hotspot attribution on one function, pass" >&2
+        echo "  --bench-filter matching exactly one benchmark." >&2
+        echo "" >&2
+    fi
+fi
+
 # ── capture ───────────────────────────────────────────────────────────────────
 print_step "Starting perf capture (mode=${MODE}, preset=${PRESET})"
 info "Data:   ${DATA_FILE}"

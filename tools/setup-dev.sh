@@ -176,6 +176,31 @@ if ! $MINIMAL; then
         echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-cov ..."
     fi
 
+    # heaptrack (tools/profile-heap.sh) and the FlameGraph scripts (analyze-perf.sh) are
+    # zero-risk to install here: heaptrack is a plain apt package, FlameGraph is just a
+    # git clone. Neither is coupled to the running kernel version, unlike `perf` itself
+    # (linux-tools-$(uname -r)) -- that one is deliberately left as a manual step;
+    # check-prereqs.sh already detects and prints the exact install command for it, and
+    # getting the wrong kernel-flavor package here could fail in ways that are confusing
+    # to unwind, especially on WSL2 (see the WSL2 notes in this script and
+    # tools/profile-perf.sh).
+    run_apt heaptrack
+    if [[ ! -d "$HOME/opt/FlameGraph" ]]; then
+        if ! command -v git &>/dev/null; then
+            echo "WARNING: git not found; skipping FlameGraph clone. Install git and re-run, or clone" >&2
+            echo "         manually: git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph" >&2
+        else
+            # git clone fails if the destination's parent directory doesn't exist yet.
+            run_cmd mkdir -p "$HOME/opt"
+            # Best-effort: FlameGraph is optional tooling, so a transient network/proxy
+            # failure here shouldn't abort the rest of setup under `set -e`.
+            if ! run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"; then
+                echo "WARNING: FlameGraph clone failed; continuing setup. Retry manually with:" >&2
+                echo "         git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph" >&2
+            fi
+        fi
+    fi
+
     # ── Step 6: Headless test runtime ────────────────────────────────────────
     echo ""
     echo "==> Installing headless test runtime..."
