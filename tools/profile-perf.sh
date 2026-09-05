@@ -171,6 +171,7 @@ info "Binary: ${BINARY}"
     echo "BINARY=${BINARY}"
     echo "DATA_FILE=${DATA_FILE}"
     echo "TIMESTAMP=${TIMESTAMP}"
+    echo "PERF_EVENT=${PERF_EVENT}"
 } > "${LOG_FILE}"
 
 # perf record flags:
@@ -221,7 +222,11 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
     # empty trace) would otherwise abort the script right here with no diagnostic at all,
     # since the failure surfaces as this command's own exit status, not as sample count 0.
-    if ! perf script -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+    # -G (hide call graph) makes this an accurate one-line-per-sample count: without it,
+    # DWARF call-graph output emits one line per stack frame, so `wc -l` on the default
+    # output counts frames, not samples (confirmed: 38855 frame-lines vs. 11810 actual
+    # samples on the same trace, per perf record's own reported count).
+    if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
         die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
     fi
     SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
