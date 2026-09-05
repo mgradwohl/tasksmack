@@ -2,6 +2,8 @@
 
 #include "Domain/Numeric.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/ChartGrid.h"
+#include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -11,7 +13,6 @@
 #include <implot.h>
 
 #include <algorithm>
-#include <cfloat>
 #include <chrono>
 #include <cstddef>
 #include <format>
@@ -27,15 +28,20 @@ namespace
 
 using UI::Widgets::BAR_WIDTH;
 using UI::Widgets::buildTimeAxis;
+using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
-using UI::Widgets::HISTORY_PLOT_HEIGHT_DEFAULT;
 using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
+using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::smoothTowards;
+
+// Minimum plot height a core cell will shrink to before the grid prefers scrolling over
+// squashing charts flat -- keeps the chart legible even on a very short window with many rows.
+constexpr float MIN_PLOT_HEIGHT = 60.0F;
 
 } // namespace
 
@@ -88,121 +94,108 @@ void renderCpuCoresSection(RenderContext& ctx)
 
     const size_t coreCount = perCoreHist.size();
 
-    // Grid layout
+    // Grid layout: fills the full available panel space (width and height), choosing a
+    // rows x columns shape that tracks the panel's own aspect ratio (square panel -> square-ish
+    // grid, wide panel -> fewer rows/more columns) -- see UI/ChartGridLayout.h for the sizing
+    // algorithm shared with StorageSection's per-disk grid.
     {
-        const float gridWidth = ImGui::GetContentRegionAvail().x;
-        constexpr float minCellWidth = 240.0F;
-        const float barWidth = ImGui::GetFrameHeight(); // Match prior horizontal bar height for visual consistency
-        const float cellWidth = minCellWidth + barWidth;
-        const size_t gridCols = std::max<size_t>(1, static_cast<size_t>(gridWidth / cellWidth));
-        const int gridColsInt = UI::Format::checkedCount(gridCols);
-        const size_t gridRows = (coreCount + gridCols - 1) / gridCols;
+        const float labelHeight = ImGui::GetTextLineHeight();
+        const float spacingY = ImGui::GetStyle().ItemSpacing.y;
+        // Fixed vertical overhead per cell (label row + its spacing), mirroring the prior
+        // fixed-height layout's margins so cell proportions don't visibly shift.
+        const float cellOverhead = labelHeight + spacingY + BAR_WIDTH + (spacingY * 2.0F);
+        const float barColumnAllowance = ImGui::GetFrameHeight(); // extra width for the NowBar column
 
-        if (ImGui::BeginTable("PerCoreGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
-        {
-            for (size_t row = 0; row < gridRows; ++row)
-            {
-                ImGui::TableNextRow();
-                for (size_t col = 0; col < gridCols; ++col)
-                {
-                    const size_t coreIdx = (row * gridCols) + col;
-                    ImGui::TableNextColumn();
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ChartGridConfig gridConfig{
+            .availableWidth = avail.x,
+            .availableHeight = avail.y,
+            .itemCount = coreCount,
+            .minCellWidth = 240.0F + barColumnAllowance,
+            .minCellHeight = cellOverhead + MIN_PLOT_HEIGHT,
+        };
 
-                    if (coreIdx >= coreCount)
-                    {
-                        continue;
-                    }
-
-                    const auto& samples = perCoreHist[coreIdx];
-                    if (samples.empty())
-                    {
-                        ImGui::TextColored(theme.scheme().textMuted, "Core %zu\nCollecting data...", coreIdx);
-                        continue;
-                    }
-
-                    const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
-
-                    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
-                    ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-                    const std::string childId = std::format("CoreCell{}", coreIdx);
-                    const float labelHeight = ImGui::GetTextLineHeight();
-                    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-                    const float childHeight = labelHeight + spacingY + HISTORY_PLOT_HEIGHT_DEFAULT + BAR_WIDTH + (spacingY * 2.0F);
-                    if (ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders))
-                    {
-                        const float availableWidth = ImGui::GetContentRegionAvail().x;
-                        const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
-                        const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
-                        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
-                        ImGui::TextUnformatted(coreLabel.c_str());
-                        ImGui::Spacing();
-
-                        std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
-
-                        // Capture necessary variables by value/reference for lambda
-                        const auto& sampleData = samples;
-                        const auto& themeRef = theme;
-                        const auto& axisCfg = axisConfig;
-
-                        auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg]()
+        renderChartGrid("PerCoreGrid",
+                        coreCount,
+                        gridConfig,
+                        [&](const size_t coreIdx, float /*cellWidth*/, const float cellHeight)
                         {
-                            auto coreCfg = UI::Widgets::percentHistoryConfig("##PerCorePlot", axisCfg.xMin, axisCfg.xMax);
-                            coreCfg.showLegend = false;
-                            const UI::Widgets::HistoryChart chart(coreCfg);
-                            if (chart.active())
+                            const auto& samples = perCoreHist[coreIdx];
+                            if (samples.empty())
                             {
-                                plotLineWithFill("##Core",
-                                                 timeData.data(),
-                                                 sampleData.data(),
-                                                 UI::Format::checkedCount(timeData.size()),
-                                                 themeRef.scheme().chartCpu,
-                                                 std::nullopt,
-                                                 2.0F,
-                                                 true,
-                                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                                ImGui::TextColored(theme.scheme().textMuted, "Core %zu\nCollecting data...", coreIdx);
+                                return;
+                            }
 
-                                if (ImPlot::IsPlotHovered() && !timeData.empty())
+                            const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
+                            const float availableWidth = ImGui::GetContentRegionAvail().x;
+                            const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
+                            const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
+                            ImGui::TextUnformatted(coreLabel.c_str());
+                            ImGui::Spacing();
+
+                            std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
+                            const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - cellOverhead);
+
+                            // Capture necessary variables by value/reference for lambda
+                            const auto& sampleData = samples;
+                            const auto& themeRef = theme;
+                            const auto& axisCfg = axisConfig;
+
+                            auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg, plotHeight]()
+                            {
+                                auto coreCfg = UI::Widgets::percentHistoryConfig("##PerCorePlot", axisCfg.xMin, axisCfg.xMax);
+                                coreCfg.showLegend = false;
+                                coreCfg.height = plotHeight;
+                                const UI::Widgets::HistoryChart chart(coreCfg);
+                                if (chart.active())
                                 {
-                                    const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
-                                    if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
+                                    plotLineWithFill("##Core",
+                                                     timeData.data(),
+                                                     sampleData.data(),
+                                                     UI::Format::checkedCount(timeData.size()),
+                                                     themeRef.scheme().chartCpu,
+                                                     std::nullopt,
+                                                     2.0F,
+                                                     true,
+                                                     UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+
+                                    if (ImPlot::IsPlotHovered() && !timeData.empty())
                                     {
-                                        ImGui::BeginTooltip();
-                                        const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
-                                        ImGui::TextUnformatted(ageText.c_str());
-                                        ImGui::Separator();
-                                        if (*idxVal < sampleData.size())
+                                        const ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+                                        if (const auto idxVal = hoveredIndexFromPlotX(timeData, mouse.x))
                                         {
-                                            ImGui::TextColored(
-                                                themeRef.scheme().chartCpu,
-                                                "CPU: %s",
-                                                UI::Format::percentCompact(static_cast<double>(sampleData[*idxVal])).c_str());
+                                            ImGui::BeginTooltip();
+                                            const auto ageText = formatAgeSeconds(static_cast<double>(timeData[*idxVal]));
+                                            ImGui::TextUnformatted(ageText.c_str());
+                                            ImGui::Separator();
+                                            if (*idxVal < sampleData.size())
+                                            {
+                                                ImGui::TextColored(
+                                                    themeRef.scheme().chartCpu,
+                                                    "CPU: %s",
+                                                    UI::Format::percentCompact(static_cast<double>(sampleData[*idxVal])).c_str());
+                                            }
+                                            ImGui::EndTooltip();
                                         }
-                                        ImGui::EndTooltip();
                                     }
                                 }
-                            }
-                        };
+                            };
 
-                        const double smoothed = (ctx.smoothedPerCore != nullptr && coreIdx < ctx.smoothedPerCore->size())
-                                                  ? (*ctx.smoothedPerCore)[coreIdx]
-                                                  : snap.cpuPerCore[coreIdx].totalPercent;
-                        const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
-                                         .label = std::format("Core {}", coreIdx),
-                                         .tooltipText = {},
-                                         .value01 = UI::Format::percent01(smoothed),
-                                         .color = theme.progressColor(smoothed)};
+                            const double smoothed = (ctx.smoothedPerCore != nullptr && coreIdx < ctx.smoothedPerCore->size())
+                                                      ? (*ctx.smoothedPerCore)[coreIdx]
+                                                      : snap.cpuPerCore[coreIdx].totalPercent;
+                            const NowBar bar{.valueText = UI::Format::percentCompact(smoothed),
+                                             .label = std::format("Core {}", coreIdx),
+                                             .tooltipText = {},
+                                             .value01 = UI::Format::percent01(smoothed),
+                                             .color = theme.progressColor(smoothed)};
 
-                        std::vector<NowBar> bars;
-                        bars.push_back(bar);
-                        const std::string tableId = std::format("CoreLayout{}", coreIdx);
-                        renderHistoryWithNowBars(tableId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, plotFn, bars, false, 0, true);
-                    }
-                    ImGui::EndChild();
-                    ImGui::PopStyleColor(2);
-                }
-            }
-            ImGui::EndTable();
-        }
+                            std::vector<NowBar> bars;
+                            bars.push_back(bar);
+                            renderHistoryWithNowBars("##CoreHistory", plotHeight, plotFn, bars, false, 0, true);
+                        });
     }
 }
 

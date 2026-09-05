@@ -2,6 +2,8 @@
 
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
+#include "UI/ChartGrid.h"
+#include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -11,10 +13,8 @@
 #include <implot.h>
 
 #include <algorithm>
-#include <cfloat>
 #include <chrono>
 #include <cstddef>
-#include <format>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +27,7 @@ namespace
 {
 
 using UI::Widgets::buildTimeAxis;
+using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
 using UI::Widgets::formatAgeSeconds;
 using UI::Widgets::formatAxisBytesPerSec;
@@ -37,11 +38,18 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::plotLineWithFill;
+using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
-/// Render a single disk cell (label + read/write NowBars + chart).
+// Minimum plot height a disk cell will shrink to before the grid prefers scrolling over
+// squashing charts flat -- mirrors CpuCoresSection's MIN_PLOT_HEIGHT.
+constexpr float MIN_PLOT_HEIGHT = 60.0F;
+
+/// Render a single disk cell (label + read/write NowBars + chart). plotHeight comes from the
+/// enclosing grid cell's size (see renderChartGrid in renderStorageSection) so the chart fills
+/// the cell instead of using a fixed height.
 void renderDiskCell(std::string_view deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
@@ -49,7 +57,8 @@ void renderDiskCell(std::string_view deviceName,
                     double currentRead,
                     double currentWrite,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
-                    const UI::Theme& theme)
+                    const UI::Theme& theme,
+                    float plotHeight)
 {
     const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
                                      writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
@@ -68,13 +77,11 @@ void renderDiskCell(std::string_view deviceName,
                           .value01 = normalizeToUnitInterval(currentWrite, diskMax),
                           .color = theme.scheme().chartIoWrite};
 
-    const std::string plotId = std::format("##DiskPlot_{}", deviceName);
-    const std::string layoutId = std::format("DiskLayout_{}", deviceName);
-
     auto diskPlotFn = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig(plotId.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        auto diskCfg = UI::Widgets::autoFitHistoryConfig("##DiskPlot", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec);
+        diskCfg.height = plotHeight;
+        const UI::Widgets::HistoryChart chart(diskCfg);
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(timeData.size());
@@ -121,8 +128,7 @@ void renderDiskCell(std::string_view deviceName,
     };
 
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
-    renderHistoryWithNowBars(
-        layoutId.c_str(), HISTORY_PLOT_HEIGHT_DEFAULT, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+    renderHistoryWithNowBars("##DiskHistory", plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
 }
 
 } // namespace
@@ -178,15 +184,9 @@ void renderStorageSection(RenderContext& ctx)
 
     if (diskCount > 1)
     {
-        // ── Multi-disk: one chart cell per disk in a 2-column grid ──────────────
+        // ── Multi-disk: one chart cell per disk, grid fills the available panel space ──
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
-
-        const float gridWidth = ImGui::GetContentRegionAvail().x;
-        constexpr float MIN_CELL_WIDTH = 320.0F;
-        const size_t gridCols = std::max<size_t>(1, static_cast<size_t>(gridWidth / MIN_CELL_WIDTH));
-        const int gridColsInt = UI::Format::checkedCount(gridCols);
-        const size_t gridRows = (diskCount + gridCols - 1) / gridCols;
 
         // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
         std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
@@ -196,73 +196,61 @@ void renderStorageSection(RenderContext& ctx)
             diskLookup.emplace(d.deviceName, &d);
         }
 
-        if (ImGui::BeginTable("PerDiskGrid", gridColsInt, ImGuiTableFlags_SizingStretchSame))
-        {
-            for (size_t row = 0; row < gridRows; ++row)
+        const float labelHeight = ImGui::GetTextLineHeight();
+        const float spacingY = ImGui::GetStyle().ItemSpacing.y;
+        constexpr float BAR_HEIGHT = 20.0F; // approximate NowBar row height
+        const float cellOverhead = labelHeight + spacingY + BAR_HEIGHT + (spacingY * 2.0F);
+
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ChartGridConfig gridConfig{
+            .availableWidth = avail.x,
+            .availableHeight = avail.y,
+            .itemCount = diskCount,
+            .minCellWidth = 320.0F,
+            .minCellHeight = cellOverhead + MIN_PLOT_HEIGHT,
+        };
+
+        renderChartGrid(
+            "PerDiskGrid",
+            diskCount,
+            gridConfig,
+            [&](const size_t diskIdx, float /*cellWidth*/, const float cellHeight)
             {
-                ImGui::TableNextRow();
-                for (size_t col = 0; col < gridCols; ++col)
+                const auto& disk = perDisk[diskIdx];
+                const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
+
+                if (alignedCount == 0)
                 {
-                    const size_t diskIdx = (row * gridCols) + col;
-                    ImGui::TableNextColumn();
-                    if (diskIdx >= diskCount)
-                    {
-                        continue;
-                    }
-
-                    const auto& disk = perDisk[diskIdx];
-                    const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
-
-                    // Build float read/write data for this disk
-                    std::vector<float> readData;
-                    std::vector<float> writeData;
-                    readData.reserve(alignedCount);
-                    writeData.reserve(alignedCount);
-                    const size_t readOffset = disk.readBytesPerSec.size() - alignedCount;
-                    const size_t writeOffset = disk.writeBytesPerSec.size() - alignedCount;
-                    for (size_t i = 0; i < alignedCount; ++i)
-                    {
-                        readData.push_back(static_cast<float>(disk.readBytesPerSec[readOffset + i]));
-                        writeData.push_back(static_cast<float>(disk.writeBytesPerSec[writeOffset + i]));
-                    }
-
-                    // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
-                    double diskRead = 0.0;
-                    double diskWrite = 0.0;
-                    if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
-                    {
-                        diskRead = it->second->readBytesPerSec;
-                        diskWrite = it->second->writeBytesPerSec;
-                    }
-
-                    const std::string childId = std::format("DiskCell_{}", disk.deviceName);
-                    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
-                    ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-
-                    const float labelHeight = ImGui::GetTextLineHeight();
-                    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-                    constexpr float BAR_HEIGHT = 20.0F; // approximate NowBar row height
-                    const float childHeight = labelHeight + spacingY + HISTORY_PLOT_HEIGHT_DEFAULT + BAR_HEIGHT + (spacingY * 2.0F);
-
-                    if (ImGui::BeginChild(childId.c_str(), ImVec2(-FLT_MIN, childHeight), ImGuiChildFlags_Borders))
-                    {
-                        if (alignedCount == 0)
-                        {
-                            ImGui::TextColored(theme.scheme().textMuted, "%s\nCollecting data...", disk.deviceName.c_str());
-                        }
-                        else
-                        {
-                            const std::vector<float> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount),
-                                                               diskTimes.end());
-                            renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme);
-                        }
-                    }
-                    ImGui::EndChild();
-                    ImGui::PopStyleColor(2);
+                    ImGui::TextColored(theme.scheme().textMuted, "%s\nCollecting data...", disk.deviceName.c_str());
+                    return;
                 }
-            }
-            ImGui::EndTable();
-        }
+
+                // Build float read/write data for this disk
+                std::vector<float> readData;
+                std::vector<float> writeData;
+                readData.reserve(alignedCount);
+                writeData.reserve(alignedCount);
+                const size_t readOffset = disk.readBytesPerSec.size() - alignedCount;
+                const size_t writeOffset = disk.writeBytesPerSec.size() - alignedCount;
+                for (size_t i = 0; i < alignedCount; ++i)
+                {
+                    readData.push_back(static_cast<float>(disk.readBytesPerSec[readOffset + i]));
+                    writeData.push_back(static_cast<float>(disk.writeBytesPerSec[writeOffset + i]));
+                }
+
+                // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
+                double diskRead = 0.0;
+                double diskWrite = 0.0;
+                if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
+                {
+                    diskRead = it->second->readBytesPerSec;
+                    diskWrite = it->second->writeBytesPerSec;
+                }
+
+                const std::vector<float> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
+                const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - cellOverhead);
+                renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, plotHeight);
+            });
     }
     else
     {
