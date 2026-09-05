@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "Platform/Windows/WindowsGPUProbe.h"
+#include "Platform/Windows/WindowsGPUProbeMath.h"
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,73 @@ namespace Platform
 {
 namespace
 {
+
+// ==========================================================================
+// normalizeGPUName / gpuNamesMatch: pure string logic, no hardware required.
+// ==========================================================================
+
+TEST(NormalizeGPUNameTest, LowercasesAndTrims)
+{
+    EXPECT_EQ(normalizeGPUName("  NVIDIA GeForce RTX 4090  "), "nvidia geforce rtx 4090");
+}
+
+TEST(NormalizeGPUNameTest, CollapsesInternalWhitespace)
+{
+    EXPECT_EQ(normalizeGPUName("NVIDIA   GeForce\tRTX  4090"), "nvidia geforce rtx 4090");
+}
+
+TEST(NormalizeGPUNameTest, EmptyStringStaysEmpty)
+{
+    EXPECT_EQ(normalizeGPUName(""), "");
+    EXPECT_EQ(normalizeGPUName("   "), "");
+}
+
+TEST(GpuNamesMatchTest, ExactMatch)
+{
+    EXPECT_TRUE(gpuNamesMatch("GeForce RTX 4090", "GeForce RTX 4090"));
+}
+
+TEST(GpuNamesMatchTest, CaseAndWhitespaceInsensitiveMatch)
+{
+    EXPECT_TRUE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "nvidia   geforce rtx 4090"));
+}
+
+TEST(GpuNamesMatchTest, SubstringMatch)
+{
+    // DXGI often reports "NVIDIA GeForce RTX 4090" while NVML reports just "GeForce RTX 4090".
+    EXPECT_TRUE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "GeForce RTX 4090"));
+    EXPECT_TRUE(gpuNamesMatch("GeForce RTX 4090", "NVIDIA GeForce RTX 4090"));
+}
+
+TEST(GpuNamesMatchTest, UnrelatedNamesDoNotMatch)
+{
+    EXPECT_FALSE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "AMD Radeon RX 7900"));
+}
+
+TEST(GpuNamesMatchTest, EmptyNameNeverMatchesANonEmptyName)
+{
+    // NVML leaves a GPU's name empty when DeviceGetName fails for that device; such a device
+    // must never be spuriously matched to a real, named DXGI adapter via the substring check.
+    EXPECT_FALSE(gpuNamesMatch("NVIDIA GeForce RTX 4090", ""));
+    EXPECT_FALSE(gpuNamesMatch("", "NVIDIA GeForce RTX 4090"));
+}
+
+TEST(GpuNamesMatchTest, TwoEmptyNamesDoNotMatch)
+{
+    EXPECT_FALSE(gpuNamesMatch("", ""));
+}
+
+TEST(GpuNamesMatchTest, AllWhitespaceNameNeverMatchesANonEmptyName)
+{
+    EXPECT_FALSE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "   "));
+}
+
+TEST(GpuNamesMatchTest, TwoDistinctAllWhitespaceNamesDoNotMatch)
+{
+    // A raw exact-match shortcut (name1 == name2) taken before normalization would otherwise
+    // treat two byte-identical all-whitespace names as a match.
+    EXPECT_FALSE(gpuNamesMatch("   ", "   "));
+}
 
 // ==========================================================================
 // Basic Smoke Tests

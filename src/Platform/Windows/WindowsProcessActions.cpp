@@ -1,6 +1,7 @@
 #include "WindowsProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "WindowsProcessActionsMath.h"
 
 #include <spdlog/spdlog.h>
 
@@ -87,30 +88,6 @@ ProcessActionResult WindowsProcessActions::terminateProcess(int32_t pid, uint32_
 
     spdlog::info("Successfully terminated process {} with exit code {}", pid, exitCode);
     return ProcessActionResult::ok();
-}
-
-uint32_t WindowsProcessActions::niceToPriorityClass(int32_t nice)
-{
-    // Map Unix nice values to Windows priority classes using shared thresholds.
-    // We intentionally never use REALTIME_PRIORITY_CLASS to avoid system instability.
-    using namespace Domain::Priority;
-    if (nice < HIGH_THRESHOLD)
-    {
-        return HIGH_PRIORITY_CLASS;
-    }
-    if (nice < ABOVE_NORMAL_THRESHOLD)
-    {
-        return ABOVE_NORMAL_PRIORITY_CLASS;
-    }
-    if (nice < BELOW_NORMAL_THRESHOLD)
-    {
-        return NORMAL_PRIORITY_CLASS;
-    }
-    if (nice < IDLE_THRESHOLD)
-    {
-        return BELOW_NORMAL_PRIORITY_CLASS;
-    }
-    return IDLE_PRIORITY_CLASS;
 }
 
 ProcessActionResult WindowsProcessActions::setPriority(int32_t pid, int32_t nice)

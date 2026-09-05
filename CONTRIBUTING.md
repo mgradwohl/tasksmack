@@ -372,6 +372,49 @@ turned out to be a byte-for-byte duplicate of the already-shared, already-tested
 `Core::isEnvFlagEnabled()` (`Core/EnvUtils.h`); deleting the duplicate and reusing the shared
 helper was strictly better than writing a third copy of the same test.
 
+### Testing Windows platform-probe code that touches real hardware/OS APIs
+
+`Platform::Windows` probes read real hardware/OS state (battery status, GPU adapters, process
+priority classes, disk instance names), so most of their branches only execute when the CI
+runner happens to have the matching hardware or state - e.g. a battery-state switch never
+reaches `Charging`/`Full` on a desktop CI runner with no battery, and NVML-backed GPU logic
+never runs without a real NVIDIA driver installed. Two patterns handle this, chosen by whether
+the untested logic needs OS handles or not:
+
+1. **Pure logic: extract it into a small header taking primitives, the same technique as the
+   ImGui one above but for hardware inputs instead of ImGui/SDL state.** Take the relevant OS
+   struct's fields as plain integers (not the Win32 struct or handle type) so the header stays
+   includable from a test file without pulling in COM interfaces - and without pulling in
+   `windows.h` either, where the value being extracted doesn't need an SDK constant (some do:
+   `WindowsProcessActionsMath.h` below still includes `windows.h` for the `*_PRIORITY_CLASS`
+   constants it returns). See
+   `WindowsPowerProbeMath.h` (`parsePowerStatus` takes `SYSTEM_POWER_STATUS`'s fields as
+   `uint8_t`/`uint32_t` instead of the struct itself), `DXGIGPUProbeMath.h`
+   (`isIntegratedGPUFromDesc` takes `DXGI_ADAPTER_DESC1`'s vendor/flags/memory fields instead of
+   an `IDXGIAdapter1*`, avoiding COM mocking entirely), `WindowsGPUProbeMath.h`
+   (`normalizeGPUName`/`gpuNamesMatch`), `WindowsProcessActionsMath.h` (`niceToPriorityClass`),
+   and `WindowsDiskProbeMath.h` (`parsePhysicalDriveIndex`, alongside the pre-existing
+   `clampNonNegativeQuadPart`). Writing tests against `parsePowerStatus` this way is what caught
+   a real bug: `BATTERY_FLAG_UNKNOWN` (0xFF) also has the `BATTERY_FLAG_NO_BATTERY` bit (0x80)
+   set, so the original bitmask-first check order made the `Unknown` battery state unreachable.
+2. **Logic that must stay behind real OS handles/dynamically-loaded function pointers (e.g.
+   NVML's `nvmlDevice_t`/function table): use a friend test-accessor struct**, declared as a
+   single `friend struct FooTestAccessor;` line in the production class and defined only in the
+   test file, so it never appears in the public API. Its static methods reach into the class's
+   private members to inject fake state - see `NVMLGPUProbeTestAccessor` in
+   `test_WindowsNVMLGPUProbe.cpp`, which injects a fake `NVMLFunctions` table and device handles
+   so `enumerateGPUs()`/`readGPUCounters()`/`readProcessGPUCounters()`/`capabilities()` run
+   deterministically without a real NVIDIA GPU. This is necessary (rather than Linux's
+   dlopen-a-fake-`.so`-on-`LD_LIBRARY_PATH` trick) because `NVMLGPUProbe::loadNVML()`
+   deliberately restricts `LoadLibraryExW` to `LOAD_LIBRARY_SEARCH_SYSTEM32` (security hardening
+   so a portable installation cannot load an adjacent DLL) - a fake DLL placed elsewhere cannot
+   be found. The accessor substitutes the backend *after* construction (the constructor's real
+   `loadNVML()` still runs first; the accessor's `inject()` tears down whatever real backend it
+   loaded before installing the fake one) rather than bypassing or weakening `loadNVML()` itself.
+   The accessor struct must be declared directly in `namespace Platform` (not nested in the test
+   file's anonymous namespace), since an
+   anonymous-namespace type is a different entity than the one the friend declaration names.
+
 ## VS Code
 
 Recommended extensions:
