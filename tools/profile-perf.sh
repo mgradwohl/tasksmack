@@ -213,6 +213,10 @@ fi
 if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     PERF_SCRIPT_OUT="$(mktemp)"
     PERF_SCRIPT_ERR="$(mktemp)"
+    # Clean up unconditionally on exit from this point (success, the die() below, or any
+    # unexpected error) rather than only on the success path -- die() calls exit
+    # immediately, so an `rm -f` placed after the check it guards would never run.
+    trap 'rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"' EXIT
     # Separate stdout/stderr into files rather than piping into `wc -l` with stderr
     # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
     # empty trace) would otherwise abort the script right here with no diagnostic at all,
@@ -221,7 +225,6 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
         die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
     fi
     SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
-    rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"
     if [[ "${SAMPLE_COUNT}" -eq 0 ]]; then
         die "perf captured zero samples (event=${PERF_EVENT}). The trace at ${DATA_FILE} is empty and unusable. This usually means the workload exited before perf attached, or ran too briefly at 997 Hz to catch anything -- try a longer-running workload or a lower -F rate."
     fi
