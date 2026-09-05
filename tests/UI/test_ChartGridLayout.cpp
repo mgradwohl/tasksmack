@@ -95,7 +95,7 @@ TEST(ChartGridLayoutTest, TinyPanelClampsToMinimumCellSize)
 
     EXPECT_GE(grid.cellWidth, config.minCellWidth);
     EXPECT_GE(grid.cellHeight, config.minCellHeight);
-    EXPECT_EQ(grid.columns * grid.rows >= config.itemCount, true);
+    EXPECT_GE(grid.columns * grid.rows, config.itemCount);
 }
 
 TEST(ChartGridLayoutTest, NonPositiveTargetAspectFallsBackToSquare)

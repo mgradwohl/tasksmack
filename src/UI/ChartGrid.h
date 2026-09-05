@@ -14,9 +14,19 @@
 #include <cfloat>
 #include <concepts>
 #include <cstddef>
+#include <string_view>
 
 namespace UI::Widgets
 {
+
+namespace Detail
+{
+/// Default CellIdFn tag for renderChartGrid: "use the loop index as the ImGui ID", correct for
+/// collections whose index already *is* the item's identity (e.g. a CPU core number) and where
+/// item order never changes at runtime.
+struct UseIndexAsId
+{};
+} // namespace Detail
 
 /// Render a grid of itemCount bordered cells sized by computeChartGridLayout(config), calling
 /// renderCell(index, cellWidth, cellHeight) for each cell in row-major order. Cells past
@@ -27,9 +37,12 @@ namespace UI::Widgets
 /// ImVec2(-FLT_MIN, ...)); cellHeight is the value callers need to size their own content
 /// (e.g. a HistoryChartConfig::height) so it fills the cell instead of using a fixed constant.
 ///
-/// Cell IDs use ImGui::PushID(index) rather than a formatted per-cell string, avoiding a
-/// heap allocation per cell per frame -- relevant here since this can run every frame for
-/// dozens of cells (CPU cores, disks) while the window is being resized.
+/// Cell IDs default to ImGui::PushID(index) (no heap allocation) -- correct as long as index
+/// *is* the item's identity and never reorders (true for CPU cores). For a collection whose
+/// membership/order can change at runtime (e.g. disks, which can be unplugged mid-session,
+/// shifting later indices), pass cellId so ImGui/ImPlot per-widget state (pan/zoom, RenderMetrics
+/// entries) stays attached to the same logical item instead of "jumping" to whatever now
+/// occupies that index -- see #823 review.
 ///
 /// A template (not std::function) so passing a capturing lambda doesn't force a type-erased
 /// wrapper allocation on this resize-time-hot path.
@@ -37,9 +50,9 @@ namespace UI::Widgets
 /// itemCount is the single source of truth for the grid's item count: config.itemCount is
 /// overwritten from it before computing the layout, so a caller can't accidentally desync the
 /// two (e.g. by updating one but not the other on a later edit).
-template<typename RenderCellFn>
+template<typename RenderCellFn, typename CellIdFn = Detail::UseIndexAsId>
     requires std::invocable<RenderCellFn, size_t, float, float>
-inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConfig config, RenderCellFn renderCell)
+inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConfig config, RenderCellFn renderCell, CellIdFn cellId = {})
 {
     if (itemCount == 0)
     {
@@ -68,7 +81,15 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
                 continue;
             }
 
-            ImGui::PushID(static_cast<int>(index));
+            if constexpr (std::same_as<CellIdFn, Detail::UseIndexAsId>)
+            {
+                ImGui::PushID(static_cast<int>(index));
+            }
+            else
+            {
+                const std::string_view id = cellId(index);
+                ImGui::PushID(id.data(), id.data() + id.size());
+            }
             ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
             ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
             if (ImGui::BeginChild("GridCell", ImVec2(-FLT_MIN, grid.cellHeight), ImGuiChildFlags_Borders))

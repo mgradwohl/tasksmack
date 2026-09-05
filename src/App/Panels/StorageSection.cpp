@@ -254,7 +254,10 @@ void renderStorageSection(RenderContext& ctx)
 
                 const std::vector<float> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
                 renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight);
-            });
+            },
+            // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each
+            // cell's ImGui/ImPlot state by the stable device name instead of position (#823 review).
+            [&](const size_t diskIdx) -> std::string_view { return perDisk[diskIdx].deviceName; });
     }
     else
     {
