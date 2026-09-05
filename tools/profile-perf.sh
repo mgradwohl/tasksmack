@@ -117,8 +117,10 @@ check_perf_version() {
 detect_perf_event() {
     if perf stat -e cycles -- true &>/dev/null; then
         echo "cycles"
-    else
+    elif perf stat -e cpu-clock -- true &>/dev/null; then
         echo "cpu-clock"
+    else
+        die "Neither the 'cycles' nor 'cpu-clock' perf event works in this environment. This usually means /proc/sys/kernel/perf_event_paranoid is too restrictive, or perf lacks the necessary permissions/capabilities. Check 'cat /proc/sys/kernel/perf_event_paranoid' (0-1 is typically needed) or run with appropriate privileges."
     fi
 }
 

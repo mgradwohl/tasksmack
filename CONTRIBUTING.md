@@ -730,11 +730,11 @@ Linux machine / GitHub Actions runner.
 
 **WSL2 note (no hardware counters — a separate issue):** WSL2's hypervisor does not pass
 through real hardware performance counters, so the default `cycles` event silently
-records zero samples instead of erroring — you'd only discover it later from `perf
-report`/`analyze-perf.sh` failing with "has no samples". `tools/profile-perf.sh` detects
-this automatically and falls back to the `cpu-clock` software event, printing a notice
-when it does; it also verifies the capture actually contains samples and fails loudly if
-not. The same fallback applies to most containers and some cloud VMs/CI runners.
+records zero samples instead of erroring — you'd only discover it later from
+`perf report`/`analyze-perf.sh` failing with "has no samples". `tools/profile-perf.sh`
+detects this automatically and falls back to the `cpu-clock` software event, printing a
+notice when it does; it also verifies the capture actually contains samples and fails
+loudly if not. The same fallback applies to most containers and some cloud VMs/CI runners.
 
 ### Linux — Heap allocation profiling (heaptrack)
 
