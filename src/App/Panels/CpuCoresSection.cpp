@@ -26,7 +26,6 @@ namespace App::CpuCoresSection
 namespace
 {
 
-using UI::Widgets::BAR_WIDTH;
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
@@ -99,20 +98,22 @@ void renderCpuCoresSection(RenderContext& ctx)
     // grid, wide panel -> fewer rows/more columns) -- see UI/ChartGridLayout.h for the sizing
     // algorithm shared with StorageSection's per-disk grid.
     {
-        const float labelHeight = ImGui::GetTextLineHeight();
-        const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-        // Fixed vertical overhead per cell (label row + its spacing), mirroring the prior
-        // fixed-height layout's margins so cell proportions don't visibly shift.
-        const float cellOverhead = labelHeight + spacingY + BAR_WIDTH + (spacingY * 2.0F);
+        // Approximate overhead used only as a floor for the grid's minimum cell height (so the
+        // layout algorithm has a reasonable size to reason about before any cell has actually
+        // rendered). The real per-cell overhead is measured directly below via cursor position,
+        // since the label row's true height depends on ImGui's own spacing rules and isn't
+        // worth re-deriving by hand (see #823 review: an earlier version of this guessed at that
+        // math, including a horizontal NowBar-column constant that doesn't belong in a vertical
+        // measurement at all, and ended up over-subtracting from the plot height).
+        const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
         const float barColumnAllowance = ImGui::GetFrameHeight(); // extra width for the NowBar column
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
             .availableWidth = avail.x,
             .availableHeight = avail.y,
-            .itemCount = coreCount,
             .minCellWidth = 240.0F + barColumnAllowance,
-            .minCellHeight = cellOverhead + MIN_PLOT_HEIGHT,
+            .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
         };
 
         renderChartGrid("PerCoreGrid",
@@ -127,6 +128,7 @@ void renderCpuCoresSection(RenderContext& ctx)
                                 return;
                             }
 
+                            const float cellContentTop = ImGui::GetCursorPosY();
                             const std::string coreLabel = std::format(ICON_FA_MICROCHIP " Core {}", coreIdx);
                             const float availableWidth = ImGui::GetContentRegionAvail().x;
                             const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x;
@@ -134,9 +136,10 @@ void renderCpuCoresSection(RenderContext& ctx)
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
                             ImGui::TextUnformatted(coreLabel.c_str());
                             ImGui::Spacing();
+                            const float measuredOverhead = ImGui::GetCursorPosY() - cellContentTop;
 
                             std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
-                            const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - cellOverhead);
+                            const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);
 
                             // Capture necessary variables by value/reference for lambda
                             const auto& sampleData = samples;

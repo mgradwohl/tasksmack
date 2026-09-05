@@ -47,9 +47,11 @@ constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 // squashing charts flat -- mirrors CpuCoresSection's MIN_PLOT_HEIGHT.
 constexpr float MIN_PLOT_HEIGHT = 60.0F;
 
-/// Render a single disk cell (label + read/write NowBars + chart). plotHeight comes from the
-/// enclosing grid cell's size (see renderChartGrid in renderStorageSection) so the chart fills
-/// the cell instead of using a fixed height.
+/// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
+/// grid cell's full size (see renderChartGrid in renderStorageSection); the plot height is
+/// derived from it by measuring the label row's actual consumed height via cursor position
+/// (rather than guessing at ImGui's spacing rules with a hand-picked constant -- see #823
+/// review) so the chart fills exactly what's left in the cell.
 void renderDiskCell(std::string_view deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
@@ -58,7 +60,7 @@ void renderDiskCell(std::string_view deviceName,
                     double currentWrite,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
-                    float plotHeight)
+                    float cellHeight)
 {
     const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
                                      writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
@@ -76,6 +78,11 @@ void renderDiskCell(std::string_view deviceName,
                           .tooltipText = {},
                           .value01 = normalizeToUnitInterval(currentWrite, diskMax),
                           .color = theme.scheme().chartIoWrite};
+
+    const float cellContentTop = ImGui::GetCursorPosY();
+    ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
+    const float measuredOverhead = ImGui::GetCursorPosY() - cellContentTop;
+    const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
     {
@@ -127,7 +134,6 @@ void renderDiskCell(std::string_view deviceName,
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
     renderHistoryWithNowBars("##DiskHistory", plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
 }
 
@@ -196,18 +202,17 @@ void renderStorageSection(RenderContext& ctx)
             diskLookup.emplace(d.deviceName, &d);
         }
 
-        const float labelHeight = ImGui::GetTextLineHeight();
-        const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-        constexpr float BAR_HEIGHT = 20.0F; // approximate NowBar row height
-        const float cellOverhead = labelHeight + spacingY + BAR_HEIGHT + (spacingY * 2.0F);
+        // Approximate overhead used only as a floor for the grid's minimum cell height; the real
+        // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
+        // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
+        const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
             .availableWidth = avail.x,
             .availableHeight = avail.y,
-            .itemCount = diskCount,
             .minCellWidth = 320.0F,
-            .minCellHeight = cellOverhead + MIN_PLOT_HEIGHT,
+            .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
         };
 
         renderChartGrid(
@@ -248,8 +253,7 @@ void renderStorageSection(RenderContext& ctx)
                 }
 
                 const std::vector<float> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
-                const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - cellOverhead);
-                renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, plotHeight);
+                renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight);
             });
     }
     else

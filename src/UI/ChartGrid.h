@@ -12,8 +12,8 @@
 #include <imgui.h>
 
 #include <cfloat>
+#include <concepts>
 #include <cstddef>
-#include <functional>
 
 namespace UI::Widgets
 {
@@ -30,16 +30,23 @@ namespace UI::Widgets
 /// Cell IDs use ImGui::PushID(index) rather than a formatted per-cell string, avoiding a
 /// heap allocation per cell per frame -- relevant here since this can run every frame for
 /// dozens of cells (CPU cores, disks) while the window is being resized.
-inline void renderChartGrid(const char* tableId,
-                            size_t itemCount,
-                            const ChartGridConfig& config,
-                            const std::function<void(size_t index, float cellWidth, float cellHeight)>& renderCell)
+///
+/// A template (not std::function) so passing a capturing lambda doesn't force a type-erased
+/// wrapper allocation on this resize-time-hot path.
+///
+/// itemCount is the single source of truth for the grid's item count: config.itemCount is
+/// overwritten from it before computing the layout, so a caller can't accidentally desync the
+/// two (e.g. by updating one but not the other on a later edit).
+template<typename RenderCellFn>
+    requires std::invocable<RenderCellFn, size_t, float, float>
+inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConfig config, RenderCellFn renderCell)
 {
     if (itemCount == 0)
     {
         return;
     }
 
+    config.itemCount = itemCount;
     const ChartGridDimensions grid = computeChartGridLayout(config);
     const int columnsInt = UI::Format::checkedCount(grid.columns);
 
