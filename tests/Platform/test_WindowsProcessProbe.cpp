@@ -3,6 +3,7 @@
 
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
+#include "Platform/Windows/WindowsProcessProbeMath.h"
 
 #include <gtest/gtest.h>
 
@@ -688,4 +689,64 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
     }
 }
 
+namespace
+{
+
+// ==========================================================================
+// calculateDetailTTLsFromTotalRAMBytes: pure RAM-tier logic, no OS calls
+// required. This machine's actual RAM only ever exercises one tier via the
+// real GlobalMemoryStatusEx()-backed member function, so these fabricated
+// byte counts are the only way to reach the other four tiers.
+// ==========================================================================
+
+constexpr std::uint64_t GIB = 1024ULL * 1024 * 1024;
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, BelowTwoGibUsesMostAggressiveCaching)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(GIB); // 1 GiB
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(4000));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
+}
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, TwoToFourGibUsesConservativeTier)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(2 * GIB);
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(3000));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(10000));
+}
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, FourToEightGibUsesBalancedTier)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(4 * GIB);
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(2000));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(8000));
+}
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, EightToSixteenGibUsesModerateTier)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(8 * GIB);
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(1500));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(6000));
+}
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, SixteenGibAndAboveUsesMostResponsiveTier)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(16 * GIB);
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(1000));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(4000));
+
+    // Well above the top tier threshold should stay on the same (top) tier.
+    const auto ttlsHuge = calculateDetailTTLsFromTotalRAMBytes(256 * GIB);
+    EXPECT_EQ(ttlsHuge.light, ttls.light);
+    EXPECT_EQ(ttlsHuge.heavy, ttls.heavy);
+}
+
+TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
+{
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(0);
+    EXPECT_EQ(ttls.light, std::chrono::milliseconds(4000));
+    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
+}
+
+} // namespace
 } // namespace Platform

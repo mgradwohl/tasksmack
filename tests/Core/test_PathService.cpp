@@ -15,6 +15,7 @@
 ///       cannot function at all in that environment.
 
 #include "Core/PathService.h"
+#include "Core/PathServiceMath.h"
 #include "Platform/IPathProvider.h"
 
 #include <gtest/gtest.h>
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <system_error>
 #include <type_traits>
 
 namespace Core
@@ -103,6 +105,96 @@ TEST(PathServiceTest, TwoInstancesReturnSamePaths)
     PathService svc2;
     EXPECT_EQ(svc1.executableDir(), svc2.executableDir());
     EXPECT_EQ(svc1.userConfigDir(), svc2.userConfigDir());
+}
+
+// =============================================================================
+// resolveAbsolutePath(): the toAbsolute() fallback logic, with injected
+// absolute()/current_path() predicates so the failure branches - which need a
+// genuinely broken filesystem to reach for real - can be exercised directly.
+// =============================================================================
+
+// Function-local statics (lazily initialized on first call, inside a test body where gtest can
+// still catch an exception) rather than namespace-scope globals, which clang-tidy flags as unsafe
+// static storage duration: std::function's converting constructor is not guaranteed noexcept, and
+// an exception thrown during static initialization before main() cannot be caught.
+const AbsolutePathFn& kFailingAbsolute()
+{
+    static const AbsolutePathFn fn = [](const std::filesystem::path&, std::error_code& ec)
+    {
+        ec = std::make_error_code(std::errc::io_error);
+        return std::filesystem::path{};
+    };
+    return fn;
+}
+const CurrentPathFn& kFailingCurrentPath()
+{
+    static const CurrentPathFn fn = [](std::error_code& ec)
+    {
+        ec = std::make_error_code(std::errc::io_error);
+        return std::filesystem::path{};
+    };
+    return fn;
+}
+
+TEST(ResolveAbsolutePathTest, SucceedingAbsoluteFnReturnsNormalizedResult)
+{
+    const std::filesystem::path raw = "/tmp/./a/../b";
+    const AbsolutePathFn succeedingAbsolute = [](const std::filesystem::path& p, std::error_code& ec)
+    {
+        ec.clear();
+        return p;
+    };
+
+    const auto result = resolveAbsolutePath(raw, succeedingAbsolute, kFailingCurrentPath());
+
+    EXPECT_EQ(result, raw.lexically_normal());
+}
+
+TEST(ResolveAbsolutePathTest, FailingAbsoluteWithRelativeRawComposesWithCurrentPath)
+{
+    const std::filesystem::path raw = "sub/dir";
+    std::filesystem::path cwd = std::filesystem::temp_directory_path();
+    const CurrentPathFn succeedingCurrentPath = [&cwd](std::error_code& ec)
+    {
+        ec.clear();
+        return cwd;
+    };
+
+    const auto result = resolveAbsolutePath(raw, kFailingAbsolute(), succeedingCurrentPath);
+
+    EXPECT_EQ(result, (cwd / raw).lexically_normal());
+}
+
+TEST(ResolveAbsolutePathTest, FailingAbsoluteWithAbsoluteRawSkipsCurrentPathFallback)
+{
+    // raw is already absolute, so the relative-composition branch must not be taken even
+    // though current_path() would also fail here - the function should fall straight through
+    // to the last-resort lexically_normal(raw) return.
+    const std::filesystem::path raw = std::filesystem::temp_directory_path() / "already_absolute";
+
+    const auto result = resolveAbsolutePath(raw, kFailingAbsolute(), kFailingCurrentPath());
+
+    EXPECT_EQ(result, raw.lexically_normal());
+}
+
+TEST(ResolveAbsolutePathTest, BothPrimitivesFailingWithRelativeRawReturnsLexicallyNormalizedRaw)
+{
+    const std::filesystem::path raw = "relative/only";
+
+    const auto result = resolveAbsolutePath(raw, kFailingAbsolute(), kFailingCurrentPath());
+
+    EXPECT_EQ(result, raw.lexically_normal());
+    EXPECT_TRUE(result.is_relative()) << "documents the degenerate case: the contract is relaxed, not upheld, "
+                                         "when both filesystem primitives fail";
+}
+
+TEST(ResolveAbsolutePathTest, BothPrimitivesFailingWithEmptyRawDoesNotThrow)
+{
+    // Exercises the raw.empty() branch of the best-effort logging path.
+    EXPECT_NO_THROW({
+        const auto result = resolveAbsolutePath(std::filesystem::path{}, kFailingAbsolute(), kFailingCurrentPath());
+        EXPECT_TRUE(result.empty());
+    });
 }
 
 } // namespace
