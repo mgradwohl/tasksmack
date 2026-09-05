@@ -346,11 +346,16 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 // Template helper for extracting history fields - reduces code duplication
 template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
 {
-    // Explicit trailing return type: a static analyzer flagged this lambda's deduced-return-type
-    // body against the dependent `sample.*field` expression as a possible missing return, even
-    // though it's a single unconditional return statement. Spelling out `-> float` removes the
-    // ambiguity.
-    return getHistoryFieldByProjection(gpuId, [field](const GPUSnapshot& sample) -> float { return static_cast<float>(sample.*field); });
+    // A prior attempt to resolve a static-analyzer false positive here (an explicit `-> float`
+    // trailing return type) did not fully satisfy it: the dependent `sample.*field` expression in
+    // a single-expression lambda body was still flagged as a possible missing return. Splitting
+    // the cast into its own statement before the return removes the remaining ambiguity.
+    return getHistoryFieldByProjection(gpuId,
+                                       [field](const GPUSnapshot& sample) -> float
+                                       {
+                                           const auto value = static_cast<float>(sample.*field);
+                                           return value;
+                                       });
 }
 
 // Underlying lock/find/reserve/loop shared by getHistoryField() (a plain member pointer, for
