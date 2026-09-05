@@ -404,9 +404,12 @@ the untested logic needs OS handles or not:
    deterministically without a real NVIDIA GPU. This is necessary (rather than Linux's
    dlopen-a-fake-`.so`-on-`LD_LIBRARY_PATH` trick) because `NVMLGPUProbe::loadNVML()`
    deliberately restricts `LoadLibraryExW` to `LOAD_LIBRARY_SEARCH_SYSTEM32` (security hardening
-   from #781) - a fake DLL placed elsewhere cannot be found. The accessor bypasses `loadNVML()`
-   entirely rather than weakening that restriction. The accessor struct must be declared directly
-   in `namespace Platform` (not nested in the test file's anonymous namespace), since an
+   so a portable installation cannot load an adjacent DLL) - a fake DLL placed elsewhere cannot
+   be found. The accessor substitutes the backend *after* construction (the constructor's real
+   `loadNVML()` still runs first; the accessor's `inject()` tears down whatever real backend it
+   loaded before installing the fake one) rather than bypassing or weakening `loadNVML()` itself.
+   The accessor struct must be declared directly in `namespace Platform` (not nested in the test
+   file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
 ## VS Code

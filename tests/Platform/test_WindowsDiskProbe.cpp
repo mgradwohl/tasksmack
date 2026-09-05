@@ -96,6 +96,20 @@ TEST(ParsePhysicalDriveIndexTest, NonNumericIndexReturnsNullopt)
     EXPECT_FALSE(parsePhysicalDriveIndex(L"C: 0").has_value());
 }
 
+TEST(ParsePhysicalDriveIndexTest, OverflowingNumericPrefixReturnsNulloptRatherThanWrapping)
+{
+    // A PhysicalDisk instance name is never legitimately this long, but a malformed/adversarial
+    // one must fail closed instead of overflowing signed int (undefined behavior).
+    EXPECT_FALSE(parsePhysicalDriveIndex(L"99999999999999999999 C:").has_value());
+}
+
+TEST(ParsePhysicalDriveIndexTest, MaxIntIndexIsAccepted)
+{
+    const auto result = parsePhysicalDriveIndex(L"2147483647 C:");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, std::numeric_limits<int>::max());
+}
+
 // =============================================================================
 // Construction and Basic Operations
 // =============================================================================

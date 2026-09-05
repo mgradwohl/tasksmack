@@ -189,14 +189,15 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeEnumerationIsStable)
 // ==========================================================================
 // Fake-NVML-backed tests
 //
-// loadNVML() deliberately restricts nvml.dll's search path to
-// LOAD_LIBRARY_SEARCH_SYSTEM32 (security hardening from #781), so - unlike Linux's
-// dlopen-based NVML probe - a fake DLL placed elsewhere cannot be picked up. Instead,
-// NVMLGPUProbeTestAccessor (a friend of NVMLGPUProbe, see NVMLGPUProbe.h) lets tests
-// inject a fake NVMLFunctions table and device handles directly, bypassing loadNVML()
-// entirely. This exercises enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/
-// capabilities() deterministically without a real NVIDIA GPU, without weakening the
-// production DLL-loading path in any way.
+// loadNVML() deliberately restricts nvml.dll's search path to LOAD_LIBRARY_SEARCH_SYSTEM32
+// (security hardening so a portable installation cannot load an adjacent DLL), so - unlike
+// Linux's dlopen-based NVML probe - a fake DLL placed elsewhere cannot be picked up. Instead,
+// NVMLGPUProbeTestAccessor (a friend of NVMLGPUProbe, see NVMLGPUProbe.h) lets tests substitute
+// a fake NVMLFunctions table and device handles after construction (the constructor's real
+// loadNVML() still runs as normal first; see NVMLGPUProbeTestAccessor::inject() below for how
+// any real backend it loaded is torn down first). This exercises enumerateGPUs()/
+// readGPUCounters()/readProcessGPUCounters()/capabilities() deterministically without a real
+// NVIDIA GPU, without weakening the production DLL-loading path in any way.
 // ==========================================================================
 
 namespace
@@ -499,12 +500,22 @@ nvmlReturn_t fakeShutdown()
 // namespace Platform (not inside an anonymous namespace) so the `friend struct
 // NVMLGPUProbeTestAccessor;` declaration in NVMLGPUProbe.h resolves to this exact type; its
 // members can still see the fakes above via the anonymous namespace's implicit visibility in
-// the rest of this translation unit. This does not affect (or bypass) loadNVML()'s
-// LOAD_LIBRARY_SEARCH_SYSTEM32 hardening (#781) in any way.
+// the rest of this translation unit. inject() below substitutes the backend after the
+// constructor's real loadNVML() has already run; this does not change or bypass
+// loadNVML()'s LOAD_LIBRARY_SEARCH_SYSTEM32 hardening in any way.
 struct NVMLGPUProbeTestAccessor
 {
     static void inject(NVMLGPUProbe& probe, const NVMLGPUProbe::NVMLFunctions& fns, bool initialized)
     {
+        // The constructor already ran the real loadNVML()/initializeNVML() against whatever
+        // NVML is actually present on this machine. On a machine with a real NVIDIA driver
+        // installed, that leaves a real nvmlInit() outstanding and a real DLL handle open;
+        // tear both down properly (matching real nvmlShutdown() to the real nvmlInit(), and
+        // freeing the real DLL) before substituting the fake backend below, so this doesn't
+        // leak an outstanding initialization or an unmatched DLL reference count.
+        probe.shutdownNVML();
+        probe.unloadNVML();
+
         probe.m_NVML = fns;
         probe.m_Initialized = initialized;
     }

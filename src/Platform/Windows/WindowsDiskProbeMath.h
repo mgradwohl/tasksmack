@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -38,7 +39,14 @@ namespace Platform
         {
             return std::nullopt;
         }
-        index = (index * 10) + (ch - L'0');
+        const int digit = ch - L'0';
+        // An implausibly long numeric prefix would otherwise overflow signed int here
+        // (undefined behavior) and could return an arbitrary drive index; fail closed instead.
+        if (index > (std::numeric_limits<int>::max() - digit) / 10)
+        {
+            return std::nullopt;
+        }
+        index = (index * 10) + digit;
     }
     return index;
 }

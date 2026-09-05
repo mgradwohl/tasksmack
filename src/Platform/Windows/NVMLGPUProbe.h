@@ -40,11 +40,13 @@ class NVMLGPUProbe : public IGPUProbe
     }
 
   private:
-    // Test-only accessor: lets unit tests inject fake NVML function pointers and device
-    // handles so enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/capabilities()
-    // can be exercised deterministically without a real NVIDIA GPU or nvml.dll. Production
-    // code never touches this, and it does not affect (or bypass) loadNVML()'s
-    // LOAD_LIBRARY_SEARCH_SYSTEM32 hardening (#781) - only test_WindowsNVMLGPUProbe.cpp uses it.
+    // Test-only accessor: lets unit tests substitute fake NVML function pointers and device
+    // handles after construction, so enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/
+    // capabilities() can be exercised deterministically without a real NVIDIA GPU or nvml.dll.
+    // The constructor's loadNVML()/initializeNVML() still run as normal before the accessor
+    // substitutes the backend; this does not change or bypass loadNVML()'s
+    // LOAD_LIBRARY_SEARCH_SYSTEM32 hardening in any way. Production code never touches this -
+    // only test_WindowsNVMLGPUProbe.cpp uses it.
     friend struct NVMLGPUProbeTestAccessor;
 
     bool loadNVML();
