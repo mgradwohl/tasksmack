@@ -153,7 +153,7 @@ TaskSmack uses TOML-based theme files. Built-in themes are bundled with the appl
 
 3. Restart the application — your theme will appear in the theme selector.
 
-TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](../../assets/themes/README.md).
+TaskSmack currently ships 20 themes. Theme schema details and the current inventory live in [`assets/themes/README.md`](https://github.com/mgradwohl/tasksmack/blob/main/assets/themes/README.md).
 
 ---
 
