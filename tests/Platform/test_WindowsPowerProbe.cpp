@@ -31,6 +31,32 @@ constexpr std::uint8_t BATTERY_FLAG_CHARGING = 0x08;
 constexpr std::uint8_t BATTERY_FLAG_DISCHARGING = 0x00;
 constexpr std::uint32_t BATTERY_LIFE_TIME_UNKNOWN = 0xFFFFFFFFU;
 
+// =============================================================================
+// hasBatteryFromFlag: must stay consistent with parsePowerStatus()'s state parsing -
+// hasBattery == false is only valid when the corresponding state is NotPresent (see
+// PowerProbeContractTest.ReadReturnsSaneCounters).
+// =============================================================================
+
+TEST(HasBatteryFromFlagTest, NoBatteryBitReportsFalse)
+{
+    EXPECT_FALSE(hasBatteryFromFlag(BATTERY_FLAG_NO_BATTERY));
+}
+
+TEST(HasBatteryFromFlagTest, PresentBatteryFlagsReportTrue)
+{
+    EXPECT_TRUE(hasBatteryFromFlag(BATTERY_FLAG_DISCHARGING));
+    EXPECT_TRUE(hasBatteryFromFlag(BATTERY_FLAG_CHARGING));
+}
+
+TEST(HasBatteryFromFlagTest, UnknownFlagReportsTrueNotFalse)
+{
+    // parsePowerStatus(BATTERY_FLAG_UNKNOWN) reports BatteryState::Unknown, not NotPresent,
+    // so hasBattery must not be false here even though 0xFF also has the NO_BATTERY bit set -
+    // otherwise hasBattery == false alongside a non-NotPresent state would violate the
+    // power-probe contract.
+    EXPECT_TRUE(hasBatteryFromFlag(BATTERY_FLAG_UNKNOWN));
+}
+
 TEST(ParsePowerStatusTest, NoBatteryReportsNotPresentAndOnAc)
 {
     const auto counters = parsePowerStatus(0, BATTERY_FLAG_NO_BATTERY, 0, BATTERY_LIFE_TIME_UNKNOWN);

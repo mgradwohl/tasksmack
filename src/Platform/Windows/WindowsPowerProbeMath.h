@@ -7,6 +7,29 @@
 namespace Platform
 {
 
+// Note: BATTERY_FLAG_NO_BATTERY (0x80), BATTERY_FLAG_UNKNOWN (0xFF), and BATTERY_FLAG_CHARGING
+// (0x08) are defined in the Windows SDK (winbase.h). Shared by hasBatteryFromFlag() and
+// parsePowerStatus() below so both agree on what BatteryFlag means.
+inline constexpr std::uint8_t BATTERY_FLAG_NO_BATTERY_BIT = 0x80;
+inline constexpr std::uint8_t BATTERY_FLAG_UNKNOWN_VALUE = 0xFF;
+inline constexpr std::uint8_t BATTERY_FLAG_CHARGING_BIT = 0x08;
+
+/// Does this BatteryFlag value indicate a battery is present? Used for
+/// PowerCapabilities::hasBattery, so it must stay consistent with parsePowerStatus() below:
+/// BATTERY_FLAG_UNKNOWN (0xFF) is a distinct sentinel that also happens to have the
+/// BATTERY_FLAG_NO_BATTERY bit (0x80) set, but parsePowerStatus() reports it as
+/// BatteryState::Unknown, not NotPresent - so hasBattery must not be false here, or the
+/// power-probe contract (hasBattery == false implies BatteryState::NotPresent) would be
+/// violated whenever the OS reports an unknown battery flag.
+[[nodiscard]] inline bool hasBatteryFromFlag(std::uint8_t batteryFlag)
+{
+    if (batteryFlag == BATTERY_FLAG_UNKNOWN_VALUE)
+    {
+        return true;
+    }
+    return (batteryFlag & BATTERY_FLAG_NO_BATTERY_BIT) == 0;
+}
+
 /// Pure parsing of a SYSTEM_POWER_STATUS snapshot into PowerCounters, extracted from
 /// WindowsPowerProbe::read() so its battery-state/charge/time-remaining branches can be
 /// unit tested with fabricated field values. CI runners have no battery, so these branches
@@ -21,11 +44,6 @@ namespace Platform
 [[nodiscard]] inline PowerCounters
 parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8_t batteryLifePercent, std::uint32_t batteryLifeTimeSec)
 {
-    // Note: BATTERY_FLAG_NO_BATTERY (0x80), BATTERY_FLAG_UNKNOWN (0xFF), and
-    // BATTERY_FLAG_CHARGING (0x08) are defined in the Windows SDK (winbase.h)
-    constexpr std::uint8_t BATTERY_FLAG_NO_BATTERY_BIT = 0x80;
-    constexpr std::uint8_t BATTERY_FLAG_UNKNOWN_VALUE = 0xFF;
-    constexpr std::uint8_t BATTERY_FLAG_CHARGING_BIT = 0x08;
     constexpr std::uint32_t BATTERY_LIFE_TIME_UNKNOWN = 0xFFFFFFFFU;
 
     PowerCounters counters;

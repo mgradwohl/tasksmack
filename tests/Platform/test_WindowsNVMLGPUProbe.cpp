@@ -892,7 +892,7 @@ TEST(NVMLGPUProbeErrorStringTest, UnknownCodeFallsBackToGenericMessage)
     // Deliberately out of range: exercises the "Unknown error (N)" default branch.
     const auto message =
         NVMLGPUProbeTestAccessor::errorString(static_cast<nvmlReturn_t>(12345)); // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
-    EXPECT_NE(message.find("12345"), std::string::npos);
+    EXPECT_TRUE(message.contains("12345"));
 }
 
 } // namespace

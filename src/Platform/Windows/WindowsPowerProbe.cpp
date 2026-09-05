@@ -18,17 +18,18 @@
 namespace Platform
 {
 
-// Note: BATTERY_FLAG_NO_BATTERY (0x80), BATTERY_FLAG_UNKNOWN (0xFF), and
-// BATTERY_FLAG_CHARGING (0x08) are defined in the Windows SDK (winbase.h)
-
 WindowsPowerProbe::WindowsPowerProbe()
 {
     // Probe capabilities at construction time
     SYSTEM_POWER_STATUS sps{};
     if (GetSystemPowerStatus(&sps) != 0)
     {
-        // Check if there's a battery
-        m_Capabilities.hasBattery = (sps.BatteryFlag & BATTERY_FLAG_NO_BATTERY) == 0;
+        // Check if there's a battery. Must agree with parsePowerStatus()'s handling of
+        // BATTERY_FLAG_UNKNOWN (0xFF): that sentinel reports BatteryState::Unknown from read(),
+        // not NotPresent, so hasBattery must not be false for it either - otherwise callers
+        // would see hasBattery == false alongside a non-NotPresent state, which violates the
+        // power-probe contract.
+        m_Capabilities.hasBattery = hasBatteryFromFlag(sps.BatteryFlag);
         m_Capabilities.hasChargePercent = m_Capabilities.hasBattery && (sps.BatteryLifePercent <= 100);
         m_Capabilities.hasTimeEstimates = m_Capabilities.hasBattery && (sps.BatteryLifeTime != 0xFFFFFFFF);
 

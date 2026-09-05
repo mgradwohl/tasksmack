@@ -384,7 +384,10 @@ the untested logic needs OS handles or not:
 1. **Pure logic: extract it into a small header taking primitives, the same technique as the
    ImGui one above but for hardware inputs instead of ImGui/SDL state.** Take the relevant OS
    struct's fields as plain integers (not the Win32 struct or handle type) so the header stays
-   includable from a test file without pulling in `windows.h` or COM interfaces. See
+   includable from a test file without pulling in COM interfaces - and without pulling in
+   `windows.h` either, where the value being extracted doesn't need an SDK constant (some do:
+   `WindowsProcessActionsMath.h` below still includes `windows.h` for the `*_PRIORITY_CLASS`
+   constants it returns). See
    `WindowsPowerProbeMath.h` (`parsePowerStatus` takes `SYSTEM_POWER_STATUS`'s fields as
    `uint8_t`/`uint32_t` instead of the struct itself), `DXGIGPUProbeMath.h`
    (`isIntegratedGPUFromDesc` takes `DXGI_ADAPTER_DESC1`'s vendor/flags/memory fields instead of

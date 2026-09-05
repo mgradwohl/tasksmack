@@ -26,20 +26,19 @@ namespace Platform
 /// system instability.
 [[nodiscard]] inline uint32_t niceToPriorityClass(int32_t nice)
 {
-    using namespace Domain::Priority;
-    if (nice < HIGH_THRESHOLD)
+    if (nice < Domain::Priority::HIGH_THRESHOLD)
     {
         return HIGH_PRIORITY_CLASS;
     }
-    if (nice < ABOVE_NORMAL_THRESHOLD)
+    if (nice < Domain::Priority::ABOVE_NORMAL_THRESHOLD)
     {
         return ABOVE_NORMAL_PRIORITY_CLASS;
     }
-    if (nice < BELOW_NORMAL_THRESHOLD)
+    if (nice < Domain::Priority::BELOW_NORMAL_THRESHOLD)
     {
         return NORMAL_PRIORITY_CLASS;
     }
-    if (nice < IDLE_THRESHOLD)
+    if (nice < Domain::Priority::IDLE_THRESHOLD)
     {
         return BELOW_NORMAL_PRIORITY_CLASS;
     }
