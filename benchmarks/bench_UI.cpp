@@ -56,8 +56,8 @@ BENCHMARK(BM_ChartWidgets_ComputeAlpha);
 // the plotted history window from the full retained buffer.
 // =============================================================================
 
-// GPU_HISTORY_CAPACITY-sized buffer (Domain::GPU_HISTORY_CAPACITY = 300, 5 min at 1s
-// intervals), requesting the full window -- the common case for a freshly-opened chart.
+// Domain::GPU_HISTORY_CAPACITY-sized buffer (5 min of retained history at the 1s sampling
+// interval), requesting the full window -- the common case for a freshly-opened chart.
 static void BM_ChartWidgets_TailAlignedSpan_FullWindow(benchmark::State& state)
 {
     const std::vector<float> data(Domain::GPU_HISTORY_CAPACITY, 42.0F);

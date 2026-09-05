@@ -192,7 +192,12 @@ if ! $MINIMAL; then
         else
             # git clone fails if the destination's parent directory doesn't exist yet.
             run_cmd mkdir -p "$HOME/opt"
-            run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"
+            # Best-effort: FlameGraph is optional tooling, so a transient network/proxy
+            # failure here shouldn't abort the rest of setup under `set -e`.
+            if ! run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"; then
+                echo "WARNING: FlameGraph clone failed; continuing setup. Retry manually with:" >&2
+                echo "         git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph" >&2
+            fi
         fi
     fi
 

@@ -172,7 +172,9 @@ fi
 if [[ "${MODE}" = "bench" ]]; then
     BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>/dev/null || true)"
     BENCH_MATCH_COUNT="$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)"
-    if [[ "${BENCH_MATCH_COUNT}" -gt 1 ]]; then
+    if [[ "${BENCH_MATCH_COUNT}" -eq 0 ]]; then
+        die "--bench-filter '${BENCH_FILTER}' matches no benchmarks. Capturing would only measure benchmark startup/shutdown noise. Run '${BINARY} --benchmark_list_tests=true' to see valid names."
+    elif [[ "${BENCH_MATCH_COUNT}" -gt 1 ]]; then
         echo "WARNING: --bench-filter '${BENCH_FILTER}' matches ${BENCH_MATCH_COUNT} benchmarks:" >&2
         printf '%s\n' "${BENCH_MATCHES}" | sed 's/^/  - /' >&2
         echo "  Profiling several benchmarks together can produce misleading relative" >&2
