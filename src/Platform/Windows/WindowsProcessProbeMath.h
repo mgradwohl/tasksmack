@@ -9,8 +9,8 @@ namespace Platform
 /// TTLs for the light/heavy detail-refresh caches, tuned by calculateDetailTTLsFromTotalRAMBytes().
 struct DetailCacheTTLs
 {
-    std::chrono::milliseconds light;
-    std::chrono::milliseconds heavy;
+    std::chrono::milliseconds light{0};
+    std::chrono::milliseconds heavy{0};
 };
 
 /// Pure RAM-tier decision logic extracted from WindowsProcessProbe::calculateDetailTTLsFromTotalRAM()
