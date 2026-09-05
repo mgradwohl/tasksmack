@@ -161,6 +161,28 @@ fi
 
 [[ -x "${BINARY}" ]] || die "Binary not found or not executable: ${BINARY}. Build with: cmake --build --preset ${PRESET}"
 
+# In bench mode, warn if the filter matches multiple benchmarks. Google Benchmark scales
+# iteration count (not time) to fill --benchmark_min_time per benchmark, so a cheap
+# per-call benchmark gets looped far more times than an expensive one to fill the same
+# time slot. Since perf sampling is time-based, that gives the cheap benchmark equal (or
+# greater) representation in the profile regardless of its real-world importance --
+# confirmed directly: profiling the default multi-benchmark filter on a GPU-less machine
+# attributed ~40% of total samples to near-zero-cost GPU no-op benchmarks, drowning out
+# the genuinely expensive process/system-probe work being measured alongside them.
+if [[ "${MODE}" = "bench" ]]; then
+    BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>/dev/null || true)"
+    BENCH_MATCH_COUNT="$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)"
+    if [[ "${BENCH_MATCH_COUNT}" -gt 1 ]]; then
+        echo "WARNING: --bench-filter '${BENCH_FILTER}' matches ${BENCH_MATCH_COUNT} benchmarks:" >&2
+        printf '%s\n' "${BENCH_MATCHES}" | sed 's/^/  - /' >&2
+        echo "  Profiling several benchmarks together can produce misleading relative" >&2
+        echo "  percentages when their per-call costs differ a lot (see the comment above" >&2
+        echo "  this check). For accurate hotspot attribution on one function, pass" >&2
+        echo "  --bench-filter matching exactly one benchmark." >&2
+        echo "" >&2
+    fi
+fi
+
 # ── capture ───────────────────────────────────────────────────────────────────
 print_step "Starting perf capture (mode=${MODE}, preset=${PRESET})"
 info "Data:   ${DATA_FILE}"

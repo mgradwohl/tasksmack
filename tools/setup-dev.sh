@@ -176,6 +176,19 @@ if ! $MINIMAL; then
         echo "[dry-run] sudo update-alternatives --install /usr/bin/llvm-cov ..."
     fi
 
+    # heaptrack (tools/profile-heap.sh) and the FlameGraph scripts (analyze-perf.sh) are
+    # zero-risk to install here: heaptrack is a plain apt package, FlameGraph is just a
+    # git clone. Neither is coupled to the running kernel version, unlike `perf` itself
+    # (linux-tools-$(uname -r)) -- that one is deliberately left as a manual step;
+    # check-prereqs.sh already detects and prints the exact install command for it, and
+    # getting the wrong kernel-flavor package here could fail in ways that are confusing
+    # to unwind, especially on WSL2 (see the WSL2 notes in this script and
+    # tools/profile-perf.sh).
+    run_apt heaptrack
+    if [[ ! -d "$HOME/opt/FlameGraph" ]]; then
+        run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"
+    fi
+
     # ── Step 6: Headless test runtime ────────────────────────────────────────
     echo ""
     echo "==> Installing headless test runtime..."

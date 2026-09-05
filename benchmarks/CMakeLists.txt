@@ -79,6 +79,7 @@ add_executable(TaskSmackBenchmarks
     bench_GPUModel.cpp
     bench_Numeric.cpp
     bench_Format.cpp
+    bench_UI.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
