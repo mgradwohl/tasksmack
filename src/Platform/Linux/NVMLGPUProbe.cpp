@@ -1,5 +1,6 @@
 #include "NVMLGPUProbe.h"
 
+#include "NVMLGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/NVMLTypes.h"
 
@@ -175,15 +176,7 @@ void NVMLGPUProbe::Impl::unloadNVML()
 
 std::string NVMLGPUProbe::Impl::getNVMLError(nvmlReturn_t result) const
 {
-    if (nvmlErrorString != nullptr)
-    {
-        const char* errorStr = nvmlErrorString(result);
-        if (errorStr != nullptr)
-        {
-            return {errorStr};
-        }
-    }
-    return "Unknown NVML error";
+    return NVMLGPUProbeMath::resolveErrorString(result, nvmlErrorString);
 }
 
 // Constructor

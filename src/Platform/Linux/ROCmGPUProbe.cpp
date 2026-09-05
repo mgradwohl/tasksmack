@@ -1,6 +1,7 @@
 #include "ROCmGPUProbe.h"
 
 #include "Platform/GPUTypes.h"
+#include "ROCmGPUProbeMath.h"
 
 #include <spdlog/spdlog.h>
 
@@ -268,35 +269,14 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
 {
-    if (rsmi_status_string != nullptr)
-    {
-        const char* errStr = rsmi_status_string(result);
-        if (errStr != nullptr)
-        {
-            return errStr;
-        }
-    }
-    return "Unknown ROCm error " + std::to_string(result);
+    return ROCmGPUProbeMath::resolveErrorString(result, rsmi_status_string);
 }
 
 std::string ROCmGPUProbe::Impl::deriveDeviceId(std::uint32_t deviceIdx) const
 {
-    // Chain: uniqueId → pciId → "amd_N" fallback.
-    // Must match the enumerateGPUs() chain exactly so GPUCounters::gpuId
-    // correlates to GPUInfo::id in the domain layer.
-    std::uint64_t uniqueId = 0;
-    if (rsmi_dev_unique_id_get != nullptr && rsmi_dev_unique_id_get(deviceIdx, &uniqueId) == RSMI_STATUS_SUCCESS)
-    {
-        return std::to_string(uniqueId);
-    }
-
-    std::uint64_t pciId = 0;
-    if (rsmi_dev_pci_id_get != nullptr && rsmi_dev_pci_id_get(deviceIdx, &pciId) == RSMI_STATUS_SUCCESS)
-    {
-        return std::to_string(pciId);
-    }
-
-    return "amd_" + std::to_string(deviceIdx);
+    // Chain: uniqueId → pciId → "amd_N" fallback. Must match the enumerateGPUs() chain
+    // exactly so GPUCounters::gpuId correlates to GPUInfo::id in the domain layer.
+    return ROCmGPUProbeMath::deriveDeviceId(deviceIdx, rsmi_dev_unique_id_get, rsmi_dev_pci_id_get);
 }
 
 ROCmGPUProbe::ROCmGPUProbe() : m_Impl(std::make_unique<Impl>())
