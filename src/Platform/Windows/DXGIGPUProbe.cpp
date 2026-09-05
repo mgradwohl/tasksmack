@@ -1,5 +1,6 @@
 #include "DXGIGPUProbe.h"
 
+#include "DXGIGPUProbeMath.h"
 #include "Platform/GPUTypes.h"
 #include "WinString.h"
 
@@ -31,36 +32,6 @@
 
 namespace Platform
 {
-
-namespace
-{
-
-/// Convert vendor ID to vendor name string
-[[nodiscard]] std::string vendorIdToName(uint32_t vendorId)
-{
-    switch (vendorId)
-    {
-    case 0x10DE:
-        return "NVIDIA";
-    case 0x1002:
-    case 0x1022:
-        return "AMD";
-    case 0x8086:
-    case 0x8087:
-        return "Intel";
-    default:
-        return "Unknown";
-    }
-}
-
-/// Convert LUID to PDH-compatible format string: "GPU_0x{HighPart}_0x{LowPart}"
-/// PDH instance names use this format for GPU identification
-[[nodiscard]] std::string luidToPdhFormat(const LUID& luid)
-{
-    return std::format("GPU_0x{:08X}_0x{:08X}", static_cast<std::uint32_t>(luid.HighPart), static_cast<std::uint32_t>(luid.LowPart));
-}
-
-} // namespace
 
 DXGIGPUProbe::DXGIGPUProbe() : m_Initialized(initialize())
 {}
@@ -98,32 +69,7 @@ bool DXGIGPUProbe::isIntegratedGPU(IDXGIAdapter1* adapter)
         return false;
     }
 
-    // Check if this is a software adapter or integrated GPU
-    // DXGI_ADAPTER_FLAG_SOFTWARE = 0x2
-    constexpr UINT SOFTWARE_FLAG = 2;
-    if ((desc.Flags & SOFTWARE_FLAG) != 0)
-    {
-        return false; // Skip software adapters
-    }
-
-    // Intel integrated GPUs typically have vendor ID 0x8086
-    // Intel UHD/Iris integrated graphics have lower dedicated video memory
-    if (desc.VendorId == 0x8086)
-    {
-        // Intel GPUs with < 512MB dedicated VRAM are likely integrated
-        return desc.DedicatedVideoMemory < (512ULL * 1024 * 1024);
-    }
-
-    // AMD APUs (integrated) have vendor ID 0x1002 but lower dedicated memory
-    if (desc.VendorId == 0x1002)
-    {
-        // AMD integrated GPUs typically have < 1GB dedicated VRAM
-        return desc.DedicatedVideoMemory < (1024ULL * 1024 * 1024);
-    }
-
-    // NVIDIA doesn't make consumer integrated GPUs (Tegra is different architecture)
-    // Assume discrete for NVIDIA
-    return false;
+    return isIntegratedGPUFromDesc(desc.VendorId, desc.Flags, desc.DedicatedVideoMemory);
 }
 
 std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
@@ -162,7 +108,8 @@ std::vector<GPUInfo> DXGIGPUProbe::enumerateGPUs()
 
                 // Generate LUID-based ID for PDH counter matching
                 // PDH GPU counters use LUID format: GPU_0x{HighPart}_0x{LowPart}
-                info.luidId = luidToPdhFormat(desc.AdapterLuid);
+                info.luidId =
+                    luidToPdhFormat(static_cast<uint32_t>(desc.AdapterLuid.HighPart), static_cast<uint32_t>(desc.AdapterLuid.LowPart));
 
                 // Convert name from wide char
                 info.name = WinString::wideToUtf8(desc.Description);

@@ -56,6 +56,8 @@ if(WIN32)
         Platform/test_WindowsNVMLGPUProbe.cpp
         Platform/test_WindowsPDHGPUProbe.cpp
         Platform/test_WindowsGPUProbe.cpp
+        Platform/test_WindowsDXGIGPUProbe.cpp
+        Platform/test_WindowsProcAddress.cpp
         Platform/test_WinString.cpp
     )
     set(PLATFORM_SRC_UNDER_TEST
