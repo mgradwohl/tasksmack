@@ -170,7 +170,15 @@ fi
 # attributed ~40% of total samples to near-zero-cost GPU no-op benchmarks, drowning out
 # the genuinely expensive process/system-probe work being measured alongside them.
 if [[ "${MODE}" = "bench" ]]; then
-    BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>/dev/null || true)"
+    BENCH_LIST_ERR="$(mktemp)"
+    trap 'rm -f "${BENCH_LIST_ERR}"' EXIT
+    BENCH_LIST_STATUS=0
+    BENCH_MATCHES="$("${BINARY}" "--benchmark_filter=${BENCH_FILTER}" --benchmark_list_tests=true 2>"${BENCH_LIST_ERR}")" || BENCH_LIST_STATUS=$?
+    if [[ "${BENCH_LIST_STATUS}" -ne 0 ]]; then
+        die "Failed to list benchmarks from ${BINARY} (exit ${BENCH_LIST_STATUS}): $(cat "${BENCH_LIST_ERR}")"
+    fi
+    rm -f "${BENCH_LIST_ERR}"
+    trap - EXIT
     BENCH_MATCH_COUNT="$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)"
     if [[ "${BENCH_MATCH_COUNT}" -eq 0 ]]; then
         die "--bench-filter '${BENCH_FILTER}' matches no benchmarks. Capturing would only measure benchmark startup/shutdown noise. Run '${BINARY} --benchmark_list_tests=true' to see valid names."
