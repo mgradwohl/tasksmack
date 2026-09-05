@@ -227,6 +227,22 @@ void ThrowingOnAttachLayer::onDetach()
 
 } // namespace
 
+// Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after calling
+// signalWindowGeometryChanged(), which is noexcept and has no other observable effect.
+// Declared directly in namespace Core (not inside the anonymous namespace above) so the
+// `friend struct ApplicationTestAccessor;` declaration in Application.h resolves to this
+// exact type. Same pattern as NVMLGPUProbeTestAccessor in test_WindowsNVMLGPUProbe.cpp.
+namespace Core
+{
+struct ApplicationTestAccessor
+{
+    [[nodiscard]] static bool geometryChangedThisFrame(const Application& app)
+    {
+        return app.m_WindowGeometryChangedThisFrame;
+    }
+};
+} // namespace Core
+
 // =============================================================================
 // Construction and Initialization Tests
 // =============================================================================
@@ -618,6 +634,52 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
         const auto& window = app.getWindow();
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "InteractionRedrawTest";
+
+    try
+    {
+        Core::Application app(spec);
+        EXPECT_FALSE(app.isInteractionRedrawActive());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SignalWindowGeometryChangedSetsFlag)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "GeometryChangedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        // Called by TitleBarLayer when it moves/resizes the window; no public getter, so
+        // Core::ApplicationTestAccessor (declared above) observes the private flag directly.
+        ASSERT_FALSE(Core::ApplicationTestAccessor::geometryChangedThisFrame(app));
+        app.signalWindowGeometryChanged();
+        EXPECT_TRUE(Core::ApplicationTestAccessor::geometryChangedThisFrame(app));
     }
     catch (const std::exception& e)
     {

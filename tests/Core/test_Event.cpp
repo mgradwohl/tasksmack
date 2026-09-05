@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 
 namespace Core
@@ -19,6 +20,29 @@ class ThemeChangedEvent : public Event
 {
   public:
     EVENT_CLASS_TYPE(ThemeChanged) // NOLINT(cppcoreguidelines-macro-usage)
+};
+
+/// Flips an external flag on destruction, so a test can observe whether the derived
+/// destructor actually ran when destroyed through a base Event* (proving virtual dispatch
+/// reached it, rather than just proving the call didn't crash).
+class DestructorTrackingEvent : public Event
+{
+  public:
+    explicit DestructorTrackingEvent(bool& destroyedFlag) : m_DestroyedFlag(destroyedFlag)
+    {}
+    ~DestructorTrackingEvent() override
+    {
+        m_DestroyedFlag = true;
+    }
+    DestructorTrackingEvent(const DestructorTrackingEvent&) = delete;
+    DestructorTrackingEvent& operator=(const DestructorTrackingEvent&) = delete;
+    DestructorTrackingEvent(DestructorTrackingEvent&&) = delete;
+    DestructorTrackingEvent& operator=(DestructorTrackingEvent&&) = delete;
+
+    EVENT_CLASS_TYPE(ThemeChanged) // NOLINT(cppcoreguidelines-macro-usage)
+
+  private:
+    bool& m_DestroyedFlag;
 };
 
 // ========== Event base class ==========
@@ -42,6 +66,19 @@ TEST(EventTest, SetHandledFalseAfterTrue)
     ev.setHandled(true);
     ev.setHandled(false);
     EXPECT_FALSE(ev.isHandled());
+}
+
+TEST(EventTest, DestroysThroughBasePointerWithoutLeaking)
+{
+    // Event's own virtual destructor body is only exercised when destruction happens
+    // through a base Event* (as opposed to a concrete type going out of scope directly),
+    // so this is the only coverage of that vtable slot. Asserting the derived destructor
+    // actually ran (not just that reset() didn't crash) verifies virtual dispatch reached
+    // it, matching this codebase's Rule-of-5 discipline.
+    bool destroyed = false;
+    std::unique_ptr<Event> ev = std::make_unique<DestructorTrackingEvent>(destroyed);
+    ev.reset();
+    EXPECT_TRUE(destroyed);
 }
 
 TEST(EventTest, GetEventTypeMatchesStaticType)
