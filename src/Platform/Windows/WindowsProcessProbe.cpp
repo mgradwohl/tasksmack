@@ -1,6 +1,7 @@
 #include "WindowsProcessProbe.h"
 
 #include "Domain/Numeric.h"
+#include "WindowsProcessProbeMath.h"
 
 #include <spdlog/spdlog.h>
 
@@ -1151,10 +1152,9 @@ bool WindowsProcessProbe::detectPowerMonitoring()
 
 void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseconds& lightTTL, std::chrono::milliseconds& heavyTTL) noexcept
 {
-    // Query total physical RAM and tune cache refresh intervals based on system size.
-    // Heuristic: Systems with abundant RAM can afford frequent detail refreshes (lower latency),
-    // while memory-constrained systems should cache longer to reduce enumeration overhead.
-
+    // Query total physical RAM and delegate the tier decision to the pure helper in
+    // WindowsProcessProbeMath.h (unit-testable with fabricated byte counts, since this
+    // machine's actual RAM only ever exercises one tier here).
     MEMORYSTATUSEX memStatus{};
     memStatus.dwLength = sizeof(memStatus);
 
@@ -1166,45 +1166,9 @@ void WindowsProcessProbe::calculateDetailTTLsFromTotalRAM(std::chrono::milliseco
         return;
     }
 
-    const uint64_t totalBytes = memStatus.ullTotalPhys;
-
-    // Tier thresholds and corresponding TTLs (based on total physical RAM):
-    // - < 2 GB total: Aggressive caching (preserve CPU/memory on low-end systems)
-    // - 2-4 GB: Conservative refresh
-    // - 4-8 GB: Balanced refresh
-    // - 8-16 GB: Slightly more frequent, but still avoids per-frame thrash
-    // - >= 16 GB: Keep responsive while preventing expensive detail recompute every sample
-
-    if (totalBytes < (2ULL * 1024 * 1024 * 1024))
-    {
-        // < 2 GB: Cache longer to reduce CPU load on memory-constrained systems
-        lightTTL = std::chrono::milliseconds(4000);
-        heavyTTL = std::chrono::milliseconds(15000);
-    }
-    else if (totalBytes < (4ULL * 1024 * 1024 * 1024))
-    {
-        // 2-4 GB: Conservative but not aggressive
-        lightTTL = std::chrono::milliseconds(3000);
-        heavyTTL = std::chrono::milliseconds(10000);
-    }
-    else if (totalBytes < (8ULL * 1024 * 1024 * 1024))
-    {
-        // 4-8 GB: Balanced refresh
-        lightTTL = std::chrono::milliseconds(2000);
-        heavyTTL = std::chrono::milliseconds(8000);
-    }
-    else if (totalBytes < (16ULL * 1024 * 1024 * 1024))
-    {
-        // 8-16 GB: Moderate refresh
-        lightTTL = std::chrono::milliseconds(1500);
-        heavyTTL = std::chrono::milliseconds(6000);
-    }
-    else
-    {
-        // >= 16 GB: Responsive, but avoid 1Hz+ heavy metadata refresh churn
-        lightTTL = std::chrono::milliseconds(1000);
-        heavyTTL = std::chrono::milliseconds(4000);
-    }
+    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(memStatus.ullTotalPhys);
+    lightTTL = ttls.light;
+    heavyTTL = ttls.heavy;
 }
 
 uint64_t WindowsProcessProbe::readSystemEnergy() const
