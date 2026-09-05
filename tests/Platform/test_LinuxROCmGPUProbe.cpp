@@ -2,13 +2,90 @@
 
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/ROCmGPUProbe.h"
+#include "Platform/Linux/ROCmGPUProbeMath.h"
 
 #include <gtest/gtest.h>
+
+#include <cstdint>
 
 namespace Platform
 {
 namespace
 {
+
+// ROCmGPUProbeMath: pure logic exercised with fake function pointers, covering error and
+// missing-symbol branches the fixed-behavior mock library (tests/Mocks/ROCmMock.cpp) never
+// takes -- it always succeeds, so these paths are otherwise unreachable via ROCmGPUProbe itself.
+
+TEST(ROCmGPUProbeMathTest, ResolveErrorStringReturnsLibraryStringWhenAvailable)
+{
+    const auto result = ROCmGPUProbeMath::resolveErrorString(7, [](std::uint32_t) -> const char* { return "Input out of bounds"; });
+    EXPECT_EQ(result, "Input out of bounds");
+}
+
+TEST(ROCmGPUProbeMathTest, ResolveErrorStringFallsBackWhenFunctionPointerIsNull)
+{
+    EXPECT_EQ(ROCmGPUProbeMath::resolveErrorString(3, nullptr), "Unknown ROCm error 3");
+}
+
+TEST(ROCmGPUProbeMathTest, ResolveErrorStringFallsBackWhenLibraryReturnsNull)
+{
+    const auto result = ROCmGPUProbeMath::resolveErrorString(3, [](std::uint32_t) -> const char* { return nullptr; });
+    EXPECT_EQ(result, "Unknown ROCm error 3");
+}
+
+TEST(ROCmGPUProbeMathTest, DeriveDeviceIdPrefersUniqueId)
+{
+    const auto uniqueIdFn = [](std::uint32_t, std::uint64_t* out) -> std::uint32_t
+    {
+        *out = 4001;
+        return ROCmGPUProbeMath::kRsmiStatusSuccess;
+    };
+    const auto pciIdFn = [](std::uint32_t, std::uint64_t* out) -> std::uint32_t
+    {
+        *out = 9001;
+        return ROCmGPUProbeMath::kRsmiStatusSuccess;
+    };
+    EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(0, uniqueIdFn, pciIdFn), "4001");
+}
+
+TEST(ROCmGPUProbeMathTest, DeriveDeviceIdFallsBackToPciIdWhenUniqueIdUnavailable)
+{
+    const auto pciIdFn = [](std::uint32_t, std::uint64_t* out) -> std::uint32_t
+    {
+        *out = 9001;
+        return ROCmGPUProbeMath::kRsmiStatusSuccess;
+    };
+    EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(1, nullptr, pciIdFn), "9001");
+}
+
+TEST(ROCmGPUProbeMathTest, DeriveDeviceIdFallsBackToPciIdWhenUniqueIdFails)
+{
+    const auto uniqueIdFn = [](std::uint32_t, std::uint64_t*) -> std::uint32_t
+    {
+        return ROCmGPUProbeMath::kRsmiStatusSuccess + 1; // any non-success status
+    };
+    const auto pciIdFn = [](std::uint32_t, std::uint64_t* out) -> std::uint32_t
+    {
+        *out = 9001;
+        return ROCmGPUProbeMath::kRsmiStatusSuccess;
+    };
+    EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(1, uniqueIdFn, pciIdFn), "9001");
+}
+
+TEST(ROCmGPUProbeMathTest, DeriveDeviceIdFallsBackToAmdIndexWhenBothLookupsUnavailable)
+{
+    EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(2, nullptr, nullptr), "amd_2");
+}
+
+TEST(ROCmGPUProbeMathTest, DeriveDeviceIdFallsBackToAmdIndexWhenBothLookupsFail)
+{
+    const auto alwaysFails = [](std::uint32_t, std::uint64_t*) -> std::uint32_t
+    {
+        return ROCmGPUProbeMath::kRsmiStatusSuccess + 1;
+    };
+    EXPECT_EQ(ROCmGPUProbeMath::deriveDeviceId(2, alwaysFails, alwaysFails), "amd_2");
+}
 
 TEST(LinuxROCmGPUProbeTest, BasicOperationsDoNotThrow)
 {

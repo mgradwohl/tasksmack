@@ -2,6 +2,8 @@
 
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/NVMLGPUProbe.h"
+#include "Platform/Linux/NVMLGPUProbeMath.h"
+#include "Platform/NVMLTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -11,6 +13,30 @@ namespace Platform
 {
 namespace
 {
+
+// NVMLGPUProbeMath: pure logic exercised with fake function pointers, covering the
+// missing-symbol and null-string branches the fixed-behavior mock library
+// (tests/Mocks/NVMLMock.cpp) never takes -- it always succeeds, so these paths are
+// otherwise unreachable via NVMLGPUProbe itself.
+
+TEST(NVMLGPUProbeMathTest, ResolveErrorStringReturnsLibraryStringWhenAvailable)
+{
+    const auto result = NVMLGPUProbeMath::resolveErrorString(NVML::NVML_ERROR_NOT_SUPPORTED,
+                                                             [](NVML::nvmlReturn_t) -> const char* { return "Not Supported"; });
+    EXPECT_EQ(result, "Not Supported");
+}
+
+TEST(NVMLGPUProbeMathTest, ResolveErrorStringFallsBackWhenFunctionPointerIsNull)
+{
+    EXPECT_EQ(NVMLGPUProbeMath::resolveErrorString(NVML::NVML_ERROR_NOT_SUPPORTED, nullptr), "Unknown NVML error");
+}
+
+TEST(NVMLGPUProbeMathTest, ResolveErrorStringFallsBackWhenLibraryReturnsNull)
+{
+    const auto result =
+        NVMLGPUProbeMath::resolveErrorString(NVML::NVML_ERROR_NOT_SUPPORTED, [](NVML::nvmlReturn_t) -> const char* { return nullptr; });
+    EXPECT_EQ(result, "Unknown NVML error");
+}
 
 TEST(LinuxNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 {
