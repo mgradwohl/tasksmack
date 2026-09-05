@@ -6,6 +6,13 @@
 namespace Platform
 {
 
+/// TTLs for the light/heavy detail-refresh caches, tuned by calculateDetailTTLsFromTotalRAMBytes().
+struct DetailCacheTTLs
+{
+    std::chrono::milliseconds light;
+    std::chrono::milliseconds heavy;
+};
+
 /// Pure RAM-tier decision logic extracted from WindowsProcessProbe::calculateDetailTTLsFromTotalRAM()
 /// so its tier thresholds can be unit tested with fabricated byte counts - the real function's
 /// GlobalMemoryStatusEx() call reports whatever RAM this machine happens to have, so most tiers
@@ -13,12 +20,6 @@ namespace Platform
 /// (lower latency), while memory-constrained systems should cache longer to reduce enumeration
 /// overhead.
 /// @param totalPhysicalBytes MEMORYSTATUSEX::ullTotalPhys (total physical RAM in bytes)
-struct DetailCacheTTLs
-{
-    std::chrono::milliseconds light;
-    std::chrono::milliseconds heavy;
-};
-
 [[nodiscard]] inline DetailCacheTTLs calculateDetailTTLsFromTotalRAMBytes(std::uint64_t totalPhysicalBytes) noexcept
 {
     // Tier thresholds and corresponding TTLs (based on total physical RAM):

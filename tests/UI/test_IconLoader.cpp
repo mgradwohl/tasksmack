@@ -283,8 +283,6 @@ class IconLoaderGLTest : public ::testing::Test
 
 } // namespace
 
-namespace UI
-{
 namespace
 {
 
@@ -330,5 +328,4 @@ TEST_F(IconLoaderGLTest, LoadTextureWithRealImageAndRealGLContextSucceeds)
 }
 
 } // namespace
-} // namespace UI
 } // namespace UI
