@@ -333,6 +333,15 @@ struct PDHGPUProbe::Impl
 
     std::unordered_map<std::wstring, CachedInstance, WideStringHash, std::equal_to<>> instanceCache;
 
+    // Diagnostic counters for instanceFor()'s cache behavior, added while investigating
+    // perf-plan-574 / issue #583 (instanceFor was measured as ~61% of TaskSmack's own CPU
+    // time in a GPU-heavy benchmark). Cheap to maintain (a handful of increments per call)
+    // and read via PDHGPUProbe::instanceCacheStats() - not gated behind a build flag since
+    // the cost of keeping them is negligible next to what they're measuring.
+    std::uint64_t instanceCacheHits = 0;
+    std::uint64_t instanceCacheMisses = 0;
+    std::uint64_t instanceCacheClears = 0;
+
     Impl() = default;
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
@@ -458,11 +467,14 @@ struct PDHGPUProbe::Impl
     {
         if (const auto it = instanceCache.find(name); it != instanceCache.end())
         {
+            ++instanceCacheHits;
             return it->second;
         }
+        ++instanceCacheMisses;
 
         if (instanceCache.size() > MAX_INSTANCE_CACHE_ENTRIES)
         {
+            ++instanceCacheClears;
             instanceCache.clear();
         }
 
@@ -474,6 +486,56 @@ struct PDHGPUProbe::Impl
         cached.gpuLuid = parsed.gpuLuid;
         cached.valid = parsed.valid;
         return instanceCache.emplace(std::move(wide), std::move(cached)).first->second;
+    }
+
+    /// Per-slot positional cache for one counter's wildcard-expanded array: remembers the
+    /// previous cycle's instance name and parsed metadata at each array index. One of these
+    /// per counter (utilization/dedicated/shared), since e.g. the utilization array's index 5
+    /// has nothing to do with the dedicated-memory array's index 5.
+    struct PositionalCache
+    {
+        std::vector<std::wstring> names;
+        std::vector<CachedInstance> cached;
+    };
+
+    PositionalCache utilizationPositional;
+    PositionalCache dedicatedMemoryPositional;
+    PositionalCache sharedMemoryPositional;
+
+    // Diagnostic counters for instanceForAt()'s positional-slot shortcut, added alongside
+    // the instanceCache* counters above while investigating perf-plan-574 / issue #583.
+    std::uint64_t positionalHits = 0;
+    std::uint64_t positionalMisses = 0;
+
+    /// Looks up (or parses/caches) instance metadata for the item at `index` within one
+    /// counter's wildcard-expanded array this cycle. PDH's wildcard instance order is
+    /// empirically stable between consecutive collects for the same live instance set (see
+    /// the positional hit-rate this reports via PDHGPUProbe::instanceCacheStats()), so
+    /// comparing this cycle's name at `index` against `posCache`'s remembered name at that
+    /// same index is normally enough to reuse the cached CachedInstance without touching
+    /// instanceCache/instanceFor() - i.e. without a single hash-map lookup - at all.
+    /// Correctness never depends on that ordering actually holding: any mismatch (including
+    /// PDH reordering instances, or the instance count changing) falls back to instanceFor(),
+    /// the exact same hash-map path used before this existed, so a wrong guess here costs an
+    /// extra string comparison, never a wrong answer.
+    const CachedInstance& instanceForAt(std::wstring_view name, std::size_t index, PositionalCache& posCache)
+    {
+        if (index < posCache.names.size() && posCache.names[index] == name)
+        {
+            ++positionalHits;
+            return posCache.cached[index];
+        }
+        ++positionalMisses;
+
+        const CachedInstance& parsed = instanceFor(name);
+        if (index >= posCache.names.size())
+        {
+            posCache.names.resize(index + 1);
+            posCache.cached.resize(index + 1);
+        }
+        posCache.names[index] = name;
+        posCache.cached[index] = parsed;
+        return posCache.cached[index];
     }
 
     /// @brief Read all expanded instances of a wildcard counter into the reused scratch buffer

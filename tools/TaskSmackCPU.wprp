@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes'?>
+<WindowsPerformanceRecorder
+    Author="TaskSmack"
+    Comments="CPU-sampling profile with larger buffers than the built-in CPU profile. Every capture taken with tools/profile-etw.ps1 using the plain 'CPU' profile reported hundreds of thousands of dropped events on this dev machine's sampling volume (16 logical cores, system-wide sampling); this profile keeps the same CPU-sampling provider set but with buffer sizing modeled on Windows Kits' SampleGeneralProfileForLargeServers.wprp."
+    Company="TaskSmack"
+    Copyright="TaskSmack"
+    Tag="TaskSmack"
+    Team="TaskSmack"
+    Version="1.0"
+    >
+  <Profiles>
+    <Profile
+        Base="CPU.Verbose.File"
+        Description="CPU sampling profile with larger buffers to avoid dropped events"
+        DetailLevel="Verbose"
+        Id="TaskSmackCPU.Verbose.File"
+        LoggingMode="File"
+        Name="TaskSmackCPU"
+        >
+      <Collectors Operation="Add">
+        <SystemCollectorId Value="SystemCollector_WPRSystemCollectorInFile">
+          <BufferSize Value="1024"/>
+          <Buffers Value="500"/>
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

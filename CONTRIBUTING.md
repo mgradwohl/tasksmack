@@ -762,9 +762,13 @@ pwsh tools/profile-etw.ps1 app
 # Benchmark trace
 pwsh tools/profile-etw.ps1 bench
 pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'   # profile the entire benchmark suite
 
 # Use win-profile for symbol-rich follow-up attribution
 pwsh tools/profile-etw.ps1 app -Preset win-profile
+
+# Unattended/scripted app trace — run for a fixed window and close automatically
+pwsh tools/profile-etw.ps1 app -DurationSeconds 45
 
 # Analyze a captured trace
 pwsh tools/analyze-etw.ps1 -TracePath .\perf-data\etw-app-<timestamp>.etl
@@ -782,6 +786,12 @@ Notes:
 - `wpr -cancel` returns a non-zero exit code when no trace is active; the scripts treat that as non-fatal.
 - Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
 - Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
+- Capture uses `tools/TaskSmackCPU.wprp`, a custom WPR profile with larger buffers than the
+  built-in `CPU` profile, to avoid the "trace has dropped N events" warning that the built-in
+  profile produces on machines with many logical cores under system-wide sampling.
+- The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
+  the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
+  the entire suite instead.
 
 ### Compile-Time Profiling (-ftime-trace)
 
