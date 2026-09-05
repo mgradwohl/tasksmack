@@ -123,6 +123,27 @@ TEST(ProcessModelTest, WhenProbeReportsFullPrivileges_ThenReducedPrivilegesIsFal
 }
 
 // =============================================================================
+// ISamplable Tests
+// =============================================================================
+
+TEST(ProcessModelTest, SampleDelegatesToRefresh)
+{
+    // sample() is the ISamplable override BackgroundSampler calls in production;
+    // every other test in this file drives refresh() directly, so this is the
+    // only coverage of sample()'s own body.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    static_cast<Domain::ISamplable&>(model).sample();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].pid, 100);
+}
+
+// =============================================================================
 // CPU Percentage Calculation Tests
 // =============================================================================
 
