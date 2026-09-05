@@ -8,6 +8,7 @@
 // so -- same reasoning as UI/IconLoader.cpp's direct test linkage documented in
 // CONTRIBUTING.md -- they benchmark real production code, not a parallel copy.
 
+#include "Domain/GPUModel.h"
 #include "UI/ChartWidgets.h"
 
 #include <benchmark/benchmark.h>
@@ -59,7 +60,7 @@ BENCHMARK(BM_ChartWidgets_ComputeAlpha);
 // intervals), requesting the full window -- the common case for a freshly-opened chart.
 static void BM_ChartWidgets_TailAlignedSpan_FullWindow(benchmark::State& state)
 {
-    const std::vector<float> data(300, 42.0F);
+    const std::vector<float> data(Domain::GPU_HISTORY_CAPACITY, 42.0F);
 
     for (auto _ : state)
     {
@@ -81,7 +82,9 @@ static void BM_ChartWidgets_TailAlignedSpan_PartialWindow(benchmark::State& stat
         benchmark::DoNotOptimize(UI::Widgets::tailAlignedSpan(data, requestedCount));
     }
 }
-BENCHMARK(BM_ChartWidgets_TailAlignedSpan_PartialWindow)->Args({300, 60})->Args({1800, 300});
+BENCHMARK(BM_ChartWidgets_TailAlignedSpan_PartialWindow)
+    ->Args({static_cast<int64_t>(Domain::GPU_HISTORY_CAPACITY), 60})
+    ->Args({1800, static_cast<int64_t>(Domain::GPU_HISTORY_CAPACITY)});
 
 // =============================================================================
 // Axis formatter Benchmarks -- called once per visible tick label per axis per
