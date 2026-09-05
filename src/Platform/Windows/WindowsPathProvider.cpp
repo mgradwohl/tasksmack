@@ -10,10 +10,13 @@
 #include <windows.h>
 // clang-format on
 
-#include <algorithm>
+#include "WindowsPathProviderMath.h"
+
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -22,82 +25,29 @@ namespace Platform
 
 std::filesystem::path WindowsPathProvider::getExecutableDir() const
 {
-    // Use wide string API and let filesystem handle conversion.
-    // Handle paths that may exceed MAX_PATH by growing the buffer as needed.
-    constexpr DWORD kInitialSize = MAX_PATH;
-    constexpr DWORD kMaxLongPath = 32767; // Windows long-path limit for Unicode paths
-
-    std::wstring buffer(kInitialSize, L'\0');
-
-    for (;;)
-    {
-        const DWORD bufferSize = static_cast<DWORD>(buffer.size());
-        const DWORD len = GetModuleFileNameW(nullptr, buffer.data(), bufferSize);
-
-        if (len == 0)
-        {
-            // Failure; break to fallback.
-            break;
-        }
-
-        if (len < bufferSize)
-        {
-            // Successfully retrieved full path (len does not include terminating null).
-            buffer.resize(len);
-            return std::filesystem::path(buffer).parent_path();
-        }
-
-        // len >= bufferSize: the buffer may be too small and the path truncated.
-        if (bufferSize >= kMaxLongPath)
-        {
-            // Already at or above the long-path limit; cannot grow further safely.
-            break;
-        }
-
-        const DWORD newSize = std::min(bufferSize * 2, kMaxLongPath);
-
-        buffer.assign(static_cast<std::size_t>(newSize), L'\0');
-    }
-
-    // Fallback to current directory if GetModuleFileName fails.
-    // Use the error_code overload so we never throw.
-    // If current_path() also fails, returns an empty path ({}) as a last-resort
-    // sentinel. PathService's normalization step handles this degenerate case and
-    // logs a warning so the condition is visible at runtime.
-    std::error_code cwdEc;
-    auto cwd = std::filesystem::current_path(cwdEc);
-    if (!cwdEc)
-    {
-        return cwd;
-    }
-    return {};
+    return resolveExecutableDir([](wchar_t* buffer, std::uint32_t size) -> std::uint32_t
+                                { return GetModuleFileNameW(nullptr, buffer, size); },
+                                [](std::error_code& ec) { return std::filesystem::current_path(ec); });
 }
 
 std::filesystem::path WindowsPathProvider::getUserConfigDir() const
 {
-    // Use _dupenv_s (secure version) to get APPDATA
-    char* appData = nullptr;
-    if (_dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
-    {
-        const std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
-        if (appData[0] != '\0')
+    return resolveUserConfigDir(
+        []() -> std::optional<std::string>
         {
-            return std::filesystem::path(appData) / "TaskSmack";
-        }
-    }
-
-    // Fallback to current directory if APPDATA not found.
-    // Use the error_code overload so we never throw.
-    // If current_path() also fails, returns an empty path ({}) as a last-resort
-    // sentinel. PathService's normalization step handles this degenerate case and
-    // logs a warning so the condition is visible at runtime.
-    std::error_code cwdEc;
-    auto cwd = std::filesystem::current_path(cwdEc);
-    if (!cwdEc)
-    {
-        return cwd;
-    }
-    return {};
+            // Use _dupenv_s (secure version) to get APPDATA
+            char* appData = nullptr;
+            if (_dupenv_s(&appData, nullptr, "APPDATA") == 0 && appData != nullptr)
+            {
+                const std::unique_ptr<char, decltype(&std::free)> holder(appData, &std::free);
+                if (appData[0] != '\0')
+                {
+                    return std::string(appData);
+                }
+            }
+            return std::nullopt;
+        },
+        [](std::error_code& ec) { return std::filesystem::current_path(ec); });
 }
 
 } // namespace Platform
