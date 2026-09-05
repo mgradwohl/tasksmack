@@ -11,6 +11,7 @@
 /// Note: These tests require a display/windowing system. They are skipped in headless environments.
 
 #include "Core/Application.h"
+#include "Core/FramePacing.h"
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/PathService.h"
@@ -351,6 +352,90 @@ TEST(ApplicationTest, PushMultipleLayers)
     {
         GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
+}
+
+// =============================================================================
+// FramePacing Tests (pure decision logic extracted from Application::run())
+// =============================================================================
+
+TEST(FramePacingTest, ShouldBreakEventDrainWhenBudgetExceeded)
+{
+    EXPECT_TRUE(Core::FramePacing::computeShouldBreakEventDrain(8.0, 8.0));
+    EXPECT_TRUE(Core::FramePacing::computeShouldBreakEventDrain(9.0, 8.0));
+    EXPECT_FALSE(Core::FramePacing::computeShouldBreakEventDrain(7.9, 8.0));
+}
+
+TEST(FramePacingTest, IsInteractingWhenAnyReasonPresent)
+{
+    EXPECT_TRUE(Core::FramePacing::computeIsInteracting(true, false, 0));
+    EXPECT_TRUE(Core::FramePacing::computeIsInteracting(false, true, 0));
+    EXPECT_TRUE(Core::FramePacing::computeIsInteracting(false, false, 1));
+    EXPECT_FALSE(Core::FramePacing::computeIsInteracting(false, false, 0));
+}
+
+TEST(FramePacingTest, IsWithinInteractionGrace)
+{
+    EXPECT_TRUE(Core::FramePacing::isWithinInteractionGrace(1.0F, 1.5F));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(1.5F, 1.5F));
+    EXPECT_FALSE(Core::FramePacing::isWithinInteractionGrace(2.0F, 1.5F));
+}
+
+TEST(FramePacingTest, VsyncTransitionDisablesOnInteractionStartWhenSpecRequestsVsync)
+{
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(false, true, true, false), Core::FramePacing::VsyncTransition::Disable);
+}
+
+TEST(FramePacingTest, VsyncTransitionNoChangeOnInteractionStartWhenSpecDoesNotRequestVsync)
+{
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(false, true, false, false), Core::FramePacing::VsyncTransition::NoChange);
+}
+
+TEST(FramePacingTest, VsyncTransitionRestoresOnInteractionEndWhenPreviouslyDisabled)
+{
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(true, false, true, true), Core::FramePacing::VsyncTransition::Restore);
+}
+
+TEST(FramePacingTest, VsyncTransitionNoChangeOnInteractionEndWhenNotPreviouslyDisabled)
+{
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(true, false, true, false), Core::FramePacing::VsyncTransition::NoChange);
+}
+
+TEST(FramePacingTest, VsyncTransitionNoChangeWhileInteractionStateUnchanged)
+{
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(true, true, true, true), Core::FramePacing::VsyncTransition::NoChange);
+    EXPECT_EQ(Core::FramePacing::computeVsyncTransition(false, false, true, false), Core::FramePacing::VsyncTransition::NoChange);
+}
+
+TEST(FramePacingTest, SkipRenderThisFrameWhenDrainExceedsBudgetAndNotMinimized)
+{
+    EXPECT_TRUE(Core::FramePacing::computeSkipRenderThisFrame(16.0, 16.0, false));
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(15.9, 16.0, false));
+}
+
+TEST(FramePacingTest, SkipRenderThisFrameNeverSkipsWhileMinimized)
+{
+    EXPECT_FALSE(Core::FramePacing::computeSkipRenderThisFrame(1000.0, 16.0, true));
+}
+
+TEST(FramePacingTest, ShouldSleepWhenIdleOutsideGracePeriod)
+{
+    EXPECT_TRUE(Core::FramePacing::computeShouldSleepWhenIdle(false, true));
+}
+
+TEST(FramePacingTest, ShouldSleepWhenIdleInsideGraceButGeometryUnchanged)
+{
+    EXPECT_TRUE(Core::FramePacing::computeShouldSleepWhenIdle(true, false));
+}
+
+TEST(FramePacingTest, ShouldNotSleepWhenIdleInsideGraceWithGeometryChanged)
+{
+    EXPECT_FALSE(Core::FramePacing::computeShouldSleepWhenIdle(true, true));
+}
+
+TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenMinimized)
+{
+    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
+    EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(false, 50, 200), 50);
 }
 
 // =============================================================================

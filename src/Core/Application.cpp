@@ -2,6 +2,7 @@
 
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
+#include "Core/FramePacing.h"
 #include "Core/Layer.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
@@ -613,7 +614,8 @@ void Application::run()
                 const double batchMs = std::chrono::duration<double, std::milli>(drainNow - lastDrainBatchCheckTime).count();
                 maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, batchMs);
                 lastDrainBatchCheckTime = drainNow;
-                if (std::chrono::duration<double, std::milli>(drainNow - eventDrainStart).count() >= DRAIN_BUDGET_MS)
+                if (FramePacing::computeShouldBreakEventDrain(std::chrono::duration<double, std::milli>(drainNow - eventDrainStart).count(),
+                                                              DRAIN_BUDGET_MS))
                 {
                     p0FiredThisDrain = true;
                     break;
@@ -638,23 +640,26 @@ void Application::run()
         // without reintroducing per-event rendering stalls: render at most once
         // per drained event batch.
         bool didImmediateResizeRedraw = false;
-        const bool forceInteractionRedraw = getTime() < m_InteractionRedrawUntil;
-        const bool isInteracting = needsResizeRedraw || forceInteractionRedraw || (resizeEventCount > 0);
+        const bool forceInteractionRedraw = FramePacing::isWithinInteractionGrace(getTime(), m_InteractionRedrawUntil);
+        const bool isInteracting = FramePacing::computeIsInteracting(needsResizeRedraw, forceInteractionRedraw, resizeEventCount);
         const bool tracingInteraction = m_ResizePerfTraceEnabled && isInteracting;
 
         // P1: Adaptive vsync — disable vsync at interaction start to break the
         // vsync/compositor-stall coupling that causes drain and swap spikes on
         // Wayland. Restore adaptive vsync when the interaction ends (after the
         // grace period expires) so idle frames remain tear-free.
-        if (!wasInteracting && isInteracting && m_Spec.VSync)
+        switch (FramePacing::computeVsyncTransition(wasInteracting, isInteracting, m_Spec.VSync, m_VsyncDisabledForInteraction))
         {
+        case FramePacing::VsyncTransition::Disable:
             Window::setVSync(false);
             m_VsyncDisabledForInteraction = true;
-        }
-        else if (wasInteracting && !isInteracting && m_VsyncDisabledForInteraction)
-        {
+            break;
+        case FramePacing::VsyncTransition::Restore:
             Window::setVSync(true);
             m_VsyncDisabledForInteraction = false;
+            break;
+        case FramePacing::VsyncTransition::NoChange:
+            break;
         }
 
         if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
@@ -673,7 +678,8 @@ void Application::run()
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
         // frame to avoid compounding the stall with render+swap time. Events are
         // fully processed; the display catches up on the next frame.
-        const bool skipRenderThisFrame = (totalDrainMs >= DRAIN_SKIP_RENDER_MS) && !m_Window->isMinimized();
+        const bool skipRenderThisFrame =
+            FramePacing::computeSkipRenderThisFrame(totalDrainMs, DRAIN_SKIP_RENDER_MS, m_Window->isMinimized());
         if (skipRenderThisFrame && traceResizePerfThisFrame && tracingInteraction)
         {
             ++resizeTraceStats.skippedRenderFrames;
@@ -707,15 +713,15 @@ void Application::run()
         //   sleep immediately, keeping interactive frame rate unaffected.
         if (!hadEvents)
         {
-            const bool keepInteractionRedrawActive = getTime() < m_InteractionRedrawUntil;
+            const bool keepInteractionRedrawActive = FramePacing::isWithinInteractionGrace(getTime(), m_InteractionRedrawUntil);
             // During the grace period, allow sleep if window geometry did not change last frame.
             // This prevents ~20 wasted renders after the user releases mouse while the window
             // is stationary. SDL_WaitEventTimeout wakes immediately on any event, so
             // responsiveness is unaffected. geometryChangedLastFrame reflects the previous
             // frame's onUpdate result (1-frame lag is intentional and benign).
-            if (!keepInteractionRedrawActive || !geometryChangedLastFrame)
+            if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
             {
-                const int sleepMs = m_Window->isMinimized() ? MINIMIZED_FRAME_SLEEP_MS : IDLE_FRAME_SLEEP_MS;
+                const int sleepMs = FramePacing::computeIdleSleepMs(m_Window->isMinimized(), IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS);
                 SDL_WaitEventTimeout(nullptr, sleepMs);
             }
         }
