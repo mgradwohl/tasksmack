@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string_view>
+#include <system_error>
 
 namespace UI
 {
@@ -158,6 +159,18 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     const auto first = findAssetsDir();
     const auto second = findAssetsDir();
     EXPECT_EQ(first, second);
+
+    // Comparing against selectAssetsDir() run directly against the live app's real
+    // executable directory and the real filesystem (the same "fonts" subdirectory probe
+    // findAssetsDir() uses internally) proves the cached result actually resolves from
+    // the live application, not just that the cache is internally consistent.
+    const auto expected = selectAssetsDir(Core::Application::get().paths().executableDir(),
+                                          [](const std::filesystem::path& p)
+                                          {
+                                              std::error_code ec;
+                                              return std::filesystem::exists(p / "fonts", ec);
+                                          });
+    EXPECT_EQ(first, expected);
 }
 
 } // namespace
