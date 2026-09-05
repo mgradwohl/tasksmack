@@ -105,6 +105,13 @@ class Application
     static void setInstance(std::unique_ptr<Application> app);
 
   private:
+    // Test-only accessor: lets unit tests observe m_WindowGeometryChangedThisFrame after
+    // calling signalWindowGeometryChanged(), which has no other observable effect (it's
+    // noexcept and only consumed internally by run()'s idle-sleep gate). Same pattern as
+    // NVMLGPUProbeTestAccessor in Platform/Windows/NVMLGPUProbe.h. Production code never
+    // touches this -- only test_Application.cpp uses it.
+    friend struct ApplicationTestAccessor;
+
     ApplicationSpecification m_Spec;
     PathService m_Paths;
     std::unique_ptr<Window> m_Window;
