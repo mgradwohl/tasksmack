@@ -17,6 +17,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/PathService.h"
+#include "Core/ResizePerfTrace.h"
 #include "Core/WindowEvents.h"
 
 #include <SDL3/SDL.h>
@@ -438,6 +439,75 @@ TEST(FramePacingTest, IdleSleepMsUsesMinimizedDurationWhenMinimized)
 {
     EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(true, 50, 200), 200);
     EXPECT_EQ(Core::FramePacing::computeIdleSleepMs(false, 50, 200), 50);
+}
+
+// =============================================================================
+// ResizePerfTrace Tests (pure accumulator/logging extracted from Application::run()'s
+// optional resize-performance tracing; see Core/ResizePerfTrace.h)
+// =============================================================================
+
+TEST(ResizePerfTraceStatsTest, HasSamplesReflectsRecordedActivity)
+{
+    Core::ResizePerfTraceStats stats;
+    EXPECT_FALSE(stats.hasSamples());
+
+    stats.recordEventBatch(1, 0, 1.0, 1.0, false);
+    EXPECT_TRUE(stats.hasSamples());
+}
+
+TEST(ResizePerfTraceStatsTest, HasSamplesTrueAfterFrameOnly)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(false, 1.0, 1.0, 1.0, 1.0);
+    EXPECT_TRUE(stats.hasSamples());
+}
+
+TEST(ResizePerfTraceStatsTest, RecordEventBatchAccumulatesAndTracksMax)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.recordEventBatch(10, 3, 5.0, 6.0, true);
+
+    EXPECT_EQ(stats.eventBatches, 2U);
+    EXPECT_EQ(stats.drainedEvents, 14U);
+    EXPECT_EQ(stats.resizeEvents, 4U);
+    EXPECT_EQ(stats.maxEventsPerBatch, 10U);
+    EXPECT_DOUBLE_EQ(stats.drainMs, 7.0);
+    EXPECT_DOUBLE_EQ(stats.maxDrainMs, 5.0);
+    EXPECT_DOUBLE_EQ(stats.maxSinglePollBatchMs, 6.0);
+    EXPECT_EQ(stats.p0BudgetCapHits, 1U) << "only the second batch fired p0";
+}
+
+TEST(ResizePerfTraceStatsTest, RecordFrameAccumulatesAndTracksMax)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(false, 1.0, 2.0, 0.5, 3.0);
+    stats.recordFrame(true, 4.0, 1.0, 2.0, 9.0);
+
+    EXPECT_EQ(stats.frames, 2U);
+    EXPECT_EQ(stats.resizeFrames, 1U) << "only the second frame was a resize frame";
+    EXPECT_DOUBLE_EQ(stats.updateMs, 5.0);
+    EXPECT_DOUBLE_EQ(stats.maxUpdateMs, 4.0);
+    EXPECT_DOUBLE_EQ(stats.renderMs, 3.0);
+    EXPECT_DOUBLE_EQ(stats.maxRenderMs, 2.0);
+    EXPECT_DOUBLE_EQ(stats.postRenderMs, 2.5);
+    EXPECT_DOUBLE_EQ(stats.maxPostRenderMs, 2.0);
+    EXPECT_DOUBLE_EQ(stats.swapMs, 12.0);
+    EXPECT_DOUBLE_EQ(stats.maxSwapMs, 9.0);
+}
+
+TEST(ResizePerfTraceStatsTest, LogSummaryIsNoopWhenNoSamples)
+{
+    const Core::ResizePerfTraceStats stats;
+    EXPECT_NO_THROW(Core::logResizePerfTraceSummary(stats, "test-empty"));
+}
+
+TEST(ResizePerfTraceStatsTest, LogSummaryLogsWhenSamplesPresent)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(2, 1, 1.0, 1.0, false);
+    stats.recordFrame(true, 1.0, 1.0, 1.0, 1.0);
+    EXPECT_NO_THROW(Core::logResizePerfTraceSummary(stats, "test-populated"));
 }
 
 // =============================================================================

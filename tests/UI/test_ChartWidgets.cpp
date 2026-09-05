@@ -244,6 +244,82 @@ TEST(ChartWidgetsFormattersTest, FormatAxisPercentFormatsOneDecimal)
     EXPECT_EQ(std::string(buf), "12.3%");
 }
 
+TEST(ChartWidgetsFormattersTest, FormatAxisPercentClampsTinyNegativeToZero)
+{
+    char buf[32]{};
+    const int len = formatAxisPercent(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "0.0%");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesGigaSuffix)
+{
+    char buf[32]{};
+    const int len = formatAxisLocalized(2'500'000'000.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "2.5G");
+}
+
+TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecHandlesMegaAndGigaSuffixes)
+{
+    char buf[32]{};
+    int len = formatAxisBytesPerSec(5.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "5.0MB/s");
+
+    len = formatAxisBytesPerSec(2.0 * 1024.0 * 1024.0 * 1024.0, buf, static_cast<int>(sizeof(buf)), nullptr);
+    EXPECT_GT(len, 0);
+    EXPECT_EQ(std::string(buf), "2.0GB/s");
+}
+
+// ========== seriesMax / normalizeToUnitInterval ==========
+
+TEST(ChartWidgetsTest, SeriesMaxReturnsFloorWhenValuesEmptyAndCurrentBelowFloor)
+{
+    EXPECT_DOUBLE_EQ(seriesMax({}, 0.5), 1.0);
+}
+
+TEST(ChartWidgetsTest, SeriesMaxReturnsCurrentWhenValuesEmptyAndCurrentAboveFloor)
+{
+    EXPECT_DOUBLE_EQ(seriesMax({}, 5.0), 5.0);
+}
+
+TEST(ChartWidgetsTest, SeriesMaxReturnsHistoryMaxWhenLargerThanCurrentAndFloor)
+{
+    EXPECT_DOUBLE_EQ(seriesMax({2.0, 8.0, 3.0}, 4.0), 8.0);
+}
+
+TEST(ChartWidgetsTest, SeriesMaxReturnsCurrentWhenLargerThanHistory)
+{
+    EXPECT_DOUBLE_EQ(seriesMax({2.0, 3.0}, 10.0), 10.0);
+}
+
+TEST(ChartWidgetsTest, SeriesMaxReturnsFloorWhenAllValuesBelowOne)
+{
+    EXPECT_DOUBLE_EQ(seriesMax({0.1, 0.2}, 0.3), 1.0);
+}
+
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalScalesWithinRange)
+{
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(50.0, 100.0), 0.5);
+}
+
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalReturnsZeroWhenMaxValueIsZeroOrNegative)
+{
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(50.0, 0.0), 0.0);
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(50.0, -10.0), 0.0);
+}
+
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalClampsAboveMax)
+{
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(150.0, 100.0), 1.0);
+}
+
+TEST(ChartWidgetsTest, NormalizeToUnitIntervalClampsBelowZero)
+{
+    EXPECT_DOUBLE_EQ(normalizeToUnitInterval(-10.0, 100.0), 0.0);
+}
+
 // ========== Time-axis helpers ==========
 
 TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsOffset)

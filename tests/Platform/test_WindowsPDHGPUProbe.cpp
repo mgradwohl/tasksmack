@@ -1,11 +1,13 @@
 #ifdef _WIN32
 
+#include "Platform/GPUTypes.h"
 #include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/PDHGPUProbeImpl.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -52,6 +54,65 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     EXPECT_FALSE(caps.hasFanSpeed);
 }
 
+TEST(WindowsPDHGPUProbeTest, MoveConstructionAndAssignmentTransferState)
+{
+    PDHGPUProbe probe;
+    const bool availableBeforeMove = probe.isAvailable();
+
+    PDHGPUProbe moved(std::move(probe));
+    EXPECT_EQ(moved.isAvailable(), availableBeforeMove);
+    EXPECT_NO_THROW([[maybe_unused]] auto process = moved.readProcessGPUCounters());
+
+    PDHGPUProbe assigned;
+    assigned = std::move(moved);
+    EXPECT_EQ(assigned.isAvailable(), availableBeforeMove);
+    EXPECT_NO_THROW([[maybe_unused]] auto process = assigned.readProcessGPUCounters());
+}
+
+// =============================================================================
+// parseInstanceName: pure parsing, no probe/fake harness required. Covers malformed-shape
+// branches not otherwise reachable via readProcessGPUCounters()'s malformed-name test, which
+// only exercises names that already have a "_phys_" or "_engtype_" segment.
+// =============================================================================
+
+TEST(ParseInstanceNameTest, NoUnderscoreAfterPidIsInvalid)
+{
+    // "pid_" prefix present but nothing delimits the PID from what follows.
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_123").valid);
+}
+
+TEST(ParseInstanceNameTest, NoPhysOrEngtypeSuffixIsInvalid)
+{
+    // Valid pid_/luid_ prefix, but the instance name ends there with no _phys_ or _engtype_.
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_700_luid_0x0_0x1").valid);
+}
+
+TEST(ParseInstanceNameTest, EmptyLuidSegmentIsInvalid)
+{
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_701_luid__phys_0_eng_0_engtype_3D").valid);
+}
+
+TEST(ParseInstanceNameTest, LuidPartsMissingHexPrefixAreInvalid)
+{
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_702_luid_ABC_DEF_phys_0_eng_0_engtype_3D").valid);
+}
+
+TEST(ParseInstanceNameTest, PhysWithoutEngSuffixIsInvalid)
+{
+    // "_phys_0" followed by garbage instead of "_eng_".
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_703_luid_0x0_0x1_phys_0_garbage").valid);
+}
+
+TEST(ParseInstanceNameTest, EngWithNonDigitSuffixIsInvalid)
+{
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_704_luid_0x0_0x1_phys_0_eng_x_engtype_3D").valid);
+}
+
+TEST(ParseInstanceNameTest, EngWithoutEngtypeSuffixIsInvalid)
+{
+    EXPECT_FALSE(PDHGPUProbeImplDetail::parseInstanceName("pid_705_luid_0x0_0x1_phys_0_eng_0_garbage").valid);
+}
+
 } // namespace
 } // namespace Platform
 
@@ -82,6 +143,9 @@ struct FakeScenario
     std::unordered_map<PDH_HCOUNTER, std::vector<void*>> seenBufferPointers;
     int getArrayCallCount = 0;
     std::uintptr_t nextHandleValue = 1;
+    /// When set for a counter, fakeGetFormattedCounterArray returns this status immediately
+    /// (neither ERROR_SUCCESS nor PDH_MORE_DATA), simulating a hard PDH failure.
+    std::unordered_map<PDH_HCOUNTER, PDH_STATUS> hardFailureStatus;
 };
 
 namespace Platform
@@ -126,6 +190,11 @@ PDH_STATUS WINAPI
 fakeGetFormattedCounterArray(PDH_HCOUNTER counter, DWORD format, LPDWORD bufferSize, LPDWORD itemCount, PPDH_FMT_COUNTERVALUE_ITEM_W buffer)
 {
     ++g_scenario->getArrayCallCount;
+    if (const auto failIt = g_scenario->hardFailureStatus.find(counter); failIt != g_scenario->hardFailureStatus.end())
+    {
+        *itemCount = 0;
+        return failIt->second;
+    }
     static const std::vector<FakeItem> emptyList;
     const auto listIt = g_scenario->items.find(counter);
     const std::vector<FakeItem>& list = (listIt != g_scenario->items.end()) ? listIt->second : emptyList;
@@ -211,6 +280,142 @@ class WindowsPDHGPUProbeInjectedTest : public ::testing::Test
 
     std::unique_ptr<FakeScenario> m_scenario;
 };
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, UninitializedImplReturnsEmptyWithoutTouchingFakes)
+{
+    // Impl::initialized stays false (default): readProcessGPUCounters() must bail out before
+    // calling any PDH function at all.
+    auto impl = std::make_unique<Impl>();
+    impl->pdhOpenQuery = fakeOpenQuery;
+    impl->pdhCloseQuery = fakeCloseQuery;
+    impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
+    impl->pdhCollectQueryData = fakeCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakeGetFormattedCounterArray;
+
+    PDHGPUProbe probe(std::move(impl));
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_EQ(m_scenario->collectCallCount, 0) << "must bail out before collecting any data";
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsEmptyWithNoCache)
+{
+    auto impl = std::make_unique<Impl>();
+    impl->pdhOpenQuery = fakeOpenQuery;
+    impl->pdhCloseQuery = fakeCloseQuery;
+    impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
+    impl->pdhCollectQueryData = fakeCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakeGetFormattedCounterArray;
+    impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    impl->initialized = true;
+    // All three wildcard counters fail to add, so ensureCounters() returns false and
+    // readProcessGPUCounters() must return early with no cached results yet (fresh probe).
+    m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+
+    PDHGPUProbe probe(std::move(impl));
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_EQ(m_scenario->collectCallCount, 0) << "must bail out before ever collecting";
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, AllCountersFailingToAddReturnsStaleCacheWhenPresent)
+{
+    auto impl = std::make_unique<Impl>();
+    impl->pdhOpenQuery = fakeOpenQuery;
+    impl->pdhCloseQuery = fakeCloseQuery;
+    impl->pdhAddEnglishCounter = fakeAddEnglishCounter;
+    impl->pdhCollectQueryData = fakeCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakeGetFormattedCounterArray;
+    impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    impl->initialized = true;
+    // Pre-populate the cache directly, as if a prior successful read had happened, then make
+    // all counters fail to add so ensureCounters() fails on this call -- exercises the "has a
+    // stale cached result to log/return" branch, not just the empty-cache one above.
+    ProcessGPUCounters cached;
+    cached.pid = 900;
+    cached.gpuUtilPercent = 50.0;
+    impl->lastValidResults = {cached};
+    impl->lastValidTimestamp = std::chrono::steady_clock::now();
+    m_scenario->failToAdd[Impl::UTILIZATION_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::DEDICATED_MEMORY_COUNTER_PATH] = true;
+    m_scenario->failToAdd[Impl::SHARED_MEMORY_COUNTER_PATH] = true;
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto results = probe.readProcessGPUCounters();
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results[0].pid, 900);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, CollectQueryDataFailureReturnsCachedResults)
+{
+    auto impl = makeInjectedImpl();
+    const PDH_HCOUNTER utilizationCounter = impl->utilizationCounter;
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_800_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 44.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto warmResults = probe.readProcessGPUCounters();
+    ASSERT_EQ(warmResults.size(), 1U);
+    EXPECT_EQ(warmResults[0].pid, 800);
+
+    // Now force PdhCollectQueryData to fail; the probe must fall back to the cached result
+    // from the successful read above rather than an empty list.
+    m_scenario->collectStatus = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_INSTANCE);
+    const auto failedResults = probe.readProcessGPUCounters();
+    ASSERT_EQ(failedResults.size(), 1U);
+    EXPECT_EQ(failedResults[0].pid, 800);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalformedNames)
+{
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->dedicatedMemoryCounter] = {
+        {.name = L"pid_801_luid_0x0_0x1_phys_0", .cstatus = PDH_CSTATUS_INVALID_DATA, .largeValue = 999},
+        {.name = L"garbage_no_pid_here", .largeValue = 111},
+        {.name = L"pid_802_luid_0x0_0x1_phys_0", .cstatus = PDH_CSTATUS_NEW_DATA, .largeValue = 4096},
+    };
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_802_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto results = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results[0].pid, 802);
+    EXPECT_EQ(results[0].gpuMemoryBytes, 4096U);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ReadCounterArrayHardFailureIsTreatedAsNoData)
+{
+    auto impl = makeInjectedImpl();
+    m_scenario->hardFailureStatus[impl->utilizationCounter] = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_OBJECT);
+
+    PDHGPUProbe probe(std::move(impl));
+    std::vector<ProcessGPUCounters> results;
+    EXPECT_NO_THROW(results = probe.readProcessGPUCounters());
+    EXPECT_TRUE(results.empty());
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ReadCounterArrayExhaustingRetriesReturnsNoData)
+{
+    auto impl = makeInjectedImpl();
+    const PDH_HCOUNTER utilizationCounter = impl->utilizationCounter;
+    // More forced PDH_MORE_DATA rounds than readCounterArray's 3-attempt retry loop allows,
+    // so every attempt fails and the loop must exit via its final `return nullptr;` rather
+    // than looping forever or crashing.
+    m_scenario->extraMoreDataRounds[utilizationCounter] = 5;
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_803_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 7.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    std::vector<ProcessGPUCounters> results;
+    EXPECT_NO_THROW(results = probe.readProcessGPUCounters());
+    EXPECT_TRUE(results.empty());
+}
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, ResizesBufferOnPdhMoreDataThenSucceeds)
 {
@@ -405,6 +610,17 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ItemsWithFailingCStatusAreSkipped)
 
     ASSERT_EQ(results.size(), 1U);
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 8.0);
+}
+
+// pdh.dll is a core OS component present on every Windows machine, so loadPDH()/initialize()'s
+// real dynamic-loading path always succeeds in CI - only the "already initialized" early-return
+// guard is exercisable this way, not the load-failure branches (those would need mocking
+// LoadLibraryW/GetProcAddress themselves, not worth it for a defensive guard like NVML's #781).
+TEST(WindowsPDHGPUProbeRealImplTest, InitializeCalledTwiceReturnsTrueImmediately)
+{
+    Impl impl;
+    ASSERT_TRUE(impl.initialize());
+    EXPECT_TRUE(impl.initialize()) << "second call should hit the already-initialized early return, not reload pdh.dll";
 }
 
 TEST(WindowsPDHGPUProbeInstanceCacheTest, CacheClearsPastLimitWithoutLosingCorrectness)
