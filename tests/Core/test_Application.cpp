@@ -8,7 +8,9 @@
 /// - Singleton instance access
 /// - Error handling (SDL initialization)
 ///
-/// Note: These tests require a display/windowing system. They are skipped in headless environments.
+/// Note: The ApplicationTest suite requires a display/windowing system and is skipped in headless
+/// environments. The FramePacingTest suite is pure logic extracted from Application::run() (see
+/// Core/FramePacing.h) and always runs, headless or not.
 
 #include "Core/Application.h"
 #include "Core/FramePacing.h"
