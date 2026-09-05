@@ -79,6 +79,48 @@ TEST(ChartWidgetsTest, InitializeOrSmoothAppliesSmoothingWhenInitialized)
     EXPECT_DOUBLE_EQ(initializeOrSmooth(10.0, 30.0, 0.25, true), 15.0);
 }
 
+// ========== tailAlignedSpan ==========
+
+TEST(ChartWidgetsTest, TailAlignedSpanReturnsWholeVectorWhenCountExceedsSize)
+{
+    const std::vector<int> data{1, 2, 3};
+    const auto span = tailAlignedSpan(data, 10);
+
+    EXPECT_EQ(span.offset, 0U);
+    ASSERT_EQ(span.values.size(), 3U);
+    EXPECT_EQ(span.values[0], 1);
+    EXPECT_EQ(span.values[2], 3);
+}
+
+TEST(ChartWidgetsTest, TailAlignedSpanReturnsLastCountElements)
+{
+    const std::vector<int> data{1, 2, 3, 4, 5};
+    const auto span = tailAlignedSpan(data, 2);
+
+    EXPECT_EQ(span.offset, 3U);
+    ASSERT_EQ(span.values.size(), 2U);
+    EXPECT_EQ(span.values[0], 4);
+    EXPECT_EQ(span.values[1], 5);
+}
+
+TEST(ChartWidgetsTest, TailAlignedSpanWithZeroCountReturnsEmptySpanAtEnd)
+{
+    const std::vector<int> data{1, 2, 3};
+    const auto span = tailAlignedSpan(data, 0);
+
+    EXPECT_EQ(span.offset, 3U);
+    EXPECT_TRUE(span.values.empty());
+}
+
+TEST(ChartWidgetsTest, TailAlignedSpanWithEmptyDataReturnsEmptySpan)
+{
+    const std::vector<int> data{};
+    const auto span = tailAlignedSpan(data, 5);
+
+    EXPECT_EQ(span.offset, 0U);
+    EXPECT_TRUE(span.values.empty());
+}
+
 // ========== NowBar ==========
 
 TEST(NowBarTest, ExplicitEmptyTooltipTextIsEmpty)

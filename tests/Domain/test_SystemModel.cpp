@@ -107,6 +107,23 @@ TEST(SystemModelTest, ConstructWithNullProbeDoesNotCrash)
     EXPECT_EQ(snap.coreCount, 0);
 }
 
+TEST(SystemModelTest, SampleDelegatesToRefresh)
+{
+    // sample() is the ISamplable override BackgroundSampler calls in production;
+    // every other test in this file drives refresh() directly, so this is the
+    // only coverage of sample()'s own body.
+    auto probe = std::make_unique<MockSystemProbe>();
+    const auto cpu = makeCpuCounters(0, 0, 0, 10000);
+    const std::vector<Platform::CpuCounters> perCore(4, cpu);
+    probe->setCounters(makeSystemCounters(cpu, makeMemoryCounters(16ULL * 1024 * 1024 * 1024, 8ULL * 1024 * 1024 * 1024), 0, perCore));
+
+    Domain::SystemModel model(std::move(probe));
+    static_cast<Domain::ISamplable&>(model).sample();
+
+    auto snap = model.snapshot();
+    EXPECT_EQ(snap.coreCount, 4);
+}
+
 TEST(SystemModelTest, PublishesCoherentVersionedState)
 {
     Domain::SystemModel model(nullptr);
