@@ -211,7 +211,17 @@ fi
 # exit 0 while writing a data file with zero samples -- confusing to discover only later,
 # from analyze-perf.sh or `perf report` failing with "has no samples". Check now instead.
 if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
-    SAMPLE_COUNT="$(perf script -i "${DATA_FILE}" 2>/dev/null | wc -l)"
+    PERF_SCRIPT_OUT="$(mktemp)"
+    PERF_SCRIPT_ERR="$(mktemp)"
+    # Separate stdout/stderr into files rather than piping into `wc -l` with stderr
+    # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
+    # empty trace) would otherwise abort the script right here with no diagnostic at all,
+    # since the failure surfaces as this command's own exit status, not as sample count 0.
+    if ! perf script -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+        die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
+    fi
+    SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
+    rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"
     if [[ "${SAMPLE_COUNT}" -eq 0 ]]; then
         die "perf captured zero samples (event=${PERF_EVENT}). The trace at ${DATA_FILE} is empty and unusable. This usually means the workload exited before perf attached, or ran too briefly at 997 Hz to catch anything -- try a longer-running workload or a lower -F rate."
     fi
