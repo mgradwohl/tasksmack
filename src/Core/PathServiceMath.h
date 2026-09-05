@@ -35,8 +35,15 @@ using CurrentPathFn = std::function<std::filesystem::path(std::error_code&)>;
 /// refuses all CWD queries); in that state the application cannot locate any of its assets or
 /// config, so the relaxed invariant is acceptable. A warning is emitted so the condition is at
 /// least observable at runtime.
+///
+/// Templated on the callable types (rather than taking AbsolutePathFn/CurrentPathFn directly) so
+/// PathService.cpp's real lambdas bind here without first converting to std::function - avoiding
+/// that conversion's allocation (and non-noexcept construction) on PathService's construction
+/// hot path. The two aliases remain available for callers (tests included) that want a concrete,
+/// storable type for the callables.
+template<typename AbsoluteFn, typename CurrentPathFn>
 [[nodiscard]] inline std::filesystem::path
-resolveAbsolutePath(const std::filesystem::path& raw, const AbsolutePathFn& absoluteFn, const CurrentPathFn& currentPathFn)
+resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteFn&& absoluteFn, CurrentPathFn&& currentPathFn)
 {
     std::error_code ec;
     const std::filesystem::path abs = absoluteFn(raw, ec);
