@@ -186,7 +186,14 @@ if ! $MINIMAL; then
     # tools/profile-perf.sh).
     run_apt heaptrack
     if [[ ! -d "$HOME/opt/FlameGraph" ]]; then
-        run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"
+        if ! command -v git &>/dev/null; then
+            echo "WARNING: git not found; skipping FlameGraph clone. Install git and re-run, or clone" >&2
+            echo "         manually: git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph" >&2
+        else
+            # git clone fails if the destination's parent directory doesn't exist yet.
+            run_cmd mkdir -p "$HOME/opt"
+            run_cmd git clone --depth 1 https://github.com/brendangregg/FlameGraph "$HOME/opt/FlameGraph"
+        fi
     fi
 
     # ── Step 6: Headless test runtime ────────────────────────────────────────

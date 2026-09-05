@@ -39,10 +39,11 @@ static void BM_ChartWidgets_ComputeAlpha(benchmark::State& state)
         v = dist(rng);
     }
 
+    const auto refreshInterval = std::chrono::milliseconds(1000);
     size_t idx = 0;
     for (auto _ : state)
     {
-        benchmark::DoNotOptimize(UI::Widgets::computeAlpha(deltas[idx & kPoolMask], std::chrono::milliseconds(1000)));
+        benchmark::DoNotOptimize(UI::Widgets::computeAlpha(deltas[idx & kPoolMask], refreshInterval));
         ++idx;
     }
 }
@@ -101,7 +102,7 @@ static void BM_ChartWidgets_FormatAxisLocalized(benchmark::State& state)
     size_t idx = 0;
     for (auto _ : state)
     {
-        benchmark::DoNotOptimize(UI::Widgets::formatAxisLocalized(values[idx & kPoolMask], buff, sizeof(buff), nullptr));
+        benchmark::DoNotOptimize(UI::Widgets::formatAxisLocalized(values[idx & kPoolMask], buff, static_cast<int>(sizeof(buff)), nullptr));
         ++idx;
     }
 }
@@ -121,7 +122,8 @@ static void BM_ChartWidgets_FormatAxisBytesPerSec(benchmark::State& state)
     size_t idx = 0;
     for (auto _ : state)
     {
-        benchmark::DoNotOptimize(UI::Widgets::formatAxisBytesPerSec(values[idx & kPoolMask], buff, sizeof(buff), nullptr));
+        benchmark::DoNotOptimize(
+            UI::Widgets::formatAxisBytesPerSec(values[idx & kPoolMask], buff, static_cast<int>(sizeof(buff)), nullptr));
         ++idx;
     }
 }
