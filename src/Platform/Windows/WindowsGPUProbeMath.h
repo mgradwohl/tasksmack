@@ -47,27 +47,18 @@ namespace Platform
 /// "NVIDIA GeForce RTX 4090" vs "GeForce RTX 4090").
 [[nodiscard]] inline bool gpuNamesMatch(const std::string& name1, const std::string& name2)
 {
-    // An empty name - e.g. NVML's DeviceGetName failed for this device - must never match
-    // anything, including another empty name; two distinct nameless devices are not thereby
-    // known to be the same adapter.
-    if (name1.empty() || name2.empty())
-    {
-        return false;
-    }
-
-    // First try exact match
-    if (name1 == name2)
-    {
-        return true;
-    }
-
-    // Try normalized comparison
+    // Normalize first (rather than trying a raw exact-match shortcut before this): two
+    // raw-identical strings always normalize equal too, so nothing is lost, and computing the
+    // normalized emptiness check up front - before any equality check - closes the case a raw
+    // exact-match shortcut would otherwise miss, such as two distinct all-whitespace names
+    // ("   " == "   ") that are byte-identical but must not count as a match.
     const std::string norm1 = normalizeGPUName(name1);
     const std::string norm2 = normalizeGPUName(name2);
 
     // An empty (or all-whitespace) name - e.g. NVML's DeviceGetName failed for this device -
-    // must never match anything: "" == "" and "".contains("") are both true, which would
-    // otherwise let a nameless device spuriously match every other GPU below.
+    // must never match anything, including another empty/whitespace-only name: "" == "" and
+    // "".contains("") are both true, which would otherwise let a nameless device spuriously
+    // match every other GPU below.
     if (norm1.empty() || norm2.empty())
     {
         return false;

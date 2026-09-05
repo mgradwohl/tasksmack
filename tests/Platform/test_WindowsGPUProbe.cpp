@@ -73,6 +73,13 @@ TEST(GpuNamesMatchTest, AllWhitespaceNameNeverMatchesANonEmptyName)
     EXPECT_FALSE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "   "));
 }
 
+TEST(GpuNamesMatchTest, TwoDistinctAllWhitespaceNamesDoNotMatch)
+{
+    // A raw exact-match shortcut (name1 == name2) taken before normalization would otherwise
+    // treat two byte-identical all-whitespace names as a match.
+    EXPECT_FALSE(gpuNamesMatch("   ", "   "));
+}
+
 // ==========================================================================
 // Basic Smoke Tests
 // ==========================================================================
