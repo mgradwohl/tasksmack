@@ -625,6 +625,52 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
     }
 }
 
+TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "InteractionRedrawTest";
+
+    try
+    {
+        Core::Application app(spec);
+        EXPECT_FALSE(app.isInteractionRedrawActive());
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
+TEST(ApplicationTest, SignalWindowGeometryChangedDoesNotThrow)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "GeometryChangedTest";
+
+    try
+    {
+        Core::Application app(spec);
+        // Called by TitleBarLayer when it moves/resizes the window; no public getter to
+        // observe the effect, so this covers the call itself (used by run()'s grace-period
+        // sleep gate, tested indirectly via Core::FramePacing).
+        app.signalWindowGeometryChanged();
+        SUCCEED();
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
+}
+
 // =============================================================================
 // Destructor Tests
 // =============================================================================

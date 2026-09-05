@@ -98,6 +98,22 @@ TEST(GPUModelTest, FirstRefreshPopulatesSnapshot)
     EXPECT_EQ(snap.memoryTotalBytes, 8ULL * 1024 * 1024 * 1024);
 }
 
+TEST(GPUModelTest, SampleDelegatesToRefresh)
+{
+    // sample() is the ISamplable override BackgroundSampler calls in production; every other
+    // test in this file drives refresh() directly, so this is the only coverage of sample()'s
+    // own body.
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+
+    Domain::GPUModel model(std::move(probe));
+    static_cast<Domain::ISamplable&>(model).sample();
+
+    auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1);
+    EXPECT_EQ(snaps[0].gpuId, "GPU0");
+}
+
 TEST(GPUModelTest, PublishesCoherentVersionedState)
 {
     auto probe = std::make_unique<MockGPUProbe>();

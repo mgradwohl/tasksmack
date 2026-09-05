@@ -122,6 +122,25 @@ TEST_F(WindowTest, CloseRequestLifecycle)
     }
 }
 
+TEST_F(WindowTest, GetGLContextReturnsNonNullAfterConstruction)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "WindowGLContextTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        EXPECT_NE(window.getGLContext(), nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        // Offscreen SDL driver does not support OpenGL context creation; skip.
+        // On a real display this is an unexpected failure — report it.
+        if (isOffscreenVideoDriver())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
 TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
 {
     try

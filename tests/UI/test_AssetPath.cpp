@@ -1,14 +1,50 @@
+#include "Core/Application.h"
+#include "Core/HeadlessVideoDriverTestUtils.h"
 #include "UI/AssetPath.h"
 #include "version.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <filesystem>
+#include <string_view>
 
 namespace UI
 {
 namespace
 {
+
+// Mirrors the hasDisplay() helper in test_Application.cpp/test_Window.cpp (each test file
+// keeps its own copy rather than sharing one, per this repo's existing convention).
+bool hasDisplay()
+{
+#ifdef _WIN32
+    char* ciEnv = nullptr;
+    std::size_t len = 0;
+    _dupenv_s(&ciEnv, &len, "CI");
+    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc; must free with free()
+    free(ciEnv);
+    if (isCI)
+    {
+        return false;
+    }
+    return true;
+#else
+    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    const char* display = std::getenv("DISPLAY");
+    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+    if ((display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0'))
+    {
+        if (TestSupport::probeGLCapability())
+        {
+            return true;
+        }
+    }
+    return TestSupport::tryEnableOffscreenVideoDriver();
+#endif
+}
 
 // ========== Candidate priority ==========
 
@@ -87,6 +123,35 @@ TEST(AssetPathTest, FallsBackToFirstCandidateWhenNoneExist)
     const std::filesystem::path exeDir = "/nonexistent/exe";
     const auto result = selectAssetsDir(exeDir, [](const std::filesystem::path& /*p*/) { return false; });
     EXPECT_EQ(result, exeDir / "assets");
+}
+
+// ========== findAssetsDir() (real Application, real filesystem) ==========
+
+TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
+{
+    // findAssetsDir() caches its result in a function-local static (computed once per
+    // process), so this is the only way to cover its body and executableDir()'s wrapper
+    // around Core::Application::get() -- both need a live Application instance, which
+    // selectAssetsDir()'s injectable-predicate tests above deliberately avoid depending on.
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "FindAssetsDirTest";
+
+    try
+    {
+        Core::Application app(spec);
+        const auto first = findAssetsDir();
+        const auto second = findAssetsDir();
+        EXPECT_EQ(first, second);
+    }
+    catch (const std::exception& e)
+    {
+        GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
+    }
 }
 
 } // namespace

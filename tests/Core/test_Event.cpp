@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <string>
 
 namespace Core
@@ -42,6 +43,17 @@ TEST(EventTest, SetHandledFalseAfterTrue)
     ev.setHandled(true);
     ev.setHandled(false);
     EXPECT_FALSE(ev.isHandled());
+}
+
+TEST(EventTest, DestroysThroughBasePointerWithoutLeaking)
+{
+    // Event's own virtual destructor body is only exercised when destruction happens
+    // through a base Event* (as opposed to a concrete type going out of scope directly),
+    // so this is the only coverage of that vtable slot. Also verifies polymorphic
+    // destruction actually works, matching this codebase's Rule-of-5 discipline.
+    std::unique_ptr<Event> ev = std::make_unique<WindowCloseEvent>();
+    ev.reset();
+    SUCCEED();
 }
 
 TEST(EventTest, GetEventTypeMatchesStaticType)
