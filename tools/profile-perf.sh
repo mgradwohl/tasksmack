@@ -26,6 +26,11 @@
 #   On WSL2: kernel version mismatch between linux-tools and the WSL kernel is common.
 #            See https://github.com/microsoft/WSL/issues for workarounds; or profile on
 #            a native Linux machine / GitHub Actions runner.
+#   Also on WSL2 (a separate issue from the above): the hypervisor does not pass through
+#   real hardware performance counters, so the default `cycles` event silently records
+#   zero samples instead of erroring — this script detects that and falls back to the
+#   `cpu-clock` software event automatically, and fails loudly if a capture still ends up
+#   empty. The same fallback applies to most containers and some cloud VMs/CI runners.
 
 set -euo pipefail
 
@@ -102,6 +107,21 @@ check_perf_version() {
     fi
 }
 
+# Detect a perf event that actually produces samples on this host. Hardware `cycles` is
+# the most accurate when the kernel has real PMU access, but under WSL2 (no hardware
+# counter passthrough), many containers, and some cloud VMs/CI runners, `perf record`
+# with `cycles` does not error -- it silently writes a data file with zero samples,
+# which only surfaces later as a confusing "has no samples" error from `perf report`.
+# Probe for it up front instead and fall back to the `cpu-clock` software event, which
+# works everywhere `perf record` itself works.
+detect_perf_event() {
+    if perf stat -e cycles -- true &>/dev/null; then
+        echo "cycles"
+    else
+        echo "cpu-clock"
+    fi
+}
+
 # ── pre-flight ────────────────────────────────────────────────────────────────
 print_step "Checking prerequisites"
 
@@ -109,6 +129,13 @@ check_command perf "apt install linux-tools-generic linux-tools-$(uname -r 2>/de
     die "perf is required. On Ubuntu: sudo apt install linux-tools-generic"
 
 check_perf_version
+
+PERF_EVENT="$(detect_perf_event)"
+if [[ "${PERF_EVENT}" != "cycles" ]]; then
+    echo "NOTE: hardware 'cycles' event unavailable (common on WSL2/containers/some cloud VMs)." >&2
+    echo "      Falling back to the '${PERF_EVENT}' software event." >&2
+    echo "" >&2
+fi
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     validate_build_prereqs || die "Build prerequisites not met."
@@ -147,12 +174,13 @@ info "Binary: ${BINARY}"
 } > "${LOG_FILE}"
 
 # perf record flags:
+#   -e            — sampling event; see detect_perf_event() above
 #   -F 997        — sample at ~997 Hz (prime to avoid aliasing with timer interrupts)
 #   -g            — capture call graphs
 #   --call-graph dwarf — use DWARF unwinding (more accurate than fp for inlined frames;
 #                         requires -g in build flags; falls back gracefully on older kernels)
 #   -o            — output file
-PERF_RECORD_FLAGS=(-F 997 -g --call-graph dwarf -o "${DATA_FILE}")
+PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 -g --call-graph dwarf -o "${DATA_FILE}")
 
 PERF_EXIT_CODE=0
 if [[ "${MODE}" = "app" ]]; then
@@ -176,6 +204,18 @@ else
     PERF_EXIT_CODE=$?
     set -e
     echo "EXIT_CODE=${PERF_EXIT_CODE}" >> "${LOG_FILE}"
+fi
+
+# ── validate ──────────────────────────────────────────────────────────────────
+# A misconfigured event (or one silently unsupported on this host) can make perf record
+# exit 0 while writing a data file with zero samples -- confusing to discover only later,
+# from analyze-perf.sh or `perf report` failing with "has no samples". Check now instead.
+if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
+    SAMPLE_COUNT="$(perf script -i "${DATA_FILE}" 2>/dev/null | wc -l)"
+    if [[ "${SAMPLE_COUNT}" -eq 0 ]]; then
+        die "perf captured zero samples (event=${PERF_EVENT}). The trace at ${DATA_FILE} is empty and unusable. This usually means the workload exited before perf attached, or ran too briefly at 997 Hz to catch anything -- try a longer-running workload or a lower -F rate."
+    fi
+    info "Captured ${SAMPLE_COUNT} samples."
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────
