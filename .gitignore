@@ -79,9 +79,11 @@ Thumbs.db
 # clangd cache
 .clangd/
 
-# Core dumps
-core
-core.*
+# Core dumps (anchored to repo root: an unanchored "core" pattern also matches the
+# src/Core and tests/Core directories on case-insensitive filesystems, silently
+# ignoring any new file added there)
+/core
+/core.*
 
 # ImGui state file
 imgui.ini

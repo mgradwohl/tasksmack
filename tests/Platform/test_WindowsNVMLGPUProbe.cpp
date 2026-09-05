@@ -803,6 +803,19 @@ TEST_F(NVMLGPUProbeFakeTest, ImplausibleReportedCountIsSkipped)
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
 }
 
+TEST_F(NVMLGPUProbeFakeTest, ImplausibleGraphicsReportedCountIsSkipped)
+{
+    // Mirrors ImplausibleReportedCountIsSkipped above, but for the graphics-process guard
+    // rather than the compute-process one - they're separate branches in production code.
+    fakeState().graphicsProcesses[0] = makeProcessQuery({}, NVML_SUCCESS, NVML_SUCCESS, 100000U);
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
+
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+}
+
 TEST_F(NVMLGPUProbeFakeTest, InsufficientSizeOnFirstCallStillFetchesProcesses)
 {
     fakeState().computeProcesses[0] =
