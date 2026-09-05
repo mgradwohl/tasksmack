@@ -2,6 +2,8 @@
 
 #include "Platform/GPUTypes.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -49,6 +51,27 @@ class PDHGPUProbe
 
     /// @brief Get capabilities of this probe
     [[nodiscard]] GPUCapabilities capabilities() const;
+
+    /// Diagnostic snapshot of instanceFor()'s instance-name cache behavior, added while
+    /// investigating perf-plan-574 / issue #583. See PDHGPUProbe::Impl::instanceCacheHits
+    /// et al. for what each counter tracks.
+    struct CacheStats
+    {
+        std::uint64_t hits = 0;
+        std::uint64_t misses = 0;
+        std::uint64_t clears = 0;
+        std::size_t cachedEntries = 0;
+        /// Positional-slot shortcut counters (instanceForAt()): a positional hit skips the
+        /// hash-map lookup entirely, so these are disjoint from hits/misses above, not a
+        /// subset of them.
+        std::uint64_t positionalHits = 0;
+        std::uint64_t positionalMisses = 0;
+    };
+
+    /// @brief Snapshot of the instance-name cache's cumulative hit/miss/clear counts and
+    /// current size. Cheap (a handful of field reads); safe to call at any time, including
+    /// before the probe is available.
+    [[nodiscard]] CacheStats instanceCacheStats() const;
 
   private:
     std::unique_ptr<Impl> m_Impl;

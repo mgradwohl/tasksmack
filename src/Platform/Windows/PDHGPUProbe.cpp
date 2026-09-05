@@ -149,13 +149,15 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
 
     if (auto* items = m_Impl->readCounterArray(m_Impl->utilizationCounter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, itemCount))
     {
-        for (const auto& item : std::span{items, itemCount})
+        const std::span itemSpan{items, itemCount};
+        for (std::size_t idx = 0; idx < itemSpan.size(); ++idx)
         {
+            const auto& item = itemSpan[idx];
             if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
             {
                 continue;
             }
-            const auto& inst = m_Impl->instanceFor(item.szName);
+            const auto& inst = m_Impl->instanceForAt(item.szName, idx, m_Impl->utilizationPositional);
             if (!inst.valid || inst.pid <= 0)
             {
                 continue;
@@ -173,20 +175,22 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         }
     }
 
-    const auto accumulateMemory = [&](PDH_HCOUNTER counter, auto memberSelector)
+    const auto accumulateMemory = [&](PDH_HCOUNTER counter, auto& posCache, auto memberSelector)
     {
         auto* items = m_Impl->readCounterArray(counter, PDH_FMT_LARGE, itemCount);
         if (items == nullptr)
         {
             return;
         }
-        for (const auto& item : std::span{items, itemCount})
+        const std::span itemSpan{items, itemCount};
+        for (std::size_t idx = 0; idx < itemSpan.size(); ++idx)
         {
+            const auto& item = itemSpan[idx];
             if (item.FmtValue.CStatus != ERROR_SUCCESS && item.FmtValue.CStatus != PDH_CSTATUS_NEW_DATA)
             {
                 continue;
             }
-            const auto& inst = m_Impl->instanceFor(item.szName);
+            const auto& inst = m_Impl->instanceForAt(item.szName, idx, posCache);
             if (!inst.valid || inst.pid <= 0)
             {
                 continue;
@@ -197,8 +201,11 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         }
     };
 
-    accumulateMemory(m_Impl->dedicatedMemoryCounter, [](AggData& agg) -> std::uint64_t& { return agg.dedicatedMemory; });
-    accumulateMemory(m_Impl->sharedMemoryCounter, [](AggData& agg) -> std::uint64_t& { return agg.sharedMemory; });
+    accumulateMemory(m_Impl->dedicatedMemoryCounter,
+                     m_Impl->dedicatedMemoryPositional,
+                     [](AggData& agg) -> std::uint64_t& { return agg.dedicatedMemory; });
+    accumulateMemory(
+        m_Impl->sharedMemoryCounter, m_Impl->sharedMemoryPositional, [](AggData& agg) -> std::uint64_t& { return agg.sharedMemory; });
 
     // Convert to ProcessGPUCounters
     for (const auto& [key, agg] : aggregated)
@@ -231,6 +238,20 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
     }
 
     return result;
+}
+
+PDHGPUProbe::CacheStats PDHGPUProbe::instanceCacheStats() const
+{
+    if (!m_Impl)
+    {
+        return {};
+    }
+    return {.hits = m_Impl->instanceCacheHits,
+            .misses = m_Impl->instanceCacheMisses,
+            .clears = m_Impl->instanceCacheClears,
+            .cachedEntries = m_Impl->instanceCache.size(),
+            .positionalHits = m_Impl->positionalHits,
+            .positionalMisses = m_Impl->positionalMisses};
 }
 
 GPUCapabilities PDHGPUProbe::capabilities() const

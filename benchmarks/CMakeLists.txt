@@ -31,7 +31,7 @@ endif()
 # Platform-specific benchmark sources
 if(WIN32)
     set(PLATFORM_BENCH_SOURCES
-        # Windows-specific benchmarks (if any)
+        bench_WindowsPDHGPUProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_BENCH
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp

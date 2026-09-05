@@ -4,8 +4,18 @@
 .DESCRIPTION
     Self-elevates if needed, starts a WPR CPU trace, runs either the real app or a
     focused benchmark workload, then stops tracing and writes artifacts under perf-data/.
+
+    Uses tools/TaskSmackCPU.wprp (a custom WPR profile with larger buffers than the
+    built-in "CPU" profile) rather than "wpr -start CPU" directly: every capture taken with
+    the plain built-in profile on a typical dev machine (16 logical cores, system-wide
+    sampling) reported hundreds of thousands of dropped events ("This trace has dropped N
+    events. Please record this trace again."), which silently degrades every downstream
+    analysis. The custom profile cuts that by roughly an order of magnitude or more (still
+    subject to run-to-run system-load variance, so occasional drops are expected, just far
+    fewer) - see TaskSmackCPU.wprp's own comment for where its buffer sizing came from.
 .PARAMETER Mode
-    app   - launch TaskSmack.exe and wait until it exits
+    app   - launch TaskSmack.exe, then either wait for it to be closed manually (default) or
+            run for a fixed window and close it automatically (-DurationSeconds)
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
 .PARAMETER Preset
         Build preset that contains the binaries to run. Defaults depend on mode:
@@ -15,8 +25,19 @@
         deeper follow-up analysis.
 .PARAMETER SkipBuild
     Skip configure/build and use the existing binaries.
+.PARAMETER DurationSeconds
+    Mode=app only: instead of waiting indefinitely for a human to exercise and close the
+    app, run it for this many seconds (idle - no interaction, so this captures background
+    refresh/render cost, not click/scroll/hover load) and then close it automatically. Lets
+    an app-mode capture run unattended/scripted. Omit (0) to keep the default interactive
+    behavior (wait for manual close, useful when you actually want to exercise the UI).
 .PARAMETER BenchmarkFilter
-    Google Benchmark filter used when Mode=bench.
+    Google Benchmark filter used when Mode=bench. Defaults to a curated set covering every
+    probe/model refresh path (Process/System/GPU/Storage/Disk) plus the PDH per-process GPU
+    path and core History container operations - deliberately excludes MemoryGrowth-style
+    benchmarks (measure allocation, not CPU hotspots) and the pure-algorithmic Format/Numeric
+    micro-benchmarks (better suited to bench.ps1's regression tracking than ETW correlation).
+    Pass '.*' to profile the entire benchmark suite instead.
 .PARAMETER BenchmarkRepetitions
     Repetition count for benchmark-mode capture.
 .PARAMETER BenchmarkMinTime
@@ -24,7 +45,11 @@
 .EXAMPLE
     pwsh tools/profile-etw.ps1 app
 .EXAMPLE
+    pwsh tools/profile-etw.ps1 app -DurationSeconds 45
+.EXAMPLE
     pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_SystemModel_Refresh$'
+.EXAMPLE
+    pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'
 .EXAMPLE
     pwsh tools/profile-etw.ps1 app -Preset win-profile
 #>
@@ -39,7 +64,9 @@ param(
 
     [switch]$SkipBuild,
 
-    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$',
+    [int]$DurationSeconds = 0,
+
+    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|History_(Push|RandomAccess|SequentialAccess|CopyTo))$',
 
     [int]$BenchmarkRepetitions = 5,
 
@@ -52,6 +79,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $perfDir = Join-Path $repoRoot 'perf-data'
+$wprProfilePath = Join-Path $scriptDir 'TaskSmackCPU.wprp'
 
 if ([string]::IsNullOrWhiteSpace($Preset)) {
     $Preset = if ($Mode -eq 'app') { 'win-optimized' } else { 'win-benchmark' }
@@ -112,8 +140,9 @@ if (-not (Test-IsAdministrator)) {
         Invoke-Native cmake '--build' '--preset' $Preset
     }
 
-    # Validate WPR availability before prompting for elevation so failures are immediate.
+    # Validate WPR availability/profile before prompting for elevation so failures are immediate.
     $null = Ensure-Tool 'wpr'
+    Ensure-Binary $wprProfilePath
 
     # Relaunch using the current PowerShell host (pwsh or powershell) for consistent behavior.
     $hostExe = (Get-Process -Id $PID).Path
@@ -122,7 +151,7 @@ if (-not (Test-IsAdministrator)) {
     }
 
     # Child run always uses -SkipBuild: if needed, parent already built before elevation.
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-SkipBuild')
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSCommandPath", '-Mode', $Mode, '-Preset', $Preset, '-Timestamp', $Timestamp, '-BenchmarkFilter', $BenchmarkFilter, '-BenchmarkRepetitions', "$BenchmarkRepetitions", '-BenchmarkMinTime', $BenchmarkMinTime, '-DurationSeconds', "$DurationSeconds", '-SkipBuild')
 
     $launchCommand = "$hostExe $($argList -join ' ')"
     "LAUNCH=$launchCommand" | Set-Content -Path $launcherLogPath -Encoding utf8
@@ -172,6 +201,7 @@ if (-not $SkipBuild) {
 $binaryName = if ($Mode -eq 'app') { 'TaskSmack.exe' } else { 'TaskSmackBenchmarks.exe' }
 $binaryPath = Join-Path $repoRoot "build/$Preset/bin/$binaryName"
 Ensure-Binary $binaryPath
+Ensure-Binary $wprProfilePath
 
 $logPath = $childLogPath
 
@@ -183,15 +213,24 @@ try {
 
     & wpr -cancel 2>&1 | Out-Null
 
-    Invoke-Native wpr '-start' 'CPU' '-filemode'
+    Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode'
 
     if ($Mode -eq 'app') {
         $proc = Start-Process -FilePath $binaryPath -PassThru
         Write-Host "Launched app PID: $($proc.Id)"
-        Write-Host 'Exercise the application, then close it to finish the trace.'
-        # Wait up to 4 hours; if the app crashes without exiting, this unblocks
-        # so the finally block can still run wpr -cancel and stop the transcript.
-        Wait-Process -Id $proc.Id -Timeout 14400 -ErrorAction SilentlyContinue
+        if ($DurationSeconds -gt 0) {
+            Write-Host "Running for $DurationSeconds second(s), then closing automatically."
+            Start-Sleep -Seconds $DurationSeconds
+            if (-not $proc.HasExited) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+        else {
+            Write-Host 'Exercise the application, then close it to finish the trace.'
+            # Wait up to 4 hours; if the app crashes without exiting, this unblocks
+            # so the finally block can still run wpr -cancel and stop the transcript.
+            Wait-Process -Id $proc.Id -Timeout 14400 -ErrorAction SilentlyContinue
+        }
     }
     else {
         Invoke-Native $binaryPath "--benchmark_filter=$BenchmarkFilter" "--benchmark_repetitions=$BenchmarkRepetitions" "--benchmark_min_time=$BenchmarkMinTime" '--benchmark_report_aggregates_only=true' '--benchmark_display_aggregates_only=true' "--benchmark_out=$benchJsonPath" '--benchmark_out_format=json'

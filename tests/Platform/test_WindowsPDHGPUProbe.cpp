@@ -612,6 +612,96 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, ItemsWithFailingCStatusAreSkipped)
     EXPECT_DOUBLE_EQ(results[0].gpuUtilPercent, 8.0);
 }
 
+// =============================================================================
+// instanceForAt's positional-slot shortcut (see PDHGPUProbeImpl.h): a second call with the
+// same item at the same array index should skip the hash-map lookup entirely; anything else
+// (reordering, or content changing at a fixed index) must still produce correct data by
+// falling back to the hash-map path, never a stale/wrong answer.
+// =============================================================================
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, RepeatedIdenticalOrderHitsPositionalCacheOnSecondCall)
+{
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_900_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 10.0},
+        {.name = L"pid_901_luid_0x0_0x1_phys_0_eng_0_engtype_Compute", .doubleValue = 20.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto first = probe.readProcessGPUCounters();
+    ASSERT_EQ(first.size(), 2U);
+
+    const auto statsAfterFirst = probe.instanceCacheStats();
+    const auto second = probe.readProcessGPUCounters();
+    const auto statsAfterSecond = probe.instanceCacheStats();
+
+    ASSERT_EQ(second.size(), 2U);
+    // Same items, same order: the second call's 2 lookups should be positional hits, and
+    // must NOT touch the underlying hash map at all (its hit/miss counters stay unchanged).
+    EXPECT_EQ(statsAfterSecond.positionalHits - statsAfterFirst.positionalHits, 2U);
+    EXPECT_EQ(statsAfterSecond.hits, statsAfterFirst.hits);
+    EXPECT_EQ(statsAfterSecond.misses, statsAfterFirst.misses);
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ReorderedItemsStillProduceCorrectDataViaFallback)
+{
+    auto impl = makeInjectedImpl();
+    const PDH_HCOUNTER utilizationCounter = impl->utilizationCounter;
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_910_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 11.0},
+        {.name = L"pid_911_luid_0x0_0x1_phys_0_eng_0_engtype_Compute", .doubleValue = 22.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto first = probe.readProcessGPUCounters();
+    ASSERT_EQ(first.size(), 2U);
+
+    // Swap the two items' positions - the same instances, but at each other's array index -
+    // simulating PDH returning a different (still valid) order on a later collect.
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_911_luid_0x0_0x1_phys_0_eng_0_engtype_Compute", .doubleValue = 22.0},
+        {.name = L"pid_910_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 11.0},
+    };
+
+    const auto second = probe.readProcessGPUCounters();
+    ASSERT_EQ(second.size(), 2U);
+    std::unordered_map<int32_t, double> utilByPid;
+    for (const auto& c : second)
+    {
+        utilByPid[c.pid] = c.gpuUtilPercent;
+    }
+    EXPECT_DOUBLE_EQ(utilByPid[910], 11.0) << "reordering must not scramble which value belongs to which pid";
+    EXPECT_DOUBLE_EQ(utilByPid[911], 22.0) << "reordering must not scramble which value belongs to which pid";
+}
+
+TEST_F(WindowsPDHGPUProbeInjectedTest, ContentChangeAtSameIndexIsDetectedNotStale)
+{
+    // Mirrors the real-world case this file's own comments describe: a driver assigning an
+    // engine index a type it previously left blank. The positional cache must detect the
+    // content change at that fixed slot rather than serving the stale cached engineType.
+    auto impl = makeInjectedImpl();
+    const PDH_HCOUNTER utilizationCounter = impl->utilizationCounter;
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_920_luid_0x0_0x1_phys_0_eng_5_engtype_", .doubleValue = 5.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto first = probe.readProcessGPUCounters();
+    ASSERT_EQ(first.size(), 1U);
+    EXPECT_TRUE(first[0].activeEngines.empty()) << "unnamed engine type at first read";
+
+    // Same pid/luid/phys/eng slot, but the driver now reports a real engine type.
+    m_scenario->items[utilizationCounter] = {
+        {.name = L"pid_920_luid_0x0_0x1_phys_0_eng_5_engtype_3D", .doubleValue = 6.0},
+    };
+
+    const auto second = probe.readProcessGPUCounters();
+    ASSERT_EQ(second.size(), 1U);
+    EXPECT_DOUBLE_EQ(second[0].gpuUtilPercent, 6.0);
+    ASSERT_EQ(second[0].activeEngines.size(), 1U);
+    EXPECT_EQ(second[0].activeEngines[0], "3D") << "content change at the same slot must not be served from stale positional cache";
+}
+
 // pdh.dll is a core OS component present on every Windows machine, so loadPDH()/initialize()'s
 // real dynamic-loading path always succeeds in CI - only the "already initialized" early-return
 // guard is exercisable this way, not the load-failure branches (those would need mocking
