@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 namespace UI
@@ -141,17 +142,22 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     Core::ApplicationSpecification spec;
     spec.Name = "FindAssetsDirTest";
 
+    // Isolate construction in its own try/catch: only a construction failure (SDL/GL
+    // unavailable) should skip this test. An exception from findAssetsDir() itself is a
+    // real regression and must fail the test, not be silently swallowed as a skip.
+    std::optional<Core::Application> app;
     try
     {
-        Core::Application app(spec);
-        const auto first = findAssetsDir();
-        const auto second = findAssetsDir();
-        EXPECT_EQ(first, second);
+        app.emplace(spec);
     }
     catch (const std::exception& e)
     {
         GTEST_SKIP() << "Application creation failed (SDL error): " << e.what();
     }
+
+    const auto first = findAssetsDir();
+    const auto second = findAssetsDir();
+    EXPECT_EQ(first, second);
 }
 
 } // namespace
