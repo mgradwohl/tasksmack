@@ -1,6 +1,7 @@
 #ifdef _WIN32
 
 #include "Platform/Windows/WindowsGPUProbe.h"
+#include "Platform/Windows/WindowsGPUProbeMath.h"
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,48 @@ namespace Platform
 {
 namespace
 {
+
+// ==========================================================================
+// normalizeGPUName / gpuNamesMatch: pure string logic, no hardware required.
+// ==========================================================================
+
+TEST(NormalizeGPUNameTest, LowercasesAndTrims)
+{
+    EXPECT_EQ(normalizeGPUName("  NVIDIA GeForce RTX 4090  "), "nvidia geforce rtx 4090");
+}
+
+TEST(NormalizeGPUNameTest, CollapsesInternalWhitespace)
+{
+    EXPECT_EQ(normalizeGPUName("NVIDIA   GeForce\tRTX  4090"), "nvidia geforce rtx 4090");
+}
+
+TEST(NormalizeGPUNameTest, EmptyStringStaysEmpty)
+{
+    EXPECT_EQ(normalizeGPUName(""), "");
+    EXPECT_EQ(normalizeGPUName("   "), "");
+}
+
+TEST(GpuNamesMatchTest, ExactMatch)
+{
+    EXPECT_TRUE(gpuNamesMatch("GeForce RTX 4090", "GeForce RTX 4090"));
+}
+
+TEST(GpuNamesMatchTest, CaseAndWhitespaceInsensitiveMatch)
+{
+    EXPECT_TRUE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "nvidia   geforce rtx 4090"));
+}
+
+TEST(GpuNamesMatchTest, SubstringMatch)
+{
+    // DXGI often reports "NVIDIA GeForce RTX 4090" while NVML reports just "GeForce RTX 4090".
+    EXPECT_TRUE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "GeForce RTX 4090"));
+    EXPECT_TRUE(gpuNamesMatch("GeForce RTX 4090", "NVIDIA GeForce RTX 4090"));
+}
+
+TEST(GpuNamesMatchTest, UnrelatedNamesDoNotMatch)
+{
+    EXPECT_FALSE(gpuNamesMatch("NVIDIA GeForce RTX 4090", "AMD Radeon RX 7900"));
+}
 
 // ==========================================================================
 // Basic Smoke Tests

@@ -28,9 +28,6 @@ class WindowsProcessActions : public IProcessActions
   private:
     /// Helper to terminate a process with given exit code
     [[nodiscard]] static ProcessActionResult terminateProcess(int32_t pid, uint32_t exitCode);
-
-    /// Map Unix nice value (-20 to 19) to Windows priority class
-    [[nodiscard]] static uint32_t niceToPriorityClass(int32_t nice);
 };
 
 } // namespace Platform

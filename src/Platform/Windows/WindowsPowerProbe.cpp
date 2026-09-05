@@ -1,6 +1,7 @@
 #include "WindowsPowerProbe.h"
 
 #include "Platform/PowerTypes.h"
+#include "WindowsPowerProbeMath.h"
 
 #include <spdlog/spdlog.h>
 
@@ -50,69 +51,16 @@ WindowsPowerProbe::WindowsPowerProbe()
 
 PowerCounters WindowsPowerProbe::read()
 {
-    PowerCounters counters;
-
     SYSTEM_POWER_STATUS sps{};
     if (GetSystemPowerStatus(&sps) == 0)
     {
         spdlog::warn("WindowsPowerProbe: GetSystemPowerStatus failed");
+        PowerCounters counters;
         counters.state = BatteryState::Unknown;
         return counters;
     }
 
-    // Check if battery is present
-    if ((sps.BatteryFlag & BATTERY_FLAG_NO_BATTERY) != 0)
-    {
-        counters.state = BatteryState::NotPresent;
-        counters.isOnAc = true;
-        return counters;
-    }
-
-    // Parse AC line status
-    counters.isOnAc = (sps.ACLineStatus == 1);
-
-    // Parse battery state
-    if (sps.BatteryFlag == BATTERY_FLAG_UNKNOWN)
-    {
-        counters.state = BatteryState::Unknown;
-    }
-    else if ((sps.BatteryFlag & BATTERY_FLAG_CHARGING) != 0)
-    {
-        counters.state = BatteryState::Charging;
-    }
-    else if (sps.BatteryLifePercent == 100)
-    {
-        // Battery is at 100% - consider it full regardless of AC status
-        counters.state = BatteryState::Full;
-    }
-    else
-    {
-        counters.state = BatteryState::Discharging;
-    }
-
-    // Battery charge percentage (0-100, or 255 for unknown)
-    if (sps.BatteryLifePercent <= 100)
-    {
-        counters.chargePercent = static_cast<int>(sps.BatteryLifePercent);
-    }
-    else
-    {
-        counters.chargePercent = -1;
-    }
-
-    // Time remaining in seconds
-    // BatteryLifeTime: seconds of battery life remaining (0xFFFFFFFF = unknown)
-    // Note: Windows API does not provide time-to-full for charging state
-    if (sps.BatteryLifeTime != 0xFFFFFFFF)
-    {
-        if (counters.state == BatteryState::Discharging)
-        {
-            counters.timeToEmptySec = sps.BatteryLifeTime;
-        }
-        // timeToFullSec remains 0 (unavailable) - Windows doesn't provide this
-    }
-
-    return counters;
+    return parsePowerStatus(sps.ACLineStatus, sps.BatteryFlag, sps.BatteryLifePercent, sps.BatteryLifeTime);
 }
 
 PowerCapabilities WindowsPowerProbe::capabilities() const

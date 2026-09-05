@@ -10,11 +10,96 @@
 
 #include "Platform/PowerTypes.h"
 #include "Platform/Windows/WindowsPowerProbe.h"
+#include "Platform/Windows/WindowsPowerProbeMath.h"
+
+#include <cstdint>
 
 namespace Platform
 {
 namespace
 {
+
+// =============================================================================
+// parsePowerStatus: pure parsing of SYSTEM_POWER_STATUS fields, no real battery
+// required. CI runners have no battery, so these branches never execute against a
+// real GetSystemPowerStatus() result without fabricating the field values here.
+// =============================================================================
+
+constexpr std::uint8_t BATTERY_FLAG_NO_BATTERY = 0x80;
+constexpr std::uint8_t BATTERY_FLAG_UNKNOWN = 0xFF;
+constexpr std::uint8_t BATTERY_FLAG_CHARGING = 0x08;
+constexpr std::uint8_t BATTERY_FLAG_DISCHARGING = 0x00;
+constexpr std::uint32_t BATTERY_LIFE_TIME_UNKNOWN = 0xFFFFFFFFU;
+
+TEST(ParsePowerStatusTest, NoBatteryReportsNotPresentAndOnAc)
+{
+    const auto counters = parsePowerStatus(0, BATTERY_FLAG_NO_BATTERY, 0, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_TRUE(counters.isOnAc);
+}
+
+TEST(ParsePowerStatusTest, UnknownFlagReportsUnknownState)
+{
+    const auto counters = parsePowerStatus(1, BATTERY_FLAG_UNKNOWN, 50, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.state, BatteryState::Unknown);
+    EXPECT_TRUE(counters.isOnAc);
+}
+
+TEST(ParsePowerStatusTest, ChargingFlagReportsCharging)
+{
+    const auto counters = parsePowerStatus(1, BATTERY_FLAG_CHARGING, 50, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+}
+
+TEST(ParsePowerStatusTest, FullChargeReportsFullRegardlessOfAc)
+{
+    const auto onBattery = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 100, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(onBattery.state, BatteryState::Full);
+
+    const auto onAc = parsePowerStatus(1, BATTERY_FLAG_DISCHARGING, 100, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(onAc.state, BatteryState::Full);
+}
+
+TEST(ParsePowerStatusTest, PartialChargeNotChargingReportsDischarging)
+{
+    const auto counters = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 42, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.state, BatteryState::Discharging);
+    EXPECT_EQ(counters.chargePercent, 42);
+}
+
+TEST(ParsePowerStatusTest, OnAcLineStatusMapsToIsOnAc)
+{
+    EXPECT_TRUE(parsePowerStatus(1, BATTERY_FLAG_DISCHARGING, 50, BATTERY_LIFE_TIME_UNKNOWN).isOnAc);
+    EXPECT_FALSE(parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 50, BATTERY_LIFE_TIME_UNKNOWN).isOnAc);
+}
+
+TEST(ParsePowerStatusTest, OutOfRangePercentReportsUnavailable)
+{
+    // 255 is BATTERY_FLAG_UNKNOWN's percent sentinel (unrelated to the flag byte).
+    const auto counters = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 255, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.chargePercent, -1);
+}
+
+TEST(ParsePowerStatusTest, UnknownTimeRemainingLeavesTimeToEmptyAtZero)
+{
+    const auto counters = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 42, BATTERY_LIFE_TIME_UNKNOWN);
+    EXPECT_EQ(counters.timeToEmptySec, 0U);
+}
+
+TEST(ParsePowerStatusTest, KnownTimeRemainingSetsTimeToEmptyWhenDischarging)
+{
+    const auto counters = parsePowerStatus(0, BATTERY_FLAG_DISCHARGING, 42, 3600U);
+    EXPECT_EQ(counters.timeToEmptySec, 3600U);
+}
+
+TEST(ParsePowerStatusTest, KnownTimeRemainingIsIgnoredWhenNotDischarging)
+{
+    // Windows doesn't provide time-to-full for charging state.
+    const auto counters = parsePowerStatus(1, BATTERY_FLAG_CHARGING, 42, 3600U);
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_EQ(counters.timeToEmptySec, 0U);
+    EXPECT_EQ(counters.timeToFullSec, 0U);
+}
 
 // =============================================================================
 // Construction and Basic Operations

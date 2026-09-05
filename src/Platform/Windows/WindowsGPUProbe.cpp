@@ -4,11 +4,11 @@
 #include "NVMLGPUProbe.h"
 #include "PDHGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "WindowsGPUProbeMath.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -20,72 +20,6 @@
 
 namespace Platform
 {
-
-namespace
-{
-
-// Normalize GPU name for comparison (trim whitespace, lowercase, remove prefixes)
-std::string normalizeGPUName(const std::string& name)
-{
-    std::string normalized;
-    normalized.reserve(name.size());
-
-    // Convert to lowercase and remove extra whitespace
-    bool lastWasSpace = true; // Skip leading spaces
-    for (const char c : name)
-    {
-        if (std::isspace(static_cast<unsigned char>(c)) != 0)
-        {
-            if (!lastWasSpace)
-            {
-                normalized += ' ';
-                lastWasSpace = true;
-            }
-        }
-        else
-        {
-            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            lastWasSpace = false;
-        }
-    }
-
-    // Remove trailing space
-    if (!normalized.empty() && normalized.back() == ' ')
-    {
-        normalized.pop_back();
-    }
-
-    return normalized;
-}
-
-// Check if two GPU names match (handles DXGI vs NVML name differences)
-bool gpuNamesMatch(const std::string& name1, const std::string& name2)
-{
-    // First try exact match
-    if (name1 == name2)
-    {
-        return true;
-    }
-
-    // Try normalized comparison
-    const std::string norm1 = normalizeGPUName(name1);
-    const std::string norm2 = normalizeGPUName(name2);
-
-    if (norm1 == norm2)
-    {
-        return true;
-    }
-
-    // Check if one contains the other (handles "NVIDIA GeForce..." vs "GeForce...")
-    if (norm1.contains(norm2) || norm2.contains(norm1))
-    {
-        return true;
-    }
-
-    return false;
-}
-
-} // namespace
 
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),

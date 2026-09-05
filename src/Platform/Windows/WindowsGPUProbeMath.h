@@ -1,0 +1,74 @@
+#pragma once
+
+#include <cctype>
+#include <string>
+
+namespace Platform
+{
+
+/// Normalize a GPU name for comparison: lowercase, and collapse runs of whitespace
+/// (including leading/trailing) to single spaces / nothing. Used to match DXGI and NVML
+/// names for the same physical adapter, which are rarely byte-identical.
+[[nodiscard]] inline std::string normalizeGPUName(const std::string& name)
+{
+    std::string normalized;
+    normalized.reserve(name.size());
+
+    // Convert to lowercase and remove extra whitespace
+    bool lastWasSpace = true; // Skip leading spaces
+    for (const char c : name)
+    {
+        if (std::isspace(static_cast<unsigned char>(c)) != 0)
+        {
+            if (!lastWasSpace)
+            {
+                normalized += ' ';
+                lastWasSpace = true;
+            }
+        }
+        else
+        {
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            lastWasSpace = false;
+        }
+    }
+
+    // Remove trailing space
+    if (!normalized.empty() && normalized.back() == ' ')
+    {
+        normalized.pop_back();
+    }
+
+    return normalized;
+}
+
+/// Check if two GPU names refer to the same adapter, handling DXGI vs NVML name
+/// differences (case, whitespace, and one being a substring of the other, e.g.
+/// "NVIDIA GeForce RTX 4090" vs "GeForce RTX 4090").
+[[nodiscard]] inline bool gpuNamesMatch(const std::string& name1, const std::string& name2)
+{
+    // First try exact match
+    if (name1 == name2)
+    {
+        return true;
+    }
+
+    // Try normalized comparison
+    const std::string norm1 = normalizeGPUName(name1);
+    const std::string norm2 = normalizeGPUName(name2);
+
+    if (norm1 == norm2)
+    {
+        return true;
+    }
+
+    // Check if one contains the other (handles "NVIDIA GeForce..." vs "GeForce...")
+    if (norm1.contains(norm2) || norm2.contains(norm1))
+    {
+        return true;
+    }
+
+    return false;
+}
+
+} // namespace Platform

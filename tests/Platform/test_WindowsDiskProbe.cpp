@@ -53,6 +53,50 @@ TEST(ClampNonNegativeQuadPartTest, LargePositiveValueDoesNotWrap)
 }
 
 // =============================================================================
+// parsePhysicalDriveIndex: pure parsing of PDH PhysicalDisk instance names, no
+// hardware required. Malformed instance names must fail closed (nullopt) rather
+// than opening an arbitrary/wrong \\.\PhysicalDriveN device.
+// =============================================================================
+
+TEST(ParsePhysicalDriveIndexTest, SingleDigitIndexWithDriveLetter)
+{
+    const auto result = parsePhysicalDriveIndex(L"0 C:");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 0);
+}
+
+TEST(ParsePhysicalDriveIndexTest, MultiDigitIndexWithMultipleDriveLetters)
+{
+    const auto result = parsePhysicalDriveIndex(L"12 D: E:");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 12);
+}
+
+TEST(ParsePhysicalDriveIndexTest, IndexWithNoTrailingSpaceOrLetters)
+{
+    const auto result = parsePhysicalDriveIndex(L"3");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 3);
+}
+
+TEST(ParsePhysicalDriveIndexTest, EmptyStringReturnsNullopt)
+{
+    EXPECT_FALSE(parsePhysicalDriveIndex(L"").has_value());
+}
+
+TEST(ParsePhysicalDriveIndexTest, LeadingSpaceReturnsNullopt)
+{
+    // Empty index part before the space.
+    EXPECT_FALSE(parsePhysicalDriveIndex(L" C:").has_value());
+}
+
+TEST(ParsePhysicalDriveIndexTest, NonNumericIndexReturnsNullopt)
+{
+    EXPECT_FALSE(parsePhysicalDriveIndex(L"_Total").has_value());
+    EXPECT_FALSE(parsePhysicalDriveIndex(L"C: 0").has_value());
+}
+
+// =============================================================================
 // Construction and Basic Operations
 // =============================================================================
 
