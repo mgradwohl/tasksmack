@@ -23,6 +23,7 @@ namespace
 
 constexpr size_t kPoolSize = 1024;
 constexpr size_t kPoolMask = kPoolSize - 1;
+static_assert((kPoolSize & kPoolMask) == 0, "kPoolSize must be a power of two for idx & kPoolMask to wrap correctly");
 
 // =============================================================================
 // computeAlpha Benchmarks -- called every frame for every smoothed chart value
@@ -103,6 +104,7 @@ static void BM_ChartWidgets_FormatAxisLocalized(benchmark::State& state)
     for (auto _ : state)
     {
         benchmark::DoNotOptimize(UI::Widgets::formatAxisLocalized(values[idx & kPoolMask], buff, static_cast<int>(sizeof(buff)), nullptr));
+        benchmark::DoNotOptimize(buff);
         ++idx;
     }
 }
@@ -124,6 +126,7 @@ static void BM_ChartWidgets_FormatAxisBytesPerSec(benchmark::State& state)
     {
         benchmark::DoNotOptimize(
             UI::Widgets::formatAxisBytesPerSec(values[idx & kPoolMask], buff, static_cast<int>(sizeof(buff)), nullptr));
+        benchmark::DoNotOptimize(buff);
         ++idx;
     }
 }
