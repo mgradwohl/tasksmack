@@ -6,6 +6,7 @@
 // behavior instead. See CONTRIBUTING.md's "extract the pure decision logic into a small header"
 // pattern (also used by Core/PathServiceMath.h for the equivalent Core-layer fallback).
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
