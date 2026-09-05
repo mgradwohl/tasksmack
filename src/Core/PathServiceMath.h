@@ -41,9 +41,9 @@ using CurrentPathFn = std::function<std::filesystem::path(std::error_code&)>;
 /// that conversion's allocation (and non-noexcept construction) on PathService's construction
 /// hot path. The two aliases remain available for callers (tests included) that want a concrete,
 /// storable type for the callables.
-template<typename AbsoluteFn, typename CurrentPathFn>
+template<typename AbsoluteCallable, typename CurrentPathCallable>
 [[nodiscard]] inline std::filesystem::path
-resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteFn&& absoluteFn, CurrentPathFn&& currentPathFn)
+resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absoluteFn, CurrentPathCallable&& currentPathFn)
 {
     std::error_code ec;
     const std::filesystem::path abs = absoluteFn(raw, ec);
