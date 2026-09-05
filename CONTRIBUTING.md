@@ -723,9 +723,18 @@ export PATH="$HOME/opt/FlameGraph:$PATH"
 ./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 ```
 
-**WSL2 note:** `perf` requires a kernel-matched tools package. If you see a version
-mismatch warning, run `sudo apt install linux-tools-$(uname -r) linux-tools-generic`
-or profile on a native Linux machine / GitHub Actions runner.
+**WSL2 note (tools/kernel version mismatch):** `perf` requires a kernel-matched tools
+package. If you see a version mismatch warning, run
+`sudo apt install linux-tools-$(uname -r) linux-tools-generic` or profile on a native
+Linux machine / GitHub Actions runner.
+
+**WSL2 note (no hardware counters — a separate issue):** WSL2's hypervisor does not pass
+through real hardware performance counters, so the default `cycles` event silently
+records zero samples instead of erroring — you'd only discover it later from
+`perf report`/`analyze-perf.sh` failing with "has no samples". `tools/profile-perf.sh`
+detects this automatically and falls back to the `cpu-clock` software event, printing a
+notice when it does; it also verifies the capture actually contains samples and fails
+loudly if not. The same fallback applies to most containers and some cloud VMs/CI runners.
 
 ### Linux — Heap allocation profiling (heaptrack)
 
