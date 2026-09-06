@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <optional>
@@ -134,10 +135,16 @@ void renderCpuCoresSection(RenderContext& ctx)
         static float cachedTextLineHeight = -1.0F;
         static float cachedItemSpacingY = -1.0F;
         static float cachedCellPaddingY = -1.0F;
+        // Epsilon rather than `==`/`!=` on floats (CodeQL cpp/equality-on-floats): these are
+        // stored style values, not accumulated arithmetic, so exact comparison would actually be
+        // safe here, but a tolerance costs nothing and avoids relying on that.
+        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
         if (const float textLineHeight = ImGui::GetTextLineHeight(),
             itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
             cellPaddingY = ImGui::GetStyle().CellPadding.y;
-            cachedTextLineHeight != textLineHeight || cachedItemSpacingY != itemSpacingY || cachedCellPaddingY != cellPaddingY)
+            std::abs(cachedTextLineHeight - textLineHeight) > STYLE_METRIC_EPSILON ||
+            std::abs(cachedItemSpacingY - itemSpacingY) > STYLE_METRIC_EPSILON ||
+            std::abs(cachedCellPaddingY - cellPaddingY) > STYLE_METRIC_EPSILON)
         {
             cachedOverhead.reset();
             cachedTextLineHeight = textLineHeight;
