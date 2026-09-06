@@ -58,7 +58,7 @@ constexpr float MIN_PLOT_HEIGHT = 60.0F;
 /// every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
 /// identically-shaped single-line label row, so the resulting vertical overhead is the same
 /// across all disks -- no need to repeat the cursor-position measurement per disk, per frame.
-void renderDiskCell(std::string_view deviceName,
+void renderDiskCell(const std::string& deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
                     const std::vector<float>& writeData,
@@ -149,7 +149,11 @@ void renderDiskCell(std::string_view deviceName,
         }
     };
 
-    renderHistoryWithNowBars("##DiskHistory", plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+    // deviceName is a real std::string (not string_view), so .c_str() is a guaranteed
+    // null-terminated C-string at zero extra cost -- reusing it as the RenderMetrics/table id
+    // keeps per-disk RenderMetrics entries from collapsing into one (#823 review), without
+    // reintroducing the per-frame heap allocation a formatted id had.
+    renderHistoryWithNowBars(deviceName.c_str(), plotHeight, diskPlotFn, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
 }
 
 } // namespace
@@ -223,8 +227,15 @@ void renderStorageSection(RenderContext& ctx)
         const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
 
         // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
-        // renderDiskCell's doc comment.
-        std::optional<float> cachedOverhead;
+        // renderDiskCell's doc comment. Cached across frames too, not just across disks within
+        // one frame: this value only changes when the font size does, so remeasure only then.
+        static std::optional<float> cachedOverhead;
+        static UI::FontSize cachedOverheadFontSize = UI::FontSize::Count;
+        if (const UI::FontSize currentFontSize = theme.currentFontSize(); cachedOverheadFontSize != currentFontSize)
+        {
+            cachedOverhead.reset();
+            cachedOverheadFontSize = currentFontSize;
+        }
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{

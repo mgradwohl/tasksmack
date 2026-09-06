@@ -120,9 +120,16 @@ void renderCpuCoresSection(RenderContext& ctx)
         // Every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
         // identically-shaped label row (same font, same one Spacing() call, same wrapping
         // table), so the resulting vertical overhead -- and therefore plotHeight -- is identical
-        // across all coreCount cells. Measure it once on the first cell and reuse it for the
-        // rest instead of repeating the same cursor-position measurement every cell, every frame.
-        std::optional<float> cachedOverhead;
+        // across all coreCount cells and doesn't change frame to frame unless the font size does.
+        // Cache it across frames (not just across cells within one frame) so it's remeasured only
+        // when that actually happens, not on every single frame regardless.
+        static std::optional<float> cachedOverhead;
+        static UI::FontSize cachedOverheadFontSize = UI::FontSize::Count;
+        if (const UI::FontSize currentFontSize = theme.currentFontSize(); cachedOverheadFontSize != currentFontSize)
+        {
+            cachedOverhead.reset();
+            cachedOverheadFontSize = currentFontSize;
+        }
 
         renderChartGrid("PerCoreGrid",
                         coreCount,
@@ -214,7 +221,12 @@ void renderCpuCoresSection(RenderContext& ctx)
 
                             std::vector<NowBar> bars;
                             bars.push_back(bar);
-                            renderHistoryWithNowBars("##CoreHistory", plotHeight, plotFn, bars, false, 0, true);
+                            // coreLabel is already allocated above for the visible label text, so
+                            // reusing it here as the RenderMetrics/table id costs nothing extra --
+                            // unlike the per-cell PushID scaffolding in ChartGrid.h, there's no
+                            // allocation to avoid, and a per-core id keeps RenderMetrics entries
+                            // from collapsing all cores into one (#823 review).
+                            renderHistoryWithNowBars(coreLabel.c_str(), plotHeight, plotFn, bars, false, 0, true);
                         });
     }
 }

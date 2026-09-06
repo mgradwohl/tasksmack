@@ -26,6 +26,17 @@ namespace Detail
 /// item order never changes at runtime.
 struct UseIndexAsId
 {};
+
+/// Everything computeChartGridLayout's result depends on. Compared field-by-field against the
+/// previous frame's config so renderChartGrid only recomputes the grid when something the user
+/// actually did changed it (resized the window, changed font size/theme, or the item count
+/// changed) -- not on every single frame regardless.
+[[nodiscard]] inline bool chartGridConfigEquals(const ChartGridConfig& a, const ChartGridConfig& b) noexcept
+{
+    return a.availableWidth == b.availableWidth && a.availableHeight == b.availableHeight && a.itemCount == b.itemCount &&
+           a.minCellWidth == b.minCellWidth && a.minCellHeight == b.minCellHeight && a.targetCellAspect == b.targetCellAspect &&
+           a.columnOverhead == b.columnOverhead && a.rowOverhead == b.rowOverhead;
+}
 } // namespace Detail
 
 /// Render a grid of itemCount bordered cells sized by computeChartGridLayout(config), calling
@@ -71,7 +82,22 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
     // detail of how this function wraps cells, not something a caller should have to supply.
     config.columnOverhead = ImGui::GetStyle().CellPadding.x * 2.0F;
     config.rowOverhead = ImGui::GetStyle().CellPadding.y * 2.0F;
-    const ChartGridDimensions grid = computeChartGridLayout(config);
+
+    // Cache the grid computation across frames: it only needs to change when the window is
+    // resized, the theme/font size changes (which moves minCellWidth/minCellHeight/overhead), or
+    // itemCount changes -- not every single frame regardless. One cache per call site (this is a
+    // template, so CpuCoresSection's and StorageSection's calls each get their own independent
+    // static instance, keyed by their distinct closure types).
+    static ChartGridConfig cachedConfig{};
+    static ChartGridDimensions cachedGrid{};
+    static bool cacheValid = false;
+    if (!cacheValid || !Detail::chartGridConfigEquals(config, cachedConfig))
+    {
+        cachedGrid = computeChartGridLayout(config);
+        cachedConfig = config;
+        cacheValid = true;
+    }
+    const ChartGridDimensions& grid = cachedGrid;
     const int columnsInt = UI::Format::checkedCount(grid.columns);
 
     if (!ImGui::BeginTable(tableId, columnsInt, ImGuiTableFlags_SizingStretchSame))
