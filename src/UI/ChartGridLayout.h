@@ -84,13 +84,16 @@ struct ChartGridDimensions
 
         // Two candidates commonly tie exactly (e.g. an NxM and MxN split of a square panel
         // compute the same ratio via swapped operands), so tie-detection needs a tolerance
-        // rather than `==` on floats: an epsilon-scaled comparison catches both exact ties and
-        // near-ties that differ only by floating-point rounding, without misclassifying a
-        // genuinely better candidate as tied.
-        constexpr float SCORE_TIE_EPSILON = 1e-4F;
+        // rather than `==` on floats. Scores are pixel dimensions, which can range from tens
+        // (a cramped panel) to thousands (a large/4K panel), so the tolerance is scaled by the
+        // score's own magnitude rather than a fixed absolute value -- a fixed epsilon that's
+        // meaningful at 300px would be far too tight to catch rounding-level near-ties at
+        // 3000px, and far too loose relative to a 30px score.
+        constexpr float SCORE_TIE_RELATIVE_EPSILON = 1e-4F;
+        const float tieThreshold = SCORE_TIE_RELATIVE_EPSILON * std::max({1.0F, std::abs(score), std::abs(bestScore)});
         const float scoreDiff = score - bestScore;
-        const bool tied = std::abs(scoreDiff) <= SCORE_TIE_EPSILON;
-        const bool better = scoreDiff > SCORE_TIE_EPSILON || (tied && waste < bestWaste);
+        const bool tied = std::abs(scoreDiff) <= tieThreshold;
+        const bool better = scoreDiff > tieThreshold || (tied && waste < bestWaste);
         if (better)
         {
             bestScore = score;

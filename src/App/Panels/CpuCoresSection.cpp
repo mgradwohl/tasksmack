@@ -26,6 +26,7 @@ namespace App::CpuCoresSection
 namespace
 {
 
+using UI::Widgets::BAR_WIDTH;
 using UI::Widgets::buildTimeAxis;
 using UI::Widgets::ChartGridConfig;
 using UI::Widgets::computeAlpha;
@@ -106,7 +107,7 @@ void renderCpuCoresSection(RenderContext& ctx)
         // math, including a horizontal NowBar-column constant that doesn't belong in a vertical
         // measurement at all, and ended up over-subtracting from the plot height).
         const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
-        const float barColumnAllowance = ImGui::GetFrameHeight(); // extra width for the NowBar column
+        const float barColumnAllowance = BAR_WIDTH; // extra width renderHistoryWithNowBars reserves for the NowBar column
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{

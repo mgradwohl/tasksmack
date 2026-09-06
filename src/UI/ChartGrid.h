@@ -68,7 +68,7 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
         return;
     }
 
-    auto& theme = UI::Theme::get();
+    const auto& theme = UI::Theme::get();
     for (size_t row = 0; row < grid.rows; ++row)
     {
         ImGui::TableNextRow();
@@ -83,11 +83,15 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
 
             if constexpr (std::same_as<CellIdFn, Detail::UseIndexAsId>)
             {
-                ImGui::PushID(static_cast<int>(index));
+                ImGui::PushID(UI::Format::checkedCount(index));
             }
             else
             {
-                const std::string_view id = cellId(index);
+                // Keep the actual return value alive (not just a string_view over it) for the
+                // duration of PushID: if cellId returns a std::string by value, converting it
+                // straight to string_view would dangle once the temporary is destroyed at the
+                // end of this statement (see #823 review).
+                const auto id = cellId(index);
                 ImGui::PushID(id.data(), id.data() + id.size());
             }
             ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
