@@ -32,10 +32,13 @@ struct UseIndexAsId
 /// renderCell(index, cellWidth, cellHeight) for each cell in row-major order. Cells past
 /// itemCount in the final row (e.g. 16 items in a 4x5 grid) are skipped, not rendered blank.
 ///
-/// renderCell runs inside an active ImGui::BeginChild of size (cellWidth, cellHeight) --
-/// cellWidth is informational (the child already fills the stretched table column via
-/// ImVec2(-FLT_MIN, ...)); cellHeight is the value callers need to size their own content
-/// (e.g. a HistoryChartConfig::height) so it fills the cell instead of using a fixed constant.
+/// renderCell runs inside an active ImGui::BeginChild sized (cellWidth, cellHeight) --
+/// cellWidth/cellHeight are the child's *usable content* dimensions (measured via
+/// GetContentRegionAvail() right after BeginChild, not the outer size passed to it), so callers
+/// that size content to exactly fill the cell (e.g. a HistoryChartConfig::height) don't overflow
+/// it and trigger a scrollbar: a bordered child reserves WindowPadding on all sides from its
+/// declared outer size, so content sized to that outer size directly is WindowPadding.y*2 too
+/// tall -- see #823 review (reported as a visible scrollbar on every chart cell).
 ///
 /// Cell IDs default to ImGui::PushID(index) (no heap allocation) -- correct as long as index
 /// *is* the item's identity and never reorders (true for CPU cores). For a collection whose
@@ -98,7 +101,8 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
             ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
             if (ImGui::BeginChild("GridCell", ImVec2(-FLT_MIN, grid.cellHeight), ImGuiChildFlags_Borders))
             {
-                renderCell(index, grid.cellWidth, grid.cellHeight);
+                const ImVec2 innerAvail = ImGui::GetContentRegionAvail();
+                renderCell(index, innerAvail.x, innerAvail.y);
             }
             ImGui::EndChild();
             ImGui::PopStyleColor(2);
