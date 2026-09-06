@@ -49,15 +49,18 @@ constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 constexpr float MIN_PLOT_HEIGHT = 60.0F;
 
 /// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
-/// grid cell's full size (see renderChartGrid in renderStorageSection); the plot height is
-/// derived from it by measuring the label row's actual consumed height via cursor position
-/// (rather than guessing at ImGui's spacing rules with a hand-picked constant -- see #823
-/// review) so the chart fills exactly what's left in the cell.
+/// grid cell's *usable content* height (see renderChartGrid's cellWidth/cellHeight doc in
+/// ChartGrid.h -- it's measured via GetContentRegionAvail() inside the cell's BeginChild, not
+/// the outer size passed to it); the plot height is derived from it by measuring the label row's
+/// actual consumed height via cursor position (rather than guessing at ImGui's spacing rules
+/// with a hand-picked constant -- see #823 review) so the chart fills exactly what's left in the
+/// cell.
 ///
-/// cachedOverhead is measured once (on the first disk of the frame) and reused for the rest:
-/// every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
-/// identically-shaped single-line label row, so the resulting vertical overhead is the same
-/// across all disks -- no need to repeat the cursor-position measurement per disk, per frame.
+/// cachedOverhead is measured once per frame (on the first disk) and reused for the rest, and
+/// cached across frames too until the style metrics it's built from change: every cell gets the
+/// same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped
+/// single-line label row, so the resulting vertical overhead is the same across all disks and
+/// doesn't change frame to frame on its own.
 void renderDiskCell(const std::string& deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
@@ -228,13 +231,26 @@ void renderStorageSection(RenderContext& ctx)
 
         // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
         // renderDiskCell's doc comment. Cached across frames too, not just across disks within
-        // one frame: this value only changes when the font size does, so remeasure only then.
+        // one frame: remeasure only when the style values it's built from actually change.
+        //
+        // Keyed on the actual style values (text line height, ItemSpacing.y, CellPadding.y)
+        // rather than theme.currentFontSize() alone: today's theme switches happen to leave
+        // those metrics untouched (Theme::applyImGuiStyle sets them to fixed values independent
+        // of the color scheme), but that's a property of the current theme implementation, not
+        // something this cache should have to assume stays true (#823 review).
         static std::optional<float> cachedOverhead;
-        static UI::FontSize cachedOverheadFontSize = UI::FontSize::Count;
-        if (const UI::FontSize currentFontSize = theme.currentFontSize(); cachedOverheadFontSize != currentFontSize)
+        static float cachedTextLineHeight = -1.0F;
+        static float cachedItemSpacingY = -1.0F;
+        static float cachedCellPaddingY = -1.0F;
+        if (const float textLineHeight = ImGui::GetTextLineHeight(),
+            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            cellPaddingY = ImGui::GetStyle().CellPadding.y;
+            cachedTextLineHeight != textLineHeight || cachedItemSpacingY != itemSpacingY || cachedCellPaddingY != cellPaddingY)
         {
             cachedOverhead.reset();
-            cachedOverheadFontSize = currentFontSize;
+            cachedTextLineHeight = textLineHeight;
+            cachedItemSpacingY = itemSpacingY;
+            cachedCellPaddingY = cellPaddingY;
         }
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();

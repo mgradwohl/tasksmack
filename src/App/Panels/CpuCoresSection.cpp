@@ -120,15 +120,29 @@ void renderCpuCoresSection(RenderContext& ctx)
         // Every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
         // identically-shaped label row (same font, same one Spacing() call, same wrapping
         // table), so the resulting vertical overhead -- and therefore plotHeight -- is identical
-        // across all coreCount cells and doesn't change frame to frame unless the font size does.
-        // Cache it across frames (not just across cells within one frame) so it's remeasured only
-        // when that actually happens, not on every single frame regardless.
+        // across all coreCount cells and doesn't change frame to frame unless the metrics it's
+        // built from do. Cache it across frames (not just across cells within one frame) so it's
+        // remeasured only when that actually happens, not on every single frame regardless.
+        //
+        // Keyed on the actual style values the measurement depends on (text line height,
+        // ItemSpacing.y, CellPadding.y) rather than theme.currentFontSize() alone: today's theme
+        // switches happen to leave those metrics untouched (Theme::applyImGuiStyle sets them to
+        // fixed values independent of the color scheme), but that's a property of the current
+        // theme implementation, not something this cache should have to assume stays true (#823
+        // review).
         static std::optional<float> cachedOverhead;
-        static UI::FontSize cachedOverheadFontSize = UI::FontSize::Count;
-        if (const UI::FontSize currentFontSize = theme.currentFontSize(); cachedOverheadFontSize != currentFontSize)
+        static float cachedTextLineHeight = -1.0F;
+        static float cachedItemSpacingY = -1.0F;
+        static float cachedCellPaddingY = -1.0F;
+        if (const float textLineHeight = ImGui::GetTextLineHeight(),
+            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            cellPaddingY = ImGui::GetStyle().CellPadding.y;
+            cachedTextLineHeight != textLineHeight || cachedItemSpacingY != itemSpacingY || cachedCellPaddingY != cellPaddingY)
         {
             cachedOverhead.reset();
-            cachedOverheadFontSize = currentFontSize;
+            cachedTextLineHeight = textLineHeight;
+            cachedItemSpacingY = itemSpacingY;
+            cachedCellPaddingY = cellPaddingY;
         }
 
         renderChartGrid("PerCoreGrid",
