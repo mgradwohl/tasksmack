@@ -74,22 +74,14 @@ void renderDiskIOSection(RenderContext& ctx)
     StorageSection::renderStorageSection(storageCtx);
 }
 
-void renderNetworkSection(RenderContext& ctx)
+/// Network throughput chart + interface status table. Only called once ctx.systemPublication and
+/// ctx.hasNetworkCounters are known good (see renderNetworkSection) -- extracted from it so that
+/// function can put this section, the disk grid, and the "unavailable" fallback message in
+/// whatever order it wants without the ~500 lines below needing to move or re-indent.
+namespace
 {
-    // Render Disk I/O section at the top of Network and I/O tab
-    renderDiskIOSection(ctx);
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    const auto& theme = UI::Theme::get();
-    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
-    {
-        ImGui::TextUnformatted("Network monitoring not available on this platform.");
-        return;
-    }
-
+void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, double nowSeconds)
+{
     const auto& netSnap = ctx.systemPublication->snapshot;
     const auto& interfaces = netSnap.networkInterfaces;
 
@@ -571,6 +563,31 @@ void renderNetworkSection(RenderContext& ctx)
             ImGui::EndTable();
         }
     }
+}
+} // namespace
+
+void renderNetworkSection(RenderContext& ctx)
+{
+    const auto& theme = UI::Theme::get();
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    // Network content first, at its own natural (non-stretching) height; the disk grid renders
+    // after it and fills whatever's left via ImGui::GetContentRegionAvail() (see
+    // StorageSection::renderStorageSection) -- reversed from the disk-then-network order this
+    // tab used before #823's grid work, which let the disk grid's now-space-filling behavior
+    // greedily consume the whole tab and push the network chart/table below it off-screen.
+    if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
+    {
+        ImGui::TextUnformatted("Network monitoring not available on this platform.");
+    }
+    else
+    {
+        renderNetworkChartAndTable(ctx, theme, nowSeconds);
+    }
+
+    ImGui::Separator();
+    ImGui::Spacing();
+    renderDiskIOSection(ctx);
 }
 
 } // namespace App::NetworkSection
