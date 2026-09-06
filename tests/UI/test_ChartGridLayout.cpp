@@ -7,6 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
+
 namespace UI::Widgets
 {
 namespace
@@ -96,6 +100,87 @@ TEST(ChartGridLayoutTest, TinyPanelClampsToMinimumCellSize)
     EXPECT_GE(grid.cellWidth, config.minCellWidth);
     EXPECT_GE(grid.cellHeight, config.minCellHeight);
     EXPECT_GE(grid.columns * grid.rows, config.itemCount);
+}
+
+TEST(ChartGridLayoutTest, RowAndColumnOverheadAreReservedSoTotalFitsExactly)
+{
+    // columnOverhead/rowOverhead model a fixed per-cell cost the *renderer* adds outside
+    // computeChartGridLayout's own cellWidth/cellHeight (e.g. the wrapping table's CellPadding).
+    // A caller that adds that overhead back around each cell should land on exactly the
+    // available space, not exceed it -- this is what stopped an outer scrollbar from appearing
+    // around the whole grid even when every individual cell fit its own space (#823 review).
+    const ChartGridConfig config{
+        .availableWidth = 1000.0F, .availableHeight = 1000.0F, .itemCount = 4, .columnOverhead = 8.0F, .rowOverhead = 4.0F};
+    const auto grid = computeChartGridLayout(config);
+
+    ASSERT_EQ(grid.columns, 2U);
+    ASSERT_EQ(grid.rows, 2U);
+    EXPECT_LE(static_cast<float>(grid.columns) * (grid.cellWidth + config.columnOverhead), config.availableWidth + 0.01F);
+    EXPECT_LE(static_cast<float>(grid.rows) * (grid.cellHeight + config.rowOverhead), config.availableHeight + 0.01F);
+}
+
+TEST(ChartGridLayoutTest, RealisticCoreCountsAndWindowSizesNeverOverflowWhenAFitExists)
+{
+    // Regression coverage for a real bug found by manual testing: scoring/selecting a candidate
+    // by its *raw* division (before minCellWidth/minCellHeight and the table's row/column
+    // overhead are applied) could pick a shape that, once those were added back, rendered taller
+    // or wider than the available space -- forcing an outer scrollbar around an otherwise
+    // reasonably-sized grid (observed with 10 CPU cores on a normal-sized window). Sweep a range
+    // of realistic core counts and window sizes and assert the chosen grid never needs to
+    // overflow when a non-overflowing shape actually exists for that item count/space.
+    constexpr float columnOverhead = 8.0F; // e.g. table CellPadding.x * 2
+    constexpr float rowOverhead = 4.0F;    // e.g. table CellPadding.y * 2
+    constexpr float minCellWidth = 240.0F;
+    constexpr float minCellHeight = 100.0F;
+
+    const std::array<size_t, 9> coreCounts{1, 2, 4, 6, 8, 10, 12, 16, 24};
+    const std::array<float, 4> widths{1000.0F, 1280.0F, 1600.0F, 1920.0F};
+    const std::array<float, 4> heights{600.0F, 800.0F, 900.0F, 1080.0F};
+
+    for (const size_t itemCount : coreCounts)
+    {
+        for (const float width : widths)
+        {
+            for (const float height : heights)
+            {
+                // Reference oracle: does *any* column count let both width and height fit at the
+                // configured floors? Some combinations here are genuinely infeasible (e.g. 24
+                // items at minCellWidth=240/minCellHeight=100 need more area than a 1000x600
+                // window has regardless of shape) -- those must still fall back to scrolling, so
+                // only assert non-overflow where a fit is actually possible.
+                bool aFitExists = false;
+                for (size_t columns = 1; columns <= itemCount && !aFitExists; ++columns)
+                {
+                    const auto rows = static_cast<float>((itemCount + columns - 1) / columns);
+                    const auto columnsF = static_cast<float>(columns);
+                    const float cw = std::max((width - (columnsF * columnOverhead)) / columnsF, minCellWidth);
+                    const float ch = std::max((height - (rows * rowOverhead)) / rows, minCellHeight);
+                    aFitExists = ((cw + columnOverhead) * columnsF <= width + 0.5F) && ((ch + rowOverhead) * rows <= height + 0.5F);
+                }
+                if (!aFitExists)
+                {
+                    continue;
+                }
+
+                const ChartGridConfig config{.availableWidth = width,
+                                             .availableHeight = height,
+                                             .itemCount = itemCount,
+                                             .minCellWidth = minCellWidth,
+                                             .minCellHeight = minCellHeight,
+                                             .columnOverhead = columnOverhead,
+                                             .rowOverhead = rowOverhead};
+                const auto grid = computeChartGridLayout(config);
+
+                const bool totalWidthFits = (static_cast<float>(grid.columns) * (grid.cellWidth + columnOverhead)) <= width + 0.5F;
+                const bool totalHeightFits = (static_cast<float>(grid.rows) * (grid.cellHeight + rowOverhead)) <= height + 0.5F;
+
+                EXPECT_TRUE(totalWidthFits) << "itemCount=" << itemCount << " width=" << width << " height=" << height
+                                            << " columns=" << grid.columns << " cellWidth=" << grid.cellWidth;
+                EXPECT_TRUE(totalHeightFits) << "itemCount=" << itemCount << " width=" << width << " height=" << height
+                                             << " rows=" << grid.rows << " cellHeight=" << grid.cellHeight;
+            }
+        }
+    }
 }
 
 TEST(ChartGridLayoutTest, NonPositiveTargetAspectFallsBackToSquare)

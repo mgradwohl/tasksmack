@@ -29,6 +29,13 @@ struct ChartGridConfig
     // a caller that wants individual cells biased landscape instead, at the cost of the grid
     // itself tracking the panel's aspect ratio less closely.
     float targetCellAspect = 1.0F;
+    // Fixed width/height the rendering table itself adds around every cell, independent of the
+    // cell's own content (e.g. the table's CellPadding on each side) -- set by the caller so the
+    // chosen cellWidth/cellHeight, once that per-cell overhead is added back by the renderer,
+    // sums to exactly availableWidth/availableHeight instead of exceeding it and forcing an
+    // outer scrollbar. Zero by default for pure-math callers/tests that don't render into a table.
+    float columnOverhead = 0.0F;
+    float rowOverhead = 0.0F;
 };
 
 /// Chosen grid shape and resulting per-cell size.
@@ -66,10 +73,14 @@ struct ChartGridDimensions
     const float safeWidth = std::max(config.availableWidth, config.minCellWidth);
     const float safeHeight = std::max(config.availableHeight, config.minCellHeight);
     const float aspect = config.targetCellAspect > 0.0F ? config.targetCellAspect : 1.0F;
+    // Relative slack for the "does this candidate fit" check below, absorbing float rounding in
+    // e.g. columnsF * (safeWidth / columnsF) reproducing safeWidth imprecisely.
+    constexpr float FIT_TOLERANCE = 1e-3F;
 
     size_t bestColumns = 1;
     float bestScore = -1.0F;
     size_t bestWaste = config.itemCount; // rows*cols - itemCount for the current best
+    bool bestFits = false;
 
     for (size_t columns = 1; columns <= config.itemCount; ++columns)
     {
@@ -77,10 +88,24 @@ struct ChartGridDimensions
         const auto columnsF = static_cast<float>(columns);
         const auto rowsF = static_cast<float>(rows);
 
-        const float cellWidth = safeWidth / columnsF;
-        const float cellHeight = safeHeight / rowsF;
+        // Divide up the space left *after* reserving each row/column's fixed table overhead,
+        // so columns*(cellWidth+columnOverhead) and rows*(cellHeight+rowOverhead) reproduce
+        // safeWidth/safeHeight instead of exceeding them once the renderer adds that overhead
+        // back around each cell.
+        const float widthForCells = std::max(0.0F, safeWidth - (columnsF * config.columnOverhead));
+        const float heightForCells = std::max(0.0F, safeHeight - (rowsF * config.rowOverhead));
+
+        // Score (and the fit check just below) use the *clamped* cell size, not the raw
+        // division: scoring on the raw size let a candidate whose minCellHeight/minCellWidth
+        // floor pushed its actual rendered size past what naturally divides into the available
+        // space still win, silently overflowing the panel and forcing an unwanted outer
+        // scrollbar even though a differently-shaped grid would have fit cleanly.
+        const float cellWidth = std::max(widthForCells / columnsF, config.minCellWidth);
+        const float cellHeight = std::max(heightForCells / rowsF, config.minCellHeight);
         const float score = std::min(cellWidth, cellHeight * aspect);
         const size_t waste = (rows * columns) - config.itemCount;
+        const bool fits = ((cellWidth + config.columnOverhead) * columnsF <= safeWidth * (1.0F + FIT_TOLERANCE)) &&
+                          ((cellHeight + config.rowOverhead) * rowsF <= safeHeight * (1.0F + FIT_TOLERANCE));
 
         // Two candidates commonly tie exactly (e.g. an NxM and MxN split of a square panel
         // compute the same ratio via swapped operands), so tie-detection needs a tolerance
@@ -93,18 +118,28 @@ struct ChartGridDimensions
         const float tieThreshold = SCORE_TIE_RELATIVE_EPSILON * std::max({1.0F, std::abs(score), std::abs(bestScore)});
         const float scoreDiff = score - bestScore;
         const bool tied = std::abs(scoreDiff) <= tieThreshold;
-        const bool better = scoreDiff > tieThreshold || (tied && waste < bestWaste);
+
+        // A candidate that fits without overflowing always beats one that doesn't, regardless
+        // of score -- scrolling should only ever be a last resort when *no* shape fits (see
+        // the fallback below), not a side effect of picking the highest-scoring shape without
+        // checking whether its floor-clamped size actually overflows.
+        const bool better = (fits != bestFits) ? fits : (scoreDiff > tieThreshold || (tied && waste < bestWaste));
         if (better)
         {
             bestScore = score;
             bestColumns = columns;
             bestWaste = waste;
+            bestFits = fits;
         }
     }
 
     const size_t bestRows = (config.itemCount + bestColumns - 1) / bestColumns;
-    const float finalCellWidth = std::max(safeWidth / static_cast<float>(bestColumns), config.minCellWidth);
-    const float finalCellHeight = std::max(safeHeight / static_cast<float>(bestRows), config.minCellHeight);
+    const auto bestColumnsF = static_cast<float>(bestColumns);
+    const auto bestRowsF = static_cast<float>(bestRows);
+    const float finalWidthForCells = std::max(0.0F, safeWidth - (bestColumnsF * config.columnOverhead));
+    const float finalHeightForCells = std::max(0.0F, safeHeight - (bestRowsF * config.rowOverhead));
+    const float finalCellWidth = std::max(finalWidthForCells / bestColumnsF, config.minCellWidth);
+    const float finalCellHeight = std::max(finalHeightForCells / bestRowsF, config.minCellHeight);
 
     return {.columns = bestColumns, .rows = bestRows, .cellWidth = finalCellWidth, .cellHeight = finalCellHeight};
 }

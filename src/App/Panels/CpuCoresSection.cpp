@@ -117,6 +117,13 @@ void renderCpuCoresSection(RenderContext& ctx)
             .minCellHeight = approxLabelOverhead + MIN_PLOT_HEIGHT,
         };
 
+        // Every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
+        // identically-shaped label row (same font, same one Spacing() call, same wrapping
+        // table), so the resulting vertical overhead -- and therefore plotHeight -- is identical
+        // across all coreCount cells. Measure it once on the first cell and reuse it for the
+        // rest instead of repeating the same cursor-position measurement every cell, every frame.
+        std::optional<float> cachedOverhead;
+
         renderChartGrid("PerCoreGrid",
                         coreCount,
                         gridConfig,
@@ -137,7 +144,16 @@ void renderCpuCoresSection(RenderContext& ctx)
                             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
                             ImGui::TextUnformatted(coreLabel.c_str());
                             ImGui::Spacing();
-                            const float measuredOverhead = ImGui::GetCursorPosY() - cellContentTop;
+                            if (!cachedOverhead.has_value())
+                            {
+                                // renderHistoryWithNowBars wraps the chart+bar in its own table, whose
+                                // CellPadding.y (top+bottom) compactSpacing doesn't zero (only the
+                                // horizontal padding) -- account for it here rather than clipping the
+                                // chart against it (#823 review: residual scrollbar after the cell's
+                                // own WindowPadding was already corrected for).
+                                cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                            }
+                            const float measuredOverhead = *cachedOverhead;
 
                             std::vector<float> timeData = buildTimeAxis(timestamps, samples.size(), nowSeconds);
                             const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);

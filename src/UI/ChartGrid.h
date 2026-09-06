@@ -63,6 +63,14 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
     }
 
     config.itemCount = itemCount;
+    // The table below adds its own CellPadding around every cell, on top of whatever cellHeight
+    // the layout math picks -- without accounting for that here too, rows*cellHeight can exceed
+    // the panel's available height by rows*CellPadding.y*2, forcing an outer scrollbar even
+    // though every individual cell fits (#823 review: reported as a persistent outer scrollbar
+    // after the per-cell one was already fixed). Like itemCount above, this is an implementation
+    // detail of how this function wraps cells, not something a caller should have to supply.
+    config.columnOverhead = ImGui::GetStyle().CellPadding.x * 2.0F;
+    config.rowOverhead = ImGui::GetStyle().CellPadding.y * 2.0F;
     const ChartGridDimensions grid = computeChartGridLayout(config);
     const int columnsInt = UI::Format::checkedCount(grid.columns);
 
@@ -99,7 +107,17 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
             }
             ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
             ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-            if (ImGui::BeginChild("GridCell", ImVec2(-FLT_MIN, grid.cellHeight), ImGuiChildFlags_Borders))
+            // NoScrollbar/NoScrollWithMouse: these cells are sized to fit their content exactly
+            // (see the cellWidth/cellHeight doc above), but renderCell's content nests several
+            // more ImGui/ImPlot widgets (a table with its own CellPadding, a plot, a NowBar),
+            // each contributing a little more layout overhead that isn't practical to hand-sum
+            // here. A cell is never meant to scroll -- any few-pixel residual from that nesting
+            // should clip invisibly, not surface a scrollbar (#823 review: reported as a visible
+            // scrollbar on every chart cell even after cellHeight was padding-corrected).
+            if (ImGui::BeginChild("GridCell",
+                                  ImVec2(-FLT_MIN, grid.cellHeight),
+                                  ImGuiChildFlags_Borders,
+                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
             {
                 const ImVec2 innerAvail = ImGui::GetContentRegionAvail();
                 renderCell(index, innerAvail.x, innerAvail.y);

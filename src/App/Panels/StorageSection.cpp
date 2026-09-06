@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -52,6 +53,11 @@ constexpr float MIN_PLOT_HEIGHT = 60.0F;
 /// derived from it by measuring the label row's actual consumed height via cursor position
 /// (rather than guessing at ImGui's spacing rules with a hand-picked constant -- see #823
 /// review) so the chart fills exactly what's left in the cell.
+///
+/// cachedOverhead is measured once (on the first disk of the frame) and reused for the rest:
+/// every cell gets the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an
+/// identically-shaped single-line label row, so the resulting vertical overhead is the same
+/// across all disks -- no need to repeat the cursor-position measurement per disk, per frame.
 void renderDiskCell(std::string_view deviceName,
                     const std::vector<float>& timeData,
                     const std::vector<float>& readData,
@@ -60,7 +66,8 @@ void renderDiskCell(std::string_view deviceName,
                     double currentWrite,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
-                    float cellHeight)
+                    float cellHeight,
+                    std::optional<float>& cachedOverhead)
 {
     const double diskMax = std::max({readData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(readData)),
                                      writeData.empty() ? 1.0 : static_cast<double>(*std::ranges::max_element(writeData)),
@@ -81,7 +88,15 @@ void renderDiskCell(std::string_view deviceName,
 
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
-    const float measuredOverhead = ImGui::GetCursorPosY() - cellContentTop;
+    if (!cachedOverhead.has_value())
+    {
+        // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
+        // (top+bottom) adds a little more height beyond the label -- account for it here rather
+        // than clipping the chart against it (#823 review: residual scrollbar after the cell's own
+        // WindowPadding was already corrected for).
+        cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    }
+    const float measuredOverhead = *cachedOverhead;
     const float plotHeight = std::max(MIN_PLOT_HEIGHT, cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
@@ -207,6 +222,10 @@ void renderStorageSection(RenderContext& ctx)
         // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
         const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
 
+        // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
+        // renderDiskCell's doc comment.
+        std::optional<float> cachedOverhead;
+
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ChartGridConfig gridConfig{
             .availableWidth = avail.x,
@@ -253,7 +272,8 @@ void renderStorageSection(RenderContext& ctx)
                 }
 
                 const std::vector<float> cellTimes(diskTimes.end() - static_cast<std::ptrdiff_t>(alignedCount), diskTimes.end());
-                renderDiskCell(disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight);
+                renderDiskCell(
+                    disk.deviceName, cellTimes, readData, writeData, diskRead, diskWrite, diskAxis, theme, cellHeight, cachedOverhead);
             },
             // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each
             // cell's ImGui/ImPlot state by the stable device name instead of position (#823 review).
