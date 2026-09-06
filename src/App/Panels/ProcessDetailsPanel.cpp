@@ -704,6 +704,8 @@ void ProcessDetailsPanel::renderCpuUsageSection()
                 if (alignedCount > 0)
                 {
                     const int plotCount = UI::Format::checkedCount(alignedCount);
+                    // Reuse member scratch buffers across frames instead of local vectors, so the
+                    // per-frame history redraw doesn't reallocate once buffers reach steady-state size.
                     m_CpuStackY0.assign(alignedCount, 0.0);
                     m_CpuStackYUser.resize(alignedCount);
                     m_CpuStackYSystem.resize(alignedCount);
@@ -711,6 +713,8 @@ void ProcessDetailsPanel::renderCpuUsageSection()
                     auto& yUserTop = m_CpuStackYUser;
                     auto& ySystemTop = m_CpuStackYSystem;
 
+                    // PlotShaded fills the area *between* two Y series, so a stacked user/system
+                    // area chart needs cumulative tops: user alone, then user+system on top of it.
                     for (size_t i = 0; i < alignedCount; ++i)
                     {
                         yUserTop[i] = cpuUserData[i];
