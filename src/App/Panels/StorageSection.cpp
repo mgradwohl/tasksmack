@@ -228,7 +228,15 @@ void renderStorageSection(RenderContext& ctx)
         // Approximate overhead used only as a floor for the grid's minimum cell height; the real
         // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
         // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
-        const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+        // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
+        // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
+        // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
+        // CellPadding -- omitting any of those understates the floor, so the grid can pick a
+        // cellHeight that only fits a plot smaller than MIN_PLOT_HEIGHT once the real overhead is
+        // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
+        // grid falling back to more rows/scrolling (#823 review).
+        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
+                                          ImGui::GetStyle().ItemSpacing.y + (ImGui::GetStyle().CellPadding.y * 2.0F);
 
         // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
         // renderDiskCell's doc comment. Cached across frames too, not just across disks within

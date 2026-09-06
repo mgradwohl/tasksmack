@@ -102,6 +102,29 @@ TEST(ChartGridLayoutTest, TinyPanelClampsToMinimumCellSize)
     EXPECT_GE(grid.columns * grid.rows, config.itemCount);
 }
 
+TEST(ChartGridLayoutTest, NoFittingShapeFallsBackToSingleColumn)
+{
+    // Regression coverage for a real bug: when no column count lets width and height both fit
+    // (a genuinely too-small panel for the item count), the score-based loop above can still
+    // favor a high column count because its score is computed from a *clamped* cellWidth that a
+    // ImGuiTableFlags_SizingStretchSame table will never actually grant -- that table always
+    // divides availableWidth evenly across the chosen columns, ignorant of minCellWidth. Left
+    // unhandled, that mismatch crushes every chart's rendered width far below minCellWidth
+    // instead of falling back to the intended last resort: fewer columns and vertical scrolling.
+    // A single column is the only shape that's ever safe to choose when nothing truly fits: the
+    // renderer (ChartGrid.h) sizes each cell's actual width by stretching it to its table
+    // column's share of availableWidth, not by cellWidth below (which stays a clamped floor
+    // value here, same as TinyPanelClampsToMinimumCellSize above) -- so columns=1 is what
+    // actually gives each chart the widest cell a single column can provide, deferring all
+    // overflow to rows, which grid-level scrolling can handle.
+    const ChartGridConfig config{
+        .availableWidth = 300.0F, .availableHeight = 900.0F, .itemCount = 8, .minCellWidth = 320.0F, .minCellHeight = 140.0F};
+    const auto grid = computeChartGridLayout(config);
+
+    EXPECT_EQ(grid.columns, 1U);
+    EXPECT_EQ(grid.rows, 8U);
+}
+
 TEST(ChartGridLayoutTest, RowAndColumnOverheadAreReservedSoTotalFitsExactly)
 {
     // columnOverhead/rowOverhead model a fixed per-cell cost the *renderer* adds outside

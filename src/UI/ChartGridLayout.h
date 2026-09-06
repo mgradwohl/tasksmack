@@ -133,6 +133,22 @@ struct ChartGridDimensions
         }
     }
 
+    // If no candidate fits, prefer a single column over whatever the score-based loop above
+    // landed on. The score there is computed from a *clamped* cellWidth (floored to minCellWidth),
+    // which reflects what a cell "should" get, not what a ImGuiTableFlags_SizingStretchSame table
+    // will actually grant it -- that table always divides availableWidth evenly across the chosen
+    // column count, with no awareness of minCellWidth. So a floor-clamped score can still favor a
+    // high column count in a narrow panel (e.g. reporting a 320px cellWidth for 4 columns when the
+    // panel is only 300px wide), and the renderer then gives each column ~75px, crushing every
+    // chart well below its floor instead of the vertical-scrolling fallback this is meant to be a
+    // last resort for. Falling back to columns=1 sidesteps that mismatch entirely: cellWidth
+    // becomes the full available width (as wide as a single column can ever be), and the overflow
+    // this branch exists for shows up only as extra rows, which grid-level scrolling can handle.
+    if (!bestFits)
+    {
+        bestColumns = 1;
+    }
+
     const size_t bestRows = (config.itemCount + bestColumns - 1) / bestColumns;
     const auto bestColumnsF = static_cast<float>(bestColumns);
     const auto bestRowsF = static_cast<float>(bestRows);

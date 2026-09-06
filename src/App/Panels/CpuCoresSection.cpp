@@ -107,7 +107,15 @@ void renderCpuCoresSection(RenderContext& ctx)
         // worth re-deriving by hand (see #823 review: an earlier version of this guessed at that
         // math, including a horizontal NowBar-column constant that doesn't belong in a vertical
         // measurement at all, and ended up over-subtracting from the plot height).
-        const float approxLabelOverhead = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+        // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
+        // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
+        // this lambda ever sees a height), the label row, and renderHistoryWithNowBars' nested
+        // table CellPadding -- omitting any of those understates the floor, so the grid can pick a
+        // cellHeight that only fits a plot smaller than MIN_PLOT_HEIGHT once the real overhead is
+        // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
+        // grid falling back to more rows/scrolling (#823 review).
+        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
+                                          ImGui::GetStyle().ItemSpacing.y + (ImGui::GetStyle().CellPadding.y * 2.0F);
         const float barColumnAllowance = BAR_WIDTH; // extra width renderHistoryWithNowBars reserves for the NowBar column
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
