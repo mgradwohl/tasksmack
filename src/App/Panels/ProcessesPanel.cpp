@@ -103,22 +103,27 @@ void renderRightAlignedText(std::string_view text, float textWidth)
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
-/// Common case: a RowFormatCache-backed cell whose text and width were measured together once
-/// at cache-population time (~1Hz), not per frame (perf-plan #843 phase 1) -- ImFontCalcTextSizeEx
-/// and ImGui::ItemSize showed up as real, non-trivial costs in interactive-frame profiling, and
-/// this cell's text is already cached; only its width measurement wasn't.
+/// Common case: a RowFormatCache-backed cell whose text is cached (rebuilt only at ~1Hz, not
+/// per frame) and whose width is measured lazily -- the first time this specific cell is
+/// actually drawn -- and cached into `cell.width` (mutable; see AlignedCellText's doc comment
+/// for why this must be lazy rather than done for every process at cache-population time).
+/// ImFontCalcTextSizeEx and ImGui::ItemSize showed up as real, non-trivial costs in interactive-
+/// frame profiling; this keeps that cost paid at most once per visible row per cache generation,
+/// instead of every frame or (worse) for every process regardless of visibility.
 void renderRightAlignedText(const AlignedCellText& cell)
 {
+    if (cell.width < 0.0F)
+    {
+        cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
+    }
     renderRightAlignedText(cell.text, cell.width);
 }
 
-/// Wraps `text` with its measured width, for RowFormatCache population sites. Measuring here
-/// (once, when the cache is (re)built) instead of in renderRightAlignedText() (every frame the
-/// row is visible) is the entire point of this cache.
+/// Wraps `text` for a RowFormatCache population site, deferring width measurement to the first
+/// time renderRightAlignedText() actually draws this cell (see AlignedCellText's doc comment).
 [[nodiscard]] AlignedCellText makeAlignedCellText(std::string text)
 {
-    const float width = ImGui::CalcTextSize(text.c_str(), text.c_str() + text.size()).x;
-    return AlignedCellText{.text = std::move(text), .width = width};
+    return AlignedCellText{.text = std::move(text)};
 }
 
 [[nodiscard]] auto formatAlignedPercentString(double percent) -> std::string

@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -25,25 +26,43 @@ struct ImFont; // Forward declaration for TextSizeCache
 namespace App
 {
 
-/// A pre-formatted right-aligned cell's text plus its CalcTextSize width, measured once
-/// together at RowFormatCache population time (perf-plan #843 phase 1) instead of remeasuring
-/// the text every frame in renderRightAlignedText(). Bundling them in one type means a caller
-/// can't use the text without also getting a matching width -- there's no "forgot to cache the
-/// width" failure mode. Namespace-scope (not nested in ProcessesPanel) so the free
-/// renderRightAlignedText()/makeAlignedCellText() helpers in ProcessesPanel.cpp's anonymous
-/// namespace can use it without needing member/friend access to a private nested type.
+/// A pre-formatted right-aligned cell's text plus its CalcTextSize width, measured lazily (on
+/// first render, not at RowFormatCache population time) and cached from then on (perf-plan #843
+/// phase 1). Populating widths eagerly for every process at cache-rebuild time -- before
+/// ImGuiListClipper gets a chance to restrict work to visible rows -- would concentrate
+/// thousands of CalcTextSize calls into a single snapshot-update frame on the app's "thousands
+/// of processes" scenario, working directly against the frame-budget goal this cache exists to
+/// serve. `width` is `mutable` so renderRightAlignedText() can fill it in through a `const
+/// AlignedCellText&` the first time this specific cell is actually drawn; every later frame
+/// (until the next cache rebuild resets it) reuses the cached value. Bundling text+width in one
+/// type still means a caller can't use one without the other being kept in sync. Namespace-scope
+/// (not nested in ProcessesPanel) so the free renderRightAlignedText()/makeAlignedCellText()
+/// helpers in ProcessesPanel.cpp's anonymous namespace can use it without needing member/friend
+/// access to a private nested type.
 struct AlignedCellText
 {
+    /// Sentinel meaning "not measured yet". Real widths are never negative.
+    static constexpr float UNMEASURED_WIDTH = -1.0F;
+
     std::string text;
-    float width = 0.0F;
+    mutable float width = UNMEASURED_WIDTH;
 };
 
-/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values.
-/// Namespace-scope (not nested in ProcessesPanel) for the same reason as AlignedCellText: both
-/// ProcessesPanel::TextSizeCache (header) and the free helper functions in ProcessesPanel.cpp's
-/// anonymous namespace need to see it, and it must be visible wherever
+/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values, derived
+/// by calling the real function at one representative nice value per threshold bucket instead
+/// of duplicating its label strings here -- a hand-duplicated copy would silently drift (and
+/// make getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain
+/// ever renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
+/// AlignedCellText: both ProcessesPanel::TextSizeCache (header) and the free helper functions in
+/// ProcessesPanel.cpp's anonymous namespace need to see it, and it must be visible wherever
 /// TextSizeCache::priorityLabelWidths is sized.
-inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {"High", "Above Normal", "Normal", "Below Normal", "Idle"};
+inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {
+    Domain::Priority::getPriorityLabel(Domain::Priority::MIN_NICE),               // < HIGH_THRESHOLD           -> "High"
+    Domain::Priority::getPriorityLabel(Domain::Priority::HIGH_THRESHOLD),         // < ABOVE_NORMAL_THRESHOLD   -> "Above Normal"
+    Domain::Priority::getPriorityLabel(Domain::Priority::NORMAL_NICE),            // < BELOW_NORMAL_THRESHOLD   -> "Normal"
+    Domain::Priority::getPriorityLabel(Domain::Priority::BELOW_NORMAL_THRESHOLD), // < IDLE_THRESHOLD          -> "Below Normal"
+    Domain::Priority::getPriorityLabel(Domain::Priority::MAX_NICE),               // >= IDLE_THRESHOLD          -> "Idle"
+};
 
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
