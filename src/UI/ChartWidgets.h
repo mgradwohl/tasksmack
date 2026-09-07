@@ -615,6 +615,17 @@ struct HistoryChartConfig
     return hasFixedLimits ? (ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT) : (ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
 }
 
+/// The `BeginPlot` flags HistoryChart actually uses, folding in showLegend. Previously
+/// `showLegend == false` only skipped setupLegendDefault() (which customizes the legend's
+/// position/style) without ever setting ImPlotFlags_NoLegend, so ImPlot still rendered a legend
+/// -- for the app's ID-only "##Core"-style single-series charts, an empty-text swatch with no
+/// functional purpose, still costing per-frame layout/draw work. "No legend" now means no legend
+/// (perf-plan #843 phase 1).
+[[nodiscard]] constexpr ImPlotFlags historyChartBeginPlotFlags(ImPlotFlags configuredFlags, bool showLegend) noexcept
+{
+    return showLegend ? configuredFlags : (configuredFlags | ImPlotFlags_NoLegend);
+}
+
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
 /// and applies the shared legend/axis/format/limit setup so all charts look and behave
 /// identically. When the Render Metrics overlay is active it also captures this chart's
@@ -640,7 +651,7 @@ class HistoryChart
             m_Start = std::chrono::steady_clock::now();
         }
 
-        m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), config.flags);
+        m_Active = ImPlot::BeginPlot(config.id, ImVec2(-1, config.height), historyChartBeginPlotFlags(config.flags, config.showLegend));
         if (!m_Active)
         {
             return;
