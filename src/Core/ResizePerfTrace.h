@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -27,6 +28,11 @@ namespace Core
 /// underlying partial sort (nth_element) reorders its input. Pure/allocation-only, so it's
 /// cheap to call at log time (every 0.5-5s) even though it's not meant for the render hot path.
 /// Returns 0.0 for an empty input; `percentile` is clamped to [0, 1] (e.g. 0.95 for p95).
+///
+/// Nearest-rank definition: rank = ceil(percentile * n), 1-indexed, clamped to [1, n]. For
+/// n=10 and p95, that's ceil(9.5) = 10 -> the 10th (last) of 10 sorted values, not the 9th --
+/// a plain floor(p * (n - 1)) index (this function's original implementation) under-reports
+/// the tail at small sample counts, which is exactly what p95/p99 exist to catch.
 [[nodiscard]] inline double computePercentile(std::vector<double> samples, double percentile)
 {
     if (samples.empty())
@@ -34,7 +40,10 @@ namespace Core
         return 0.0;
     }
     const double clamped = std::clamp(percentile, 0.0, 1.0);
-    const auto rank = static_cast<std::size_t>(clamped * static_cast<double>(samples.size() - 1));
+    const auto sampleCount = static_cast<double>(samples.size());
+    auto rank1Indexed = static_cast<std::size_t>(std::ceil(clamped * sampleCount));
+    rank1Indexed = std::clamp<std::size_t>(rank1Indexed, 1, samples.size());
+    const std::size_t rank = rank1Indexed - 1;
     std::ranges::nth_element(samples, samples.begin() + static_cast<std::ptrdiff_t>(rank));
     return samples[rank];
 }
@@ -62,6 +71,13 @@ struct ResizePerfTraceStats
     double maxRenderMs = 0.0;
     double maxPostRenderMs = 0.0;
     double maxSwapMs = 0.0;
+    /// Sum/max of update+render+post+swap per frame (excludes drain, which is a separate
+    /// per-loop-iteration accumulator, not always 1:1 with a rendered frame -- see
+    /// computeSkipRenderThisFrame). This is the figure #843's "p99 frame time <= 16.6ms (60fps)"
+    /// success criterion actually means: individual phase percentiles can each look fine while
+    /// their sum still misses the frame budget.
+    double totalFrameMs = 0.0;
+    double maxTotalFrameMs = 0.0;
     /// Number of times P0 (drain budget cap) fired and broke the poll loop early.
     std::uint32_t p0BudgetCapHits = 0;
     /// Number of frames skipped by P3 (drain-overrun skip-render).
@@ -75,6 +91,7 @@ struct ResizePerfTraceStats
     std::vector<double> renderSamplesMs;
     std::vector<double> postRenderSamplesMs;
     std::vector<double> swapSamplesMs;
+    std::vector<double> totalFrameSamplesMs;
 
     void
     recordEventBatch(std::uint32_t eventCount, std::uint32_t resizeEventCount, double durationMs, double singlePollBatchMs, bool p0Fired)
@@ -114,6 +131,11 @@ struct ResizePerfTraceStats
         renderSamplesMs.push_back(renderDurationMs);
         postRenderSamplesMs.push_back(postRenderDurationMs);
         swapSamplesMs.push_back(swapDurationMs);
+
+        const double totalDurationMs = updateDurationMs + renderDurationMs + postRenderDurationMs + swapDurationMs;
+        totalFrameMs += totalDurationMs;
+        maxTotalFrameMs = std::max(maxTotalFrameMs, totalDurationMs);
+        totalFrameSamplesMs.push_back(totalDurationMs);
     }
 
     [[nodiscard]] bool hasSamples() const noexcept
@@ -149,10 +171,16 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
     const double postP99 = computePercentile(stats.postRenderSamplesMs, 0.99);
     const double swapP95 = computePercentile(stats.swapSamplesMs, 0.95);
     const double swapP99 = computePercentile(stats.swapSamplesMs, 0.99);
+    // update+render+post+swap: the figure #843's "p99 frame time <= 16.6ms (60fps)" success
+    // criterion actually refers to -- per-phase percentiles can each look fine individually
+    // while their sum still misses the frame budget.
+    const double totalP95 = computePercentile(stats.totalFrameSamplesMs, 0.95);
+    const double totalP99 = computePercentile(stats.totalFrameSamplesMs, 0.99);
 
     spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
                  "p0Hits={} skippedFrames={} maxPollBatch={:.3f} ms "
-                 "frames={} resizeFrames={} drain avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
+                 "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
+                 "drain avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "update avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "render avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "post avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
@@ -167,6 +195,10 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  stats.maxSinglePollBatchMs,
                  stats.frames,
                  stats.resizeFrames,
+                 avg(stats.totalFrameMs, stats.frames),
+                 totalP95,
+                 totalP99,
+                 stats.maxTotalFrameMs,
                  avg(stats.drainMs, stats.eventBatches),
                  drainP95,
                  drainP99,

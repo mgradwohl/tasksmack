@@ -875,6 +875,7 @@ average can hide and a single max spike can overstate:
 ```
 ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
   frames=94 resizeFrames=0
+  frame avg/p95/p99/max=4.421/6.912/7.340/7.580 ms       ← update+render+post+swap (the 16.6ms/60fps figure)
   drain avg/p95/p99/max=0.031/0.084/0.121/0.121 ms      ← SDL event drain
   update avg/p95/p99/max=0.014/0.031/0.045/0.052 ms     ← domain model refresh (all layers)
   render avg/p95/p99/max=0.842/1.203/1.410/1.502 ms     ← ImGui layout + draw call generation
@@ -883,12 +884,18 @@ ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
 
 ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
   frames=109 resizeFrames=109
+  frame avg/p95/p99/max=4.447/17.462/19.960/22.443 ms
   drain avg/p95/p99/max=0.140/1.802/2.101/2.278 ms
   update avg/p95/p99/max=0.018/0.940/1.220/1.453 ms
   render avg/p95/p99/max=0.572/6.310/7.980/8.798 ms
   post avg/p95/p99/max=0.558/0.712/0.760/0.784 ms
   swap avg/p95/p99/max=3.299/9.510/11.200/12.408 ms
 ```
+
+`frame` is update+render+post+swap (drain is a separate per-loop-iteration accumulator, not
+always 1:1 with a rendered frame, so it's reported separately) — this is what #843's success
+criterion "p99 frame time ≤ 16.6ms (60fps)" actually refers to: individual phase percentiles can
+each look fine on their own while their sum still misses the frame budget.
 
 (Figures above are illustrative shapes, not a specific captured run — always compare against a
 fresh capture on your own machine, not these numbers.)

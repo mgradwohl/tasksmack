@@ -525,10 +525,12 @@ void Application::run()
         // Always capture end time; used for both trace recording and P3 skip-render decision.
         const auto eventDrainEnd = std::chrono::steady_clock::now();
         const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
-        if (traceResizePerfThisFrame)
-        {
-            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
-        }
+        // recordEventBatch() for THIS drain is deferred until after the interaction-transition
+        // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
+        // same drain), so the batch that triggers a transition lands in the correctly-reset
+        // accumulator for its own state instead of being recorded into the old state's
+        // accumulator and then immediately wiped (or misattributed into the other state's
+        // boundary log) by that reset.
 
         if (m_Window->shouldClose())
         {
@@ -568,11 +570,21 @@ void Application::run()
             resizeTraceStats = {};
         }
         // Reset stats at interaction start so idle-frame event batches accumulated before
-        // the interaction do not skew the first interaction-progress log averages.
+        // the interaction do not skew the first interaction-progress log averages. This
+        // intentionally discards an at-most-partial idle window (idle-progress already logs
+        // independently on its own cadence, so the loss is bounded and not a correctness bug).
         if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
         {
             resizeTraceStats = {};
             lastResizeTraceLogTime = getTime();
+        }
+
+        // Record THIS drain now that any transition reset above has run, so it's classified
+        // into (and counted by) the accumulator for its own state, not the state that just
+        // ended.
+        if (traceResizePerfThisFrame)
+        {
+            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
         }
 
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
