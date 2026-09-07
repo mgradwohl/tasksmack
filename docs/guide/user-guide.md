@@ -32,10 +32,10 @@ download both, then verify with [cosign](https://github.com/sigstore/cosign):
 
 ```bash
 cosign verify-blob \
-  --bundle tasksmack-<label>-Linux.tar.gz.bundle \
+  --bundle <asset>.bundle \
   --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  tasksmack-<label>-Linux.tar.gz
+  <asset>
 ```
 
 Replace the filename with whichever asset you downloaded. The two `--certificate-*` flags pin
