@@ -2,7 +2,7 @@
 
 Thanks for contributing!
 
-This document is the single source of truth for developer setup and workflows (build, test, format, lint, profiling, and packaging).
+This document is the single source of truth for developer setup and workflows (build, test, format, lint, profiling, and packaging). Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Documentation
 
@@ -10,6 +10,7 @@ To avoid duplication and doc drift, these are the canonical docs:
 
 - [README.md](README.md): project landing page and documentation index
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): contributor conduct policy and reporting path
 - [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
 - [completed-features.md](completed-features.md): canonical implemented-feature inventory
 - [docs/guide/](docs/guide/): user guide and troubleshooting
@@ -1321,6 +1322,8 @@ generated files and CPack's archive metadata, not every possible source of binar
 To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
 `cpack -G "TGZ;DEB"`, and compare `sha256sum` of the result against the published asset.
+
+Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and shipped with a matching `<file>.bundle`; see the User Guide's [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for the user-facing `cosign verify-blob` procedure.
 
 ### Changelog
 

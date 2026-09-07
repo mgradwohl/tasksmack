@@ -75,6 +75,11 @@ $ghDir = Join-Path $repoRootFull '.github'
 if (Test-Path -LiteralPath $ghDir) {
     $mdFiles += Get-ChildItem -LiteralPath $ghDir -Recurse -File -Filter '*.md'
 }
+$docsDir = Join-Path $repoRootFull 'docs'
+$docsDirNorm = ($docsDir.TrimEnd('\') + '\')
+if (Test-Path -LiteralPath $docsDir) {
+    $mdFiles += Get-ChildItem -LiteralPath $docsDir -Recurse -File -Filter '*.md'
+}
 
 $anchorCache = @{}
 function Get-AnchorsCached([string]$path) {
@@ -142,6 +147,38 @@ foreach ($md in $mdFiles) {
 
             $pathPart = [uri]::UnescapeDataString($pathPart)
             $anchor = [uri]::UnescapeDataString($anchor)
+
+            # Docsify hash-route (e.g. "#/guide/user-guide" or "#/guide/user-guide?id=heading"),
+            # used by docs/ site pages (see docs/index.html's window.$docsify config) for
+            # cross-page navigation. Resolved against docs/ as the site root, not as a
+            # same-page anchor -- a real same-page anchor can never contain "/".
+            if ($pathPart -eq '' -and $anchor.StartsWith('/') -and (Test-Path -LiteralPath $docsDir)) {
+                $docsifyAnchor = ''
+                $route = $anchor
+                $idIndex = $route.IndexOf('?id=')
+                if ($idIndex -ge 0) {
+                    $docsifyAnchor = [uri]::UnescapeDataString($route.Substring($idIndex + 4))
+                    $route = $route.Substring(0, $idIndex)
+                }
+                $route = $route.Trim('/')
+                if ($route -eq '') { $route = 'README' }
+                if (-not $route.EndsWith('.md')) { $route += '.md' }
+                # GetFullPath (not Resolve-Path, which requires the path to already exist)
+                # collapses ".." segments so a crafted route like "../../../../etc/passwd"
+                # can be caught before ever touching the filesystem outside docs/.
+                $routePath = [System.IO.Path]::GetFullPath((Join-Path $docsDir $route))
+                if (-not ($routePath.ToLowerInvariant().StartsWith($docsDirNorm.ToLowerInvariant()))) {
+                    Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Docsify route target escapes docs/: '$target'"
+                } elseif (-not (Test-Path -LiteralPath $routePath)) {
+                    Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing docsify route target '$routePath'"
+                } elseif ($docsifyAnchor -ne '') {
+                    $routeAnchors = Get-AnchorsCached (Resolve-Path -LiteralPath $routePath).Path
+                    if (-not $routeAnchors.Contains($docsifyAnchor)) {
+                        Add-Broken $broken 'missing-anchor' $md.FullName $lineNo $target "Missing anchor '#$docsifyAnchor' in $routePath (docsify route)"
+                    }
+                }
+                continue
+            }
 
             # Anchor-only link
             if ($pathPart -eq '' -and $anchor -ne '') {
@@ -246,7 +283,7 @@ foreach ($md in $mdFiles) {
     }
 }
 
-"Scanned $($mdFiles.Count) markdown files (root + .github)."
+"Scanned $($mdFiles.Count) markdown files (root + .github + docs)."
 "Broken internal link findings: $($broken.Count)"
 
 $grouped = $broken | Group-Object Kind | Sort-Object Name
