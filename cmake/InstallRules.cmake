@@ -13,7 +13,11 @@ include(GNUInstallDirs)
 # so this is scoped to Linux specifically -- UNIX AND NOT APPLE, matching the existing convention
 # in cmake/CompilerOptions.cmake -- rather than "not Windows").
 if(UNIX AND NOT APPLE)
-    set(TASKSMACK_RUNTIME_DESTINATION bin)
+    # GNUInstallDirs' CMAKE_INSTALL_BINDIR (default "bin") rather than a hardcoded literal,
+    # so a packager overriding it (e.g. -DCMAKE_INSTALL_BINDIR=libexec for a distro-specific
+    # layout) is actually honored, the same way CMAKE_INSTALL_DATADIR already is below for
+    # assets/desktop files.
+    set(TASKSMACK_RUNTIME_DESTINATION ${CMAKE_INSTALL_BINDIR})
 else()
     set(TASKSMACK_RUNTIME_DESTINATION .)
 endif()

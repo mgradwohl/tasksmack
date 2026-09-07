@@ -35,9 +35,23 @@ jobs:
     timeout-minutes: 5
     env:
       TAG_NAME: ${{ github.ref_name }}
+      REF_TYPE: ${{ github.ref_type }}
     permissions:
       contents: read
     steps:
+      - name: Validate ref is an actual tag
+        # github.ref_name is just the short name with no "refs/tags/"/"refs/heads/"
+        # prefix, so a workflow_dispatch run manually triggered from a branch named
+        # e.g. "v0.8.0" would pass the semver regex below identically to a real tag --
+        # and if that branch happened to point at main HEAD, every later check would
+        # also pass, letting build/sign/publish run without an actual tag ever having
+        # been pushed. Reject anything that isn't really a tag ref before checking its name.
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "Ref '$TAG_NAME' is a $REF_TYPE, not a tag. Releases must be triggered by an actual tag push (or a workflow_dispatch run against an existing tag ref). Aborting release." >&2
+            exit 1
+          fi
+
       - name: Validate tag is strict semver
         # Mirrors changelog.yml's tag validation: reject anything that is not
         # exactly vMAJOR.MINOR.PATCH (pre-releases, 4-part tags, branch names
