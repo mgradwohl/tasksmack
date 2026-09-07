@@ -82,7 +82,7 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         auto& state = m_DiskStates[deviceName];
         state.deviceName = deviceName;
 
-        const DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state);
+        const DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state, now);
         snapshot.disks.push_back(diskSnap);
 
         // Update state for next sample
@@ -248,7 +248,8 @@ void StorageModel::publish()
     m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
 }
 
-DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state)
+DiskSnapshot
+StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, const std::chrono::steady_clock::time_point now)
 {
     DiskSnapshot snap;
     snap.deviceName = current.deviceName;
@@ -266,8 +267,17 @@ DiskSnapshot StorageModel::computeDiskSnapshot(const Platform::DiskCounters& cur
         return snap;
     }
 
-    // Compute deltas
-    const auto deltaTime = std::chrono::steady_clock::now() - state.prevTime;
+    // Compute deltas. Uses `now` (the timestamp sampleAt() captured once, before this cycle's
+    // probe read, and the same value it stores into state.prevTime below for next cycle's
+    // baseline) rather than a fresh steady_clock::now() call here. A fresh call here would
+    // measure elapsed time from a *pre-probe* timestamp (last cycle's) to a *post-probe*
+    // timestamp (this cycle's, after m_Probe->read() and any earlier disks in this same loop
+    // already ran) -- an inconsistent basis that inflates deltaTime by this cycle's probe
+    // latency, depressing every computed rate, and that also skews between disks in the same
+    // sample() call, since it'd advance a little further for each disk processed. Using `now`
+    // consistently for both sides means every cycle measures the same "start of sampleAt" to
+    // "start of next sampleAt" gap, and every disk in one sample shares the identical basis.
+    const auto deltaTime = now - state.prevTime;
     const double deltaSeconds = std::chrono::duration<double>(deltaTime).count();
 
     // The sampler's first callback can immediately follow the synchronous seed read.

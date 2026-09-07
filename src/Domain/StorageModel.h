@@ -92,7 +92,8 @@ class StorageModel : public ISamplable
         bool isSeedTransition = false;
     };
 
-    static DiskSnapshot computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state);
+    static DiskSnapshot
+    computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, std::chrono::steady_clock::time_point now);
     void trimHistory(double nowSeconds);
     void applyHistoryCapacity();
 
