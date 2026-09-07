@@ -16,6 +16,9 @@ md_files = list(repo_root.glob("*.md"))
 # Include .github markdown files
 if (repo_root / ".github").exists():
     md_files += list((repo_root / ".github").rglob("*.md"))
+# Include the published documentation site's source pages (docs/guide, docs/dev, etc.)
+if (repo_root / "docs").exists():
+    md_files += list((repo_root / "docs").rglob("*.md"))
 
 external_prefixes = ("http://", "https://", "mailto:", "data:")
 anchor_cache: dict[str, set[str]] = {}
@@ -95,6 +98,22 @@ for md in md_files:
                 continue
             if any(target.startswith(p) for p in external_prefixes):
                 continue
+            # Docsify hash-route (e.g. "#/guide/user-guide" or "#/guide/user-guide?id=heading"),
+            # used by docs/ site pages (see docs/index.html's window.$docsify config) for
+            # cross-page navigation. Resolved against docs/ as the site root, not as a
+            # same-page anchor -- a real same-page anchor can never contain "/".
+            if target.startswith("#/") and (repo_root / "docs").exists():
+                route, docsify_anchor = target[1:].split("?id=", 1) if "?id=" in target else (target[1:], "")
+                route = urllib.parse.unquote(route).strip("/") or "README"
+                if not route.endswith(".md"):
+                    route += ".md"
+                route_path = repo_root / "docs" / route
+                if not route_path.exists():
+                    add("missing-file", str(md), idx, target, f"Missing docsify route target '{route_path}'")
+                elif docsify_anchor and urllib.parse.unquote(docsify_anchor) not in get_anchors(route_path):
+                    add("missing-anchor", str(md), idx, target,
+                        f"Missing anchor '#{docsify_anchor}' in {route_path} (docsify route)")
+                continue
             # Anchor-only link
             if target.startswith("#") and len(target) > 1:
                 anchor = urllib.parse.unquote(target[1:])
@@ -134,7 +153,7 @@ for md in md_files:
             if anchor and anchor not in get_anchors(full_target):
                 add("missing-anchor", str(md), idx, target, f"Missing anchor '#{anchor}' in {full_target} (ref [{ref_key}])")
 
-print(f"Scanned {len(md_files)} markdown files (root + .github).")
+print(f"Scanned {len(md_files)} markdown files (root + .github + docs).")
 print(f"Broken internal link findings: {len(broken)}")
 
 if broken:
