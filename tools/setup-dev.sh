@@ -99,19 +99,82 @@ else
         exit 1
     fi
 
-    wget -qO- https://apt.kitware.com/keys/kitware-archive-latest.asc |
-        gpg --dearmor |
+    # Expected fingerprints, cross-checked against each vendor's own published
+    # setup instructions (https://apt.kitware.com/, https://apt.llvm.org/) at
+    # the time this check was added. If a vendor rotates their signing key,
+    # this script will fail loudly with the new key's actual fingerprint —
+    # update the expected value below only after independently confirming the
+    # new fingerprint via the vendor's official documentation, not just by
+    # trusting the download.
+    KITWARE_KEY_FINGERPRINT="4DBEBE3EEC96E7B8C6EC5BE99E92FDC6C5B9BA75"
+    LLVM_KEY_FINGERPRINT="6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
+
+    verify_key_fingerprint() {
+        local label="$1" keyfile="$2" expected="$3"
+        # Only count fingerprints that follow a "pub:" record (the primary key), not a
+        # "sub:" record (a subkey) -- a real key legitimately has subkey fingerprints that
+        # differ from its own. Collecting a plain first-match would let a tampered file place
+        # the real key first and append an attacker-controlled *second primary key*, which gpg
+        # --dearmor would still install and apt would then also trust. Requiring exactly one
+        # primary key total closes that regardless of ordering.
+        local -a primary_fprs=()
+        local want_fpr=0 record_type fpr
+        while IFS=: read -r record_type _ _ _ _ _ _ _ _ fpr _; do
+            case "$record_type" in
+                pub) want_fpr=1 ;;
+                fpr)
+                    if [[ "$want_fpr" == 1 ]]; then
+                        primary_fprs+=("$fpr")
+                    fi
+                    want_fpr=0
+                    ;;
+                *) want_fpr=0 ;;
+            esac
+        done < <(gpg --show-keys --with-fingerprint --with-colons "$keyfile" 2>/dev/null)
+
+        if [[ ${#primary_fprs[@]} -ne 1 ]]; then
+            echo "Error: $label key file contains ${#primary_fprs[@]} primary key(s); expected exactly 1." >&2
+            printf '  found: %s\n' "${primary_fprs[@]}" >&2
+            echo "  Refusing to trust a key file with an unexpected number of primary keys." >&2
+            exit 1
+        fi
+
+        local actual="${primary_fprs[0]}"
+        if [[ "$actual" != "$expected" ]]; then
+            echo "Error: $label signing key fingerprint mismatch." >&2
+            echo "  expected: $expected" >&2
+            echo "  actual:   ${actual:-<none>}" >&2
+            echo "  Do not install this key. If $label rotated its signing key," >&2
+            echo "  confirm the new fingerprint via their official documentation" >&2
+            echo "  and update KITWARE_KEY_FINGERPRINT/LLVM_KEY_FINGERPRINT in" >&2
+            echo "  tools/setup-dev.sh (and tools/setup-dev.ps1 if applicable)." >&2
+            exit 1
+        fi
+        echo "==> Verified $label signing key fingerprint: $actual"
+    }
+
+    KITWARE_KEY_FILE=$(mktemp)
+    LLVM_KEY_FILE=$(mktemp)
+    trap 'rm -f "$KITWARE_KEY_FILE" "$LLVM_KEY_FILE"' EXIT
+
+    wget -qO "$KITWARE_KEY_FILE" https://apt.kitware.com/keys/kitware-archive-latest.asc
+    verify_key_fingerprint "Kitware" "$KITWARE_KEY_FILE" "$KITWARE_KEY_FINGERPRINT"
+    gpg --dearmor < "$KITWARE_KEY_FILE" |
         sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
     echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${UBUNTU_CODENAME} main" |
         sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
 
     sudo add-apt-repository -y ppa:deadsnakes/ppa
 
-    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key |
-        gpg --dearmor |
+    wget -qO "$LLVM_KEY_FILE" https://apt.llvm.org/llvm-snapshot.gpg.key
+    verify_key_fingerprint "LLVM" "$LLVM_KEY_FILE" "$LLVM_KEY_FINGERPRINT"
+    gpg --dearmor < "$LLVM_KEY_FILE" |
         sudo tee /usr/share/keyrings/llvm-archive-keyring.gpg >/dev/null
     echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://apt.llvm.org/${UBUNTU_CODENAME}/ llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" |
         sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+
+    rm -f "$KITWARE_KEY_FILE" "$LLVM_KEY_FILE"
+    trap - EXIT
 
     sudo apt-get update
 fi

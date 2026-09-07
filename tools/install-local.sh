@@ -18,7 +18,8 @@ else
     exit 1
 fi
 
-# Use CMake install to mirror the optimized build layout (binary + libs at prefix root, assets under share/<project_name_lower>/assets/)
+# Use CMake install to mirror the packaged Linux layout (binary + libs under bin/,
+# assets under share/<project_name_lower>/assets/ -- see cmake/InstallRules.cmake)
 cmake --install "${ROOT_DIR}/build/optimized" --prefix "${PREFIX}"
 
 # Install launcher entry and icon into the user's local desktop paths
@@ -26,7 +27,7 @@ DESKTOP_SRC="${ROOT_DIR}/assets/linux/app.tasksmack.TaskSmack.desktop"
 DESKTOP_DST="${HOME}/.local/share/applications/app.tasksmack.TaskSmack.desktop"
 ICON_SRC_PNG="${ROOT_DIR}/assets/icons/tasksmack-256.png"
 ICON_DST="${HOME}/.local/share/icons/hicolor/256x256/apps/app.tasksmack.TaskSmack.png"
-BINARY_PATH="${PREFIX}/TaskSmack"
+BINARY_PATH="${PREFIX}/bin/TaskSmack"
 
 install -Dm644 "${DESKTOP_SRC}" "${DESKTOP_DST}"
 sed -i "s|^Exec=.*|Exec=${BINARY_PATH}|" "${DESKTOP_DST}"

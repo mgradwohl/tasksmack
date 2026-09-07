@@ -26,10 +26,13 @@ jobs:
     steps:
       - name: Validate tag is strict semver
         # Reject pre-release/4-part tags (e.g. v1.2.3-rc1, v1.2.3.4) so the
-        # generated changelog always contains a proper release section.
+        # generated changelog always contains a proper release section. Each numeric
+        # identifier must be "0" or have no leading zero (real SemVer rule) -- v01.2.3
+        # is invalid, so a bare [0-9]+ per component is too loose. Kept in sync with
+        # release.yml's identical check.
         run: |
-          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH). Aborting changelog generation."
+          if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Tag '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH, no leading zeroes). Aborting changelog generation."
             exit 1
           fi
 
