@@ -1,6 +1,7 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
 
@@ -668,6 +669,23 @@ TEST_F(UserConfigSaveLoadFixture, ChartAntiAliasingTrueIsSavedAndLoaded)
     config.settings().chartAntiAliasing = false;
     config.load();
     EXPECT_TRUE(config.settings().chartAntiAliasing);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ApplyToApplicationPushesChartAntiAliasingIntoUI)
+{
+    // UI::Widgets::chartAntiAliasingEnabled() is process-wide, mutable state that
+    // applyToApplication() is the only intended non-test writer of; restore it to the
+    // documented default afterward so this test doesn't leak state into others in this binary.
+    auto& config = UserConfig::get();
+
+    config.settings().chartAntiAliasing = false;
+    config.applyToApplication();
+    EXPECT_FALSE(UI::Widgets::chartAntiAliasingEnabled()) << "a regression that omits or inverts this assignment would leave every other "
+                                                             "chartAntiAliasing test green while the setting has no real effect";
+
+    config.settings().chartAntiAliasing = true;
+    config.applyToApplication();
+    EXPECT_TRUE(UI::Widgets::chartAntiAliasingEnabled());
 }
 
 // ========== Load: Missing File Uses Defaults ==========

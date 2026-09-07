@@ -41,13 +41,14 @@ namespace Detail
 inline bool g_ChartAntiAliasingEnabled = true;
 } // namespace Detail
 
-/// Whether history chart plots render anti-aliased lines/fills. Mirrors
-/// App::UserConfig::Settings::chartAntiAliasing, but UI must not depend on App (see
-/// tasksmack.md's Dependency Rules), so the App composition root pushes this value in via
-/// setChartAntiAliasingEnabled() once at startup and again whenever the setting changes,
-/// instead of ChartWidgets reading UserConfig directly. Defaults to true (current visual
-/// behavior preserved) until the composition root sets it. Disabling trades chart-edge
-/// smoothness for lower CPU/GPU cost -- profiling showed Dear ImGui's AddPolyline/
+/// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
+/// doc comment for why "lines", not "lines/fills": ImPlot's shaded-fill path doesn't currently
+/// consult the fill AA bit at all). Mirrors App::UserConfig::Settings::chartAntiAliasing, but UI
+/// must not depend on App (see tasksmack.md's Dependency Rules), so the App composition root
+/// pushes this value in via setChartAntiAliasingEnabled() once at startup and again whenever the
+/// setting changes, instead of ChartWidgets reading UserConfig directly. Defaults to true
+/// (current visual behavior preserved) until the composition root sets it. Disabling trades
+/// chart-edge smoothness for lower CPU/GPU cost -- profiling showed Dear ImGui's AddPolyline/
 /// PathArcToFastEx as a real, non-trivial share of both idle and interactive frame time
 /// (perf-plan #843 phase 1).
 inline void setChartAntiAliasingEnabled(bool enabled) noexcept
@@ -58,6 +59,27 @@ inline void setChartAntiAliasingEnabled(bool enabled) noexcept
 [[nodiscard]] inline bool chartAntiAliasingEnabled() noexcept
 {
     return Detail::g_ChartAntiAliasingEnabled;
+}
+
+/// The ImDrawList AA bits HistoryChart overrides for the lifetime of one chart. Correction vs.
+/// this feature's original commit message: verified against the vendored implot_items.cpp that
+/// ImPlot 1.0's line renderer checks AntiAliasedLines/AntiAliasedLinesUseTex, but its shaded-fill
+/// renderer (RendererShaded::Render, backing PlotShaded) does not consult AntiAliasedFill at all
+/// -- it always emits the same triangle-strip geometry regardless of that bit. Clearing it here
+/// is therefore harmless-but-currently-inert for ImPlot's fills specifically (kept for
+/// forward-compatibility and because other draw-list content within the plot region, e.g.
+/// ImGui's own filled shapes, does honor it); the real, measured benefit is confined to line/
+/// gridline rendering (AddPolyline/_PathArcToFastEx).
+inline constexpr ImDrawListFlags CHART_ANTI_ALIASING_FLAGS_MASK =
+    ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedLinesUseTex | ImDrawListFlags_AntiAliasedFill;
+
+/// Pure bit-manipulation backing HistoryChart's anti-aliasing override, extracted so it's
+/// testable without a live ImGui context (see CONTRIBUTING.md's "extract the pure decision
+/// logic into a small header" pattern). Clears exactly CHART_ANTI_ALIASING_FLAGS_MASK's bits
+/// from `flags`, preserving every other bit untouched.
+[[nodiscard]] constexpr ImDrawListFlags clearChartAntiAliasingFlags(ImDrawListFlags flags) noexcept
+{
+    return flags & ~CHART_ANTI_ALIASING_FLAGS_MASK;
 }
 
 inline constexpr ImPlotFlags PLOT_FLAGS_DEFAULT = ImPlotFlags_NoMenus;
@@ -627,14 +649,13 @@ class HistoryChart
         if (!chartAntiAliasingEnabled())
         {
             // ImPlot 1.0 has no per-plot AA flag of its own; it renders through the current
-            // window's ImDrawList and simply respects that draw list's AntiAliasedLines/
-            // AntiAliasedLinesUseTex/AntiAliasedFill bits (see implot_items.cpp). Clearing them
-            // for the lifetime of this plot -- and restoring them in the destructor -- disables
-            // AA for exactly this chart's geometry (lines, fills, axis gridlines) without
-            // touching the ambient ImGuiStyle that every other widget in the app still uses.
+            // window's ImDrawList and its line renderer respects that draw list's AA bits (see
+            // CHART_ANTI_ALIASING_FLAGS_MASK's doc comment for the measured scope: line/gridline
+            // rendering, not ImPlot's shaded-fill path). Clearing them for the lifetime of this
+            // plot -- and restoring them in the destructor -- disables AA for exactly this
+            // chart's geometry without touching the ambient ImGuiStyle every other widget uses.
             m_SavedDrawListFlags = m_DrawList->Flags;
-            m_DrawList->Flags &=
-                ~(ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedLinesUseTex | ImDrawListFlags_AntiAliasedFill);
+            m_DrawList->Flags = clearChartAntiAliasingFlags(m_SavedDrawListFlags);
             m_AntiAliasingOverridden = true;
         }
 

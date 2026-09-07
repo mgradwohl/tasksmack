@@ -477,21 +477,65 @@ TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
 
 // ========== Chart anti-aliasing toggle (perf-plan #843 phase 1) ==========
 
-TEST(ChartAntiAliasingTest, DefaultsToEnabled)
+// Fixture restores the shared global to its documented default (true) after every test, so
+// tests stay order-independent regardless of gtest's actual run order within this binary --
+// this is process-wide, mutable state (App's composition root is the only intended writer
+// outside tests), not something each test can get an isolated copy of.
+class ChartAntiAliasingTest : public ::testing::Test
 {
-    // Reset to the documented default in case an earlier test in this binary left it toggled --
-    // this is a single process-wide flag (App's composition root is the only intended writer).
-    setChartAntiAliasingEnabled(true);
+  protected:
+    void TearDown() override
+    {
+        setChartAntiAliasingEnabled(true);
+    }
+};
+
+TEST_F(ChartAntiAliasingTest, DefaultsToEnabled)
+{
+    // Deliberately does NOT call setChartAntiAliasingEnabled() first: the point is to observe
+    // the flag's value as left by whatever ran before this test, which -- given every test in
+    // this fixture restores it to true in TearDown() -- should always be true. A regression
+    // that flips the compile-time default to false, or a test elsewhere that fails to restore
+    // it, would surface here.
     EXPECT_TRUE(chartAntiAliasingEnabled());
 }
 
-TEST(ChartAntiAliasingTest, SetterUpdatesGetter)
+TEST_F(ChartAntiAliasingTest, SetterUpdatesGetter)
 {
     setChartAntiAliasingEnabled(false);
     EXPECT_FALSE(chartAntiAliasingEnabled());
 
     setChartAntiAliasingEnabled(true);
     EXPECT_TRUE(chartAntiAliasingEnabled());
+}
+
+// ========== clearChartAntiAliasingFlags (pure bit logic backing HistoryChart's AA override) ====
+
+TEST(ClearChartAntiAliasingFlagsTest, ClearsExactlyTheThreeAABits)
+{
+    constexpr ImDrawListFlags allAaBitsPlusUnrelated = ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedLinesUseTex |
+                                                       ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AllowVtxOffset;
+
+    const ImDrawListFlags cleared = clearChartAntiAliasingFlags(allAaBitsPlusUnrelated);
+
+    EXPECT_EQ(cleared, ImDrawListFlags_AllowVtxOffset) << "only the non-AA bit should survive";
+}
+
+TEST(ClearChartAntiAliasingFlagsTest, PreservesUnrelatedBitsWhenNoAABitsSet)
+{
+    constexpr ImDrawListFlags flags = ImDrawListFlags_AllowVtxOffset;
+    EXPECT_EQ(clearChartAntiAliasingFlags(flags), flags);
+}
+
+TEST(ClearChartAntiAliasingFlagsTest, IsIdempotentOnAlreadyClearedFlags)
+{
+    const ImDrawListFlags onceCleared = clearChartAntiAliasingFlags(ImDrawListFlags_AntiAliasedLines);
+    EXPECT_EQ(clearChartAntiAliasingFlags(onceCleared), onceCleared);
+}
+
+TEST(ClearChartAntiAliasingFlagsTest, NoOpOnZeroFlags)
+{
+    EXPECT_EQ(clearChartAntiAliasingFlags(0), 0);
 }
 
 } // namespace
