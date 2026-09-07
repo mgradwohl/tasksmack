@@ -133,6 +133,46 @@ TEST(StorageModelTest, SecondSampleComputesRates)
     EXPECT_EQ(snap.disks.size(), 1ULL);
 }
 
+// Regression test: computeDiskSnapshot() previously computed its rate denominator from a fresh
+// std::chrono::steady_clock::now() call instead of the `now` timestamp sampleAt() already
+// captured (and stores as next cycle's baseline) -- so a rate depended on real wall-clock time
+// elapsed *during the test itself* between the two sampleAt() calls, not on the synthetic gap
+// the test injects via sample2Time. Uses sampleAt() with an exact synthetic 2-second gap and no
+// real sleep: if the bug were still present, the two sampleAt() calls (which happen microseconds
+// apart in the actual test process) would produce a wildly different, non-deterministic rate
+// instead of exactly deltaBytes / 2.0.
+TEST(StorageModelTest, RateUsesInjectedSampleTimeNotWallClockElapsedDuringTest)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+    StorageModel model(std::move(mockProbeOwned));
+
+    Platform::SystemDiskCounters counters1;
+    Platform::DiskCounters disk1;
+    disk1.deviceName = "sda";
+    disk1.sectorSize = 512;
+    disk1.readSectors = 1000;
+    counters1.disks.push_back(disk1);
+    mockProbe->setNextCounters(counters1);
+
+    const auto sample1Time = std::chrono::steady_clock::now();
+    model.sampleAt(sample1Time);
+
+    Platform::SystemDiskCounters counters2;
+    Platform::DiskCounters disk2 = disk1;
+    disk2.readSectors = disk1.readSectors + 2000; // +2000 sectors * 512 bytes = 1,024,000 bytes
+    counters2.disks.push_back(disk2);
+    mockProbe->setNextCounters(counters2);
+
+    const auto sample2Time = sample1Time + std::chrono::seconds(2);
+    model.sampleAt(sample2Time);
+
+    const auto snap = model.latestSnapshot();
+    ASSERT_EQ(snap.disks.size(), 1ULL);
+    // 2000 sectors * 512 bytes / 2 seconds = 512,000 bytes/sec, exactly -- not approximately.
+    EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 512000.0);
+}
+
 TEST(StorageModelTest, HistoryGrowsWithSamples)
 {
     auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
