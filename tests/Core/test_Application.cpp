@@ -512,6 +512,76 @@ TEST(ResizePerfTraceStatsTest, RecordFrameAccumulatesAndTracksMax)
     EXPECT_DOUBLE_EQ(stats.maxSwapMs, 9.0);
 }
 
+TEST(ResizePerfTraceStatsTest, RecordFrameAppendsPerPhaseSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(false, 1.0, 2.0, 0.5, 3.0);
+    stats.recordFrame(true, 4.0, 1.0, 2.0, 9.0);
+
+    EXPECT_EQ(stats.updateSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.renderSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.postRenderSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.swapSamplesMs.size(), 2U);
+    EXPECT_DOUBLE_EQ(stats.updateSamplesMs[1], 4.0);
+    EXPECT_DOUBLE_EQ(stats.swapSamplesMs[0], 3.0);
+}
+
+TEST(ResizePerfTraceStatsTest, RecordEventBatchAppendsDrainSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.recordEventBatch(10, 3, 5.0, 6.0, true);
+
+    ASSERT_EQ(stats.drainSamplesMs.size(), 2U);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[0], 2.0);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[1], 5.0);
+}
+
+// =============================================================================
+// computePercentile Tests (nearest-rank percentile backing the p95/p99 figures in
+// logResizePerfTraceSummary(); perf-plan #843 phase 0)
+// =============================================================================
+
+TEST(ComputePercentileTest, EmptyInputReturnsZero)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({}, 0.95), 0.0);
+}
+
+TEST(ComputePercentileTest, SingleValueReturnsThatValue)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({42.0}, 0.99), 42.0);
+}
+
+TEST(ComputePercentileTest, P100ReturnsMax)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({5.0, 1.0, 3.0, 2.0, 4.0}, 1.0), 5.0);
+}
+
+TEST(ComputePercentileTest, P0ReturnsMin)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({5.0, 1.0, 3.0, 2.0, 4.0}, 0.0), 1.0);
+}
+
+TEST(ComputePercentileTest, NearestRankOnHundredSortedValues)
+{
+    std::vector<double> samples;
+    samples.reserve(100);
+    for (int i = 1; i <= 100; ++i)
+    {
+        samples.push_back(static_cast<double>(i));
+    }
+    // Nearest-rank on 100 samples indexed 0..99: p95 -> index 94 (value 95), p99 -> index 98 (value 99).
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.95), 95.0);
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.99), 99.0);
+}
+
+TEST(ComputePercentileTest, OutOfRangePercentileIsClamped)
+{
+    const std::vector<double> samples = {1.0, 2.0, 3.0};
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 2.0), 3.0);
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, -1.0), 1.0);
+}
+
 TEST(ResizePerfTraceStatsTest, LogSummaryIsNoopWhenNoSamples)
 {
     const Core::ResizePerfTraceStats stats;

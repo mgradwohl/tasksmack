@@ -74,6 +74,11 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+// Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
+// interaction is a short, bounded burst where frequent logging is useful, but idle frames run
+// indefinitely while the app just sits open, so 0.5s would spam the log forever (perf-plan #843
+// phase 0 — idle-time performance is priority 1, but that doesn't mean logging it every tick).
+constexpr float IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS = 5.0F;
 constexpr int RESIZE_PERF_TRACE_TOP_LAYER_COUNT = 3;
 
 // P0: Break the event drain loop if wall-clock drain exceeds this threshold.
@@ -589,11 +594,11 @@ void Application::run()
             renderFrame(computeDeltaTime(),
                         tracingInteraction,
                         true,
-                        tracingInteraction ? &updateMs : nullptr,
-                        tracingInteraction ? &renderMs : nullptr,
-                        tracingInteraction ? &postRenderMs : nullptr,
-                        tracingInteraction ? &swapMs : nullptr);
-            if (tracingInteraction)
+                        traceResizePerfThisFrame ? &updateMs : nullptr,
+                        traceResizePerfThisFrame ? &renderMs : nullptr,
+                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                        traceResizePerfThisFrame ? &swapMs : nullptr);
+            if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
             }
@@ -630,19 +635,25 @@ void Application::run()
             renderFrame(computeDeltaTime(),
                         tracingInteraction,
                         false,
-                        tracingInteraction ? &updateMs : nullptr,
-                        tracingInteraction ? &renderMs : nullptr,
-                        tracingInteraction ? &postRenderMs : nullptr,
-                        tracingInteraction ? &swapMs : nullptr);
-            if (tracingInteraction)
+                        traceResizePerfThisFrame ? &updateMs : nullptr,
+                        traceResizePerfThisFrame ? &renderMs : nullptr,
+                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                        traceResizePerfThisFrame ? &swapMs : nullptr);
+            if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
             }
         }
 
-        if (tracingInteraction && ((getTime() - lastResizeTraceLogTime) >= RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS))
+        // Log periodically regardless of interaction state (perf-plan #843 phase 0): idle
+        // frames use a longer cadence than interaction frames (see
+        // IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS above), and both share the same accumulator/p95
+        // logging so idle and interactive numbers are directly comparable.
+        const float perfTraceLogIntervalSeconds =
+            isInteracting ? RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS : IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS;
+        if (traceResizePerfThisFrame && ((getTime() - lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
         {
-            logResizePerfTraceSummary(resizeTraceStats, "interaction-progress");
+            logResizePerfTraceSummary(resizeTraceStats, isInteracting ? "interaction-progress" : "idle-progress");
             resizeTraceStats = {};
             lastResizeTraceLogTime = getTime();
         }
