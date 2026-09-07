@@ -70,7 +70,11 @@ jobs:
         # metadata/filenames disagree with the GitHub Release tag.
         run: |
           TAG_VERSION="${TAG_NAME#v}"
-          PROJECT_VERSION=$(grep -oP '^project\(TaskSmack VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          # \S+ (not a fixed X.Y.Z group count) so a 4-component or otherwise malformed
+          # PROJECT_VERSION is compared in full rather than silently truncated to a false
+          # match. "|| true" stops a non-matching grep (exit 1) from tripping this job's
+          # `set -e` before the explicit empty-value check below can report a clear error.
+          PROJECT_VERSION=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
           if [ -z "$PROJECT_VERSION" ]; then
             echo "Could not determine PROJECT_VERSION from CMakeLists.txt." >&2
             exit 1
@@ -518,6 +522,30 @@ jobs:
           }
           Write-Host "Found executable: $exe"
           "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify packaged asset layout
+        # The smoke check below only proves the process stays alive; src/UI/AssetPath.cpp and
+        # Theme.cpp both fall back gracefully on missing assets, so a broken packaged asset
+        # layout would still pass a plain liveness check (see the equivalent Linux assertions
+        # in validate-linux-package). Windows keeps the flat "." install destination
+        # (TaskSmack.exe and share/ as siblings), so assert directly on the exact
+        # exeDir/share/tasksmack/assets path AssetPath.cpp resolves at runtime, rather than
+        # trying to capture a GUI app's console output on Windows.
+        shell: pwsh
+        run: |
+          $iconFont = Join-Path $env:TASKSMACK_PKG_ROOT "share\tasksmack\assets\fonts\fa-solid-900.ttf"
+          if (-not (Test-Path -LiteralPath $iconFont -PathType Leaf)) {
+            Write-Error "Icon font not found at $iconFont (exeDir/share/tasksmack/assets); packaged asset layout is broken."
+            exit 1
+          }
+          $themesDir = Join-Path $env:TASKSMACK_PKG_ROOT "share\tasksmack\assets\themes"
+          $themeCount = (Get-ChildItem -Path $themesDir -Filter "*.toml" -ErrorAction SilentlyContinue).Count
+          if ($themeCount -lt 1) {
+            Write-Error "No theme .toml files found under $themesDir; packaged asset layout is broken."
+            exit 1
+          }
+          Write-Host "Packaged assets verified: icon font present, $themeCount theme(s) found under $themesDir"
 
       - name: Smoke-check extracted executable
         shell: pwsh
