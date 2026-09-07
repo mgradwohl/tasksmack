@@ -12,6 +12,7 @@ import urllib.parse
 import collections
 
 repo_root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else os.getcwd()).resolve()
+docs_root = (repo_root / "docs").resolve()
 md_files = list(repo_root.glob("*.md"))
 # Include .github markdown files
 if (repo_root / ".github").exists():
@@ -102,12 +103,15 @@ for md in md_files:
             # used by docs/ site pages (see docs/index.html's window.$docsify config) for
             # cross-page navigation. Resolved against docs/ as the site root, not as a
             # same-page anchor -- a real same-page anchor can never contain "/".
-            if target.startswith("#/") and (repo_root / "docs").exists():
+            if target.startswith("#/") and docs_root.exists():
                 route, docsify_anchor = target[1:].split("?id=", 1) if "?id=" in target else (target[1:], "")
                 route = urllib.parse.unquote(route).strip("/") or "README"
                 if not route.endswith(".md"):
                     route += ".md"
-                route_path = repo_root / "docs" / route
+                route_path = (docs_root / route).resolve()
+                if not route_path.is_relative_to(docs_root):
+                    add("missing-file", str(md), idx, target, f"Docsify route target escapes docs/: '{target}'")
+                    continue
                 if not route_path.exists():
                     add("missing-file", str(md), idx, target, f"Missing docsify route target '{route_path}'")
                 elif docsify_anchor and urllib.parse.unquote(docsify_anchor) not in get_anchors(route_path):

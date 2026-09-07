@@ -160,6 +160,19 @@ endif()
 # security hardening flags below) so third-party FetchContent targets built in the same
 # configuration stay ABI/ISA-consistent with TaskSmack's own code.
 if(TASKSMACK_MARCH)
+    # CMake treats ';' as a list separator even inside a value substituted into a larger
+    # unquoted token (e.g. -march=${TASKSMACK_MARCH}), so a value like "x86-64;-Wall" would
+    # silently expand into two separate compiler flags -- bypassing the single-flag
+    # check_cxx_compiler_flag() validation below entirely, since check_cxx_compiler_flag
+    # itself also treats a ';'-containing value as a list of flags to validate together
+    # rather than one candidate flag. Verified locally: TASKSMACK_MARCH=x86-64;-Wall passed
+    # the (list-based) check and injected -march=x86-64 and -Wall as two separate flags into
+    # the actual build. Reject any embedded ';' up front instead.
+    if(TASKSMACK_MARCH MATCHES ";")
+        message(FATAL_ERROR "TASKSMACK_MARCH must be a single value with no ';' in it -- got "
+            "'${TASKSMACK_MARCH}'. CMake list-separator semantics would otherwise let this "
+            "expand into multiple compiler flags instead of one -march argument.")
+    endif()
     include(CheckCXXCompilerFlag)
     # Cache variable name must depend on the value: check_cxx_compiler_flag() only evaluates
     # once per distinct result variable, so a fixed name would return a stale answer if

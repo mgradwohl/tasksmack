@@ -76,6 +76,7 @@ if (Test-Path -LiteralPath $ghDir) {
     $mdFiles += Get-ChildItem -LiteralPath $ghDir -Recurse -File -Filter '*.md'
 }
 $docsDir = Join-Path $repoRootFull 'docs'
+$docsDirNorm = ($docsDir.TrimEnd('\') + '\')
 if (Test-Path -LiteralPath $docsDir) {
     $mdFiles += Get-ChildItem -LiteralPath $docsDir -Recurse -File -Filter '*.md'
 }
@@ -162,8 +163,13 @@ foreach ($md in $mdFiles) {
                 $route = $route.Trim('/')
                 if ($route -eq '') { $route = 'README' }
                 if (-not $route.EndsWith('.md')) { $route += '.md' }
-                $routePath = Join-Path $docsDir $route
-                if (-not (Test-Path -LiteralPath $routePath)) {
+                # GetFullPath (not Resolve-Path, which requires the path to already exist)
+                # collapses ".." segments so a crafted route like "../../../../etc/passwd"
+                # can be caught before ever touching the filesystem outside docs/.
+                $routePath = [System.IO.Path]::GetFullPath((Join-Path $docsDir $route))
+                if (-not ($routePath.ToLowerInvariant().StartsWith($docsDirNorm.ToLowerInvariant()))) {
+                    Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Docsify route target escapes docs/: '$target'"
+                } elseif (-not (Test-Path -LiteralPath $routePath)) {
                     Add-Broken $broken 'missing-file' $md.FullName $lineNo $target "Missing docsify route target '$routePath'"
                 } elseif ($docsifyAnchor -ne '') {
                     $routeAnchors = Get-AnchorsCached (Resolve-Path -LiteralPath $routePath).Path
