@@ -161,7 +161,13 @@ jobs:
 
   static-analysis:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Runs on pull_request (the actual PR gate -- #833) plus the existing schedule/
+    # workflow_dispatch coverage. Deliberately excludes plain `push`: static-analysis.yml
+    # already runs this identical job on every push to main, so including push here would
+    # just duplicate that run rather than add new coverage.
+    if: >-
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -426,6 +432,7 @@ jobs:
       - build-windows-debug
       - build-windows-release
       - docs-hygiene
+      - static-analysis
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -442,6 +449,7 @@ jobs:
           LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
           WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
+          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
         run: |
           failed=false
 
@@ -475,6 +483,16 @@ jobs:
             fi
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
+              failed=true
+            fi
+          fi
+
+          # static-analysis is skipped on 'push' (static-analysis.yml already covers push to
+          # main) and on docs-only PRs (both intentional); require success everywhere else.
+          if [[ "$EVENT_NAME" != 'push' ]]; then
+            if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
+                  ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
+              echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"
               failed=true
             fi
           fi

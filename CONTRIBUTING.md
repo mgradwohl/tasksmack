@@ -1155,7 +1155,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, weekly, and via manual dispatch. It detects docs-only changes to skip C++ builds. It runs Linux and Windows Debug builds on push/PR, Release builds on schedule/dispatch, checks markdown links, runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, weekly, and via manual dispatch. It detects docs-only changes to skip C++ builds. It runs Linux and Windows Debug builds on push/PR, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and on plain pushes to `main`, which `static-analysis.yml` already covers), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -1202,16 +1202,17 @@ account/repo-level security settings):
    on via `gh api repos/mgradwohl/tasksmack/actions/permissions/workflow` --
    `can_approve_pull_request_reviews` must be `true`; `renovate.yml` fails on every run while
    it's `false`.
-2. **Recommended**, or CI silently won't run on Renovate's PRs: PRs opened with the default
-   `GITHUB_TOKEN` don't trigger other workflows (`ci.yml` included) -- GitHub's loop-prevention
-   behavior for the built-in token. Add a fine-grained PAT scoped to just this repo, with
-   Contents, Pull requests, Issues (needed because `dependencyDashboard: true` in
-   `renovate.json5` has Renovate create/update a tracking issue), and **Workflows** (needed
-   because the LLVM entry edits `LLVM_SEMVER_VERSION` inside `ci.yml` itself, and GitHub blocks
-   pushes touching `.github/workflows/*` without this scope even with Contents:write) all set to
-   "Read and write", as the `RENOVATE_TOKEN` repository secret so CI actually gates these PRs
-   like any other. Until that's set up, manually re-run/trigger CI (e.g. push an empty commit, or
-   close and reopen the PR) on any Renovate PR before merging it.
+2. **Required**, or `renovate.yml` fails immediately with an actionable error instead of running:
+   PRs opened with the default `GITHUB_TOKEN` don't trigger other workflows (`ci.yml` included)
+   -- GitHub's loop-prevention behavior for the built-in token. `renovate.yml` deliberately does
+   not fall back to `GITHUB_TOKEN` (it used to, silently, which let dependency-update PRs skip CI
+   and be merged unvalidated); it fails the run instead until this is set up. Add a fine-grained
+   PAT scoped to just this repo, with Contents, Pull requests, Issues (needed because
+   `dependencyDashboard: true` in `renovate.json5` has Renovate create/update a tracking issue),
+   and **Workflows** (needed because the LLVM entry edits `LLVM_SEMVER_VERSION` inside `ci.yml`
+   itself, and GitHub blocks pushes touching `.github/workflows/*` without this scope even with
+   Contents:write) all set to "Read and write", as the `RENOVATE_TOKEN` repository secret so CI
+   actually gates these PRs like any other.
 
 **Libraries and code we pull in** (i.e. actual dependencies):
 
@@ -1257,6 +1258,38 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
   doing so on a schedule risks breaking contributors' environments with no warning. Bump these
   by hand when there's an actual reason to.
 
+### Cutting a Release
+
+Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is the *only* trigger for both an official
+TaskSmack release (`release.yml`: validates the tag, builds and signs Linux/Windows packages, and
+publishes a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`):
+
+```bash
+# 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
+#    get it reviewed, and merge it to main. release.yml's validate job requires this to already
+#    match the tag (see Release Environment below), so it must land *before* step 3.
+
+# 2. Make sure you are on main and fully up to date with that merged bump
+git checkout main
+git pull
+
+# 3. Create and push a strict semver tag matching the version just merged — this is the only trigger
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That single push runs two independent workflows:
+
+- **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
+  and packages both platforms, validates the packaged artifacts (see [Release Artifact
+  Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
+  GitHub Release (see [Release Artifacts](#release-artifacts) for what it contains and [Release
+  Reproducibility](#release-reproducibility) for the determinism policy). Watch it under
+  **Actions → Release**.
+- **`changelog.yml`** regenerates `CHANGELOG.md` and opens a `chore/changelog-vX.Y.Z → main` pull
+  request that must be merged separately -- see [Changelog](#changelog) below. Watch it under
+  **Actions → Changelog**.
+
 ### Release Artifacts
 
 Each GitHub release (triggered by a `v*.*.*` tag) includes:
@@ -1288,9 +1321,9 @@ strict `vMAJOR.MINOR.PATCH`, does not resolve to the current `main` HEAD, or doe
 `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version bump fails the release
 instead of publishing mismatched metadata. Concretely: **bump and merge `CMakeLists.txt`'s
 `project(TaskSmack VERSION ...)` to the target version first**, then tag that merged commit on
-`main` — see step 1 in [Producing a Changelog](#producing-a-changelog), which creates the same
-tag that also triggers this release workflow. Tagging before the version bump lands fails this
-check immediately.
+`main` — see step 1 in [Cutting a Release](#cutting-a-release), which creates the same tag that
+also triggers this release workflow. Tagging before the version bump lands fails this check
+immediately.
 
 Each platform build job's "Record toolchain versions" step logs the runner image
 (`ubuntu-24.04`/`windows-2025`), full compiler/linker versions (`clang --version`, `ld.lld
@@ -1333,25 +1366,9 @@ Every asset is signed with Sigstore (keyless OIDC via `cosign sign-blob`) and sh
 
 #### Producing a Changelog
 
-The same tag that triggers changelog generation also triggers `release.yml`, whose `validate`
-job requires `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` to already match the tag (see
-[Release Environment](#release-environment)) — so the version bump must land on `main` *before*
-the tag is pushed, not after:
-
-```bash
-# 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
-#    get it reviewed, and merge it to main.
-
-# 2. Make sure you are on main and fully up to date with that merged bump
-git checkout main
-git pull
-
-# 3. Create and push a strict semver tag matching the version just merged — this is the only trigger
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The `changelog` workflow then runs automatically and:
+See [Cutting a Release](#cutting-a-release) for the tag-push steps that trigger this -- the same
+tag push also triggers `release.yml`. Once pushed, the `changelog` workflow runs automatically
+and:
 
 1. Validates the tag is strict semver (`vMAJOR.MINOR.PATCH`). Tags like `v1.0.0-rc1` or `v1.0.0.4` are rejected.
 2. Verifies the tag points to the current `HEAD` of `main`. Tagging from a branch or an older commit will abort the workflow.
