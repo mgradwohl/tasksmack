@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -23,6 +24,26 @@ struct ImFont; // Forward declaration for TextSizeCache
 
 namespace App
 {
+
+/// A pre-formatted right-aligned cell's text plus its CalcTextSize width, measured once
+/// together at RowFormatCache population time (perf-plan #843 phase 1) instead of remeasuring
+/// the text every frame in renderRightAlignedText(). Bundling them in one type means a caller
+/// can't use the text without also getting a matching width -- there's no "forgot to cache the
+/// width" failure mode. Namespace-scope (not nested in ProcessesPanel) so the free
+/// renderRightAlignedText()/makeAlignedCellText() helpers in ProcessesPanel.cpp's anonymous
+/// namespace can use it without needing member/friend access to a private nested type.
+struct AlignedCellText
+{
+    std::string text;
+    float width = 0.0F;
+};
+
+/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values.
+/// Namespace-scope (not nested in ProcessesPanel) for the same reason as AlignedCellText: both
+/// ProcessesPanel::TextSizeCache (header) and the free helper functions in ProcessesPanel.cpp's
+/// anonymous namespace need to see it, and it must be visible wherever
+/// TextSizeCache::priorityLabelWidths is sized.
+inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {"High", "Above Normal", "Normal", "Below Normal", "Idle"};
 
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
@@ -161,6 +182,13 @@ class ProcessesPanel : public Panel
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
 
+        // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
+        // That column isn't backed by RowFormatCache (it's a live std::string_view lookup, not
+        // a per-row formatted string), so its width can't ride along with RowFormatCache's
+        // per-row AlignedCellText widths -- cached here instead, alongside this panel's other
+        // small fixed-string-set widths.
+        std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
+
         // Font pointer used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
 
@@ -175,6 +203,10 @@ class ProcessesPanel : public Panel
         {
             return columnHeaderWidths[toIndex(col)];
         }
+
+        /// Get the cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels.
+        /// Returns 0 for any other string (getPriorityLabel never returns anything else).
+        [[nodiscard]] float getPriorityLabelWidth(std::string_view label) const noexcept;
     };
 
     TextSizeCache m_TextSizeCache;
@@ -184,32 +216,36 @@ class ProcessesPanel : public Panel
     /// Eliminates heap allocations for slow-changing formatted columns in renderProcessRow.
     struct RowFormatCache
     {
-        std::string ppid;       // formatId(parentPid)          — immutable
-        std::string startTime;  // formatEpochDateTimeShort      — immutable
-        std::string cpuTime;    // formatCpuTimeCompact          — changes at 1Hz
-        std::string cpuPercent; // pre-formatted to avoid per-frame decimal alignment work
-        std::string memPercent; // pre-formatted to avoid per-frame decimal alignment work
-        std::string virtualMem; // pre-formatted to avoid per-frame decimal alignment work
-        std::string resident;   // pre-formatted to avoid per-frame decimal alignment work
-        std::string peakRss;    // pre-formatted to avoid per-frame decimal alignment work
-        std::string shared;     // pre-formatted to avoid per-frame decimal alignment work
-        std::string ioRead;     // pre-formatted to avoid per-frame decimal alignment work
-        std::string ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
-        std::string netSent;    // pre-formatted to avoid per-frame decimal alignment work
-        std::string netRecv;    // pre-formatted to avoid per-frame decimal alignment work
-        std::string power;      // pre-formatted to avoid per-frame decimal alignment work
-        std::string gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
-        std::string gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
-        std::string gpuEngines; // comma-joined engine list; avoids per-frame string joins
-        std::string threads;    // formatOrDash/formatIntLocalized(threadCount)
-        std::string handles;    // formatOrDash/formatIntLocalized(handleCount)
-        std::string pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
-        std::string affinity;   // formatCpuAffinityMask         — rarely changes
-        std::string gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
+        AlignedCellText ppid;       // formatId(parentPid)          — immutable
+        AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
+        AlignedCellText cpuTime;    // formatCpuTimeCompact          — changes at 1Hz
+        AlignedCellText cpuPercent; // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText memPercent; // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText virtualMem; // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText resident;   // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText peakRss;    // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText shared;     // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText ioRead;     // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText netSent;    // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText netRecv;    // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText power;      // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
+        AlignedCellText gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
+        std::string gpuEngines;     // comma-joined engine list; avoids per-frame string joins; left-aligned, no width needed
+        AlignedCellText threads;    // formatOrDash/formatIntLocalized(threadCount)
+        AlignedCellText handles;    // formatOrDash/formatIntLocalized(handleCount)
+        AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
+        AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
+        AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
     };
 
     std::unordered_map<std::uint64_t, RowFormatCache> m_RowFormatCache;
     std::uint64_t m_RowFormatCacheVersion = std::numeric_limits<std::uint64_t>::max();
+    // Font used the last time m_RowFormatCache was populated. A font/size/DPI change alone
+    // (without a new data version) must still force a rebuild, or every AlignedCellText's width
+    // goes stale for whatever's cached until the next ~1Hz data refresh happens to land.
+    const ImFont* m_RowFormatCacheFontPtr = nullptr;
 
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();
