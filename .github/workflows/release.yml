@@ -216,13 +216,19 @@ jobs:
           path: original-dist/
 
       - name: Compare digests
+        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed locally:
+        # CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/ itself), which the
+        # existing "Upload artifacts" step uploads along with the real packages. sha256sum
+        # on a directory errors and, under this job's `set -e` default, would abort before
+        # ever comparing anything. Restrict both operations to regular files.
         run: |
           echo "=== build-linux (first build) ==="
-          sha256sum original-dist/*
+          find original-dist -maxdepth 1 -type f -exec sha256sum {} +
           echo "=== verify-reproducibility (second, independent build) ==="
-          sha256sum dist/*
+          find dist -maxdepth 1 -type f -exec sha256sum {} +
           FAILED=0
           for f in dist/*; do
+            [[ -f "$f" ]] || continue
             name=$(basename "$f")
             orig="original-dist/${name}"
             if [[ ! -f "$orig" ]]; then
@@ -373,12 +379,17 @@ jobs:
           path: original-dist/
 
       - name: Compare digests
+        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed
+        # locally on Linux; CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/
+        # itself), which the existing "Upload artifacts" step uploads along with the real
+        # packages. Get-FileHash errors on a directory, so -File restricts Get-ChildItem
+        # to regular files up front.
         shell: pwsh
         run: |
           $failed = $false
-          Get-ChildItem dist/* | ForEach-Object {
+          Get-ChildItem dist/* -File | ForEach-Object {
             $orig = Join-Path "original-dist" $_.Name
-            if (-not (Test-Path -LiteralPath $orig)) {
+            if (-not (Test-Path -LiteralPath $orig -PathType Leaf)) {
               Write-Host "::warning::No matching original artifact for $($_.Name) -- treating as a reproducibility failure, not skipping it."
               $failed = $true
               return
