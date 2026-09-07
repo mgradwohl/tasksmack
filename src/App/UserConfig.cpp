@@ -5,6 +5,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "ProcessColumnConfig.h"
+#include "UI/ChartWidgets.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -248,6 +249,11 @@ void UserConfig::load()
                                               Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT,
                                               [](auto v) { return Domain::Sampling::clampChartTauMsMax(v); });
 
+        if (auto val = config["ui"]["chart_anti_aliasing"].value<bool>())
+        {
+            m_Settings.chartAntiAliasing = *val;
+        }
+
         UserConfigHelpers::loadAndClamp(config,
                                         "ui",
                                         "progress_color_low_threshold",
@@ -469,6 +475,7 @@ void UserConfig::save()
              {"progress_color_low_threshold", Domain::Sampling::clampProgressColorLowThreshold(m_Settings.progressColorLowThreshold)},
              {"progress_color_high_threshold", Domain::Sampling::clampProgressColorHighThreshold(m_Settings.progressColorHighThreshold)},
              {"show_privilege_notice", m_Settings.showPrivilegeNotice},
+             {"chart_anti_aliasing", m_Settings.chartAntiAliasing},
          }},
         {"theme", toml::table{{"id", m_Settings.themeId}}},
         {"font", toml::table{{"size", fontSizeStr}}},
@@ -497,6 +504,8 @@ void UserConfig::save()
     file << "#   [ui] chart_tau_ms_min/max: adaptive smoothing time constant range (ms); affects chart responsiveness\n";
     file << "#   [ui] progress_color_low/high_threshold: color change percentages for progress bars\n";
     file << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    file << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
+            "on integrated GPUs\n";
     file << "#   [process_columns]: toggle columns on/off; true shows the column\n";
     file << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     file << config;
@@ -522,6 +531,12 @@ void UserConfig::applyToApplication() const
     // Apply theme and font size
     theme.setThemeById(m_Settings.themeId);
     theme.setFontSize(m_Settings.fontSize);
+
+    // Push the anti-aliasing preference into UI (which must not depend on App/UserConfig
+    // directly -- see tasksmack.md's Dependency Rules). Config-file-only for now, like the
+    // adjacent chart_smooth_factor/chart_tau_ms_min/max tuning knobs: not exposed as a Settings
+    // UI toggle, so re-applying only at startup (no live-change path to wire up) is sufficient.
+    UI::Widgets::setChartAntiAliasingEnabled(m_Settings.chartAntiAliasing);
 }
 
 void UserConfig::captureFromApplication()
