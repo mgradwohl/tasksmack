@@ -152,6 +152,42 @@ if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endif()
 endif()
 
+# Target microarchitecture override. TASKSMACK_MARCH is declared (empty by default) in
+# cmake/Options.cmake; presets that need specific tuning (optimized, release-compatible,
+# pgo-*) bake -march directly into CMAKE_CXX_FLAGS_RELEASE instead, so this only matters for
+# presets that don't already set one -- e.g. `cmake --preset release -DTASKSMACK_MARCH=native`,
+# as documented in CONTRIBUTING.md's CPU Compatibility section. Applied globally (like the
+# security hardening flags below) so third-party FetchContent targets built in the same
+# configuration stay ABI/ISA-consistent with TaskSmack's own code.
+if(TASKSMACK_MARCH)
+    # CMake treats ';' as a list separator even inside a value substituted into a larger
+    # unquoted token (e.g. -march=${TASKSMACK_MARCH}), so a value like "x86-64;-Wall" would
+    # silently expand into two separate compiler flags -- bypassing the single-flag
+    # check_cxx_compiler_flag() validation below entirely, since check_cxx_compiler_flag
+    # itself also treats a ';'-containing value as a list of flags to validate together
+    # rather than one candidate flag. Verified locally: TASKSMACK_MARCH=x86-64;-Wall passed
+    # the (list-based) check and injected -march=x86-64 and -Wall as two separate flags into
+    # the actual build. Reject any embedded ';' up front instead.
+    if(TASKSMACK_MARCH MATCHES ";")
+        message(FATAL_ERROR "TASKSMACK_MARCH must be a single value with no ';' in it -- got "
+            "'${TASKSMACK_MARCH}'. CMake list-separator semantics would otherwise let this "
+            "expand into multiple compiler flags instead of one -march argument.")
+    endif()
+    include(CheckCXXCompilerFlag)
+    # Cache variable name must depend on the value: check_cxx_compiler_flag() only evaluates
+    # once per distinct result variable, so a fixed name would return a stale answer if
+    # TASKSMACK_MARCH changes across reconfigures of the same build directory.
+    string(MAKE_C_IDENTIFIER "TASKSMACK_MARCH_SUPPORTED_${TASKSMACK_MARCH}" _ts_march_check_var)
+    check_cxx_compiler_flag("-march=${TASKSMACK_MARCH}" ${_ts_march_check_var})
+    if(NOT ${_ts_march_check_var})
+        message(FATAL_ERROR "TASKSMACK_MARCH='${TASKSMACK_MARCH}' is not a microarchitecture "
+            "${CMAKE_CXX_COMPILER_ID} accepts via -march. Try 'native', 'x86-64-v2', or "
+            "'x86-64-v3', or leave TASKSMACK_MARCH unset to use the preset's own setting.")
+    endif()
+    add_compile_options(-march=${TASKSMACK_MARCH})
+    message(STATUS "Target microarchitecture: -march=${TASKSMACK_MARCH} (TASKSMACK_MARCH override)")
+endif()
+
 function(tasksmack_apply_linux_toolchain target)
     if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE -stdlib=libc++ -pthread)

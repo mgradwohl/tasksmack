@@ -23,6 +23,30 @@ macOS and other operating systems are not currently supported.
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
+### Verifying a Release
+
+Every file on a release (the `.deb`, `.tar.gz`, `.zip`, and the SBOM) is signed with
+[Sigstore](https://www.sigstore.dev/) via keyless OIDC signing in the `release` GitHub Actions
+workflow. Each asset has a matching `<filename>.bundle` alongside it on the same release —
+download both, then verify with [cosign](https://github.com/sigstore/cosign):
+
+```bash
+cosign verify-blob \
+  --bundle <asset>.bundle \
+  --certificate-identity-regexp '^https://github\.com/mgradwohl/tasksmack/\.github/workflows/release\.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  <asset>
+```
+
+Replace the filename with whichever asset you downloaded. The two `--certificate-*` flags pin
+verification to TaskSmack's actual release workflow and to GitHub's OIDC issuer, so a signature
+from any other source fails to verify. A successful check prints `Verified OK`.
+
+If a release asset has **no matching `.bundle` file**, or `cosign verify-blob` **fails**, do not
+trust that asset — treat it as potentially tampered with. Re-download from the
+[Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) rather than a mirror, and
+if the problem persists, report it per [SECURITY.md](https://github.com/mgradwohl/tasksmack/blob/main/SECURITY.md).
+
 ---
 
 ## System Requirements
