@@ -475,5 +475,24 @@ TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
     EXPECT_EQ(formatAgeSeconds(-2.5), "Age: 2.5s");
 }
 
+// ========== Chart anti-aliasing toggle (perf-plan #843 phase 1) ==========
+
+TEST(ChartAntiAliasingTest, DefaultsToEnabled)
+{
+    // Reset to the documented default in case an earlier test in this binary left it toggled --
+    // this is a single process-wide flag (App's composition root is the only intended writer).
+    setChartAntiAliasingEnabled(true);
+    EXPECT_TRUE(chartAntiAliasingEnabled());
+}
+
+TEST(ChartAntiAliasingTest, SetterUpdatesGetter)
+{
+    setChartAntiAliasingEnabled(false);
+    EXPECT_FALSE(chartAntiAliasingEnabled());
+
+    setChartAntiAliasingEnabled(true);
+    EXPECT_TRUE(chartAntiAliasingEnabled());
+}
+
 } // namespace
 } // namespace UI::Widgets

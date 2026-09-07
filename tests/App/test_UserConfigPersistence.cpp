@@ -638,6 +638,38 @@ TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
 }
 
+// ========== chartAntiAliasing Persistence (perf-plan #843 phase 1) ==========
+
+TEST(UserSettingsTest, ChartAntiAliasingDefaultsToTrue)
+{
+    // UserSettings default: chartAntiAliasing = true (current visual behavior preserved
+    // unless the user opts out via config.toml for a lower-power/integrated GPU).
+    const UserSettings settings;
+    EXPECT_TRUE(settings.chartAntiAliasing);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ChartAntiAliasingFalseIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().chartAntiAliasing = false;
+    config.save();
+    config.settings().chartAntiAliasing = true;
+    config.load();
+    EXPECT_FALSE(config.settings().chartAntiAliasing);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ChartAntiAliasingTrueIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+
+    config.settings().chartAntiAliasing = true;
+    config.save();
+    config.settings().chartAntiAliasing = false;
+    config.load();
+    EXPECT_TRUE(config.settings().chartAntiAliasing);
+}
+
 // ========== Load: Missing File Uses Defaults ==========
 
 TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
@@ -654,6 +686,7 @@ TEST_F(UserConfigSaveLoadFixture, LoadMissingFileUsesDefaults)
     EXPECT_EQ(config.settings().themeId, "arctic-fire");
     EXPECT_EQ(config.settings().fontSize, UI::FontSize::Medium);
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
+    EXPECT_TRUE(config.settings().chartAntiAliasing);
 }
 
 // ========== Load: is-loaded guard ==========
