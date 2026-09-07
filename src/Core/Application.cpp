@@ -565,6 +565,12 @@ void Application::run()
         {
             logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
             resizeTraceStats = {};
+            // Restart the cadence here too (mirroring the idle->interaction reset below):
+            // lastResizeTraceLogTime is at most one 0.5s interaction-progress tick stale, so
+            // without this the first post-interaction idle-progress window comes up short of a
+            // full IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS, rather than starting fresh at the
+            // moment idle begins.
+            lastResizeTraceLogTime = getTime();
         }
         // Reset stats at interaction start so idle-frame event batches accumulated before
         // the interaction do not skew the first interaction-progress log averages. This
