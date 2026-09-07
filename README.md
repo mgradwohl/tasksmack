@@ -41,7 +41,7 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 
 | Platform | Package | Install |
 |----------|---------|---------|
-| Debian/Ubuntu | `.deb` | `sudo apt install ./tasksmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
+| Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
