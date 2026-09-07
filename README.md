@@ -45,7 +45,7 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
-Optimized packages target x86-64-v3 and require AVX2. Use a compatible x86-64-v2 package on older CPUs; see the [User Guide](docs/guide/user-guide.md#system-requirements).
+Published packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
 ## Documentation
 

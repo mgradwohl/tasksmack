@@ -17,8 +17,61 @@ env:
 permissions: {}
 
 jobs:
+  validate:
+    name: Validate Release Tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+    permissions:
+      contents: read
+    steps:
+      - name: Validate tag is strict semver
+        # Mirrors changelog.yml's tag validation: reject anything that is not
+        # exactly vMAJOR.MINOR.PATCH (pre-releases, 4-part tags, branch names
+        # from a stray workflow_dispatch) before any build/sign/publish work runs.
+        run: |
+          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH). Aborting release." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history is required to resolve the tag SHA and compare it
+          # against origin/main below.
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        # A release must publish exactly what is on main. Abort if the tag
+        # was created from, or has drifted from, the current main HEAD.
+        run: |
+          TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
+          MAIN_SHA=$(git rev-parse origin/main)
+          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting release." >&2
+            exit 1
+          fi
+
+      - name: Verify tag matches project version
+        # Catches a missed version bump before it ships assets whose embedded
+        # metadata/filenames disagree with the GitHub Release tag.
+        run: |
+          TAG_VERSION="${TAG_NAME#v}"
+          PROJECT_VERSION=$(grep -oP '^project\(TaskSmack VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          if [ -z "$PROJECT_VERSION" ]; then
+            echo "Could not determine PROJECT_VERSION from CMakeLists.txt." >&2
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "Tag version '$TAG_VERSION' does not match CMakeLists.txt PROJECT_VERSION '$PROJECT_VERSION'. Aborting release." >&2
+            exit 1
+          fi
+          echo "Tag version matches PROJECT_VERSION: $PROJECT_VERSION"
+
   build-linux:
     name: Build Linux Packages
+    needs: [validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -63,6 +116,7 @@ jobs:
 
   build-windows:
     name: Build Windows Packages
+    needs: [validate]
     runs-on: windows-2025
     timeout-minutes: 30
     permissions:

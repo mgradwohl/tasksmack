@@ -29,7 +29,9 @@ macOS and other operating systems are not currently supported.
 
 ### CPU Compatibility
 
-TaskSmack ships several build flavours targeting different CPU generations. Pick the package that matches your hardware:
+The packages on the [Releases page](https://github.com/mgradwohl/tasksmack/releases/latest) are built with the `release` / `win-release` preset, which uses default compiler optimizations and runs on any x86-64 CPU — no AVX2 or other extended instruction set is required.
+
+Building from source lets you target other microarchitectures instead:
 
 | Preset | Target microarchitecture | Minimum CPU |
 |--------|--------------------------|-------------|
@@ -37,7 +39,7 @@ TaskSmack ships several build flavours targeting different CPU generations. Pick
 | `release-compatible` / `win-release-compatible` | x86-64-v2 | 2009+ (Core i3/i5/i7, Athlon II) |
 | `optimized` / `win-optimized` | x86-64-v3 (AVX2) | Intel Haswell 2013+ / AMD Excavator 2015+ |
 
-> **Tip:** If you see an "Illegal instruction" crash immediately on launch, your CPU does not support AVX2. Download the `release-compatible` build instead.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instructions. If you build the `optimized` preset yourself and see an "Illegal instruction" crash immediately on launch, your CPU does not support AVX2 — use `release-compatible` instead.
 
 ---
 
