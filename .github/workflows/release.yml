@@ -208,7 +208,8 @@ jobs:
             name=$(basename "$f")
             orig="original-dist/${name}"
             if [[ ! -f "$orig" ]]; then
-              echo "::warning::No matching original artifact for $name; skipping comparison."
+              echo "::warning::No matching original artifact for $name -- treating as a reproducibility failure, not skipping it."
+              FAILED=1
               continue
             fi
             if ! cmp -s "$f" "$orig"; then
@@ -298,6 +299,90 @@ jobs:
           path: dist/*
           retention-days: 90
 
+  verify-reproducibility-windows:
+    name: Verify Windows Build Reproducibility
+    needs: [validate, build-windows]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    # Advisory only -- see verify-reproducibility (Linux)'s comment; not part of
+    # create-release's `needs`.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read  # Required to download the windows-packages artifact from this run
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set deterministic build timestamp
+        shell: pwsh
+        run: |
+          $epoch = git log -1 --format=%ct
+          "SOURCE_DATE_EPOCH=$epoch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: windows-release-repro-check-llvm${{ env.LLVM_SEMVER_VERSION }}
+          max-size: 500M
+
+      - name: Configure
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          cd build/win-release
+          cpack -G "ZIP"
+
+      - name: Download build-windows's packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-packages
+          path: original-dist/
+
+      - name: Compare digests
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem dist/* | ForEach-Object {
+            $orig = Join-Path "original-dist" $_.Name
+            if (-not (Test-Path -LiteralPath $orig)) {
+              Write-Host "::warning::No matching original artifact for $($_.Name) -- treating as a reproducibility failure, not skipping it."
+              $failed = $true
+              return
+            }
+            $rebuiltHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $originalHash = (Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash
+            Write-Host "$($_.Name): rebuilt=$rebuiltHash original=$originalHash"
+            if ($rebuiltHash -ne $originalHash) {
+              Write-Host "::warning::$($_.Name) differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+              $failed = $true
+            }
+          }
+          if ($failed) {
+            Write-Host "Reproducibility check found differences (advisory only; did not block the release)."
+            exit 1
+          } else {
+            Write-Host "All Windows packages are byte-for-byte identical across two independent builds of this tag."
+          }
+
   validate-linux-package:
     name: Validate Linux Release Artifacts
     needs: [build-linux]
@@ -335,21 +420,52 @@ jobs:
           fi
           echo "Installed binary: $BIN"
 
-      - name: Smoke-check installed binary
+      - name: Install mesa software rendering
+        # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
+        # simpler and stronger than an Xvfb-backed smoke check, and this is the same
+        # mesa/GL stack Xvfb would have needed anyway.
+        run: apt-get install -y libgl1-mesa-dri
+
+      - name: Define asset-resolution smoke check
+        # A bounded "is it still running" check alone doesn't prove assets loaded --
+        # src/UI/AssetPath.cpp and Theme.cpp both fall back gracefully on missing
+        # fonts/themes, so a broken installed/extracted asset layout would still pass a
+        # plain liveness check. Assert the actual log lines that only appear once the
+        # icon font and at least one theme have loaded from the real assets directory.
         run: |
-          apt-get install -y xvfb libgl1-mesa-dri
-          BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
-          xvfb-run -a --server-args="-screen 0 1920x1080x24" "$BIN" &
-          PID=$!
-          sleep 5
-          if ! kill -0 "$PID" 2>/dev/null; then
-            echo "TaskSmack exited within 5 seconds of launch under Xvfb" >&2
-            wait "$PID"
+          cat > /tmp/smoke-check.sh <<'SMOKE_CHECK'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          label="$1"
+          bin="$2"
+          log="$3"
+          SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug timeout 5 "$bin" > "$log" 2>&1
+          status=$?
+          cat "$log"
+          if [[ "$status" -ne 124 ]]; then
+            echo "$label: TaskSmack exited on its own (status=$status) instead of running until the timeout killed it; treating as a crash." >&2
             exit 1
           fi
-          kill "$PID"
-          wait "$PID" 2>/dev/null || true
-          echo "Smoke check passed: TaskSmack ran for at least 5 seconds without crashing."
+          if ! grep -q "Assets directory found:" "$log"; then
+            echo "$label: assets directory was not found (see the 'Assets directory not found' fallback warning above, if present); installed/extracted asset layout is broken." >&2
+            exit 1
+          fi
+          if grep -q "Icon font not found" "$log"; then
+            echo "$label: icon font failed to load even though an assets directory was found." >&2
+            exit 1
+          fi
+          if ! grep -q "Loaded theme:" "$log"; then
+            echo "$label: no themes loaded; theme directory is missing or empty." >&2
+            exit 1
+          fi
+          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack ran until the timeout as expected."
+          SMOKE_CHECK
+          chmod +x /tmp/smoke-check.sh
+
+      - name: Smoke-check installed .deb binary
+        run: |
+          BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
+          /tmp/smoke-check.sh "deb" "$BIN" /tmp/deb-run.log
 
       - name: Extract and verify .tar.gz layout
         run: |
@@ -361,6 +477,10 @@ jobs:
             exit 1
           fi
           echo "tar.gz binary found: $BIN"
+          echo "TGZ_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Smoke-check extracted .tar.gz binary
+        run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run.log
 
   validate-windows-package:
     name: Validate Windows Release Artifacts
@@ -378,17 +498,26 @@ jobs:
           path: dist/
 
       - name: Extract and verify .zip layout
+        # The documented layout (README/User Guide: "Extract and run TaskSmack.exe") is flat:
+        # CPack produces one top-level directory, with TaskSmack.exe directly inside it. A
+        # recursive search would also accept TaskSmack.exe nested at any depth, silently
+        # passing even if it moved somewhere users can no longer find per the documented steps.
         shell: pwsh
         run: |
           $zipFile = Get-ChildItem dist/*.zip | Select-Object -First 1
           Expand-Archive -Path $zipFile.FullName -DestinationPath extracted
-          $exe = Get-ChildItem -Path extracted -Recurse -Filter "TaskSmack.exe" | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "TaskSmack.exe not found in extracted .zip layout"
+          $topLevelDirs = Get-ChildItem -Path extracted -Directory
+          if ($topLevelDirs.Count -ne 1) {
+            Write-Error "Expected exactly one top-level directory in the extracted .zip, found $($topLevelDirs.Count)"
             exit 1
           }
-          Write-Host "Found executable: $($exe.FullName)"
-          "TASKSMACK_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $exe = Join-Path $topLevelDirs[0].FullName "TaskSmack.exe"
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Write-Error "TaskSmack.exe not found directly under the .zip's top-level directory ($($topLevelDirs[0].FullName)); documented layout requires it at the package root, not nested."
+            exit 1
+          }
+          Write-Host "Found executable: $exe"
+          "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Smoke-check extracted executable
         shell: pwsh

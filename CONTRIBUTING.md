@@ -1269,17 +1269,27 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 `validate-linux-package` and `validate-windows-package` run after each platform's build job and
 before `create-release`, so a failure here blocks signing and publishing. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
-`Depends` declared in `cmake/Packaging.cmake`, separately extracts the `.tar.gz`, and launches the
-installed binary under Xvfb for a bounded smoke check. Windows extracts the `.zip` and launches
-the executable directly on the runner's desktop session. Both smoke checks only assert the process
-stays up for a few seconds without crashing — they are not a functional test suite.
+`Depends` declared in `cmake/Packaging.cmake`, separately extracts the `.tar.gz`, and launches
+each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
+no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
+`TaskSmack.exe` directly under the single top-level directory, matching the documented layout) and
+launches the executable directly on the runner's desktop session. Beyond the process staying up
+for the full 5 seconds, the Linux checks assert on the actual startup log for confirmation that
+assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
+least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back
+gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
+asset layout. These are still smoke checks, not a functional test suite.
 
 ### Release Environment
 
 `release.yml`'s `validate` job rejects a tag before any build/sign/publish work runs if it is not
 strict `vMAJOR.MINOR.PATCH`, does not resolve to the current `main` HEAD, or does not match
 `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version bump fails the release
-instead of publishing mismatched metadata.
+instead of publishing mismatched metadata. Concretely: **bump and merge `CMakeLists.txt`'s
+`project(TaskSmack VERSION ...)` to the target version first**, then tag that merged commit on
+`main` — see step 1 in [Producing a Changelog](#producing-a-changelog), which creates the same
+tag that also triggers this release workflow. Tagging before the version bump lands fails this
+check immediately.
 
 Each platform build job's "Record toolchain versions" step logs the runner image
 (`ubuntu-24.04`/`windows-2025`), full compiler/linker versions (`clang --version`, `ld.lld
@@ -1299,13 +1309,14 @@ so two independent builds of the same tag produce byte-identical archives. Local
 `SOURCE_DATE_EPOCH` unset and get the real configure-time timestamp, which is fine since dev
 builds have no reproducibility requirement.
 
-`release.yml`'s `verify-reproducibility` job rebuilds `build-linux`'s tag from a clean workspace
-with the same `SOURCE_DATE_EPOCH` and compares package digests. It is advisory only (`continue-on-
-error: true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning
-for investigation rather than blocking the release, since reproducibility here covers CMake's own
+`release.yml`'s `verify-reproducibility` (Linux) and `verify-reproducibility-windows` jobs each
+rebuild their platform's tag from a clean workspace with the same `SOURCE_DATE_EPOCH` and compare
+package digests against the corresponding `build-linux`/`build-windows` artifact -- a missing
+matching artifact counts as a failure, not a skip. Both are advisory only (`continue-on-error:
+true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning for
+investigation rather than blocking the release, since reproducibility here covers CMake's own
 generated files and CPack's archive metadata, not every possible source of binary non-determinism
-(e.g. absolute build-path fragments a future dependency might embed in debug info). Windows is not
-currently double-built for this check.
+(e.g. absolute build-path fragments a future dependency might embed in debug info).
 
 To verify a published Linux release yourself: clone the tag, export
 `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
@@ -1319,14 +1330,20 @@ To verify a published Linux release yourself: clone the tag, export
 
 #### Producing a Changelog
 
-Producing a changelog is a single command:
+The same tag that triggers changelog generation also triggers `release.yml`, whose `validate`
+job requires `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` to already match the tag (see
+[Release Environment](#release-environment)) — so the version bump must land on `main` *before*
+the tag is pushed, not after:
 
 ```bash
-# 1. Make sure you are on main and fully up to date
+# 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
+#    get it reviewed, and merge it to main.
+
+# 2. Make sure you are on main and fully up to date with that merged bump
 git checkout main
 git pull
 
-# 2. Create and push a strict semver tag — this is the only trigger
+# 3. Create and push a strict semver tag matching the version just merged — this is the only trigger
 git tag v1.0.0
 git push origin v1.0.0
 ```

@@ -110,9 +110,36 @@ else
     LLVM_KEY_FINGERPRINT="6084F3CF814B57C1CF12EFD515CF4D18AF4F7421"
 
     verify_key_fingerprint() {
-        local label="$1" keyfile="$2" expected="$3" actual
-        actual=$(gpg --show-keys --with-fingerprint --with-colons "$keyfile" 2>/dev/null |
-            awk -F: '/^fpr:/ { print $10; exit }')
+        local label="$1" keyfile="$2" expected="$3"
+        # Only count fingerprints that follow a "pub:" record (the primary key), not a
+        # "sub:" record (a subkey) -- a real key legitimately has subkey fingerprints that
+        # differ from its own. Collecting a plain first-match would let a tampered file place
+        # the real key first and append an attacker-controlled *second primary key*, which gpg
+        # --dearmor would still install and apt would then also trust. Requiring exactly one
+        # primary key total closes that regardless of ordering.
+        local -a primary_fprs=()
+        local want_fpr=0 record_type fpr
+        while IFS=: read -r record_type _ _ _ _ _ _ _ _ fpr _; do
+            case "$record_type" in
+                pub) want_fpr=1 ;;
+                fpr)
+                    if [[ "$want_fpr" == 1 ]]; then
+                        primary_fprs+=("$fpr")
+                    fi
+                    want_fpr=0
+                    ;;
+                *) want_fpr=0 ;;
+            esac
+        done < <(gpg --show-keys --with-fingerprint --with-colons "$keyfile" 2>/dev/null)
+
+        if [[ ${#primary_fprs[@]} -ne 1 ]]; then
+            echo "Error: $label key file contains ${#primary_fprs[@]} primary key(s); expected exactly 1." >&2
+            printf '  found: %s\n' "${primary_fprs[@]}" >&2
+            echo "  Refusing to trust a key file with an unexpected number of primary keys." >&2
+            exit 1
+        fi
+
+        local actual="${primary_fprs[0]}"
         if [[ "$actual" != "$expected" ]]; then
             echo "Error: $label signing key fingerprint mismatch." >&2
             echo "  expected: $expected" >&2

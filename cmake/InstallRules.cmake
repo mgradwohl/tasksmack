@@ -75,3 +75,29 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
         ${CMAKE_SOURCE_DIR}/assets/icons
     DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME_LOWER}/assets
 )
+
+# Desktop integration (Linux only, see #845): a system install (the .deb) is now on PATH
+# (Exec=TaskSmack, matching TASKSMACK_RUNTIME_DESTINATION=bin above), so also install the
+# existing launcher entry and hicolor icons that tools/install-local.sh already installs for a
+# local dev install, so a packaged install is equally discoverable from an application menu.
+# Included for both TGZ and DEB since both share these install() rules -- harmless extra files
+# in the portable .tar.gz, which is still just "extract and run bin/TaskSmack" for anyone who
+# doesn't want a system install. Icon/menu caches (update-desktop-database,
+# gtk-update-icon-cache) are not triggered automatically by this CPack-generated .deb (no
+# postinst hook), so the entry may need a desktop-session restart to appear, same as it would
+# for any manually-copied .desktop file.
+if(NOT WIN32)
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+    )
+    foreach(_ts_icon_size 16 24 32 48 128 256)
+        install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack-${_ts_icon_size}.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_ts_icon_size}x${_ts_icon_size}/apps
+            RENAME app.tasksmack.TaskSmack.png
+        )
+    endforeach()
+    install(FILES ${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+        RENAME app.tasksmack.TaskSmack.svg
+    )
+endif()
