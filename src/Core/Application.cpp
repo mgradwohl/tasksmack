@@ -530,13 +530,10 @@ void Application::run()
         // same drain), so the batch that triggers a transition lands in the correctly-reset
         // accumulator for its own state instead of being recorded into the old state's
         // accumulator and then immediately wiped (or misattributed into the other state's
-        // boundary log) by that reset.
-
-        if (m_Window->shouldClose())
-        {
-            stop();
-            break;
-        }
+        // boundary log) by that reset. The shouldClose() check that used to sit here is moved
+        // below, after recordEventBatch() actually runs: otherwise a shutdown request arriving
+        // in this drain would break out before recordEventBatch() executes at all, silently
+        // dropping the final drain from the "shutdown" summary.
 
         // Keep interactive move/resize visually responsive across platforms
         // without reintroducing per-event rendering stalls: render at most once
@@ -587,12 +584,23 @@ void Application::run()
             resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
         }
 
+        // Deferred from just after the drain (see comment above) so this frame's batch is
+        // always recorded -- including the final one before shutdown -- before we might break.
+        if (m_Window->shouldClose())
+        {
+            stop();
+            break;
+        }
+
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
         // frame to avoid compounding the stall with render+swap time. Events are
         // fully processed; the display catches up on the next frame.
         const bool skipRenderThisFrame =
             FramePacing::computeSkipRenderThisFrame(totalDrainMs, DRAIN_SKIP_RENDER_MS, m_Window->isMinimized());
-        if (skipRenderThisFrame && traceResizePerfThisFrame && tracingInteraction)
+        // Counted regardless of interaction state (not just tracingInteraction): an idle drain
+        // that overruns the budget also skips rendering, and the idle-progress/shutdown
+        // summaries should reflect that instead of always reporting skippedFrames=0 for idle.
+        if (skipRenderThisFrame && traceResizePerfThisFrame)
         {
             ++resizeTraceStats.skippedRenderFrames;
         }

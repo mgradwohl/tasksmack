@@ -903,10 +903,14 @@ fresh capture on your own machine, not these numbers.)
 Frames or layers that exceed 250 ms emit additional `ResizePerfSlowFrame` /
 `ResizePerfSlowLayer` / `ResizePerfTitleBarSlowUpdate` lines for pinpoint attribution.
 
-You can also control the spdlog runtime level directly (useful for CI or scripted runs):
+You can also control the spdlog runtime level directly (useful for CI or scripted runs). This
+only changes which already-emitted log messages are visible — it does **not** enable ResizePerf
+frame-timing collection by itself; that still requires `TASKSMACK_TRACE_RESIZE_PERF=1` regardless
+of log level, since `Application` only enables tracing from that env var:
 
 ```bash
-# Show only info+ in a release build (same effect as TASKSMACK_TRACE_RESIZE_PERF=1)
+# Raise the default log verbosity in a release build. Does NOT enable ResizePerf tracing on
+# its own -- combine with TASKSMACK_TRACE_RESIZE_PERF=1 above to see ResizePerf lines.
 TASKSMACK_LOG_LEVEL=info ./build/optimized/bin/TaskSmack
 
 # Full debug verbosity in an optimized build
