@@ -467,6 +467,30 @@ TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
     EXPECT_EQ(historyChartYAxisFlags(false), ImPlotAxisFlags_AutoFit | Y_AXIS_FLAGS_DEFAULT);
 }
 
+// ========== historyChartBeginPlotFlags (perf-plan #843 phase 1: showLegend=false must
+// actually suppress the legend, not just skip customizing it) ==========
+
+TEST(HistoryChartConfigTest, BeginPlotFlagsUnchangedWhenLegendShown)
+{
+    EXPECT_EQ(historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, true), PLOT_FLAGS_DEFAULT);
+}
+
+TEST(HistoryChartConfigTest, BeginPlotFlagsAddsNoLegendWhenLegendHidden)
+{
+    const ImPlotFlags result = historyChartBeginPlotFlags(PLOT_FLAGS_DEFAULT, false);
+    EXPECT_EQ(result, PLOT_FLAGS_DEFAULT | ImPlotFlags_NoLegend);
+    EXPECT_TRUE(result & ImPlotFlags_NoLegend);
+}
+
+TEST(HistoryChartConfigTest, BeginPlotFlagsPreservesOtherConfiguredBitsWhenLegendHidden)
+{
+    const ImPlotFlags configured = PLOT_FLAGS_DEFAULT | ImPlotFlags_NoTitle;
+    const ImPlotFlags result = historyChartBeginPlotFlags(configured, false);
+    EXPECT_TRUE(result & ImPlotFlags_NoTitle);
+    EXPECT_TRUE(result & ImPlotFlags_NoMenus);
+    EXPECT_TRUE(result & ImPlotFlags_NoLegend);
+}
+
 // ========== Generic helpers ==========
 
 TEST(ChartWidgetsHelpersTest, FormatAgeSecondsUsesAbsoluteValue)
