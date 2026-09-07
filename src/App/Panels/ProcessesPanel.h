@@ -272,42 +272,14 @@ class ProcessesPanel : public Panel
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
-    /// One row of a flattened tree-view render order: a process snapshot index plus the tree
-    /// context (depth/hasChildren/isExpanded) renderProcessRow() needs, produced by
-    /// collectTreeRows() so ImGuiListClipper can bound the expensive part (renderProcessRow,
-    /// which measures/renders every column) to visible rows only -- see perf-plan #843's
-    /// tree-view virtualization item. Building this flat list is a cheap pointer/index walk with
-    /// no ImGui calls, so unlike renderProcessRow() it's fine to rebuild every frame rather than
-    /// caching it across frames (which would need its own invalidation on filter/expand/collapse
-    /// changes for no real benefit).
-    struct TreeRow
-    {
-        std::size_t procIdx;
-        int depth;
-        bool hasChildren;
-        bool isExpanded;
-    };
-
-    /// Render process rows in tree view mode, applying ImGuiListClipper to the flattened
-    /// render-order list from collectTreeRows() so only visible rows reach renderProcessRow().
+    /// Render process rows in tree view mode. Flattens the filtered/expanded tree into render
+    /// order via ProcessTreeFlatten::collectProcessTreeRows() (a pure, separately-tested
+    /// traversal -- see ProcessTreeFlatten.h), then applies ImGuiListClipper to that flat list
+    /// so only visible rows reach the expensive part, renderProcessRow() -- see perf-plan #843's
+    /// tree-view virtualization item.
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
-
-    /// Iteratively walks one root process and its descendants, appending one TreeRow per node
-    /// (in the same pre-order, reverse-children-pushed traversal the old direct-rendering
-    /// version used) to `outRows`. Does not call renderProcessRow() or any other ImGui function
-    /// -- see TreeRow's doc comment for why that separation matters.
-    /// @param snapshots The full list of process snapshots.
-    /// @param filteredSet Set of filtered indices for O(1) membership checks.
-    /// @param procIdx Index of the root process to start from.
-    /// @param depth Depth to assign the root process (0 for a top-level root).
-    /// @param outRows Appended to in render order; not cleared by this function.
-    void collectTreeRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                         const std::unordered_set<std::size_t>& filteredSet,
-                         std::size_t procIdx,
-                         int depth,
-                         std::vector<TreeRow>& outRows);
 
     /// Render a single process row
     /// @param proc The process to render.

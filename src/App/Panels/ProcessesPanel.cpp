@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessSortUtils.h"
+#include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -32,7 +33,6 @@
 #include <format>
 #include <memory>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -47,7 +47,6 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
-constexpr int MAX_TREE_DEPTH = 1000;       // Maximum tree depth to detect cycles or malformed data
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -1224,72 +1223,6 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     }
 }
 
-void ProcessesPanel::collectTreeRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                     const std::unordered_set<std::size_t>& filteredSet,
-                                     std::size_t procIdx,
-                                     int depth,
-                                     std::vector<TreeRow>& outRows)
-{
-    // Iterative tree walk using explicit stack to avoid recursion. Identical traversal to the
-    // pre-clipper version (perf-plan #843): only what happens with each visited node changed
-    // (append a TreeRow here, instead of calling renderProcessRow() directly there).
-    struct StackFrame
-    {
-        std::size_t procIdx;
-        int depth;
-    };
-
-    std::vector<StackFrame> stack;
-    stack.reserve(32); // Reserve space for typical tree depth to avoid reallocations
-    stack.push_back(StackFrame{.procIdx = procIdx, .depth = depth});
-
-    while (!stack.empty())
-    {
-        const StackFrame frame = stack.back();
-        stack.pop_back();
-
-        // Prevent excessive depth (may indicate cycles or malformed data)
-        if (frame.depth >= MAX_TREE_DEPTH)
-        {
-            spdlog::warn("ProcessesPanel: Maximum tree depth ({}) exceeded, possible cycle or malformed data", MAX_TREE_DEPTH);
-            continue;
-        }
-
-        const auto& proc = snapshots[frame.procIdx];
-
-        // Check if this process has children (in the filtered set)
-        bool hasChildren = false;
-        std::vector<std::size_t> filteredChildren;
-
-        if (!proc.childrenIndices.empty())
-        {
-            filteredChildren.reserve(proc.childrenIndices.size());
-            // Only count children that are in the filtered set
-            for (const std::size_t childIdx : proc.childrenIndices)
-            {
-                if (filteredSet.contains(childIdx))
-                {
-                    filteredChildren.push_back(childIdx);
-                }
-            }
-            hasChildren = !filteredChildren.empty();
-        }
-
-        const bool isExpanded = !m_CollapsedKeys.contains(proc.uniqueKey);
-
-        outRows.push_back(TreeRow{.procIdx = frame.procIdx, .depth = frame.depth, .hasChildren = hasChildren, .isExpanded = isExpanded});
-
-        // Add children to stack if expanded (in reverse order for correct rendering)
-        if (hasChildren && isExpanded)
-        {
-            for (const auto& childIdx : std::views::reverse(filteredChildren))
-            {
-                stack.push_back(StackFrame{.procIdx = childIdx, .depth = frame.depth + 1});
-            }
-        }
-    }
-}
-
 void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
 {
     // Convert filtered indices to a set for O(1) lookups
@@ -1316,16 +1249,16 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // respect PID/natural order) BEFORE rendering anything, so ImGuiListClipper below can bound
     // the expensive part -- renderProcessRow(), which measures/renders every column -- to
     // visible rows only. This walk itself does no ImGui work and is cheap even for thousands of
-    // expanded rows; see TreeRow's doc comment for why it's rebuilt every frame rather than
+    // expanded rows; see ProcessTreeFlatten.h for why it's rebuilt every frame rather than
     // cached (perf-plan #843 tree-view virtualization item).
-    std::vector<TreeRow> rows;
+    std::vector<ProcessTreeFlatten::ProcessTreeRow> rows;
     rows.reserve(filteredIndices.size());
     for (const std::size_t idx : filteredIndices)
     {
         // Only start a descent from root processes (not listed as a child of any other filtered process)
         if (!isChildInFilteredSet.contains(idx))
         {
-            collectTreeRows(snapshots, filteredSet, idx, 0, rows);
+            ProcessTreeFlatten::collectProcessTreeRows(snapshots, filteredSet, m_CollapsedKeys, idx, 0, rows);
         }
     }
 
@@ -1335,7 +1268,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
-            const TreeRow& row = rows[static_cast<std::size_t>(i)];
+            const ProcessTreeFlatten::ProcessTreeRow& row = rows[static_cast<std::size_t>(i)];
             renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded);
         }
     }
