@@ -19,7 +19,7 @@ macOS and other operating systems are not currently supported.
 
 | Platform | Package | Install |
 |----------|---------|---------|
-| Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
+| Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i tasksmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Linux (other) | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 

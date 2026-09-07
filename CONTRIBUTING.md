@@ -1221,7 +1221,54 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 
 - Linux packages: `.tar.gz` and `.deb`
 - Windows packages: `.zip`
-- SBOM: `tasksmack-<label>-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the source tree using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). The SBOM lists all detected components and licenses to improve supply-chain transparency.
+- Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
+
+### Release Artifact Validation
+
+`validate-linux-package` and `validate-windows-package` run after each platform's build job and
+before `create-release`, so a failure here blocks signing and publishing. Linux installs the
+`.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
+`Depends` declared in `cmake/Packaging.cmake`, separately extracts the `.tar.gz`, and launches the
+installed binary under Xvfb for a bounded smoke check. Windows extracts the `.zip` and launches
+the executable directly on the runner's desktop session. Both smoke checks only assert the process
+stays up for a few seconds without crashing — they are not a functional test suite.
+
+### Release Environment
+
+`release.yml`'s `validate` job rejects a tag before any build/sign/publish work runs if it is not
+strict `vMAJOR.MINOR.PATCH`, does not resolve to the current `main` HEAD, or does not match
+`CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version bump fails the release
+instead of publishing mismatched metadata.
+
+Each platform build job's "Record toolchain versions" step logs the runner image
+(`ubuntu-24.04`/`windows-2025`), full compiler/linker versions (`clang --version`, `ld.lld
+--version`), CMake, Ninja, and Python versions to that job's log. Linux additionally pins and
+asserts an exact `apt.llvm.org` package version for `clang-22` (`LLVM_LINUX_EXACT_VERSION` in
+`release.yml`) rather than accepting whatever the apt repository currently serves for the major
+version — see the comment above that variable for the deliberate-upgrade procedure. Windows
+already pins an exact LLVM semver via `LLVM_SEMVER_VERSION`.
+
+### Release Reproducibility
+
+Release builds set `SOURCE_DATE_EPOCH` (from the tagged commit's timestamp) before configuring.
+CMake's `string(TIMESTAMP ...)` calls that populate `version.h`'s `BUILD_DATE`/`BUILD_TIME` honor
+that variable, so the embedded timestamp reflects the commit being released rather than
+wall-clock build time; CPack's `TGZ`/`ZIP` archive generators also honor it for entry timestamps,
+so two independent builds of the same tag produce byte-identical archives. Local/dev builds leave
+`SOURCE_DATE_EPOCH` unset and get the real configure-time timestamp, which is fine since dev
+builds have no reproducibility requirement.
+
+`release.yml`'s `verify-reproducibility` job rebuilds `build-linux`'s tag from a clean workspace
+with the same `SOURCE_DATE_EPOCH` and compares package digests. It is advisory only (`continue-on-
+error: true`, not in `create-release`'s `needs`) — a mismatch is surfaced as a workflow warning
+for investigation rather than blocking the release, since reproducibility here covers CMake's own
+generated files and CPack's archive metadata, not every possible source of binary non-determinism
+(e.g. absolute build-path fragments a future dependency might embed in debug info). Windows is not
+currently double-built for this check.
+
+To verify a published Linux release yourself: clone the tag, export
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)`, build with the `release` preset, package with
+`cpack -G "TGZ;DEB"`, and compare `sha256sum` of the result against the published asset.
 
 ### Changelog
 

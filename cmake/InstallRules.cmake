@@ -4,6 +4,18 @@
 
 include(GNUInstallDirs)
 
+# Linux packages (.deb/.tar.gz) install the executable under bin/ so the .deb lands it in
+# /usr/bin (on PATH, conventional FHS layout -- see #845) and the .tar.gz gets a bin/TaskSmack
+# layout; src/UI/AssetPath.cpp's selectAssetsDir() already has a "one level up" candidate
+# (exeDir/../share/<app>/assets) specifically for this case. Windows keeps the existing flat "."
+# layout (TaskSmack.exe at the .zip root) unchanged, since that layout is documented and NSIS
+# packaging is untested from this change.
+if(WIN32)
+    set(TASKSMACK_RUNTIME_DESTINATION .)
+else()
+    set(TASKSMACK_RUNTIME_DESTINATION bin)
+endif()
+
 # Copy FreeType runtime (if shared/imported) next to the executable for portable layout
 if(TARGET Freetype::Freetype)
     get_target_property(_ft_alias Freetype::Freetype ALIASED_TARGET)
@@ -33,8 +45,8 @@ if(TARGET Freetype::Freetype)
             COMMENT "Copying FreeType runtime to build directory")
 
         install(TARGETS ${_ft_target}
-            RUNTIME DESTINATION .
-            LIBRARY DESTINATION .
+            RUNTIME DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
+            LIBRARY DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
         )
     endif()
 endif()
@@ -43,8 +55,8 @@ endif()
 
 install(TARGETS TaskSmack
     BUNDLE DESTINATION .
-    RUNTIME DESTINATION .
-    LIBRARY DESTINATION .
+    RUNTIME DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
+    LIBRARY DESTINATION ${TASKSMACK_RUNTIME_DESTINATION}
     ARCHIVE DESTINATION .
 )
 
