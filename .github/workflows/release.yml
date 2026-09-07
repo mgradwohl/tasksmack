@@ -444,8 +444,14 @@ jobs:
       - name: Install mesa software rendering
         # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
         # simpler and stronger than an Xvfb-backed smoke check, and this is the same
-        # mesa/GL stack Xvfb would have needed anyway.
-        run: apt-get install -y libgl1-mesa-dri
+        # mesa/GL stack Xvfb would have needed anyway. libgl1-mesa-dri alone is not enough:
+        # it provides the DRI/Gallium driver modules but not the EGL loader (libEGL.so.1,
+        # from libegl1) or Mesa's EGL vendor implementation (libegl-mesa0) that SDL3's
+        # offscreen backend needs to create a GL context at all -- confirmed these are
+        # separate packages (apt-cache depends libgl1-mesa-dri lists neither), and this
+        # dev environment's own working offscreen test only succeeded because a full
+        # dev-toolchain install had already pulled both packages in for unrelated reasons.
+        run: apt-get install -y libgl1-mesa-dri libegl1 libegl-mesa0
 
       - name: Define asset-resolution smoke check
         # A bounded "is it still running" check alone doesn't prove assets loaded --
