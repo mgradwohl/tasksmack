@@ -618,7 +618,6 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
-                        tracingInteraction,
                         true,
                         traceResizePerfThisFrame ? &updateMs : nullptr,
                         traceResizePerfThisFrame ? &renderMs : nullptr,
@@ -659,7 +658,6 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
-                        tracingInteraction,
                         false,
                         traceResizePerfThisFrame ? &updateMs : nullptr,
                         traceResizePerfThisFrame ? &renderMs : nullptr,
@@ -680,7 +678,13 @@ void Application::run()
         if (traceResizePerfThisFrame && ((getTime() - lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
         {
             logResizePerfTraceSummary(resizeTraceStats, isInteracting ? "interaction-progress" : "idle-progress");
-            resizeTraceStats = {};
+            // Reset only the per-interval counters, NOT the rolling percentile sample windows:
+            // a periodic log within the same idle/interaction state should let those windows
+            // keep accumulating past PERCENTILE_WINDOW_SIZE's threshold for a meaningful p99,
+            // rather than restarting from an empty window (and a degenerate p99==max) every
+            // single interval. The full `= {}` reset above/below at actual state transitions
+            // still clears everything, including the rolling windows.
+            resizeTraceStats.resetIntervalCounters();
             lastResizeTraceLogTime = getTime();
         }
 
@@ -696,14 +700,17 @@ void Application::run()
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(float deltaTime,
-                              bool tracingInteractionFrame,
-                              bool resizeTriggeredFrame,
-                              double* updateMs,
-                              double* renderMs,
-                              double* postRenderMs,
-                              double* swapMs)
+void Application::renderFrame(
+    float deltaTime, bool resizeTriggeredFrame, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
+    // Single flag now governs both the aggregate phase timings below AND the detailed
+    // per-layer breakdown (previously a separate tracingInteractionFrame parameter gated the
+    // per-layer breakdown by interaction state alone, which meant idle frames skipped the
+    // extra per-layer clock reads that interaction frames paid for -- silently inflating
+    // interaction-progress phase timings relative to idle-progress ones and undermining the
+    // "same accumulator, directly comparable" idle-vs-interactive design). One flag, tied to
+    // whether tracing is enabled at all, keeps both frame kinds paying the same instrumentation
+    // overhead.
     const bool tracing = (updateMs != nullptr);
 
     struct LayerPhaseDuration
@@ -714,7 +721,7 @@ void Application::renderFrame(float deltaTime,
 
     std::vector<LayerPhaseDuration> updateLayerDurations;
     std::vector<LayerPhaseDuration> postLayerDurations;
-    if (tracingInteractionFrame)
+    if (tracing)
     {
         updateLayerDurations.reserve(m_LayerStack.size());
         postLayerDurations.reserve(m_LayerStack.size());
@@ -724,9 +731,9 @@ void Application::renderFrame(float deltaTime,
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
-        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const auto layerStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         guardLayerCall(layer, "onUpdate", [&] { layer->onUpdate(deltaTime); });
-        if (tracingInteractionFrame)
+        if (tracing)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             updateLayerDurations.emplace_back(LayerPhaseDuration{
@@ -745,9 +752,9 @@ void Application::renderFrame(float deltaTime,
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
-        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const auto layerStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         guardLayerCall(layer, "onPostRender", [&] { layer->onPostRender(); });
-        if (tracingInteractionFrame)
+        if (tracing)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             postLayerDurations.emplace_back(LayerPhaseDuration{
@@ -776,7 +783,7 @@ void Application::renderFrame(float deltaTime,
         *swapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
     }
 
-    if (tracingInteractionFrame)
+    if (tracing)
     {
         const double measuredUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
         const double measuredPostMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();

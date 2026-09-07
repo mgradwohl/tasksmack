@@ -48,11 +48,19 @@ namespace Core
     return samples[rank];
 }
 
-/// Accumulates per-frame/per-event-batch timing stats for one resize-trace logging interval.
-/// All fields are plain counters/sums updated by recordEventBatch()/recordFrame(); the caller
-/// (Application::run()) decides when to log a summary and reset. The *SamplesMs vectors back
-/// the p95/p99 figures in logResizePerfTraceSummary() -- sums/maxes alone can't tell you
-/// whether a frame budget was missed at the tail, only on average or at the single worst frame.
+/// Accumulates per-frame/per-event-batch timing stats. Most fields are per-interval
+/// counters/sums reset by resetIntervalCounters() at each periodic log; the *SamplesMs vectors
+/// are instead ROLLING windows (capped at PERCENTILE_WINDOW_SIZE, oldest dropped first) that
+/// persist across those periodic resets, only cleared by a full `= {}` reset at an
+/// idle<->interaction state transition. This split matters: nearest-rank percentiles over a
+/// small sample count necessarily equal the max (n<100 forces p99==max; n<20 forces p95==max),
+/// which would make every reported p99 statistically indistinguishable from max at the ~30
+/// samples a 0.5s interaction-progress interval collects, or even the ~100 samples a 5s
+/// idle-progress interval collects at a 20fps idle rate -- defeating the point of reporting a
+/// percentile instead of just the max. Keeping the rolling window alive across same-state
+/// periodic resets (while still clearing it at transitions, so idle and interaction data never
+/// mix) lets it accumulate well past 100 samples over a few consecutive intervals of
+/// continuous idle/interaction time, at which point p99 starts meaningfully differing from max.
 struct ResizePerfTraceStats
 {
     std::uint32_t eventBatches = 0;
@@ -86,6 +94,11 @@ struct ResizePerfTraceStats
     /// A large value here indicates a single SDL_PollEvent call stalling (Wayland configure hold).
     double maxSinglePollBatchMs = 0.0;
 
+    /// Rolling-window cap: comfortably past the n=100 threshold where nearest-rank p99 stops
+    /// being forced to equal the max, without letting the window span so much wall-clock time
+    /// that a stale sample from many seconds ago masks a genuine recent regression.
+    static constexpr std::size_t PERCENTILE_WINDOW_SIZE = 200;
+
     std::vector<double> drainSamplesMs;
     std::vector<double> updateSamplesMs;
     std::vector<double> renderSamplesMs;
@@ -103,7 +116,7 @@ struct ResizePerfTraceStats
         drainMs += durationMs;
         maxDrainMs = std::max(maxDrainMs, durationMs);
         maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, singlePollBatchMs);
-        drainSamplesMs.push_back(durationMs);
+        pushRollingSample(drainSamplesMs, durationMs);
         if (p0Fired)
         {
             ++p0BudgetCapHits;
@@ -127,25 +140,69 @@ struct ResizePerfTraceStats
         maxRenderMs = std::max(maxRenderMs, renderDurationMs);
         maxPostRenderMs = std::max(maxPostRenderMs, postRenderDurationMs);
         maxSwapMs = std::max(maxSwapMs, swapDurationMs);
-        updateSamplesMs.push_back(updateDurationMs);
-        renderSamplesMs.push_back(renderDurationMs);
-        postRenderSamplesMs.push_back(postRenderDurationMs);
-        swapSamplesMs.push_back(swapDurationMs);
+        pushRollingSample(updateSamplesMs, updateDurationMs);
+        pushRollingSample(renderSamplesMs, renderDurationMs);
+        pushRollingSample(postRenderSamplesMs, postRenderDurationMs);
+        pushRollingSample(swapSamplesMs, swapDurationMs);
 
         const double totalDurationMs = updateDurationMs + renderDurationMs + postRenderDurationMs + swapDurationMs;
         totalFrameMs += totalDurationMs;
         maxTotalFrameMs = std::max(maxTotalFrameMs, totalDurationMs);
-        totalFrameSamplesMs.push_back(totalDurationMs);
+        pushRollingSample(totalFrameSamplesMs, totalDurationMs);
     }
 
     [[nodiscard]] bool hasSamples() const noexcept
     {
         return (eventBatches > 0) || (frames > 0);
     }
+
+    /// Resets the per-interval scalar counters/sums that logResizePerfTraceSummary() reports
+    /// as avg/max (i.e. everything above except the rolling *SamplesMs windows), so avg/max
+    /// still describe "since the last log", the same as before this rolling-window change. The
+    /// rolling windows themselves are deliberately left untouched -- see the class comment.
+    /// Call this at each periodic progress log; use `*this = {}` instead at an actual
+    /// idle<->interaction transition, which should also clear the rolling windows.
+    void resetIntervalCounters() noexcept
+    {
+        eventBatches = 0;
+        frames = 0;
+        resizeFrames = 0;
+        drainedEvents = 0;
+        resizeEvents = 0;
+        maxEventsPerBatch = 0;
+        drainMs = 0.0;
+        updateMs = 0.0;
+        renderMs = 0.0;
+        postRenderMs = 0.0;
+        swapMs = 0.0;
+        maxDrainMs = 0.0;
+        maxUpdateMs = 0.0;
+        maxRenderMs = 0.0;
+        maxPostRenderMs = 0.0;
+        maxSwapMs = 0.0;
+        totalFrameMs = 0.0;
+        maxTotalFrameMs = 0.0;
+        p0BudgetCapHits = 0;
+        skippedRenderFrames = 0;
+        maxSinglePollBatchMs = 0.0;
+    }
+
+  private:
+    static void pushRollingSample(std::vector<double>& buffer, double value)
+    {
+        buffer.push_back(value);
+        if (buffer.size() > PERCENTILE_WINDOW_SIZE)
+        {
+            buffer.erase(buffer.begin());
+        }
+    }
 };
 
-/// Logs one summary line for the stats accumulated since the last reset. A no-op when no
-/// samples have been recorded (hasSamples() is false), so callers can invoke this
+/// Logs one summary line: avg/max figures describe the interval since the last
+/// resetIntervalCounters()/`= {}` reset, while p95/p99 are computed over the rolling
+/// PERCENTILE_WINDOW_SIZE-sample window, which can span several such intervals within the same
+/// idle/interaction state (see the class comment on ResizePerfTraceStats). A no-op when no
+/// samples have been recorded this interval (hasSamples() is false), so callers can invoke this
 /// unconditionally at interaction boundaries and shutdown.
 inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const std::string_view reason)
 {

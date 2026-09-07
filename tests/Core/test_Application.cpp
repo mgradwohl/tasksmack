@@ -544,6 +544,51 @@ TEST(ResizePerfTraceStatsTest, RecordEventBatchAppendsDrainSamples)
     EXPECT_DOUBLE_EQ(stats.drainSamplesMs[1], 5.0);
 }
 
+TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollingSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.recordFrame(true, 1.0, 2.0, 0.5, 3.0);
+
+    stats.resetIntervalCounters();
+
+    EXPECT_EQ(stats.eventBatches, 0U);
+    EXPECT_EQ(stats.frames, 0U);
+    EXPECT_EQ(stats.resizeFrames, 0U);
+    EXPECT_DOUBLE_EQ(stats.drainMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.updateMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.maxDrainMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.maxTotalFrameMs, 0.0);
+    EXPECT_FALSE(stats.hasSamples()) << "hasSamples() reflects this interval's counters, which were reset";
+
+    // Rolling sample windows survive the reset -- this is the whole point of the split.
+    ASSERT_EQ(stats.drainSamplesMs.size(), 1U);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[0], 2.0);
+    ASSERT_EQ(stats.updateSamplesMs.size(), 1U);
+    EXPECT_DOUBLE_EQ(stats.updateSamplesMs[0], 1.0);
+
+    // A full aggregate reset (the interaction-transition path) clears everything, including
+    // the rolling windows.
+    stats = {};
+    EXPECT_TRUE(stats.drainSamplesMs.empty());
+    EXPECT_TRUE(stats.updateSamplesMs.empty());
+}
+
+TEST(ResizePerfTraceStatsTest, RollingSampleWindowIsCappedAtPercentileWindowSize)
+{
+    Core::ResizePerfTraceStats stats;
+    const auto capacity = Core::ResizePerfTraceStats::PERCENTILE_WINDOW_SIZE;
+    for (std::size_t i = 0; i < capacity + 50; ++i)
+    {
+        stats.recordEventBatch(1, 0, static_cast<double>(i), 0.0, false);
+    }
+
+    ASSERT_EQ(stats.drainSamplesMs.size(), capacity);
+    // Oldest samples (0..49) should have been dropped; the window should now hold 50..(capacity+49).
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs.front(), 50.0);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs.back(), static_cast<double>(capacity + 49));
+}
+
 // =============================================================================
 // computePercentile Tests (nearest-rank percentile backing the p95/p99 figures in
 // logResizePerfTraceSummary(); perf-plan #843 phase 0)

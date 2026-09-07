@@ -131,9 +131,12 @@ class Application
     bool m_WindowGeometryChangedThisFrame = false;
 
     /// Run one update+render+swapBuffers cycle. Extracted so the main loop and
-    /// the immediate-repaint-on-resize path share identical rendering logic.
+    /// the immediate-repaint-on-resize path share identical rendering logic. Detailed
+    /// per-layer timing/slow-frame diagnostics are enabled by passing non-null timing
+    /// pointers (i.e. whenever perf tracing is enabled at all) -- not gated separately by
+    /// interaction state, so idle and interaction frames pay identical instrumentation
+    /// overhead and their measured phase timings stay directly comparable.
     void renderFrame(float deltaTime,
-                     bool tracingInteractionFrame,
                      bool resizeTriggeredFrame,
                      double* updateMs = nullptr,
                      double* renderMs = nullptr,

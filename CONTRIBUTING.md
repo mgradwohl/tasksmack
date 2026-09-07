@@ -897,6 +897,16 @@ always 1:1 with a rendered frame, so it's reported separately) — this is what 
 criterion "p99 frame time ≤ 16.6ms (60fps)" actually refers to: individual phase percentiles can
 each look fine on their own while their sum still misses the frame budget.
 
+`frames=`/`batches=` count only the current interval (5s idle / 0.5s interaction), but the
+p95/p99 figures are computed over a rolling window of up to 200 samples that persists across
+consecutive same-state intervals (only cleared when idle and interaction actually transition,
+so idle and interaction data never mix) — see `PERCENTILE_WINDOW_SIZE` in `ResizePerfTrace.h`.
+That's why, e.g., a `frames=94` idle-progress line above can still show p99 below max: with
+nearest-rank percentiles, p99 is mathematically forced to equal max whenever the *window* it's
+computed over holds fewer than 100 samples, which a single 94-frame interval alone would — the
+rolling window carrying samples over from prior intervals in the same state is what avoids that
+degenerate case in steady, continuous idle/interaction periods.
+
 (Figures above are illustrative shapes, not a specific captured run — always compare against a
 fresh capture on your own machine, not these numbers.)
 
