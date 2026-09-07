@@ -90,14 +90,40 @@ constexpr std::string_view LIST_VIEW_LABEL = "List View";
     return std::nullopt;
 }
 
-void renderRightAlignedText(std::string_view text)
+/// Renders `text` right-aligned within the remaining cell width, using an already-measured
+/// `textWidth` instead of calling ImGui::CalcTextSize() itself -- callers own measuring (and,
+/// for RowFormatCache-backed columns, caching) that width. See the AlignedCellText
+/// overload below for the common case.
+void renderRightAlignedText(std::string_view text, float textWidth)
 {
     // GetContentRegionAvail() properly returns space from cursor to right edge of cell
-    const float textWidth = ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
     const float availWidth = ImGui::GetContentRegionAvail().x;
     const float currentX = ImGui::GetCursorPosX();
     ImGui::SetCursorPosX(currentX + std::max(0.0F, availWidth - textWidth));
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
+}
+
+/// Common case: a RowFormatCache-backed cell whose text is cached (rebuilt only at ~1Hz, not
+/// per frame) and whose width is measured lazily -- the first time this specific cell is
+/// actually drawn -- and cached into `cell.width` (mutable; see AlignedCellText's doc comment
+/// for why this must be lazy rather than done for every process at cache-population time).
+/// ImFontCalcTextSizeEx and ImGui::ItemSize showed up as real, non-trivial costs in interactive-
+/// frame profiling; this keeps that cost paid at most once per visible row per cache generation,
+/// instead of every frame or (worse) for every process regardless of visibility.
+void renderRightAlignedText(const AlignedCellText& cell)
+{
+    if (cell.width < 0.0F)
+    {
+        cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
+    }
+    renderRightAlignedText(cell.text, cell.width);
+}
+
+/// Wraps `text` for a RowFormatCache population site, deferring width measurement to the first
+/// time renderRightAlignedText() actually draws this cell (see AlignedCellText's doc comment).
+[[nodiscard]] AlignedCellText makeAlignedCellText(std::string text)
+{
+    return AlignedCellText{.text = std::move(text)};
 }
 
 [[nodiscard]] auto formatAlignedPercentString(double percent) -> std::string
@@ -181,6 +207,25 @@ void ProcessesPanel::TextSizeCache::populate()
     // Cache static label widths
     treeViewLabelWidth = ImGui::CalcTextSize(TREE_VIEW_LABEL.data(), TREE_VIEW_LABEL.data() + TREE_VIEW_LABEL.size()).x;
     listViewLabelWidth = ImGui::CalcTextSize(LIST_VIEW_LABEL.data(), LIST_VIEW_LABEL.data() + LIST_VIEW_LABEL.size()).x;
+
+    // Cache Domain::Priority::getPriorityLabel()'s fixed label widths
+    for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
+    {
+        const auto& label = PRIORITY_LABELS[i];
+        priorityLabelWidths[i] = ImGui::CalcTextSize(label.data(), label.data() + label.size()).x;
+    }
+}
+
+float ProcessesPanel::TextSizeCache::getPriorityLabelWidth(std::string_view label) const noexcept
+{
+    for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
+    {
+        if (PRIORITY_LABELS[i] == label)
+        {
+            return priorityLabelWidths[i];
+        }
+    }
+    return 0.0F; // Unreachable in practice: getPriorityLabel() only returns PRIORITY_LABELS entries.
 }
 
 void ProcessesPanel::ensureTextSizeCacheValid()
@@ -424,47 +469,53 @@ void ProcessesPanel::renderContent()
     }
     const auto& currentSnapshots = m_CachedRenderSnapshots;
 
-    // Rebuild row format cache when snapshot data changes (~1Hz), never per frame (60fps).
-    // Eliminates heap allocations for slow-changing formatted columns in renderProcessRow.
-    if (m_CachedSnapshotVersion != m_RowFormatCacheVersion)
+    // Rebuild row format cache when snapshot data changes (~1Hz), never per frame (60fps), or
+    // when the font used to measure the cached AlignedCellText widths has changed (a font-size/
+    // DPI change alone, with no new data version, would otherwise leave every cached width
+    // stale until the next data refresh happens to land).
+    if (m_CachedSnapshotVersion != m_RowFormatCacheVersion || m_TextSizeCache.fontPtr != m_RowFormatCacheFontPtr)
     {
         m_RowFormatCache.clear();
         m_RowFormatCache.reserve(currentSnapshots.size());
         for (const auto& proc : currentSnapshots)
         {
             RowFormatCache fmt;
-            fmt.ppid = UI::Format::formatId(proc.parentPid);
-            fmt.startTime = UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch);
-            fmt.cpuTime = UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds);
-            fmt.cpuPercent = formatAlignedPercentString(proc.cpuPercent);
-            fmt.memPercent = formatAlignedPercentString(proc.memoryPercent);
-            fmt.virtualMem =
-                formatAlignedBytesString(static_cast<double>(proc.virtualBytes), UI::Format::unitForTotalBytes(proc.virtualBytes));
-            fmt.resident = formatAlignedBytesString(static_cast<double>(proc.memoryBytes), UI::Format::unitForTotalBytes(proc.memoryBytes));
-            fmt.peakRss =
-                formatAlignedBytesString(static_cast<double>(proc.peakMemoryBytes), UI::Format::unitForTotalBytes(proc.peakMemoryBytes));
-            fmt.shared = formatAlignedBytesString(static_cast<double>(proc.sharedBytes), UI::Format::unitForTotalBytes(proc.sharedBytes));
-            fmt.ioRead =
+            fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
+            fmt.startTime = makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch));
+            fmt.cpuTime = makeAlignedCellText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds));
+            fmt.cpuPercent = makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent));
+            fmt.memPercent = makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent));
+            fmt.virtualMem = makeAlignedCellText(
+                formatAlignedBytesString(static_cast<double>(proc.virtualBytes), UI::Format::unitForTotalBytes(proc.virtualBytes)));
+            fmt.resident = makeAlignedCellText(
+                formatAlignedBytesString(static_cast<double>(proc.memoryBytes), UI::Format::unitForTotalBytes(proc.memoryBytes)));
+            fmt.peakRss = makeAlignedCellText(
+                formatAlignedBytesString(static_cast<double>(proc.peakMemoryBytes), UI::Format::unitForTotalBytes(proc.peakMemoryBytes)));
+            fmt.shared = makeAlignedCellText(
+                formatAlignedBytesString(static_cast<double>(proc.sharedBytes), UI::Format::unitForTotalBytes(proc.sharedBytes)));
+            fmt.ioRead = makeAlignedCellText(
                 (proc.ioReadBytesPerSec > 0.0)
                     ? formatAlignedBytesPerSecString(proc.ioReadBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec))
-                    : "-";
-            fmt.ioWrite =
+                    : "-");
+            fmt.ioWrite = makeAlignedCellText(
                 (proc.ioWriteBytesPerSec > 0.0)
                     ? formatAlignedBytesPerSecString(proc.ioWriteBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec))
-                    : "-";
-            fmt.netSent =
+                    : "-");
+            fmt.netSent = makeAlignedCellText(
                 (proc.netSentBytesPerSec > 0.0)
                     ? formatAlignedBytesPerSecString(proc.netSentBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec))
-                    : "-";
-            fmt.netRecv = (proc.netReceivedBytesPerSec > 0.0)
-                            ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec,
-                                                             UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
-                            : "-";
-            fmt.power = formatAlignedPowerString(proc.powerWatts);
-            fmt.gpuPercent = (proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-";
-            fmt.gpuMemory = (proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
-                                                                                 UI::Format::unitForTotalBytes(proc.gpuMemoryBytes))
-                                                      : "-";
+                    : "-");
+            fmt.netRecv =
+                makeAlignedCellText((proc.netReceivedBytesPerSec > 0.0)
+                                        ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec,
+                                                                         UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
+                                        : "-");
+            fmt.power = makeAlignedCellText(formatAlignedPowerString(proc.powerWatts));
+            fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
+            fmt.gpuMemory =
+                makeAlignedCellText((proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
+                                                                                         UI::Format::unitForTotalBytes(proc.gpuMemoryBytes))
+                                                              : "-");
             if (proc.gpuEngines.empty())
             {
                 fmt.gpuEngines = "-";
@@ -480,14 +531,19 @@ void ProcessesPanel::renderContent()
                     fmt.gpuEngines += proc.gpuEngines[i];
                 }
             }
-            fmt.threads = UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); });
-            fmt.handles = UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); });
-            fmt.pageFaults = UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); });
-            fmt.affinity = UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask);
-            fmt.gdiObjects = proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-";
+            fmt.threads =
+                makeAlignedCellText(UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
+            fmt.handles =
+                makeAlignedCellText(UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
+            fmt.pageFaults =
+                makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
+            fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));
+            fmt.gdiObjects =
+                makeAlignedCellText(proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-");
             m_RowFormatCache.emplace(proc.uniqueKey, std::move(fmt));
         }
         m_RowFormatCacheVersion = m_CachedSnapshotVersion;
+        m_RowFormatCacheFontPtr = m_TextSizeCache.fontPtr;
     }
 
     // Search bar
@@ -1024,9 +1080,15 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::Priority:
-            // getPriorityLabel returns string_view into static storage — no allocation needed
-            renderRightAlignedText(Domain::Priority::getPriorityLabel(proc.nice));
+        {
+            // getPriorityLabel returns string_view into static storage — no allocation needed.
+            // Not RowFormatCache-backed (it's a direct nice-value lookup, not a per-row
+            // formatted string), so its width comes from TextSizeCache's small fixed-label
+            // width cache instead of an AlignedCellText.
+            const std::string_view priorityLabel = Domain::Priority::getPriorityLabel(proc.nice);
+            renderRightAlignedText(priorityLabel, m_TextSizeCache.getPriorityLabelWidth(priorityLabel));
             break;
+        }
 
         case ProcessColumn::Threads:
             renderRightAlignedText(fmt.threads);
