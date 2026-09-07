@@ -272,20 +272,14 @@ class ProcessesPanel : public Panel
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
-    /// Render process rows in tree view mode
+    /// Render process rows in tree view mode. Flattens the filtered/expanded tree into render
+    /// order via ProcessTreeFlatten::collectProcessTreeRows() (a pure, separately-tested
+    /// traversal -- see ProcessTreeFlatten.h), then applies ImGuiListClipper to that flat list
+    /// so only visible rows reach the expensive part, renderProcessRow() -- see perf-plan #843's
+    /// tree-view virtualization item.
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
-
-    /// Render a single process and its children iteratively
-    /// @param snapshots The full list of process snapshots.
-    /// @param filteredSet Set of filtered indices for O(1) membership checks.
-    /// @param procIdx Index of current process to render.
-    /// @param depth Current depth in the tree hierarchy.
-    void renderProcessTreeNode(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                               const std::unordered_set<std::size_t>& filteredSet,
-                               std::size_t procIdx,
-                               int depth);
 
     /// Render a single process row
     /// @param proc The process to render.
