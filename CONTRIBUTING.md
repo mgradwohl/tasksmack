@@ -838,8 +838,12 @@ Each `.cpp` file generates a `<source>.json` trace alongside its `.o` file. `too
 
 ### Resize Performance Instrumentation
 
-TaskSmack has built-in resize/interaction frame-timing instrumentation that works in any build.
-Enable it by setting `TASKSMACK_TRACE_RESIZE_PERF=1` before launching:
+TaskSmack has built-in frame-timing instrumentation that works in any build, covering both
+interactive (resize/move) and idle/steady-state frames (perf-plan #843 phase 0 — idle-time
+performance is priority 1 for the app, so idle frames get timed too, not just resize gestures).
+Despite the env var's resize-focused name (it started as a resize-specific investigation), it now
+runs continuously whenever enabled. Enable it by setting `TASKSMACK_TRACE_RESIZE_PERF=1` before
+launching:
 
 ```bash
 # Linux — optimized build (recommended for realistic numbers)
@@ -860,27 +864,64 @@ cmake --build --preset win-profile
 $env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object /tmp/resize-trace.log
 ```
 
-Resize the window (edges and corners) for 20–30 seconds, then close the app.
-The log contains `ResizePerf[interaction-progress|interaction-end|shutdown]` lines with
-per-phase timing for every 0.5 s window:
+Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
+window (edges and corners) for 20–30 seconds to capture interactive numbers, then close the app.
+The log contains `ResizePerf[idle-progress|interaction-progress|interaction-end|shutdown]` lines.
+Idle frames log every 5 s (`IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS`); interaction frames log every
+0.5 s (`RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS`) since an interaction is a short, bounded burst
+where more frequent logging is useful. Each line reports avg/p95/p99/max per phase, not just
+avg/max — p95/p99 answer "did we miss the 16.6 ms (60 fps) frame budget at the tail", which an
+average can hide and a single max spike can overstate:
 
 ```
+ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
+  frames=94 resizeFrames=0
+  frame avg/p95/p99/max=4.421/6.912/7.340/7.580 ms       ← update+render+post+swap (the 16.6ms/60fps figure)
+  drain avg/p95/p99/max=0.031/0.084/0.121/0.121 ms      ← SDL event drain
+  update avg/p95/p99/max=0.014/0.031/0.045/0.052 ms     ← domain model refresh (all layers)
+  render avg/p95/p99/max=0.842/1.203/1.410/1.502 ms     ← ImGui layout + draw call generation
+  post avg/p95/p99/max=0.611/0.798/0.850/0.902 ms       ← post-render (all layers)
+  swap avg/p95/p99/max=2.940/4.812/5.220/5.401 ms       ← GL buffer swap (includes vsync stall)
+
 ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
   frames=109 resizeFrames=109
-  drain avg/max=0.140/2.278 ms    ← SDL event drain
-  update avg/max=0.018/1.453 ms   ← domain model refresh (all layers)
-  render avg/max=0.572/8.798 ms   ← ImGui layout + draw call generation
-  post avg/max=0.558/0.784 ms     ← post-render (all layers)
-  swap avg/max=3.299/12.408 ms    ← GL buffer swap (includes vsync stall)
+  frame avg/p95/p99/max=4.447/17.462/19.960/22.443 ms
+  drain avg/p95/p99/max=0.140/1.802/2.101/2.278 ms
+  update avg/p95/p99/max=0.018/0.940/1.220/1.453 ms
+  render avg/p95/p99/max=0.572/6.310/7.980/8.798 ms
+  post avg/p95/p99/max=0.558/0.712/0.760/0.784 ms
+  swap avg/p95/p99/max=3.299/9.510/11.200/12.408 ms
 ```
+
+`frame` is update+render+post+swap (drain is a separate per-loop-iteration accumulator, not
+always 1:1 with a rendered frame, so it's reported separately) — this is what #843's success
+criterion "p99 frame time ≤ 16.6ms (60fps)" actually refers to: individual phase percentiles can
+each look fine on their own while their sum still misses the frame budget.
+
+`frames=`/`batches=` count only the current interval (5s idle / 0.5s interaction), but the
+p95/p99 figures are computed over a rolling window of up to 200 samples that persists across
+consecutive same-state intervals (only cleared when idle and interaction actually transition,
+so idle and interaction data never mix) — see `PERCENTILE_WINDOW_SIZE` in `ResizePerfTrace.h`.
+That's why, e.g., a `frames=94` idle-progress line above can still show p99 below max: with
+nearest-rank percentiles, p99 is mathematically forced to equal max whenever the *window* it's
+computed over holds fewer than 100 samples, which a single 94-frame interval alone would — the
+rolling window carrying samples over from prior intervals in the same state is what avoids that
+degenerate case in steady, continuous idle/interaction periods.
+
+(Figures above are illustrative shapes, not a specific captured run — always compare against a
+fresh capture on your own machine, not these numbers.)
 
 Frames or layers that exceed 250 ms emit additional `ResizePerfSlowFrame` /
 `ResizePerfSlowLayer` / `ResizePerfTitleBarSlowUpdate` lines for pinpoint attribution.
 
-You can also control the spdlog runtime level directly (useful for CI or scripted runs):
+You can also control the spdlog runtime level directly (useful for CI or scripted runs). This
+only changes which already-emitted log messages are visible — it does **not** enable ResizePerf
+frame-timing collection by itself; that still requires `TASKSMACK_TRACE_RESIZE_PERF=1` regardless
+of log level, since `Application` only enables tracing from that env var:
 
 ```bash
-# Show only info+ in a release build (same effect as TASKSMACK_TRACE_RESIZE_PERF=1)
+# Raise the default log verbosity in a release build. Does NOT enable ResizePerf tracing on
+# its own -- combine with TASKSMACK_TRACE_RESIZE_PERF=1 above to see ResizePerf lines.
 TASKSMACK_LOG_LEVEL=info ./build/optimized/bin/TaskSmack
 
 # Full debug verbosity in an optimized build

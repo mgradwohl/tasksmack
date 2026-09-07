@@ -74,6 +74,11 @@ constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 constexpr float INTERACTION_REDRAW_GRACE_SECONDS = 0.35F;
 constexpr const char* RESIZE_PERF_TRACE_ENV = "TASKSMACK_TRACE_RESIZE_PERF";
 constexpr float RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS = 0.5F;
+// Idle/steady-state frames are logged on a much longer cadence than interaction frames: an
+// interaction is a short, bounded burst where frequent logging is useful, but idle frames run
+// indefinitely while the app just sits open, so 0.5s would spam the log forever (perf-plan #843
+// phase 0 — idle-time performance is priority 1, but that doesn't mean logging it every tick).
+constexpr float IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS = 5.0F;
 constexpr int RESIZE_PERF_TRACE_TOP_LAYER_COUNT = 3;
 
 // P0: Break the event drain loop if wall-clock drain exceeds this threshold.
@@ -520,16 +525,15 @@ void Application::run()
         // Always capture end time; used for both trace recording and P3 skip-render decision.
         const auto eventDrainEnd = std::chrono::steady_clock::now();
         const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
-        if (traceResizePerfThisFrame)
-        {
-            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
-        }
-
-        if (m_Window->shouldClose())
-        {
-            stop();
-            break;
-        }
+        // recordEventBatch() for THIS drain is deferred until after the interaction-transition
+        // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
+        // same drain), so the batch that triggers a transition lands in the correctly-reset
+        // accumulator for its own state instead of being recorded into the old state's
+        // accumulator and then immediately wiped (or misattributed into the other state's
+        // boundary log) by that reset. The shouldClose() check that used to sit here is moved
+        // below, after recordEventBatch() actually runs: otherwise a shutdown request arriving
+        // in this drain would break out before recordEventBatch() executes at all, silently
+        // dropping the final drain from the "shutdown" summary.
 
         // Keep interactive move/resize visually responsive across platforms
         // without reintroducing per-event rendering stalls: render at most once
@@ -561,13 +565,37 @@ void Application::run()
         {
             logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
             resizeTraceStats = {};
+            // Restart the cadence here too (mirroring the idle->interaction reset below):
+            // lastResizeTraceLogTime is at most one 0.5s interaction-progress tick stale, so
+            // without this the first post-interaction idle-progress window comes up short of a
+            // full IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS, rather than starting fresh at the
+            // moment idle begins.
+            lastResizeTraceLogTime = getTime();
         }
         // Reset stats at interaction start so idle-frame event batches accumulated before
-        // the interaction do not skew the first interaction-progress log averages.
+        // the interaction do not skew the first interaction-progress log averages. This
+        // intentionally discards an at-most-partial idle window (idle-progress already logs
+        // independently on its own cadence, so the loss is bounded and not a correctness bug).
         if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
         {
             resizeTraceStats = {};
             lastResizeTraceLogTime = getTime();
+        }
+
+        // Record THIS drain now that any transition reset above has run, so it's classified
+        // into (and counted by) the accumulator for its own state, not the state that just
+        // ended.
+        if (traceResizePerfThisFrame)
+        {
+            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
+        }
+
+        // Deferred from just after the drain (see comment above) so this frame's batch is
+        // always recorded -- including the final one before shutdown -- before we might break.
+        if (m_Window->shouldClose())
+        {
+            stop();
+            break;
         }
 
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
@@ -575,7 +603,10 @@ void Application::run()
         // fully processed; the display catches up on the next frame.
         const bool skipRenderThisFrame =
             FramePacing::computeSkipRenderThisFrame(totalDrainMs, DRAIN_SKIP_RENDER_MS, m_Window->isMinimized());
-        if (skipRenderThisFrame && traceResizePerfThisFrame && tracingInteraction)
+        // Counted regardless of interaction state (not just tracingInteraction): an idle drain
+        // that overruns the budget also skips rendering, and the idle-progress/shutdown
+        // summaries should reflect that instead of always reporting skippedFrames=0 for idle.
+        if (skipRenderThisFrame && traceResizePerfThisFrame)
         {
             ++resizeTraceStats.skippedRenderFrames;
         }
@@ -587,13 +618,12 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
-                        tracingInteraction,
                         true,
-                        tracingInteraction ? &updateMs : nullptr,
-                        tracingInteraction ? &renderMs : nullptr,
-                        tracingInteraction ? &postRenderMs : nullptr,
-                        tracingInteraction ? &swapMs : nullptr);
-            if (tracingInteraction)
+                        traceResizePerfThisFrame ? &updateMs : nullptr,
+                        traceResizePerfThisFrame ? &renderMs : nullptr,
+                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                        traceResizePerfThisFrame ? &swapMs : nullptr);
+            if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
             }
@@ -628,22 +658,33 @@ void Application::run()
             double postRenderMs = 0.0;
             double swapMs = 0.0;
             renderFrame(computeDeltaTime(),
-                        tracingInteraction,
                         false,
-                        tracingInteraction ? &updateMs : nullptr,
-                        tracingInteraction ? &renderMs : nullptr,
-                        tracingInteraction ? &postRenderMs : nullptr,
-                        tracingInteraction ? &swapMs : nullptr);
-            if (tracingInteraction)
+                        traceResizePerfThisFrame ? &updateMs : nullptr,
+                        traceResizePerfThisFrame ? &renderMs : nullptr,
+                        traceResizePerfThisFrame ? &postRenderMs : nullptr,
+                        traceResizePerfThisFrame ? &swapMs : nullptr);
+            if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
             }
         }
 
-        if (tracingInteraction && ((getTime() - lastResizeTraceLogTime) >= RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS))
+        // Log periodically regardless of interaction state (perf-plan #843 phase 0): idle
+        // frames use a longer cadence than interaction frames (see
+        // IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS above), and both share the same accumulator/p95
+        // logging so idle and interactive numbers are directly comparable.
+        const float perfTraceLogIntervalSeconds =
+            isInteracting ? RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS : IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS;
+        if (traceResizePerfThisFrame && ((getTime() - lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
         {
-            logResizePerfTraceSummary(resizeTraceStats, "interaction-progress");
-            resizeTraceStats = {};
+            logResizePerfTraceSummary(resizeTraceStats, isInteracting ? "interaction-progress" : "idle-progress");
+            // Reset only the per-interval counters, NOT the rolling percentile sample windows:
+            // a periodic log within the same idle/interaction state should let those windows
+            // keep accumulating past PERCENTILE_WINDOW_SIZE's threshold for a meaningful p99,
+            // rather than restarting from an empty window (and a degenerate p99==max) every
+            // single interval. The full `= {}` reset above/below at actual state transitions
+            // still clears everything, including the rolling windows.
+            resizeTraceStats.resetIntervalCounters();
             lastResizeTraceLogTime = getTime();
         }
 
@@ -659,14 +700,17 @@ void Application::run()
     spdlog::info("Exiting main loop");
 }
 
-void Application::renderFrame(float deltaTime,
-                              bool tracingInteractionFrame,
-                              bool resizeTriggeredFrame,
-                              double* updateMs,
-                              double* renderMs,
-                              double* postRenderMs,
-                              double* swapMs)
+void Application::renderFrame(
+    float deltaTime, bool resizeTriggeredFrame, double* updateMs, double* renderMs, double* postRenderMs, double* swapMs)
 {
+    // Single flag now governs both the aggregate phase timings below AND the detailed
+    // per-layer breakdown (previously a separate tracingInteractionFrame parameter gated the
+    // per-layer breakdown by interaction state alone, which meant idle frames skipped the
+    // extra per-layer clock reads that interaction frames paid for -- silently inflating
+    // interaction-progress phase timings relative to idle-progress ones and undermining the
+    // "same accumulator, directly comparable" idle-vs-interactive design). One flag, tied to
+    // whether tracing is enabled at all, keeps both frame kinds paying the same instrumentation
+    // overhead.
     const bool tracing = (updateMs != nullptr);
 
     struct LayerPhaseDuration
@@ -677,7 +721,7 @@ void Application::renderFrame(float deltaTime,
 
     std::vector<LayerPhaseDuration> updateLayerDurations;
     std::vector<LayerPhaseDuration> postLayerDurations;
-    if (tracingInteractionFrame)
+    if (tracing)
     {
         updateLayerDurations.reserve(m_LayerStack.size());
         postLayerDurations.reserve(m_LayerStack.size());
@@ -687,9 +731,9 @@ void Application::renderFrame(float deltaTime,
     // Update all layers
     for (const auto& layer : m_LayerStack)
     {
-        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const auto layerStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         guardLayerCall(layer, "onUpdate", [&] { layer->onUpdate(deltaTime); });
-        if (tracingInteractionFrame)
+        if (tracing)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             updateLayerDurations.emplace_back(LayerPhaseDuration{
@@ -708,9 +752,9 @@ void Application::renderFrame(float deltaTime,
     // Post-render (for ImGui frame end, etc.)
     for (const auto& layer : m_LayerStack)
     {
-        const auto layerStart = tracingInteractionFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const auto layerStart = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         guardLayerCall(layer, "onPostRender", [&] { layer->onPostRender(); });
-        if (tracingInteractionFrame)
+        if (tracing)
         {
             const auto layerEnd = std::chrono::steady_clock::now();
             postLayerDurations.emplace_back(LayerPhaseDuration{
@@ -739,7 +783,7 @@ void Application::renderFrame(float deltaTime,
         *swapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
     }
 
-    if (tracingInteractionFrame)
+    if (tracing)
     {
         const double measuredUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
         const double measuredPostMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();

@@ -57,6 +57,14 @@ struct UserSettings
     int chartTauMsMin = Domain::Sampling::CHART_TAU_MS_MIN_DEFAULT;
     int chartTauMsMax = Domain::Sampling::CHART_TAU_MS_MAX_DEFAULT;
 
+    // Anti-aliased line/fill rendering for history chart plots. On by default (preserves the
+    // existing look); disabling it trades chart-edge smoothness for lower CPU/GPU cost, which
+    // profiling showed as a real, non-trivial share of both idle and interactive frame time
+    // (Dear ImGui's AddPolyline/PathArcToFastEx -- perf-plan #843 phase 1). An escape hatch for
+    // lower-power/integrated GPUs rather than a default-off change, since the app's charts
+    // should stay just as beautiful as today unless the user opts into the tradeoff.
+    bool chartAntiAliasing = true;
+
     // Progress bar color thresholds (percentage, 0-100)
     double progressColorLowThreshold = Domain::Sampling::PROGRESS_COLOR_LOW_THRESHOLD_DEFAULT;
     double progressColorHighThreshold = Domain::Sampling::PROGRESS_COLOR_HIGH_THRESHOLD_DEFAULT;

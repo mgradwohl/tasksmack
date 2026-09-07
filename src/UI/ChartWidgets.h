@@ -29,6 +29,59 @@
 namespace UI::Widgets
 {
 
+namespace Detail
+{
+// Single global toggle, mirrors the pattern of other small UI-owned render state (e.g.
+// RenderMetrics' enabled flag). Must be a named-namespace `inline` variable (external linkage,
+// one instance program-wide), not an anonymous-namespace one -- this header is included from
+// multiple translation units, and an anonymous-namespace variable would give each TU its own
+// separate copy, silently breaking the "one shared toggle" contract
+// setChartAntiAliasingEnabled()/chartAntiAliasingEnabled() below are meant to provide.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+inline bool g_ChartAntiAliasingEnabled = true;
+} // namespace Detail
+
+/// Whether history chart plots render anti-aliased lines (see CHART_ANTI_ALIASING_FLAGS_MASK's
+/// doc comment for why "lines", not "lines/fills": ImPlot's shaded-fill path doesn't currently
+/// consult the fill AA bit at all). Mirrors App::UserConfig::Settings::chartAntiAliasing, but UI
+/// must not depend on App (see tasksmack.md's Dependency Rules), so the App composition root
+/// pushes this value in via setChartAntiAliasingEnabled() once at startup and again whenever the
+/// setting changes, instead of ChartWidgets reading UserConfig directly. Defaults to true
+/// (current visual behavior preserved) until the composition root sets it. Disabling trades
+/// chart-edge smoothness for lower CPU/GPU cost -- profiling showed Dear ImGui's AddPolyline/
+/// PathArcToFastEx as a real, non-trivial share of both idle and interactive frame time
+/// (perf-plan #843 phase 1).
+inline void setChartAntiAliasingEnabled(bool enabled) noexcept
+{
+    Detail::g_ChartAntiAliasingEnabled = enabled;
+}
+
+[[nodiscard]] inline bool chartAntiAliasingEnabled() noexcept
+{
+    return Detail::g_ChartAntiAliasingEnabled;
+}
+
+/// The ImDrawList AA bits HistoryChart overrides for the lifetime of one chart. Correction vs.
+/// this feature's original commit message: verified against the vendored implot_items.cpp that
+/// ImPlot 1.0's line renderer checks AntiAliasedLines/AntiAliasedLinesUseTex, but its shaded-fill
+/// renderer (RendererShaded::Render, backing PlotShaded) does not consult AntiAliasedFill at all
+/// -- it always emits the same triangle-strip geometry regardless of that bit. Clearing it here
+/// is therefore harmless-but-currently-inert for ImPlot's fills specifically (kept for
+/// forward-compatibility and because other draw-list content within the plot region, e.g.
+/// ImGui's own filled shapes, does honor it); the real, measured benefit is confined to line/
+/// gridline rendering (AddPolyline/_PathArcToFastEx).
+inline constexpr ImDrawListFlags CHART_ANTI_ALIASING_FLAGS_MASK =
+    ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedLinesUseTex | ImDrawListFlags_AntiAliasedFill;
+
+/// Pure bit-manipulation backing HistoryChart's anti-aliasing override, extracted so it's
+/// testable without a live ImGui context (see CONTRIBUTING.md's "extract the pure decision
+/// logic into a small header" pattern). Clears exactly CHART_ANTI_ALIASING_FLAGS_MASK's bits
+/// from `flags`, preserving every other bit untouched.
+[[nodiscard]] constexpr ImDrawListFlags clearChartAntiAliasingFlags(ImDrawListFlags flags) noexcept
+{
+    return flags & ~CHART_ANTI_ALIASING_FLAGS_MASK;
+}
+
 inline constexpr ImPlotFlags PLOT_FLAGS_DEFAULT = ImPlotFlags_NoMenus;
 inline constexpr ImPlotAxisFlags X_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
 inline constexpr ImPlotAxisFlags Y_AXIS_FLAGS_DEFAULT = ImPlotAxisFlags_NoHighlight;
@@ -574,11 +627,14 @@ struct HistoryChartConfig
 class HistoryChart
 {
   public:
-    explicit HistoryChart(const HistoryChartConfig& config) : m_Id(config.id), m_Measure(RenderMetrics::get().enabled())
+    // m_DrawList is captured unconditionally in the initializer list (not just when
+    // m_Measure): also needed for the anti-aliasing override below, and
+    // ImGui::GetWindowDrawList() is a cheap accessor, not an allocation.
+    explicit HistoryChart(const HistoryChartConfig& config)
+        : m_DrawList(ImGui::GetWindowDrawList()), m_Id(config.id), m_Measure(RenderMetrics::get().enabled())
     {
         if (m_Measure)
         {
-            m_DrawList = ImGui::GetWindowDrawList();
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
             m_IdxBefore = m_DrawList->IdxBuffer.Size;
             m_Start = std::chrono::steady_clock::now();
@@ -588,6 +644,19 @@ class HistoryChart
         if (!m_Active)
         {
             return;
+        }
+
+        if (!chartAntiAliasingEnabled())
+        {
+            // ImPlot 1.0 has no per-plot AA flag of its own; it renders through the current
+            // window's ImDrawList and its line renderer respects that draw list's AA bits (see
+            // CHART_ANTI_ALIASING_FLAGS_MASK's doc comment for the measured scope: line/gridline
+            // rendering, not ImPlot's shaded-fill path). Clearing them for the lifetime of this
+            // plot -- and restoring them in the destructor -- disables AA for exactly this
+            // chart's geometry without touching the ambient ImGuiStyle every other widget uses.
+            m_SavedDrawListFlags = m_DrawList->Flags;
+            m_DrawList->Flags = clearChartAntiAliasingFlags(m_SavedDrawListFlags);
+            m_AntiAliasingOverridden = true;
         }
 
         if (config.showLegend)
@@ -608,6 +677,14 @@ class HistoryChart
         if (m_Active)
         {
             ImPlot::EndPlot();
+        }
+
+        // Restored after EndPlot (not before): EndPlot may still emit plot-area geometry
+        // (e.g. mouse-position text, box-select rectangle) that should honor the same
+        // override as the rest of the plot's content.
+        if (m_AntiAliasingOverridden && (m_DrawList != nullptr))
+        {
+            m_DrawList->Flags = m_SavedDrawListFlags;
         }
 
         // Gate on m_Active: when BeginPlot fails, this scope may span unrelated UI work,
@@ -637,8 +714,10 @@ class HistoryChart
     const char* m_Id = "";
     int m_VtxBefore = 0;
     int m_IdxBefore = 0;
+    ImDrawListFlags m_SavedDrawListFlags = 0;
     bool m_Measure = false;
     bool m_Active = false;
+    bool m_AntiAliasingOverridden = false;
 };
 
 /// RAII scope that records draw-list geometry (and CPU time) added between construction and

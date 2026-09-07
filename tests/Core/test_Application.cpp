@@ -510,6 +510,142 @@ TEST(ResizePerfTraceStatsTest, RecordFrameAccumulatesAndTracksMax)
     EXPECT_DOUBLE_EQ(stats.maxPostRenderMs, 2.0);
     EXPECT_DOUBLE_EQ(stats.swapMs, 12.0);
     EXPECT_DOUBLE_EQ(stats.maxSwapMs, 9.0);
+    // Frame 1 total: 1.0+2.0+0.5+3.0=6.5; frame 2 total: 4.0+1.0+2.0+9.0=16.0.
+    EXPECT_DOUBLE_EQ(stats.totalFrameMs, 22.5);
+    EXPECT_DOUBLE_EQ(stats.maxTotalFrameMs, 16.0);
+}
+
+TEST(ResizePerfTraceStatsTest, RecordFrameAppendsPerPhaseSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(false, 1.0, 2.0, 0.5, 3.0);
+    stats.recordFrame(true, 4.0, 1.0, 2.0, 9.0);
+
+    EXPECT_EQ(stats.updateSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.renderSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.postRenderSamplesMs.size(), 2U);
+    EXPECT_EQ(stats.swapSamplesMs.size(), 2U);
+    EXPECT_DOUBLE_EQ(stats.updateSamplesMs[1], 4.0);
+    EXPECT_DOUBLE_EQ(stats.swapSamplesMs[0], 3.0);
+
+    ASSERT_EQ(stats.totalFrameSamplesMs.size(), 2U);
+    EXPECT_DOUBLE_EQ(stats.totalFrameSamplesMs[0], 6.5);
+    EXPECT_DOUBLE_EQ(stats.totalFrameSamplesMs[1], 16.0);
+}
+
+TEST(ResizePerfTraceStatsTest, RecordEventBatchAppendsDrainSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.recordEventBatch(10, 3, 5.0, 6.0, true);
+
+    ASSERT_EQ(stats.drainSamplesMs.size(), 2U);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[0], 2.0);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[1], 5.0);
+}
+
+TEST(ResizePerfTraceStatsTest, ResetIntervalCountersClearsCountersButKeepsRollingSamples)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordEventBatch(4, 1, 2.0, 1.5, false);
+    stats.recordFrame(true, 1.0, 2.0, 0.5, 3.0);
+
+    stats.resetIntervalCounters();
+
+    EXPECT_EQ(stats.eventBatches, 0U);
+    EXPECT_EQ(stats.frames, 0U);
+    EXPECT_EQ(stats.resizeFrames, 0U);
+    EXPECT_DOUBLE_EQ(stats.drainMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.updateMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.maxDrainMs, 0.0);
+    EXPECT_DOUBLE_EQ(stats.maxTotalFrameMs, 0.0);
+    EXPECT_FALSE(stats.hasSamples()) << "hasSamples() reflects this interval's counters, which were reset";
+
+    // Rolling sample windows survive the reset -- this is the whole point of the split.
+    ASSERT_EQ(stats.drainSamplesMs.size(), 1U);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs[0], 2.0);
+    ASSERT_EQ(stats.updateSamplesMs.size(), 1U);
+    EXPECT_DOUBLE_EQ(stats.updateSamplesMs[0], 1.0);
+
+    // A full aggregate reset (the interaction-transition path) clears everything, including
+    // the rolling windows.
+    stats = {};
+    EXPECT_TRUE(stats.drainSamplesMs.empty());
+    EXPECT_TRUE(stats.updateSamplesMs.empty());
+}
+
+TEST(ResizePerfTraceStatsTest, RollingSampleWindowIsCappedAtPercentileWindowSize)
+{
+    Core::ResizePerfTraceStats stats;
+    const auto capacity = Core::ResizePerfTraceStats::PERCENTILE_WINDOW_SIZE;
+    for (std::size_t i = 0; i < capacity + 50; ++i)
+    {
+        stats.recordEventBatch(1, 0, static_cast<double>(i), 0.0, false);
+    }
+
+    ASSERT_EQ(stats.drainSamplesMs.size(), capacity);
+    // Oldest samples (0..49) should have been dropped; the window should now hold 50..(capacity+49).
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs.front(), 50.0);
+    EXPECT_DOUBLE_EQ(stats.drainSamplesMs.back(), static_cast<double>(capacity + 49));
+}
+
+// =============================================================================
+// computePercentile Tests (nearest-rank percentile backing the p95/p99 figures in
+// logResizePerfTraceSummary(); perf-plan #843 phase 0)
+// =============================================================================
+
+TEST(ComputePercentileTest, EmptyInputReturnsZero)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({}, 0.95), 0.0);
+}
+
+TEST(ComputePercentileTest, SingleValueReturnsThatValue)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({42.0}, 0.99), 42.0);
+}
+
+TEST(ComputePercentileTest, P100ReturnsMax)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({5.0, 1.0, 3.0, 2.0, 4.0}, 1.0), 5.0);
+}
+
+TEST(ComputePercentileTest, P0ReturnsMin)
+{
+    EXPECT_DOUBLE_EQ(Core::computePercentile({5.0, 1.0, 3.0, 2.0, 4.0}, 0.0), 1.0);
+}
+
+TEST(ComputePercentileTest, NearestRankOnHundredSortedValues)
+{
+    std::vector<double> samples;
+    samples.reserve(100);
+    for (int i = 1; i <= 100; ++i)
+    {
+        samples.push_back(static_cast<double>(i));
+    }
+    // Nearest-rank on 100 samples indexed 0..99: p95 -> index 94 (value 95), p99 -> index 98 (value 99).
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.95), 95.0);
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.99), 99.0);
+}
+
+TEST(ComputePercentileTest, NearestRankOnTenSortedValues)
+{
+    // A non-100-sized regression case: 100 samples happens to make floor(p*(n-1)) and the
+    // correct nearest-rank formula (ceil(p*n)-1) agree, hiding a bug that only shows up at
+    // other sample counts. For n=10, p95 must select rank ceil(0.95*10)=10 -> 1-indexed rank
+    // 10 -> 0-indexed 9, i.e. the 10th (last) of 10 sorted values -- NOT index 8, which a
+    // floor(p*(n-1)) formula would incorrectly select.
+    const std::vector<double> samples = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.95), 10.0);
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.99), 10.0);
+    // p50 on 10 samples: ceil(5.0)=5 -> 0-indexed rank 4 -> value 5.
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 0.50), 5.0);
+}
+
+TEST(ComputePercentileTest, OutOfRangePercentileIsClamped)
+{
+    const std::vector<double> samples = {1.0, 2.0, 3.0};
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, 2.0), 3.0);
+    EXPECT_DOUBLE_EQ(Core::computePercentile(samples, -1.0), 1.0);
 }
 
 TEST(ResizePerfTraceStatsTest, LogSummaryIsNoopWhenNoSamples)
