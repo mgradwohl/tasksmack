@@ -4,15 +4,14 @@
 
 ## "Illegal instruction" error on launch
 
-**Cause:** The binary was built with the `optimized` or `win-optimized` preset, which targets the x86-64-v3 microarchitecture (AVX2). Intel processors before Haswell (2013) and AMD processors before Excavator (2015) do not support these instructions.
+**Cause:** You built TaskSmack yourself with the `optimized` or `win-optimized` preset, which targets the x86-64-v3 microarchitecture (AVX2). Intel processors before Haswell (2013) and AMD processors before Excavator (2015) do not support these instructions. The packages published on the [releases page](https://github.com/mgradwohl/tasksmack/releases/latest) use the `release`/`win-release` preset instead (default compiler optimizations, no AVX2 requirement), so this should not happen with an official download — if it does, please [file a bug](https://github.com/mgradwohl/tasksmack/issues/new).
 
-**Fix:** Download the `release-compatible` (`win-release-compatible` on Windows) build from the [releases page](https://github.com/mgradwohl/tasksmack/releases/latest). It targets x86-64-v2 (2009+ CPUs) and runs on any modern x86-64 machine.
-
-If you are building from source, use:
+**Fix:** Rebuild with a preset that doesn't require AVX2:
 
 ```bash
-cmake --preset release-compatible   # Linux
-cmake --preset win-release-compatible  # Windows
+cmake --preset release-compatible   # Linux, x86-64-v2 (2009+ CPUs)
+cmake --preset win-release-compatible  # Windows, x86-64-v2 (2009+ CPUs)
+# or the plain "release"/"win-release" presets, which use default optimizations
 ```
 
 ---

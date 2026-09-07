@@ -42,9 +42,11 @@ jobs:
         # Mirrors changelog.yml's tag validation: reject anything that is not
         # exactly vMAJOR.MINOR.PATCH (pre-releases, 4-part tags, branch names
         # from a stray workflow_dispatch) before any build/sign/publish work runs.
+        # Each numeric identifier must be "0" or have no leading zero (real SemVer
+        # rule) -- v01.2.3 is invalid, so a bare [0-9]+ per component is too loose.
         run: |
-          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH). Aborting release." >&2
+          if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH, no leading zeroes). Aborting release." >&2
             exit 1
           fi
 

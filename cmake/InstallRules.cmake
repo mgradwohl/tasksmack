@@ -7,13 +7,15 @@ include(GNUInstallDirs)
 # Linux packages (.deb/.tar.gz) install the executable under bin/ so the .deb lands it in
 # /usr/bin (on PATH, conventional FHS layout -- see #845) and the .tar.gz gets a bin/TaskSmack
 # layout; src/UI/AssetPath.cpp's selectAssetsDir() already has a "one level up" candidate
-# (exeDir/../share/<app>/assets) specifically for this case. Windows keeps the existing flat "."
-# layout (TaskSmack.exe at the .zip root) unchanged, since that layout is documented and NSIS
-# packaging is untested from this change.
-if(WIN32)
-    set(TASKSMACK_RUNTIME_DESTINATION .)
-else()
+# (exeDir/../share/<app>/assets) specifically for this case. Windows and macOS keep the existing
+# flat "." layout unchanged (Windows: documented, NSIS packaging untested from this change; macOS:
+# unsupported per README, but cmake/Packaging.cmake still configures a DragNDrop package for it,
+# so this is scoped to Linux specifically -- UNIX AND NOT APPLE, matching the existing convention
+# in cmake/CompilerOptions.cmake -- rather than "not Windows").
+if(UNIX AND NOT APPLE)
     set(TASKSMACK_RUNTIME_DESTINATION bin)
+else()
+    set(TASKSMACK_RUNTIME_DESTINATION .)
 endif()
 
 # Copy FreeType runtime (if shared/imported) next to the executable for portable layout
@@ -85,8 +87,10 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets/fonts
 # doesn't want a system install. Icon/menu caches (update-desktop-database,
 # gtk-update-icon-cache) are not triggered automatically by this CPack-generated .deb (no
 # postinst hook), so the entry may need a desktop-session restart to appear, same as it would
-# for any manually-copied .desktop file.
-if(NOT WIN32)
+# for any manually-copied .desktop file. UNIX AND NOT APPLE (not "not Windows"): this is a
+# Linux desktop-entry/hicolor-icon convention that doesn't apply to the separate macOS
+# DragNDrop package cmake/Packaging.cmake configures.
+if(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
     )
