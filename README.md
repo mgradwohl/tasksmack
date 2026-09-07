@@ -41,11 +41,11 @@ Some metrics require optional drivers, vendor libraries, kernel support, or elev
 
 | Platform | Package | Install |
 |----------|---------|---------|
-| Debian/Ubuntu | `.deb` | `sudo dpkg -i tasksmack-*.deb` |
+| Debian/Ubuntu | `.deb` | `sudo apt install ./TaskSmack-*.deb`, then run `TaskSmack` (installs to `/usr/bin`) |
 | Other Linux distributions | `.tar.gz` | Extract and run `bin/TaskSmack` |
 | Windows | `.zip` | Extract and run `TaskSmack.exe` |
 
-Optimized packages target x86-64-v3 and require AVX2. Use a compatible x86-64-v2 package on older CPUs; see the [User Guide](docs/guide/user-guide.md#system-requirements).
+Published packages are built with default compiler optimizations and run on any x86-64 CPU (no AVX2 required). Building from source lets you target a different microarchitecture; see the [User Guide](docs/guide/user-guide.md#system-requirements).
 
 Every release asset is signed with Sigstore; see [Verifying a Release](docs/guide/user-guide.md#verifying-a-release) for how to check one before installing it.
 

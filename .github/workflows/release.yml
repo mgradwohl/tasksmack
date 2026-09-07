@@ -13,12 +13,97 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
+  # Exact apt.llvm.org package version currently served for clang-22 (noble).
+  # apt.llvm.org does not retain old snapshots per major version -- it only
+  # ever serves the latest build for a given major -- so this pin cannot
+  # survive indefinitely. When apt rotates the snapshot forward, build-linux's
+  # "Assert exact LLVM package version" step fails with the new version
+  # string instead of silently building with it. Review the change, then
+  # update this value (found via:
+  #   curl -fsSL https://apt.llvm.org/noble/dists/llvm-toolchain-noble-22/main/binary-amd64/Packages.gz \
+  #     | gunzip | grep -A2 '^Package: clang-22$'
+  # ) so a Linux toolchain change is always a deliberate, reviewed PR rather
+  # than a change in apt repository state between two runs of the same tag.
+  LLVM_LINUX_EXACT_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
 
 permissions: {}
 
 jobs:
+  validate:
+    name: Validate Release Tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      REF_TYPE: ${{ github.ref_type }}
+    permissions:
+      contents: read
+    steps:
+      - name: Validate ref is an actual tag
+        # github.ref_name is just the short name with no "refs/tags/"/"refs/heads/"
+        # prefix, so a workflow_dispatch run manually triggered from a branch named
+        # e.g. "v0.8.0" would pass the semver regex below identically to a real tag --
+        # and if that branch happened to point at main HEAD, every later check would
+        # also pass, letting build/sign/publish run without an actual tag ever having
+        # been pushed. Reject anything that isn't really a tag ref before checking its name.
+        run: |
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "Ref '$TAG_NAME' is a $REF_TYPE, not a tag. Releases must be triggered by an actual tag push (or a workflow_dispatch run against an existing tag ref). Aborting release." >&2
+            exit 1
+          fi
+
+      - name: Validate tag is strict semver
+        # Mirrors changelog.yml's tag validation: reject anything that is not
+        # exactly vMAJOR.MINOR.PATCH (pre-releases, 4-part tags, branch names
+        # from a stray workflow_dispatch) before any build/sign/publish work runs.
+        # Each numeric identifier must be "0" or have no leading zero (real SemVer
+        # rule) -- v01.2.3 is invalid, so a bare [0-9]+ per component is too loose.
+        run: |
+          if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH, no leading zeroes). Aborting release." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history is required to resolve the tag SHA and compare it
+          # against origin/main below.
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        # A release must publish exactly what is on main. Abort if the tag
+        # was created from, or has drifted from, the current main HEAD.
+        run: |
+          TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
+          MAIN_SHA=$(git rev-parse origin/main)
+          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting release." >&2
+            exit 1
+          fi
+
+      - name: Verify tag matches project version
+        # Catches a missed version bump before it ships assets whose embedded
+        # metadata/filenames disagree with the GitHub Release tag.
+        run: |
+          TAG_VERSION="${TAG_NAME#v}"
+          # \S+ (not a fixed X.Y.Z group count) so a 4-component or otherwise malformed
+          # PROJECT_VERSION is compared in full rather than silently truncated to a false
+          # match. "|| true" stops a non-matching grep (exit 1) from tripping this job's
+          # `set -e` before the explicit empty-value check below can report a clear error.
+          PROJECT_VERSION=$(grep -oP '^project\(TaskSmack VERSION \K\S+' CMakeLists.txt || true)
+          if [ -z "$PROJECT_VERSION" ]; then
+            echo "Could not determine PROJECT_VERSION from CMakeLists.txt." >&2
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "Tag version '$TAG_VERSION' does not match CMakeLists.txt PROJECT_VERSION '$PROJECT_VERSION'. Aborting release." >&2
+            exit 1
+          fi
+          echo "Tag version matches PROJECT_VERSION: $PROJECT_VERSION"
+
   build-linux:
     name: Build Linux Packages
+    needs: [validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -26,10 +111,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set deterministic build timestamp
+        # Reproducible-builds.org SOURCE_DATE_EPOCH, derived from the tagged
+        # commit rather than wall-clock time. CMake's generated version.h and
+        # CPack's archive entry timestamps both honor it (see CMakeLists.txt),
+        # so two independent builds of the same tag produce identical output.
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          expect-exact-version: ${{ env.LLVM_LINUX_EXACT_VERSION }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -39,6 +132,17 @@ jobs:
         with:
           key: linux-release-package-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+
+      - name: Record toolchain versions
+        # Documents the exact release environment for cross-run investigation.
+        run: |
+          echo "=== Release toolchain versions (Linux) ==="
+          clang --version
+          ld.lld --version
+          cmake --version
+          ninja --version
+          python3 --version
+          dpkg-query -W -f='clang-${{ env.LLVM_VERSION }} package: ${Version}\n' "clang-${{ env.LLVM_VERSION }}"
 
       - name: Configure
         run: cmake --preset release -DPython3_EXECUTABLE="$(which python)"
@@ -61,14 +165,108 @@ jobs:
           path: dist/*
           retention-days: 90
 
+  verify-reproducibility:
+    name: Verify Linux Build Reproducibility
+    needs: [validate, build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Advisory only: rebuilds the same tag from a clean workspace and compares
+    # digests against build-linux's packages. Surfaces regressions in the
+    # reproducible-build policy (see CONTRIBUTING.md's Release Reproducibility
+    # section) without blocking publishing on it -- it is not part of
+    # create-release's `needs`.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read  # Required to download the linux-packages artifact from this run
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set deterministic build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+          expect-exact-version: ${{ env.LLVM_LINUX_EXACT_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Configure
+        # No ccache here (unlike build-linux): a genuinely independent rebuild must not
+        # be able to serve a translation unit's compiled output from a prior run instead
+        # of actually re-invoking the compiler, or this check would compare a cached
+        # object against itself instead of testing real build determinism.
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Package
+        run: |
+          cd build/release
+          cpack -G "TGZ;DEB"
+
+      - name: Download build-linux's packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: linux-packages
+          path: original-dist/
+
+      - name: Compare digests
+        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed locally:
+        # CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/ itself), which the
+        # existing "Upload artifacts" step uploads along with the real packages. sha256sum
+        # on a directory errors and, under this job's `set -e` default, would abort before
+        # ever comparing anything. Restrict both operations to regular files.
+        run: |
+          echo "=== build-linux (first build) ==="
+          find original-dist -maxdepth 1 -type f -exec sha256sum {} +
+          echo "=== verify-reproducibility (second, independent build) ==="
+          find dist -maxdepth 1 -type f -exec sha256sum {} +
+          FAILED=0
+          for f in dist/*; do
+            [[ -f "$f" ]] || continue
+            name=$(basename "$f")
+            orig="original-dist/${name}"
+            if [[ ! -f "$orig" ]]; then
+              echo "::warning::No matching original artifact for $name -- treating as a reproducibility failure, not skipping it."
+              FAILED=1
+              continue
+            fi
+            if ! cmp -s "$f" "$orig"; then
+              echo "::warning::$name differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+              FAILED=1
+            fi
+          done
+          if [[ "$FAILED" -eq 0 ]]; then
+            echo "All Linux packages are byte-for-byte identical across two independent builds of this tag."
+          else
+            echo "Reproducibility check found differences (advisory only; did not block the release)." >&2
+            exit 1
+          fi
+
   build-windows:
     name: Build Windows Packages
+    needs: [validate]
     runs-on: windows-2025
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set deterministic build timestamp
+        # Reproducible-builds.org SOURCE_DATE_EPOCH, derived from the tagged
+        # commit rather than wall-clock time. CMake's generated version.h and
+        # CPack's archive entry timestamps both honor it (see CMakeLists.txt),
+        # so two independent builds of the same tag produce identical output.
+        shell: pwsh
+        run: |
+          $epoch = git log -1 --format=%ct
+          "SOURCE_DATE_EPOCH=$epoch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -83,6 +281,17 @@ jobs:
         with:
           key: windows-release-package-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
+
+      - name: Record toolchain versions
+        # Documents the exact release environment for cross-run investigation.
+        shell: pwsh
+        run: |
+          Write-Host "=== Release toolchain versions (Windows) ==="
+          clang --version
+          ld.lld --version
+          cmake --version
+          ninja --version
+          python --version
 
       - name: Configure
         shell: pwsh
@@ -114,9 +323,279 @@ jobs:
           path: dist/*
           retention-days: 90
 
+  verify-reproducibility-windows:
+    name: Verify Windows Build Reproducibility
+    needs: [validate, build-windows]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    # Advisory only -- see verify-reproducibility (Linux)'s comment; not part of
+    # create-release's `needs`.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read  # Required to download the windows-packages artifact from this run
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set deterministic build timestamp
+        shell: pwsh
+        run: |
+          $epoch = git log -1 --format=%ct
+          "SOURCE_DATE_EPOCH=$epoch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Configure
+        # No ccache here (unlike build-windows) -- see verify-reproducibility (Linux)'s
+        # comment: a genuinely independent rebuild must not be able to serve a cached
+        # object instead of actually re-invoking the compiler.
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
+
+      - name: Build
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          cd build/win-release
+          cpack -G "ZIP"
+
+      - name: Download build-windows's packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-packages
+          path: original-dist/
+
+      - name: Compare digests
+        # dist/* also contains CPack's _CPack_Packages staging directory (confirmed
+        # locally on Linux; CPack leaves it under CPACK_PACKAGE_DIRECTORY, i.e. dist/
+        # itself), which the existing "Upload artifacts" step uploads along with the real
+        # packages. Get-FileHash errors on a directory, so -File restricts Get-ChildItem
+        # to regular files up front.
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem dist/* -File | ForEach-Object {
+            $orig = Join-Path "original-dist" $_.Name
+            if (-not (Test-Path -LiteralPath $orig -PathType Leaf)) {
+              Write-Host "::warning::No matching original artifact for $($_.Name) -- treating as a reproducibility failure, not skipping it."
+              $failed = $true
+              return
+            }
+            $rebuiltHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $originalHash = (Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash
+            Write-Host "$($_.Name): rebuilt=$rebuiltHash original=$originalHash"
+            if ($rebuiltHash -ne $originalHash) {
+              Write-Host "::warning::$($_.Name) differs between the two independent builds of this tag -- see CONTRIBUTING.md's Release Reproducibility section."
+              $failed = $true
+            }
+          }
+          if ($failed) {
+            Write-Host "Reproducibility check found differences (advisory only; did not block the release)."
+            exit 1
+          } else {
+            Write-Host "All Windows packages are byte-for-byte identical across two independent builds of this tag."
+          }
+
+  validate-linux-package:
+    name: Validate Linux Release Artifacts
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # A bare, no-dev-tools container so installing the .deb exercises exactly
+    # the runtime Depends declared in cmake/Packaging.cmake, rather than
+    # reusing the build-linux runner where libc++/mesa dev packages already
+    # happen to be present.
+    container:
+      image: ubuntu:24.04
+    # Container jobs default `run` steps to `sh` (dash on Ubuntu), not bash, even though
+    # every other job in this workflow gets bash by default on the bare VM runner. The
+    # steps below use bash-only [[ ... ]] conditions, which dash doesn't support.
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      actions: read  # Required to download the linux-packages artifact from this run
+    steps:
+      - name: Download Linux packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: linux-packages
+          path: dist/
+
+      - name: Install .deb in a clean environment
+        run: |
+          apt-get update
+          apt-get install -y ./dist/*.deb
+
+      - name: Verify installed .deb layout
+        # cmake/InstallRules.cmake installs the Linux executable to bin/, so
+        # the .deb places it at the conventional /usr/bin/TaskSmack (on PATH).
+        run: |
+          BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
+          if [[ -z "$BIN" || ! -x "$BIN" ]]; then
+            echo "TaskSmack binary missing or not executable after .deb install" >&2
+            exit 1
+          fi
+          echo "Installed binary: $BIN"
+
+      - name: Install mesa software rendering
+        # llvmpipe (via SDL's "offscreen" video driver, below) needs no X server at all --
+        # simpler and stronger than an Xvfb-backed smoke check, and this is the same
+        # mesa/GL stack Xvfb would have needed anyway. libgl1-mesa-dri alone is not enough:
+        # it provides the DRI/Gallium driver modules but not the EGL loader (libEGL.so.1,
+        # from libegl1) or Mesa's EGL vendor implementation (libegl-mesa0) that SDL3's
+        # offscreen backend needs to create a GL context at all -- confirmed these are
+        # separate packages (apt-cache depends libgl1-mesa-dri lists neither), and this
+        # dev environment's own working offscreen test only succeeded because a full
+        # dev-toolchain install had already pulled both packages in for unrelated reasons.
+        run: apt-get install -y libgl1-mesa-dri libegl1 libegl-mesa0
+
+      - name: Define asset-resolution smoke check
+        # A bounded "is it still running" check alone doesn't prove assets loaded --
+        # src/UI/AssetPath.cpp and Theme.cpp both fall back gracefully on missing
+        # fonts/themes, so a broken installed/extracted asset layout would still pass a
+        # plain liveness check. Assert the actual log lines that only appear once the
+        # icon font and at least one theme have loaded from the real assets directory.
+        run: |
+          cat > /tmp/smoke-check.sh <<'SMOKE_CHECK'
+          #!/usr/bin/env bash
+          set -uo pipefail
+          label="$1"
+          bin="$2"
+          log="$3"
+          SDL_VIDEODRIVER=offscreen TASKSMACK_LOG_LEVEL=debug timeout 5 "$bin" > "$log" 2>&1
+          status=$?
+          cat "$log"
+          if [[ "$status" -ne 124 ]]; then
+            echo "$label: TaskSmack exited on its own (status=$status) instead of running until the timeout killed it; treating as a crash." >&2
+            exit 1
+          fi
+          if ! grep -q "Assets directory found:" "$log"; then
+            echo "$label: assets directory was not found (see the 'Assets directory not found' fallback warning above, if present); installed/extracted asset layout is broken." >&2
+            exit 1
+          fi
+          if grep -q "Icon font not found" "$log"; then
+            echo "$label: icon font failed to load even though an assets directory was found." >&2
+            exit 1
+          fi
+          if ! grep -q "Loaded theme:" "$log"; then
+            echo "$label: no themes loaded; theme directory is missing or empty." >&2
+            exit 1
+          fi
+          echo "$label: assets (icon font + themes) resolved correctly; TaskSmack ran until the timeout as expected."
+          SMOKE_CHECK
+          chmod +x /tmp/smoke-check.sh
+
+      - name: Smoke-check installed .deb binary
+        run: |
+          BIN=$(dpkg -L tasksmack | grep -E '/bin/TaskSmack$')
+          /tmp/smoke-check.sh "deb" "$BIN" /tmp/deb-run.log
+
+      - name: Extract and verify .tar.gz layout
+        run: |
+          mkdir -p /tmp/tgz-extract
+          tar -xzf dist/*.tar.gz -C /tmp/tgz-extract
+          BIN=$(find /tmp/tgz-extract -mindepth 3 -maxdepth 3 -type f -path '*/bin/TaskSmack')
+          if [[ -z "$BIN" || ! -x "$BIN" ]]; then
+            echo "TaskSmack binary missing or not executable in .tar.gz" >&2
+            exit 1
+          fi
+          echo "tar.gz binary found: $BIN"
+          echo "TGZ_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Smoke-check extracted .tar.gz binary
+        run: /tmp/smoke-check.sh "tar.gz" "$TGZ_BIN" /tmp/tgz-run.log
+
+  validate-windows-package:
+    name: Validate Windows Release Artifacts
+    needs: [build-windows]
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read  # Required to download the windows-packages artifact from this run
+    steps:
+      - name: Download Windows packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-packages
+          path: dist/
+
+      - name: Extract and verify .zip layout
+        # The documented layout (README/User Guide: "Extract and run TaskSmack.exe") is flat:
+        # CPack produces one top-level directory, with TaskSmack.exe directly inside it. A
+        # recursive search would also accept TaskSmack.exe nested at any depth, silently
+        # passing even if it moved somewhere users can no longer find per the documented steps.
+        shell: pwsh
+        run: |
+          $zipFile = Get-ChildItem dist/*.zip | Select-Object -First 1
+          Expand-Archive -Path $zipFile.FullName -DestinationPath extracted
+          $topLevelDirs = Get-ChildItem -Path extracted -Directory
+          if ($topLevelDirs.Count -ne 1) {
+            Write-Error "Expected exactly one top-level directory in the extracted .zip, found $($topLevelDirs.Count)"
+            exit 1
+          }
+          $exe = Join-Path $topLevelDirs[0].FullName "TaskSmack.exe"
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Write-Error "TaskSmack.exe not found directly under the .zip's top-level directory ($($topLevelDirs[0].FullName)); documented layout requires it at the package root, not nested."
+            exit 1
+          }
+          Write-Host "Found executable: $exe"
+          "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify packaged asset layout
+        # The smoke check below only proves the process stays alive; src/UI/AssetPath.cpp and
+        # Theme.cpp both fall back gracefully on missing assets, so a broken packaged asset
+        # layout would still pass a plain liveness check (see the equivalent Linux assertions
+        # in validate-linux-package). Windows keeps the flat "." install destination
+        # (TaskSmack.exe and share/ as siblings), so assert directly on the exact
+        # exeDir/share/tasksmack/assets path AssetPath.cpp resolves at runtime, rather than
+        # trying to capture a GUI app's console output on Windows.
+        shell: pwsh
+        run: |
+          $iconFont = Join-Path $env:TASKSMACK_PKG_ROOT "share\tasksmack\assets\fonts\fa-solid-900.ttf"
+          if (-not (Test-Path -LiteralPath $iconFont -PathType Leaf)) {
+            Write-Error "Icon font not found at $iconFont (exeDir/share/tasksmack/assets); packaged asset layout is broken."
+            exit 1
+          }
+          $themesDir = Join-Path $env:TASKSMACK_PKG_ROOT "share\tasksmack\assets\themes"
+          $themeCount = (Get-ChildItem -Path $themesDir -Filter "*.toml" -ErrorAction SilentlyContinue).Count
+          if ($themeCount -lt 1) {
+            Write-Error "No theme .toml files found under $themesDir; packaged asset layout is broken."
+            exit 1
+          }
+          Write-Host "Packaged assets verified: icon font present, $themeCount theme(s) found under $themesDir"
+
+      - name: Smoke-check extracted executable
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath $env:TASKSMACK_EXE -PassThru
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            Write-Error "TaskSmack.exe exited within 5 seconds of launch (exit code $($proc.ExitCode))"
+            exit 1
+          }
+          Stop-Process -Id $proc.Id -Force
+          Write-Host "Smoke check passed: TaskSmack.exe ran for at least 5 seconds without exiting."
+
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, validate-linux-package, validate-windows-package]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -133,7 +612,12 @@ jobs:
           label=$(printf '%s' "$label" | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "label=${label}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate SBOM
+      - name: Generate source SBOM
+        # Generated from the source tree, not from the built Linux/Windows
+        # package contents -- it inventories what went into the build, not
+        # what's inside the shipped archives. Named and documented as such
+        # (see CONTRIBUTING.md's Release Artifacts section) so it isn't
+        # mistaken for a package-level inventory.
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
@@ -157,7 +641,7 @@ jobs:
       - name: Stage SBOM into dist
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
-        run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-sbom.spdx.json"
+        run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

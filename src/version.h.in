@@ -19,10 +19,10 @@
 #define @PROJECT_NAME_UPPER@_COMPILER_ID "@CMAKE_CXX_COMPILER_ID@"
 #define @PROJECT_NAME_UPPER@_COMPILER_VERSION "@CMAKE_CXX_COMPILER_VERSION@"
 
-// Compile timestamp (set at actual compile time via predefined macros)
-// Note: Using __DATE__/__TIME__ prevents reproducible builds
-#define @PROJECT_NAME_UPPER@_BUILD_DATE __DATE__
-#define @PROJECT_NAME_UPPER@_BUILD_TIME __TIME__
+// Configure-time build timestamp (UTC). Deterministic when SOURCE_DATE_EPOCH
+// is set in the environment (release builds do this); see CMakeLists.txt.
+#define @PROJECT_NAME_UPPER@_BUILD_DATE "@TASKSMACK_BUILD_DATE@"
+#define @PROJECT_NAME_UPPER@_BUILD_TIME "@TASKSMACK_BUILD_TIME@"
 
 namespace @PROJECT_NAME_LOWER@
 {
@@ -40,9 +40,10 @@ struct Version
     static constexpr const char* COMPILER_ID = "@CMAKE_CXX_COMPILER_ID@";
     static constexpr const char* COMPILER_VERSION = "@CMAKE_CXX_COMPILER_VERSION@";
 
-    // Compile timestamp (actual compile time of the translation unit)
-    static constexpr const char* BUILD_DATE = __DATE__;
-    static constexpr const char* BUILD_TIME = __TIME__;
+    // Configure-time build timestamp (UTC); see CMakeLists.txt for the
+    // SOURCE_DATE_EPOCH-based determinism policy.
+    static constexpr const char* BUILD_DATE = @PROJECT_NAME_UPPER@_BUILD_DATE;
+    static constexpr const char* BUILD_TIME = @PROJECT_NAME_UPPER@_BUILD_TIME;
 };
 
 } // namespace @PROJECT_NAME_LOWER@

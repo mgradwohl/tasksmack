@@ -28,6 +28,13 @@ include(cmake/Options.cmake)
 include(cmake/CompilerOptions.cmake)
 include(cmake/Dependencies.cmake)
 
+# Needed here (not just in cmake/InstallRules.cmake, which includes it again -- harmless,
+# GNUInstallDirs guards against double inclusion) so CMAKE_INSTALL_DATADIR is already set
+# when version.h.in is configured below. Without this, @CMAKE_INSTALL_DATADIR@ substitutes to
+# an empty string and TASKSMACK_INSTALL_DATADIR ships empty, breaking every installed-asset
+# search candidate in src/UI/AssetPath.cpp that depends on it.
+include(GNUInstallDirs)
+
 # Generate version header from template
 string(TOUPPER ${PROJECT_NAME} PROJECT_NAME_UPPER)
 string(TOLOWER ${PROJECT_NAME} PROJECT_NAME_LOWER)
@@ -44,6 +51,17 @@ execute_process(
 if(GIT_COMMIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUTPUT STREQUAL "")
     set(GIT_COMMIT ${GIT_COMMIT_OUTPUT})
 endif()
+
+# Build date/time embedded in version.h. string(TIMESTAMP) honors the
+# reproducible-builds.org SOURCE_DATE_EPOCH environment variable when it is
+# set, producing an identical value for a given commit instead of true
+# wall-clock time -- release builds export SOURCE_DATE_EPOCH from the tagged
+# commit (see .github/workflows/release.yml) so two builds of the same tag
+# embed the same timestamp. Local/dev builds leave it unset and get the
+# actual configure-time timestamp, which is fine since dev builds have no
+# reproducibility requirement.
+string(TIMESTAMP TASKSMACK_BUILD_DATE "%b %d %Y" UTC)
+string(TIMESTAMP TASKSMACK_BUILD_TIME "%H:%M:%S" UTC)
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in

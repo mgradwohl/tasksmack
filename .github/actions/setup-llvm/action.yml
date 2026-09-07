@@ -29,6 +29,15 @@ inputs:
     description: 'Install ccache'
     required: false
     default: 'true'
+  expect-exact-version:
+    description: >
+      Exact apt package version to require for clang-<llvm-version> (e.g.
+      '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80').
+      When set, fails the step if apt.llvm.org served a different version
+      than expected, so a release build never silently picks up a toolchain
+      change. Leave empty (the default) to skip the check.
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -117,6 +126,22 @@ runs:
         sudo timeout --kill-after=10s 180s apt-get update
         sudo timeout --kill-after=10s 300s apt-get install -y $PACKAGES
 
+    - name: Assert exact LLVM package version
+      if: ${{ inputs.expect-exact-version != '' }}
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+        EXPECTED_VERSION: ${{ inputs.expect-exact-version }}
+      run: |
+        ACTUAL_VERSION=$(dpkg-query -W -f='${Version}' "clang-${LLVM_VERSION}")
+        if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
+          echo "::error::apt.llvm.org served clang-${LLVM_VERSION} version '$ACTUAL_VERSION', but this workflow is pinned to '$EXPECTED_VERSION'."
+          echo "apt.llvm.org only retains the latest snapshot per major version, so this is expected once it rotates forward." >&2
+          echo "Confirm the new version is acceptable, then update the pinned value passed as expect-exact-version to '$ACTUAL_VERSION'." >&2
+          exit 1
+        fi
+        echo "Verified clang-${LLVM_VERSION} exact package version: $ACTUAL_VERSION"
+
     - name: Configure LLVM alternatives
       shell: bash
       env:
@@ -178,6 +203,7 @@ runs:
         echo "=== LLVM Installation Summary ==="
         clang --version | head -1
         clang++ --version | head -1
+        ld.lld --version
         if [[ "$INSTALL_CLANG_FORMAT" == "true" ]]; then
           clang-format --version
         fi
