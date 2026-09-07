@@ -180,14 +180,12 @@ jobs:
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: linux-release-repro-check-llvm${{ env.LLVM_VERSION }}
-          max-size: 500M
-
       - name: Configure
-        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)"
+        # No ccache here (unlike build-linux): a genuinely independent rebuild must not
+        # be able to serve a translation unit's compiled output from a prior run instead
+        # of actually re-invoking the compiler, or this check would compare a cached
+        # object against itself instead of testing real build determinism.
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build
         run: cmake --build --preset release
@@ -333,17 +331,14 @@ jobs:
         with:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-        with:
-          key: windows-release-repro-check-llvm${{ env.LLVM_SEMVER_VERSION }}
-          max-size: 500M
-
       - name: Configure
+        # No ccache here (unlike build-windows) -- see verify-reproducibility (Linux)'s
+        # comment: a genuinely independent rebuild must not be able to serve a cached
+        # object instead of actually re-invoking the compiler.
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        run: cmake --preset win-release -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build
         shell: pwsh
@@ -400,6 +395,12 @@ jobs:
     # happen to be present.
     container:
       image: ubuntu:24.04
+    # Container jobs default `run` steps to `sh` (dash on Ubuntu), not bash, even though
+    # every other job in this workflow gets bash by default on the bare VM runner. The
+    # steps below use bash-only [[ ... ]] conditions, which dash doesn't support.
+    defaults:
+      run:
+        shell: bash
     permissions:
       contents: read
       actions: read  # Required to download the linux-packages artifact from this run
