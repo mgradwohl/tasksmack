@@ -105,7 +105,15 @@ void renderDiskCell(const std::string& deviceName,
 
     auto diskPlotFn = [&]()
     {
-        auto diskCfg = UI::Widgets::autoFitHistoryConfig("##DiskPlot", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec);
+        // deviceName.c_str() (not a constant "##DiskPlot"), so RenderMetrics records a distinct
+        // entry per disk instead of collapsing every disk's plot into one: HistoryChart reads
+        // config.id verbatim as its RenderMetrics key, ignoring the surrounding PushID(deviceName)
+        // scope entirely -- that scope only disambiguates ImGui/ImPlot's own widget state, not
+        // this. ImPlotFlags_NoTitle keeps the plot title hidden (deviceName has no "##" prefix to
+        // hide it via ImPlot's usual Label##ID convention) without needing to allocate a new
+        // string just to add one (#823 review).
+        auto diskCfg = UI::Widgets::autoFitHistoryConfig(deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec);
+        diskCfg.flags |= ImPlotFlags_NoTitle;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(diskCfg);
         if (chart.active())

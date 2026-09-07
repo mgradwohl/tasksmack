@@ -81,6 +81,14 @@ struct ChartGridDimensions
     float bestScore = -1.0F;
     size_t bestWaste = config.itemCount; // rows*cols - itemCount for the current best
     bool bestFits = false;
+    // Largest column count whose width alone (ignoring height) fits availableWidth -- tracked
+    // separately from bestFits/bestColumns because it's the right fallback for a panel that's
+    // wide enough but too short: fewer columns there would only add more rows and thus *more*
+    // vertical overflow, not less, since minCellWidth/minCellHeight are independent floors and
+    // reducing columns never reduces itemCount's row requirement below what a wider column count
+    // already achieves. Defaults to 1 -- the correct fallback when width itself is infeasible even
+    // for a single column, matching the general no-fit fallback below.
+    size_t widthFittingColumns = 1;
 
     for (size_t columns = 1; columns <= config.itemCount; ++columns)
     {
@@ -95,7 +103,7 @@ struct ChartGridDimensions
         const float widthForCells = std::max(0.0F, safeWidth - (columnsF * config.columnOverhead));
         const float heightForCells = std::max(0.0F, safeHeight - (rowsF * config.rowOverhead));
 
-        // Score (and the fit check just below) use the *clamped* cell size, not the raw
+        // Score (and the fit checks just below) use the *clamped* cell size, not the raw
         // division: scoring on the raw size let a candidate whose minCellHeight/minCellWidth
         // floor pushed its actual rendered size past what naturally divides into the available
         // space still win, silently overflowing the panel and forcing an unwanted outer
@@ -104,8 +112,13 @@ struct ChartGridDimensions
         const float cellHeight = std::max(heightForCells / rowsF, config.minCellHeight);
         const float score = std::min(cellWidth, cellHeight * aspect);
         const size_t waste = (rows * columns) - config.itemCount;
-        const bool fits = ((cellWidth + config.columnOverhead) * columnsF <= safeWidth * (1.0F + FIT_TOLERANCE)) &&
-                          ((cellHeight + config.rowOverhead) * rowsF <= safeHeight * (1.0F + FIT_TOLERANCE));
+        const bool widthFits = (cellWidth + config.columnOverhead) * columnsF <= safeWidth * (1.0F + FIT_TOLERANCE);
+        const bool heightFits = (cellHeight + config.rowOverhead) * rowsF <= safeHeight * (1.0F + FIT_TOLERANCE);
+        const bool fits = widthFits && heightFits;
+        if (widthFits)
+        {
+            widthFittingColumns = columns;
+        }
 
         // Two candidates commonly tie exactly (e.g. an NxM and MxN split of a square panel
         // compute the same ratio via swapped operands), so tie-detection needs a tolerance
@@ -133,20 +146,23 @@ struct ChartGridDimensions
         }
     }
 
-    // If no candidate fits, prefer a single column over whatever the score-based loop above
-    // landed on. The score there is computed from a *clamped* cellWidth (floored to minCellWidth),
+    // If no candidate fits both dimensions, fall back to the largest column count whose width
+    // alone fits (widthFittingColumns) rather than unconditionally collapsing to one column. The
+    // score-based loop above can't be trusted here: its score comes from a *clamped* cellWidth,
     // which reflects what a cell "should" get, not what a ImGuiTableFlags_SizingStretchSame table
     // will actually grant it -- that table always divides availableWidth evenly across the chosen
     // column count, with no awareness of minCellWidth. So a floor-clamped score can still favor a
     // high column count in a narrow panel (e.g. reporting a 320px cellWidth for 4 columns when the
-    // panel is only 300px wide), and the renderer then gives each column ~75px, crushing every
-    // chart well below its floor instead of the vertical-scrolling fallback this is meant to be a
-    // last resort for. Falling back to columns=1 sidesteps that mismatch entirely: cellWidth
-    // becomes the full available width (as wide as a single column can ever be), and the overflow
-    // this branch exists for shows up only as extra rows, which grid-level scrolling can handle.
+    // panel is only 300px wide), crushing every chart's real width well below its floor.
+    // widthFittingColumns sidesteps that mismatch for the "width is fine, only height is
+    // infeasible" case (e.g. a wide-but-short panel): using it instead of collapsing to one column
+    // keeps rows at their natural minimum, since fewer columns there would only mean *more* rows
+    // and thus more vertical overflow for the scrolling fallback to absorb, not less. It's still
+    // exactly 1 whenever width itself is what's infeasible (nothing wider than a single column
+    // fits), matching the narrow-panel case this fallback originally targeted.
     if (!bestFits)
     {
-        bestColumns = 1;
+        bestColumns = widthFittingColumns;
     }
 
     const size_t bestRows = (config.itemCount + bestColumns - 1) / bestColumns;

@@ -125,6 +125,29 @@ TEST(ChartGridLayoutTest, NoFittingShapeFallsBackToSingleColumn)
     EXPECT_EQ(grid.rows, 8U);
 }
 
+TEST(ChartGridLayoutTest, HeightInfeasiblePanelKeepsColumnsInsteadOfCollapsingToOne)
+{
+    // Companion regression to NoFittingShapeFallsBackToSingleColumn above, covering the opposite
+    // no-fit shape: a panel wide enough for many columns but too short for even one row. Blindly
+    // falling back to a single column here (as an earlier version of this fix did) would turn a
+    // one-row, eight-column layout into an eight-row, one-column layout -- replacing a small
+    // height overflow with roughly 8x the vertical overflow, since width was never the problem.
+    // Fewer columns only ever helps when width itself doesn't fit; when it does, the widest
+    // column count should be kept so rows -- and the overflow scrolling has to absorb -- stay at
+    // their natural minimum.
+    const ChartGridConfig config{.availableWidth = 2200.0F,
+                                 .availableHeight = 100.0F,
+                                 .itemCount = 8,
+                                 .minCellWidth = 240.0F,
+                                 .minCellHeight = 140.0F,
+                                 .columnOverhead = 8.0F,
+                                 .rowOverhead = 4.0F};
+    const auto grid = computeChartGridLayout(config);
+
+    EXPECT_EQ(grid.columns, 8U);
+    EXPECT_EQ(grid.rows, 1U);
+}
+
 TEST(ChartGridLayoutTest, RowAndColumnOverheadAreReservedSoTotalFitsExactly)
 {
     // columnOverhead/rowOverhead model a fixed per-cell cost the *renderer* adds outside

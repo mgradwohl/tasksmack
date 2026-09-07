@@ -109,13 +109,16 @@ void renderCpuCoresSection(RenderContext& ctx)
         // measurement at all, and ended up over-subtracting from the plot height).
         // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
         // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
-        // this lambda ever sees a height), the label row, and renderHistoryWithNowBars' nested
-        // table CellPadding -- omitting any of those understates the floor, so the grid can pick a
-        // cellHeight that only fits a plot smaller than MIN_PLOT_HEIGHT once the real overhead is
-        // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
-        // grid falling back to more rows/scrolling (#823 review).
+        // this lambda ever sees a height), the label row plus its own auto-advance ItemSpacing.y,
+        // the explicit ImGui::Spacing() call below the label (which adds a *second* ItemSpacing.y
+        // of its own -- Spacing() is a zero-size item, so it still costs one full ItemSpacing.y
+        // like any other item), and renderHistoryWithNowBars' nested table CellPadding -- omitting
+        // any of those understates the floor, so the grid can pick a cellHeight that only fits a
+        // plot smaller than MIN_PLOT_HEIGHT once the real overhead is subtracted, which then clips
+        // invisibly against the cell's NoScrollbar instead of the grid falling back to more
+        // rows/scrolling (#823 review).
         const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + ImGui::GetTextLineHeight() +
-                                          ImGui::GetStyle().ItemSpacing.y + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                                          (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
         const float barColumnAllowance = BAR_WIDTH; // extra width renderHistoryWithNowBars reserves for the NowBar column
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -199,9 +202,19 @@ void renderCpuCoresSection(RenderContext& ctx)
                             const auto& themeRef = theme;
                             const auto& axisCfg = axisConfig;
 
-                            auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg, plotHeight]()
+                            auto plotFn = [&timeData, &sampleData, &themeRef, &axisCfg, &coreLabel, plotHeight]()
                             {
-                                auto coreCfg = UI::Widgets::percentHistoryConfig("##PerCorePlot", axisCfg.xMin, axisCfg.xMax);
+                                // coreLabel.c_str() (not a constant "##PerCorePlot"), so RenderMetrics
+                                // records a distinct entry per core instead of collapsing every core's
+                                // plot into one: HistoryChart reads config.id verbatim as its
+                                // RenderMetrics key, ignoring the surrounding PushID(coreIdx) scope
+                                // entirely -- that scope only disambiguates ImGui/ImPlot's own widget
+                                // state, not this. ImPlotFlags_NoTitle keeps the plot title hidden
+                                // (coreLabel has no "##" prefix to hide it via ImPlot's usual
+                                // Label##ID convention) without needing to allocate a new string just
+                                // to add one (#823 review).
+                                auto coreCfg = UI::Widgets::percentHistoryConfig(coreLabel.c_str(), axisCfg.xMin, axisCfg.xMax);
+                                coreCfg.flags |= ImPlotFlags_NoTitle;
                                 coreCfg.showLegend = false;
                                 coreCfg.height = plotHeight;
                                 const UI::Widgets::HistoryChart chart(coreCfg);
