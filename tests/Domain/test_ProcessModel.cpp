@@ -477,6 +477,69 @@ TEST(ProcessModelTest, FindSnapshotReflectsLatestRefreshEvenWithoutCopyingFullVe
     EXPECT_GT(after->cpuPercent, 0.0);
 }
 
+TEST(ProcessModelTest, FindSnapshotWithVersionReturnsSnapshotAndCurrentVersionTogether)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto found = model.findSnapshotWithVersion(100);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->snapshot.pid, 100);
+    EXPECT_EQ(found->version, model.snapshotVersion());
+}
+
+TEST(ProcessModelTest, FindSnapshotWithVersionReturnsNulloptForUnknownPid)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    EXPECT_FALSE(model.findSnapshotWithVersion(999).has_value());
+}
+
+TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
+{
+    // Regression test for the ShellLayer race this method was introduced to fix: a caller
+    // that reads a snapshot and the version as two separate calls (findSnapshot() then
+    // snapshotVersion()) can have a refresh() land in between them, pairing a snapshot from
+    // one generation with the version number of the next. findSnapshotWithVersion() must
+    // always return a version that matches the exact generation the returned snapshot came
+    // from, so two calls made across a refresh() must report two distinct, increasing
+    // versions -- never the same version for two different snapshot generations.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    const auto before = model.findSnapshotWithVersion(100);
+    ASSERT_TRUE(before.has_value());
+    EXPECT_DOUBLE_EQ(before->snapshot.cpuPercent, 0.0);
+
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh();
+
+    const auto after = model.findSnapshotWithVersion(100);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_GT(after->snapshot.cpuPercent, 0.0);
+    EXPECT_GT(after->version, before->version);
+}
+
 // =============================================================================
 // State Translation Tests
 // =============================================================================
