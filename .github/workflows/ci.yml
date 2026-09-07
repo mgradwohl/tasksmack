@@ -162,12 +162,13 @@ jobs:
   static-analysis:
     needs: [detect-docs-only]
     # Runs on pull_request (the actual PR gate -- #833) plus the existing schedule/
-    # workflow_dispatch coverage. Deliberately excludes plain `push`: static-analysis.yml
-    # already runs this identical job on every push to main, so including push here would
-    # just duplicate that run rather than add new coverage.
+    # workflow_dispatch coverage. Deliberately excludes push to main specifically:
+    # static-analysis.yml already runs this identical job on every push to main (but not to
+    # dev/**, which this workflow also triggers on and static-analysis.yml does not cover), so
+    # excluding all pushes here would leave dev/** pushes with no clang-tidy coverage at all.
     if: >-
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      github.event_name != 'push'
+      (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -444,6 +445,7 @@ jobs:
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
           EVENT_NAME:     ${{ github.event_name }}
+          REF:            ${{ github.ref }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
           LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
@@ -487,9 +489,10 @@ jobs:
             fi
           fi
 
-          # static-analysis is skipped on 'push' (static-analysis.yml already covers push to
-          # main) and on docs-only PRs (both intentional); require success everywhere else.
-          if [[ "$EVENT_NAME" != 'push' ]]; then
+          # static-analysis is skipped on push to main specifically (static-analysis.yml
+          # already covers that) and on docs-only PRs (both intentional); require success
+          # everywhere else, including push to dev/** branches.
+          if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
             if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
                   ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
               echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"

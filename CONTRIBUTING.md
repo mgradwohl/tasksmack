@@ -1260,9 +1260,13 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
 
 ### Cutting a Release
 
-Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is the *only* trigger for both an official
-TaskSmack release (`release.yml`: validates the tag, builds and signs Linux/Windows packages, and
-publishes a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`):
+Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is what triggers both an official TaskSmack
+release (`release.yml`: validates the tag, builds and signs Linux/Windows packages, and publishes
+a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
+it has no `workflow_dispatch` trigger). `release.yml` can also be re-run via `workflow_dispatch`
+against an existing tag ref (e.g. to retry a failed run without creating a new tag) -- it still
+validates that the ref really is a tag either way, so a stray dispatch from a branch can't
+impersonate one.
 
 ```bash
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
