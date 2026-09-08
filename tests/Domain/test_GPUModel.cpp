@@ -168,6 +168,39 @@ TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupport
     }
 }
 
+TEST(MockGPUProbeTest, ArmBlockingReadGPUCountersResetsStateFromPriorReleaseCycle)
+{
+    // Regression test for a review finding on #862: releaseBlockedReadGPUCounters() left
+    // m_ReleaseRequested and the "entered" flag set to true, so re-arming the mock without
+    // resetting them made the next blocked call's wait predicate succeed immediately (never
+    // actually blocking) and made hasEnteredBlockedReadGPUCounters() report true before the
+    // new block even started. Exercise two full arm/release cycles on the same mock and
+    // confirm the second one genuinely blocks and genuinely reports "entered" only once it
+    // has, not from stale state left over by the first cycle.
+    MockGPUProbe probe;
+
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+        probe.armBlockingReadGPUCounters();
+        ASSERT_FALSE(probe.hasEnteredBlockedReadGPUCounters())
+            << "cycle " << cycle << ": entered flag should start false immediately after arming";
+
+        auto future = std::async(std::launch::async, [&probe] { return probe.readGPUCounters(); });
+
+        while (!probe.hasEnteredBlockedReadGPUCounters())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        // The call must still be genuinely blocked at this point, not already completed.
+        const auto status = future.wait_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(status, std::future_status::timeout) << "cycle " << cycle << ": call returned before being released";
+
+        probe.releaseBlockedReadGPUCounters();
+        future.wait();
+    }
+}
+
 // =============================================================================
 // Single GPU Refresh Tests
 // =============================================================================

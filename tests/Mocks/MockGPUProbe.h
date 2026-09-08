@@ -194,9 +194,16 @@ class MockGPUProbe : public Platform::IGPUProbe
 
     /// Makes the next (and all subsequent, until released) readGPUCounters() call block
     /// indefinitely once entered, so a test can hold whatever lock the caller (GPUModel)
-    /// takes around that call from a background thread, for as long as it needs to.
+    /// takes around that call from a background thread, for as long as it needs to. Resets
+    /// state left over from a prior arm/release cycle first, so this mock can be re-armed
+    /// and reused within a single test.
     void armBlockingReadGPUCounters()
     {
+        {
+            const std::scoped_lock lock(m_BlockMutex);
+            m_ReleaseRequested = false;
+        }
+        m_EnteredBlockedReadCounters.store(false, std::memory_order_release);
         m_BlockReadCounters.store(true, std::memory_order_release);
     }
 
