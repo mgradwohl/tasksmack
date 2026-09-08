@@ -2,6 +2,7 @@
 
 #include "Core/Layer.h"
 #include "FpsCounter.h"
+#include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
@@ -11,14 +12,6 @@
 
 namespace App
 {
-
-/// Main active tab in the application
-enum class ActiveTab : std::uint8_t
-{
-    SystemOverview,
-    Processes,
-    ProcessDetails
-};
 
 class ShellLayer : public Core::Layer
 {
@@ -46,9 +39,6 @@ class ShellLayer : public Core::Layer
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
 
-    // Active tab
-    ActiveTab m_ActiveTab = ActiveTab::SystemOverview;
-
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;
 
@@ -72,6 +62,9 @@ class ShellLayer : public Core::Layer
     std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
     std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt on PID change
     std::int32_t m_CachedLabelPid = -1;  // PID for which m_CachedDetailsTabLabel was built
+
+    // Declared last so panels and cached labels outlive the non-owning registry.
+    PanelTabs m_Tabs;
 };
 
 } // namespace App

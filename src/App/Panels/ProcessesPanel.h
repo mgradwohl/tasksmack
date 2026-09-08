@@ -91,7 +91,7 @@ class ProcessesPanel : public Panel
     void render(bool* open) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
-    void renderContent();
+    void renderContent() override;
     /// Handle application events (theme/font changes)
     void onEvent(Core::Event& event) override;
 

@@ -162,7 +162,7 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 
 ## UI Layer Model
 
-- **ShellLayer:** docking root, main menu bar, global settings (refresh cadence, theme, column visibility), shared selection state.
+- **ShellLayer:** main tabs, global settings (refresh cadence, theme, column visibility), shared selection state. A `PanelTabs` registry binds each shell-owned panel to its event name and cached-label provider in one constructor list. The registry owns its event-name strings and provider callables, but references panels without owning them; panels and objects referenced by provider captures must outlive the registry. The first registration is the default tab; registration order drives tab display, attach, update, and event forwarding, with reverse-order detach. `Panel::renderContent()` renders the selected tab without a window wrapper. Cross-panel model sharing and selected-process snapshot updates remain explicit shell coordination.
 - **ProcessesPanel:** process list with sorting and details selection.
 - **ProcessDetailsPanel:** detailed view for the currently selected process.
 - **SystemMetricsPanel:** plots and timelines backed by domain history.

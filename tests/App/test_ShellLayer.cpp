@@ -11,7 +11,7 @@
 /// - Copy/move semantics (deleted per Rule of 5)
 /// - Default constructibility
 ///
-/// See also: tests/App/test_ActiveTab.cpp for the ActiveTab enum tests.
+/// See also: tests/App/test_PanelTabs.cpp for tab registration and forwarding tests.
 
 #include "App/ShellLayer.h"
 
