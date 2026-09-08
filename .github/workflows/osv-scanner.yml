@@ -19,29 +19,32 @@ name: OSV Dependency Scan
 # CVEs, but only for ecosystems GitHub's dependency graph understands -- it has no CMake/
 # FetchContent parser, so a PR bumping a FetchContent SHA to a vulnerable version previously
 # sailed through review with no CVE check until this workflow's push-to-main trigger caught it
-# *after* merge. Scoped via `paths:` to only the files that can actually change what gets
-# scanned, so most PRs don't pay for a Syft+OSV run. Deliberately `pull_request`, not
-# `pull_request_target`: this SBOM step builds directly from the PR's own (untrusted)
-# CMakeLists.txt content, and pull_request_target would run that under the base branch's
-# elevated permissions -- the classic GitHub Actions privilege-escalation pattern. The
-# `security-events: write` permission requested below is capped to read-only by GitHub for
-# fork-originated PRs regardless of what's requested here, so `upload-sarif` is turned off for
-# those (the scan and its pass/fail gate still run either way; only the Security-tab SARIF
-# upload -- which needs the write scope forks never get -- is skipped), the same
-# fork-vs-same-repo distinction dependency-review.yml already makes for its own PR-comment step.
+# *after* merge. Deliberately `pull_request`, not `pull_request_target`: the SBOM-generation
+# step builds directly from the PR's own (untrusted) CMakeLists.txt content, and
+# pull_request_target would run that under the base branch's elevated permissions -- the
+# classic GitHub Actions privilege-escalation pattern. The `security-events: write` permission
+# requested for vulnerability-scan is capped to read-only by GitHub for fork-originated PRs
+# regardless of what's requested here, so `upload-sarif` is turned off for those (the scan and
+# its pass/fail gate still run either way; only the Security-tab SARIF upload -- which needs
+# the write scope forks never get -- is skipped), the same fork-vs-same-repo distinction
+# dependency-review.yml already makes for its own PR-comment step.
+#
+# Path-relevance filtering happens *inside* the workflow (detect-relevant-changes below), not
+# via a top-level `on.pull_request.paths:` filter, and osv-scan-required always runs
+# (`if: always()`) regardless of whether the scan itself ran or was skipped as not-applicable.
+# This mirrors ci.yml's detect-docs-only / "CI Success" pattern for the same reason: a
+# top-level `paths:` filter means the workflow (and every check name it would report) simply
+# never triggers for a non-matching PR, and a *required* status check that never gets reported
+# leaves GitHub waiting on it forever -- confirmed directly (PR #866, a docs-only change,
+# stuck at mergeable_state "blocked" the moment "vulnerability-scan / osv-scan" was added as a
+# required check under the old top-level-`paths:` design). osv-scan-required is the one that
+# should be listed as the required check instead.
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-    paths:
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - 'tests/CMakeLists.txt'
-      - 'benchmarks/CMakeLists.txt'
-      - 'requirements*.txt'
-      - '.github/workflows/osv-scanner.yml'
   schedule:
     # Run weekly on Sundays at 06:00 UTC (offset from CodeQL at 10:00 UTC)
     - cron: '0 6 * * 0'
@@ -54,10 +57,47 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Determine whether this PR touches anything that could change what the scan below would
+  # find. push/schedule/workflow_dispatch always run the full scan (relevant=true
+  # unconditionally) -- only pull_request gets the narrower, diff-based check.
+  detect-relevant-changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.set_output.outputs.relevant }}
+    steps:
+      - name: Detect changes to CMake/Python dependency manifests
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          filters: |
+            relevant:
+              - 'CMakeLists.txt'
+              - 'cmake/**'
+              - 'tests/CMakeLists.txt'
+              - 'benchmarks/CMakeLists.txt'
+              - 'requirements*.txt'
+              - '.github/workflows/osv-scanner.yml'
+
+      - name: Normalize output
+        id: set_output
+        run: |
+          if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
+            echo "relevant=${{ steps.filter.outputs.relevant }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # Generate an SPDX-JSON SBOM from the source tree so the scanner can see
   # C++ FetchContent dependencies detected by Syft's cmake cataloger.
   generate-sbom:
     name: Generate SBOM from source
+    needs: detect-relevant-changes
+    if: needs.detect-relevant-changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -85,7 +125,8 @@ jobs:
   # The reusable workflow handles checkout, download of the artifact, scanning,
   # SARIF upload to the Security tab, and job failure on vulnerabilities.
   vulnerability-scan:
-    needs: generate-sbom
+    needs: [detect-relevant-changes, generate-sbom]
+    if: needs.detect-relevant-changes.outputs.relevant == 'true'
     permissions:
       actions: read
       contents: read
@@ -106,3 +147,39 @@ jobs:
       # schedule, and workflow_dispatch all keep uploading normally. fail-on-vuln (default
       # true) still gates the check either way.
       upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+  # Always runs regardless of whether the scan above ran or was skipped as not-applicable --
+  # this, not vulnerability-scan directly, is the check name to list as required. See the
+  # top-of-file comment for why.
+  osv-scan-required:
+    name: OSV Scan Required
+    if: always()
+    needs: [detect-relevant-changes, generate-sbom, vulnerability-scan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check scan result
+        env:
+          DETECT_RESULT: ${{ needs.detect-relevant-changes.result }}
+          RELEVANT: ${{ needs.detect-relevant-changes.outputs.relevant }}
+          SBOM_RESULT: ${{ needs.generate-sbom.result }}
+          SCAN_RESULT: ${{ needs.vulnerability-scan.result }}
+        run: |
+          if [[ "$DETECT_RESULT" != 'success' ]]; then
+            echo "Change detection did not succeed: $DETECT_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$RELEVANT" != 'true' ]]; then
+            echo "No CMake/Python dependency manifest changes -- scan not applicable."
+            exit 0
+          fi
+          if [[ "$SBOM_RESULT" != 'success' ]]; then
+            echo "SBOM generation did not succeed: $SBOM_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$SCAN_RESULT" != 'success' ]]; then
+            echo "Vulnerability scan did not succeed: $SCAN_RESULT" >&2
+            exit 1
+          fi
+          echo "Vulnerability scan passed."
