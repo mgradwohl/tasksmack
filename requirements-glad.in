@@ -1,0 +1,7 @@
+# Hash-locked build-time dependencies used by .github/actions/setup-python-glad.
+# Constrained by requirements.txt so this file's jinja2/markupsafe pins can never silently
+# drift from the copies used elsewhere in the repo (see #858) -- regenerate with:
+#   python -m pip install --require-hashes -r requirements-dev-tools.txt
+#   pip-compile --generate-hashes --output-file=requirements-glad.txt requirements-glad.in
+-c requirements.txt
+jinja2

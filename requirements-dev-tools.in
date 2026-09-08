@@ -1,0 +1,5 @@
+# Hash-locked pin for pip-tools itself, the tool used to regenerate every other
+# requirements*.txt lockfile in this repo (see #857). Install it from here before
+# running pip-compile:
+#   python -m pip install --require-hashes -r requirements-dev-tools.txt
+pip-tools==7.6.1

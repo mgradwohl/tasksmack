@@ -9,9 +9,9 @@ runs:
       with:
         python-version: '3.14'
         cache: 'pip'
-        cache-dependency-path: 'requirements-glad.lock'
+        cache-dependency-path: 'requirements-glad.txt'
 
     - name: Install Python dependencies for GLAD
       shell: pwsh
       run: |
-        python -m pip install --require-hashes --only-binary=:all: -r requirements-glad.lock
+        python -m pip install --require-hashes --only-binary=:all: -r requirements-glad.txt
