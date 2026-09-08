@@ -23,7 +23,7 @@ class PanelTabs
     struct Tab
     {
         std::reference_wrapper<Panel> panel;
-        std::string_view eventName;
+        std::string eventName;
         std::function<const char*()> label;
     };
 
