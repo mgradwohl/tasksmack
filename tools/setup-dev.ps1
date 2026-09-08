@@ -146,7 +146,7 @@ Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winge
 # ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
 Write-Host ""
 Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
-Invoke-Python @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.lock"))
+Invoke-Python @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.txt"))
 
 if (-not $Minimal) {
     # ── Step 5: Development Python dependencies ─────────────────────────────
