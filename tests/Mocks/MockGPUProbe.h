@@ -8,7 +8,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -139,6 +142,14 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes capabilities() throw once (simulating a transient probe query failure),
+    /// resetting the throw-once flag when it fires so subsequent calls succeed normally.
+    MockGPUProbe& withCapabilitiesQueryThrowingOnce()
+    {
+        m_ThrowOnNextCapabilitiesQuery = true;
+        return *this;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
@@ -149,6 +160,12 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::GPUCounters> readGPUCounters() override
     {
         ++m_ReadCountersCount;
+        if (m_BlockReadCounters.load(std::memory_order_acquire))
+        {
+            m_EnteredBlockedReadCounters.store(true, std::memory_order_release);
+            std::unique_lock lock(m_BlockMutex);
+            m_BlockCv.wait(lock, [this] { return m_ReleaseRequested; });
+        }
         return m_Counters;
     }
 
@@ -160,6 +177,11 @@ class MockGPUProbe : public Platform::IGPUProbe
 
     [[nodiscard]] Platform::GPUCapabilities capabilities() const override
     {
+        if (m_ThrowOnNextCapabilitiesQuery)
+        {
+            m_ThrowOnNextCapabilitiesQuery = false;
+            throw std::runtime_error("MockGPUProbe: simulated capabilities() query failure");
+        }
         return m_Capabilities;
     }
 
@@ -184,15 +206,58 @@ class MockGPUProbe : public Platform::IGPUProbe
         return m_ReadProcessCountersCount.load();
     }
 
+    /// Makes the next (and all subsequent, until released) readGPUCounters() call block
+    /// indefinitely once entered, so a test can hold whatever lock the caller (GPUModel)
+    /// takes around that call from a background thread, for as long as it needs to. Resets
+    /// state left over from a prior arm/release cycle first, so this mock can be re-armed
+    /// and reused within a single test.
+    void armBlockingReadGPUCounters()
+    {
+        {
+            const std::scoped_lock lock(m_BlockMutex);
+            m_ReleaseRequested = false;
+        }
+        m_EnteredBlockedReadCounters.store(false, std::memory_order_release);
+        m_BlockReadCounters.store(true, std::memory_order_release);
+    }
+
+    /// Releases a call currently blocked inside readGPUCounters() (see
+    /// armBlockingReadGPUCounters()) and lets future calls proceed without blocking.
+    void releaseBlockedReadGPUCounters()
+    {
+        m_BlockReadCounters.store(false, std::memory_order_release);
+        {
+            const std::scoped_lock lock(m_BlockMutex);
+            m_ReleaseRequested = true;
+        }
+        m_BlockCv.notify_all();
+    }
+
+    /// True once a readGPUCounters() call armed by armBlockingReadGPUCounters() has
+    /// actually entered its blocking wait -- i.e. the caller is now holding whatever lock
+    /// it takes around the call. Lets a test avoid racing its own timing measurement
+    /// against the background thread merely being scheduled.
+    [[nodiscard]] bool hasEnteredBlockedReadGPUCounters() const
+    {
+        return m_EnteredBlockedReadCounters.load(std::memory_order_acquire);
+    }
+
   private:
     std::vector<Platform::GPUInfo> m_GPUInfo;
     std::vector<Platform::GPUCounters> m_Counters;
     std::vector<Platform::ProcessGPUCounters> m_ProcessCounters;
     Platform::GPUCapabilities m_Capabilities;
+    mutable bool m_ThrowOnNextCapabilitiesQuery = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};
     std::atomic<std::uint32_t> m_ReadProcessCountersCount{0};
+
+    std::atomic<bool> m_BlockReadCounters{false};
+    std::atomic<bool> m_EnteredBlockedReadCounters{false};
+    std::mutex m_BlockMutex;
+    std::condition_variable m_BlockCv;
+    bool m_ReleaseRequested = false;
 };
 
 } // namespace TestMocks

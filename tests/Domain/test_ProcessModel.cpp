@@ -12,6 +12,7 @@
 #include "Domain/ProcessModel.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/GPUTypes.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -1946,6 +1947,9 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesProcessSnapshots)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
 
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
@@ -1972,6 +1976,9 @@ TEST(ProcessModelTest, MergeGPUDataMultipleProcesses)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor")
         .withProcessGPU(100, "GPU0", 256ULL * 1024 * 1024)
         .withProcessGPU(200, "GPU0", 128ULL * 1024 * 1024);
@@ -2004,6 +2011,9 @@ TEST(ProcessModelTest, MergeGPUDataAggregatesMultiGPU)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "GPU 0", "Vendor")
         .withGPU("GPU1", "GPU 1", "Vendor")
         .withProcessGPU(100, "GPU0", 256ULL * 1024 * 1024)
@@ -2046,6 +2056,9 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "NVIDIA RTX 3080", "NVIDIA").withProcessGPU(100, "GPU0", 1ULL * 1024 * 1024 * 1024);
 
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
@@ -2071,6 +2084,9 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
     auto* rawGpuProbe = gpuProbe.get();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
 
@@ -2133,6 +2149,9 @@ TEST(ProcessModelTest, MergeGPUDataWithUnknownGPUId)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "Known GPU", "TestVendor");
     // Add process GPU data with mismatched GPU ID
     gpuProbe->withProcessGPU(100, "GPU99", 512ULL * 1024 * 1024);
@@ -2159,6 +2178,9 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     processProbe->setTotalCpuTime(100000);
 
     auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
     gpuProbe->withGPU("GPU0", "GPU 0", "Vendor").withGPU("GPU1", "GPU 1", "Vendor");
     // Same PID using two different GPUs
     gpuProbe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
