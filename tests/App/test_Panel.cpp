@@ -19,6 +19,9 @@ class TestPanel final : public Panel
 
     void render(bool* /*open*/) override
     {}
+
+    void renderContent() override
+    {}
 };
 
 TEST(PanelTest, NameAndDefaultVisibility)

@@ -67,7 +67,7 @@ class SystemMetricsPanel : public Panel
     void onEvent(Core::Event& event) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
-    void renderContent();
+    void renderContent() override;
 
     /// Get the hostname (for tab/window title).
     [[nodiscard]] const std::string& hostname() const
