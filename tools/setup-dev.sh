@@ -186,7 +186,7 @@ run_apt cmake ninja-build python3.14 python3.14-venv ccache libfreetype6-dev
 PYTHON_ENV="${REPO_ROOT}/.venv"
 run_cmd python3.14 -m venv "$PYTHON_ENV"
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
-run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.lock"
+run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.txt"
 
 # ── Step 3: LLVM / Clang toolchain ───────────────────────────────────────────
 echo ""

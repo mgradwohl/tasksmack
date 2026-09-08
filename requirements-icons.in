@@ -1,0 +1,6 @@
+# Hash-locked build-time dependency used by tools/generate-icons.sh and
+# tools/generate-icons.ps1 to render tasksmack.ico from the source SVG (see #856).
+# Regenerate with:
+#   python -m pip install --require-hashes -r requirements-dev-tools.txt
+#   pip-compile --generate-hashes --output-file=requirements-icons.txt requirements-icons.in
+pillow==12.3.0
