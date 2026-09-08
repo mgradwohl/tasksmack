@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -600,6 +601,21 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
     }
 
     writer.join();
+
+    // Liveness check: prove the reader genuinely raced the writer across many distinct
+    // generations rather than, say, running once after the writer already finished (which
+    // would make the mismatch check below vacuously true regardless of whether the lookup
+    // is actually atomic). A low distinct-version count here would mean this run gave the
+    // race little chance to manifest and the pass/fail result below carries little weight.
+    std::unordered_map<std::uint64_t, std::string> distinctVersionsObserved;
+    for (const auto& [version, name] : observed)
+    {
+        distinctVersionsObserved.emplace(version, name);
+    }
+    EXPECT_GT(distinctVersionsObserved.size(), static_cast<std::size_t>(kIterations) / 10)
+        << "reader only observed " << distinctVersionsObserved.size() << " distinct generations out of " << kIterations
+        << " published -- too little interleaving for this "
+        << "run to meaningfully exercise the race";
 
     ASSERT_FALSE(observed.empty());
     const std::scoped_lock lock(registryMutex);
