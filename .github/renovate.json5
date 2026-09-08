@@ -139,9 +139,10 @@
       datasourceTemplate: 'github-tags',
     },
 
-    // ── LLVM toolchain: Windows exact semver pin (auto-PR'd for minor/patch; major requires
-    //    dashboard approval, see packageRules below) plus the Linux major-only pins (always
-    //    "major" update type by construction below, so always dashboard-gated) ──────────────
+    // ── LLVM toolchain: Windows exact semver pin plus the Linux major-only pins. Every
+    //    update to this whole group requires dashboard approval (see packageRules below) --
+    //    not just major bumps -- because Windows resolves the pinned version through
+    //    Chocolatey/WinGet, and neither feed's availability is verified before a PR opens. ──
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
@@ -180,7 +181,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -196,7 +197,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     // Every other functional LLVM_VERSION/LLVM_SEMVER_VERSION pin in the repo, so a single
@@ -214,7 +215,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -237,7 +238,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -260,7 +261,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -283,7 +284,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -295,7 +296,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -307,7 +308,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -319,7 +320,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     // ci.yml's build-linux-*/build-windows-* jobs call reusable-build-test.yml passing only
@@ -338,7 +339,7 @@
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
     {
@@ -346,6 +347,23 @@
       managerFilePatterns: ['/^\\.github/workflows/reusable-build-test\\.yml$/'],
       matchStrings: [
         "llvm-semver-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    // Every real caller of this action passes llvm-version explicitly (confirmed by reading
+    // every uses: ./.github/actions/setup-windows-llvm call site: release.yml x2,
+    // reusable-build-test.yml, heavy-checks.yml, static-analysis.yml), so this default is
+    // never actually the effective value today -- but it's still the action's documented
+    // contract default, and tracking it means it can't silently go stale for a future caller
+    // that omits the input, or for anyone reading the action file directly.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
       ],
       depNameTemplate: 'llvm/llvm-project',
       packageNameTemplate: 'llvm/llvm-project',
@@ -492,25 +510,34 @@
     {
       // Bundle every functional LLVM pin location in the repo into one PR so they can't drift
       // out of sync with each other: the Windows exact-semver pins (ci.yml, heavy-checks.yml,
-      // release.yml, static-analysis.yml, reusable-build-test.yml, setup-dev.ps1) and the
-      // Linux major-only pins (ci.yml, heavy-checks.yml, release.yml, static-analysis.yml,
-      // codeql.yml, sanitizers.yml, copilot-setup-steps.yml, reusable-build-test.yml,
-      // setup-dev.sh, cmake/Options.cmake). reusable-build-test.yml matters most of all: its
-      // own input defaults, not ci.yml's env vars, are what actually govern the compiler the
-      // main build-linux-*/build-windows-* jobs use (see the customManagers above).
+      // release.yml, static-analysis.yml, reusable-build-test.yml, setup-windows-llvm/
+      // action.yml, setup-dev.ps1) and the Linux major-only pins (ci.yml, heavy-checks.yml,
+      // release.yml, static-analysis.yml, codeql.yml, sanitizers.yml,
+      // copilot-setup-steps.yml, reusable-build-test.yml, setup-dev.sh, cmake/Options.cmake).
+      // reusable-build-test.yml matters most of all: its own input defaults, not ci.yml's env
+      // vars, are what actually govern the compiler the main build-linux-*/build-windows-*
+      // jobs use (see the customManagers above).
       matchPackageNames: ['llvm/llvm-project'],
       groupName: 'LLVM toolchain',
     },
     {
-      // Major LLVM bumps need real validation (new compiler warnings, clang-tidy behavior
-      // changes, Windows package availability) across every pin location above plus the
-      // apt-repo codename for Linux -- the same deliberate process already used for #752
-      // (LLVM 23 upgrade). The Linux major-only managers above always report update type
-      // "major" by construction, so this also covers every Linux LLVM_VERSION change.
-      // Detected and listed on the Dependency Dashboard; opens a PR only once a human ticks
-      // the checkbox (supersedes #752's blanket `enabled: false` for Windows major bumps).
+      // Every LLVM update -- not just major -- is gated, because the value this group tracks
+      // (upstream llvm-project tags) isn't actually what gets installed on Windows: both CI
+      // (.github/actions/setup-windows-llvm, `choco install llvm`) and the dev-box script
+      // (tools/setup-dev.ps1, `winget install LLVM.LLVM`) resolve the pinned version through
+      // Chocolatey/WinGet, and #752 already recorded a concrete real-world instance of that
+      // feed lagging upstream (upstream had 22.1.8 while Chocolatey still only had 22.1.7) --
+      // an auto-PR'd Windows *patch* bump under the old major-only gate would have generated
+      // an unmergeable PR (every Windows job failing at `choco install`) with nothing to catch
+      // it before CI ran. Detected and listed on the Dependency Dashboard; opens a PR only
+      // once a human ticks the checkbox and (per the same manual-verification precedent as the
+      // CMake/Ninja/ccache dev-box pins below) confirms the proposed version is actually
+      // installable through both feeds first. A true major bump additionally needs the real
+      // compiler/clang-tidy validation and the manual companion-file updates described above
+      // -- the same deliberate process already used for #752's LLVM 23 upgrade. This
+      // supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the
+      // dashboard-approval mechanism used everywhere else in this tier.
       matchPackageNames: ['llvm/llvm-project'],
-      matchUpdateTypes: ['major'],
       dependencyDashboardApproval: true,
     },
     {

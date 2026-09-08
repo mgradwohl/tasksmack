@@ -1261,18 +1261,31 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     guard also reads back from, so the guard can't desync from the value Renovate bumps),
     `tools/setup-dev.ps1` (`$LlvmVersion`), and `cmake/Options.cmake`
     (`TASKSMACK_LLVM_VERSION`, which feeds clang-tidy/IWYU tool discovery) round out the
-    per-workflow list. Critically, `reusable-build-test.yml`'s own `llvm-version`/
-    `llvm-semver-version` input defaults are *also* tracked separately: `ci.yml`'s
-    `build-linux-*`/`build-windows-*` jobs call that reusable workflow passing only `os`/
-    `build_type`, never the LLVM inputs, so it's the reusable workflow's own defaults --
-    not `ci.yml`'s env vars -- that actually govern the compiler the main build+test jobs use.
-    All of the above are grouped into one PR so they can't drift out of sync. Windows
-    minor/patch bumps auto-PR normally; a Windows *major* bump and *any* Linux major-pin change
-    both require dashboard approval first (a Linux `LLVM_VERSION`/`TASKSMACK_LLVM_VERSION`
-    change is always treated as update type "major" -- it's a bare major number like `22`, not
-    a semver triplet, so there's no meaningful minor/patch distinction to make). This
-    supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the same
-    dashboard-approval mechanism used everywhere else in this tier.
+    per-workflow list. `reusable-build-test.yml`'s own `llvm-version`/`llvm-semver-version`
+    input defaults are *also* tracked separately: `ci.yml`'s `build-linux-*`/`build-windows-*`
+    jobs call that reusable workflow passing only `os`/`build_type`, never the LLVM inputs, so
+    it's the reusable workflow's own defaults -- not `ci.yml`'s env vars -- that actually
+    govern the compiler the main build+test jobs use. `.github/actions/setup-windows-llvm/
+    action.yml`'s own `llvm-version` default rounds out the list -- every real caller passes
+    this input explicitly today, so it's not the active bug the reusable-workflow one was, but
+    it's still the action's documented contract and would silently go stale for any future
+    caller that omits it. All of the above are grouped into one PR so they can't drift out of
+    sync. Every Linux major-only manager's extraction is anchored to a full stable
+    `llvmorg-X.Y.Z` tag (nothing after the patch digit), the same anchoring reasoning as the
+    Python interpreter managers below: without it, a prerelease tag like `llvmorg-23.1.0-rc3`
+    would reduce to the same "23" a real major release would, putting a premature update on
+    the dashboard before a stable LLVM 23 actually exists.
+
+    Every update to this group -- not just major bumps -- requires dashboard approval, unlike
+    the rest of this tier. Both CI (`choco install llvm`) and the dev-box script
+    (`winget install LLVM.LLVM`) resolve the pinned Windows version through Chocolatey/WinGet,
+    and #752 already recorded a concrete real-world case of that feed lagging upstream
+    (upstream had `22.1.8` while Chocolatey only had `22.1.7`) -- an auto-PR'd Windows *patch*
+    bump would have generated an unmergeable PR with nothing to catch it before CI ran. A
+    human must confirm the proposed version is actually installable through both feeds before
+    approving, matching the same manual-verification precedent as the CMake/Ninja/ccache
+    dev-box pins below. This supersedes #752's blanket "Windows major bumps are entirely
+    disabled" rule with the dashboard-approval mechanism used everywhere else in this tier.
 
     None of the above tracking makes a major LLVM bump a single-PR, mechanical operation --
     it never has been (see #752), and the dashboard-approval gate exists precisely because a
