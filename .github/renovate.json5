@@ -322,17 +322,58 @@
       extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
+    // ci.yml's build-linux-*/build-windows-* jobs call reusable-build-test.yml passing only
+    // `os`/`build_type` -- they never pass `llvm-version`/`llvm-semver-version`, so it's this
+    // reusable workflow's OWN input defaults, not ci.yml's LLVM_VERSION/LLVM_SEMVER_VERSION
+    // env vars, that actually govern the compiler the main build+test jobs use. Without these
+    // two managers, a dashboard-approved LLVM bump would update ci.yml's (largely decorative,
+    // for the jobs that don't go through the reusable workflow) env vars while silently
+    // leaving the real build jobs on the old compiler.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/reusable-build-test\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/reusable-build-test\\.yml$/'],
+      matchStrings: [
+        "llvm-semver-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
 
-    // ── Python interpreter (setup-python-glad/action.yml + tools/setup-dev.ps1). Both
-    //    extractVersionTemplate and versioningTemplate are deliberately restricted to
-    //    major.minor only (dropping CPython's patch component entirely): the WinGet package ID
-    //    this repo pins (Python.Python.3.14) only exists at major.minor granularity, so a
-    //    patch-shaped proposal like "3.14.1" would rewrite it to a WinGet ID that doesn't
-    //    exist. Restricting extraction to major.minor means a patch-only upstream release
-    //    (v3.14.1) reduces to the same "3.14" value already pinned, so no update is proposed
-    //    for it at all -- only a genuine X.Y change (e.g. 3.14 -> 3.15) triggers a PR, and
-    //    with 2-component regex versioning that's always classified "minor", gated by the
-    //    dependencyDashboardApproval packageRule below alongside the (rarer) true major. ────
+    // ── Python interpreter (setup-python-glad/action.yml, tools/setup-dev.ps1, and CI's own
+    //    pre-commit.yml, which independently pins actions/setup-python's version string --
+    //    all three grouped so a bump can't leave any of them stale). extractVersionTemplate
+    //    and versioningTemplate are deliberately restricted to major.minor only (dropping
+    //    CPython's patch component entirely), for two independent reasons:
+    //    1. The WinGet package ID this repo pins (Python.Python.3.14) only exists at
+    //       major.minor granularity, so a patch-shaped proposal like "3.14.1" would rewrite it
+    //       to a WinGet ID that doesn't exist. Restricting extraction to major.minor means a
+    //       patch-only upstream release (v3.14.1) reduces to the same "3.14" value already
+    //       pinned, so no update is proposed for it at all -- only a genuine X.Y change (e.g.
+    //       3.14 -> 3.15) triggers a PR, and with 2-component regex versioning that's always
+    //       classified "minor", gated by the dependencyDashboardApproval packageRule below
+    //       alongside the (rarer) true major.
+    //    2. The trailing `\d+$` anchor requires the matched upstream tag to be a plain stable
+    //       `vX.Y.Z` with nothing after it -- CPython's own prerelease tags (`v3.15.0a1`,
+    //       `v3.15.0b2`, `v3.15.0rc2`, etc.) don't end in a bare digit, so they're excluded
+    //       from ever producing a candidate version. Without the anchor, `v3.15.0rc2` would
+    //       reduce to the same "3.15" a stable release would, proposing an update before a
+    //       stable 3.15.0 actually exists (verified directly against the live tag list: at
+    //       the time this was written, `v3.15.0rc2` is CPython's newest 3.15 tag and no stable
+    //       `v3.15.0` exists yet). ─────────────────────────────────────────────────────────
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/actions/setup-python-glad/action\\.yml$/'],
@@ -342,7 +383,7 @@
       depNameTemplate: 'python/cpython',
       packageNameTemplate: 'python/cpython',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
     },
     {
@@ -357,7 +398,22 @@
       depNameTemplate: 'python/cpython',
       packageNameTemplate: 'python/cpython',
       datasourceTemplate: 'github-tags',
-      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+    {
+      // CI's pre-commit job pins actions/setup-python's version string independently of
+      // GLAD's action and the dev-box script above -- without this, a Python bump would move
+      // those two but leave the pre-commit CI runtime on the old interpreter.
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/pre-commit\\.yml$/'],
+      matchStrings: [
+        "python-version: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
     },
 
@@ -436,9 +492,12 @@
     {
       // Bundle every functional LLVM pin location in the repo into one PR so they can't drift
       // out of sync with each other: the Windows exact-semver pins (ci.yml, heavy-checks.yml,
-      // release.yml, static-analysis.yml, setup-dev.ps1) and the Linux major-only pins
-      // (ci.yml, heavy-checks.yml, release.yml, static-analysis.yml, codeql.yml,
-      // sanitizers.yml, copilot-setup-steps.yml, setup-dev.sh, cmake/Options.cmake).
+      // release.yml, static-analysis.yml, reusable-build-test.yml, setup-dev.ps1) and the
+      // Linux major-only pins (ci.yml, heavy-checks.yml, release.yml, static-analysis.yml,
+      // codeql.yml, sanitizers.yml, copilot-setup-steps.yml, reusable-build-test.yml,
+      // setup-dev.sh, cmake/Options.cmake). reusable-build-test.yml matters most of all: its
+      // own input defaults, not ci.yml's env vars, are what actually govern the compiler the
+      // main build-linux-*/build-windows-* jobs use (see the customManagers above).
       matchPackageNames: ['llvm/llvm-project'],
       groupName: 'LLVM toolchain',
     },
@@ -455,7 +514,7 @@
       dependencyDashboardApproval: true,
     },
     {
-      // Both Python pin locations move together.
+      // All three Python pin locations move together.
       matchPackageNames: ['python/cpython'],
       groupName: 'Python interpreter',
     },

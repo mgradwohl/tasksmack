@@ -1257,25 +1257,37 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     only; `tools/setup-dev.sh` (`LLVM_SUPPORTED_VERSION`, the single literal its own `--llvm`
     guard also reads back from, so the guard can't desync from the value Renovate bumps),
     `tools/setup-dev.ps1` (`$LlvmVersion`), and `cmake/Options.cmake`
-    (`TASKSMACK_LLVM_VERSION`, which feeds clang-tidy/IWYU tool discovery) round out the list --
-    all grouped into one PR so they can't drift out of sync. Windows minor/patch bumps auto-PR
-    normally; a Windows *major* bump and *any* Linux major-pin change both require dashboard
-    approval first (a Linux `LLVM_VERSION`/`TASKSMACK_LLVM_VERSION` change is always treated as
-    update type "major" -- it's a bare major number like `22`, not a semver triplet, so there's
-    no meaningful minor/patch distinction to make). This supersedes #752's blanket "Windows
-    major bumps are entirely disabled" rule with the same dashboard-approval mechanism used
-    everywhere else in this tier.
+    (`TASKSMACK_LLVM_VERSION`, which feeds clang-tidy/IWYU tool discovery) round out the
+    per-workflow list. Critically, `reusable-build-test.yml`'s own `llvm-version`/
+    `llvm-semver-version` input defaults are *also* tracked separately: `ci.yml`'s
+    `build-linux-*`/`build-windows-*` jobs call that reusable workflow passing only `os`/
+    `build_type`, never the LLVM inputs, so it's the reusable workflow's own defaults --
+    not `ci.yml`'s env vars -- that actually govern the compiler the main build+test jobs use.
+    All of the above are grouped into one PR so they can't drift out of sync. Windows
+    minor/patch bumps auto-PR normally; a Windows *major* bump and *any* Linux major-pin change
+    both require dashboard approval first (a Linux `LLVM_VERSION`/`TASKSMACK_LLVM_VERSION`
+    change is always treated as update type "major" -- it's a bare major number like `22`, not
+    a semver triplet, so there's no meaningful minor/patch distinction to make). This
+    supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the same
+    dashboard-approval mechanism used everywhere else in this tier.
   - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
-    `python-version: '3.14'` and `tools/setup-dev.ps1`'s `$PythonVersion` param default (the
-    winget `--id` and the `Resolve-Python` install-path probing both derive from that one
-    variable at runtime, so they can't desync from a version Renovate bumps), grouped together.
+    `python-version: '3.14'`, `.github/workflows/pre-commit.yml`'s `python-version: '3.14'`
+    (its own independent pin for `actions/setup-python`, otherwise left stale by a bump to the
+    other two), and `tools/setup-dev.ps1`'s `$PythonVersion` param default (the winget `--id`
+    and the `Resolve-Python` install-path probing both derive from that one variable at
+    runtime, so they can't desync from a version Renovate bumps), all three grouped together.
     This is the interpreter *version string* specifically -- not `actions/setup-python`'s own
     action-version pin, which Dependabot already covers separately and always did; the version
-    string passed to it was the actual gap. Both managers extract and compare major.minor only
-    (never a patch component): the WinGet package ID this repo pins
-    (`Python.Python.3.14`) only exists at that granularity, so a patch-shaped proposal like
-    `3.14.1` would rewrite it to a nonexistent ID. Both a minor bump (`3.14` -> `3.15`) and a
-    major bump require dashboard approval before a PR opens.
+    string passed to it was the actual gap. All three managers extract and compare major.minor
+    only, from a *stable* tag only (the extraction regex requires the upstream tag to end in a
+    bare patch digit, e.g. `v3.14.1`, excluding prerelease tags like `v3.15.0rc2` -- CPython
+    publishes those well before the matching stable release, so without this a prerelease could
+    be misread as a stable minor bump and proposed before the real release exists). The WinGet
+    package ID this repo pins (`Python.Python.3.14`) only exists at major.minor granularity, so
+    a patch-shaped proposal like `3.14.1` would rewrite it to a nonexistent ID -- restricting
+    extraction to major.minor means a patch-only stable release reduces to the same value
+    already pinned, proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump
+    require dashboard approval before a PR opens.
   - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
     `$NinjaVersion`, `$CcacheVersion`), each gated independently. See the prerequisite fix
     below for why these exist at all now.
