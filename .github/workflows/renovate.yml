@@ -2,10 +2,14 @@ name: Renovate
 
 # Self-hosted Renovate run, scoped (via .github/renovate.json5's enabledManagers) to exactly the
 # gap Dependabot doesn't cover: C++ libraries pulled in via CMake FetchContent
-# (cmake/Dependencies.cmake, tests/CMakeLists.txt, benchmarks/CMakeLists.txt) and the LLVM
-# toolchain version pinned for CI/local dev setup (ci.yml, tools/setup-dev.ps1). Dependabot
-# already handles GitHub Actions and Python packages weekly on Mondays; osv-scanner.yml already
-# scans all of these for known vulnerabilities weekly on Sundays. See issue #89.
+# (cmake/Dependencies.cmake, tests/CMakeLists.txt, benchmarks/CMakeLists.txt) and the full
+# build/dev toolchain -- LLVM (11 files: every CI workflow that runs a compiler or clang-tooling
+# step, both setup-llvm actions, and both dev-box scripts), Python interpreter (4 files),
+# CMake/Ninja/ccache dev-box pins, the Windows CI's exact Chocolatey ninja/ccache pins, and (via
+# Renovate's native pre-commit manager) .pre-commit-config.yaml's own hook-tool pins -- see #89
+# and #798 for the full audit and rationale. Dependabot already handles GitHub Actions and Python
+# packages (requirements*.txt) weekly on Mondays; osv-scanner.yml already scans all of these for
+# known vulnerabilities weekly on Sundays.
 #
 # This workflow only opens PRs -- it never merges. Full CI (build+test, sanitizers, static
 # analysis) gates every proposed update the same as any human-authored PR.

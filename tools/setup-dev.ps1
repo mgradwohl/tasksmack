@@ -16,7 +16,21 @@
 param(
     [switch]$DryRun,
     [switch]$Minimal,
-    [string]$LlvmVersion = "22.1.7"
+    [string]$LlvmVersion = "22.1.7",
+    # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
+    # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
+    # setup and CI land on the same versions. ccache has no CI-side winget equivalent to
+    # mirror (CI installs it via Chocolatey instead, pinned separately in
+    # .github/actions/setup-windows-llvm/action.yml), so this pins the latest version winget
+    # actually has available.
+    [string]$CMakeVersion = "3.31.6",
+    [string]$NinjaVersion = "1.13.2",
+    [string]$CcacheVersion = "4.14",
+    # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
+    # (the winget --id, Resolve-Python's install-path probing, and Invoke-Python's log text)
+    # derives from it instead of hardcoding "3.14"/"314" a second time, so a version bump can't
+    # desync the winget package ID from the paths this script searches for afterward.
+    [string]$PythonVersion = "3.14"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,10 +51,11 @@ function Invoke-WinGet {
     }
 }
 
-function Resolve-Python314 {
+function Resolve-Python {
+    $versionCompact = $PythonVersion -replace '\.', ''
     $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python314\python.exe"),
-        (Join-Path $env:ProgramFiles "Python314\python.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$versionCompact\python.exe"),
+        (Join-Path $env:ProgramFiles "Python$versionCompact\python.exe")
     )
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
@@ -48,12 +63,12 @@ function Resolve-Python314 {
         }
     }
 
-    $command = Get-Command python3.14 -ErrorAction SilentlyContinue
+    $command = Get-Command "python$PythonVersion" -ErrorAction SilentlyContinue
     if ($command) {
         return $command.Source
     }
 
-    throw "Python 3.14 was installed but its executable could not be located. Restart the terminal and rerun this script."
+    throw "Python $PythonVersion was installed but its executable could not be located. Restart the terminal and rerun this script."
 }
 
 function Invoke-Python {
@@ -62,18 +77,22 @@ function Invoke-Python {
         [string[]]$Arguments
     )
     if ($DryRun) {
-        Write-Host "[dry-run] python3.14 $($Arguments -join ' ')"
+        Write-Host "[dry-run] python$PythonVersion $($Arguments -join ' ')"
         return
     }
 
     & $script:PythonExecutable @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Python failed with exit code ${LASTEXITCODE}: python3.14 $($Arguments -join ' ')"
+        throw "Python failed with exit code ${LASTEXITCODE}: python$PythonVersion $($Arguments -join ' ')"
     }
 }
 
 Write-Host "=== TaskSmack Dev Setup (Windows) ==="
 Write-Host "LLVM version: $LlvmVersion"
+Write-Host "CMake version: $CMakeVersion"
+Write-Host "Ninja version: $NinjaVersion"
+Write-Host "ccache version: $CcacheVersion"
+Write-Host "Python version: $PythonVersion"
 if ($DryRun) { Write-Host "(dry-run mode — nothing will be installed)" }
 Write-Host ""
 
@@ -91,16 +110,16 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 Write-Host "==> Installing Visual Studio C++ Build Tools and Windows SDK..."
 Invoke-WinGet install --id Microsoft.VisualStudio.2022.BuildTools --source winget --silent --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 
-Write-Host "==> Installing CMake..."
-Invoke-WinGet install --id Kitware.CMake --source winget --silent --accept-package-agreements --accept-source-agreements
+Write-Host "==> Installing CMake $CMakeVersion..."
+Invoke-WinGet install --id Kitware.CMake --version $CMakeVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
-Write-Host "==> Installing Ninja..."
-Invoke-WinGet install --id Ninja-build.Ninja --source winget --silent --accept-package-agreements --accept-source-agreements
+Write-Host "==> Installing Ninja $NinjaVersion..."
+Invoke-WinGet install --id Ninja-build.Ninja --version $NinjaVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
-Write-Host "==> Installing Python 3..."
-Invoke-WinGet install --id Python.Python.3.14 --source winget --silent --accept-package-agreements --accept-source-agreements
+Write-Host "==> Installing Python $PythonVersion..."
+Invoke-WinGet install --id "Python.Python.$PythonVersion" --source winget --silent --accept-package-agreements --accept-source-agreements
 if (-not $DryRun) {
-    $script:PythonExecutable = Resolve-Python314
+    $script:PythonExecutable = Resolve-Python
 }
 
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
@@ -121,8 +140,8 @@ if ($DryRun) {
 
 # ── Step 3: ccache ───────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "==> Installing ccache..."
-Invoke-WinGet install --id ccache.ccache --source winget --silent --accept-package-agreements --accept-source-agreements
+Write-Host "==> Installing ccache $CcacheVersion..."
+Invoke-WinGet install --id ccache.ccache --version $CcacheVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
 # ── Step 4: jinja2 for GLAD ─────────────────────────────────────────────────
 Write-Host ""

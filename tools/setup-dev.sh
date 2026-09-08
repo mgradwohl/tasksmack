@@ -20,7 +20,19 @@ source "${SCRIPT_DIR}/common.sh"
 
 DRY_RUN=false
 MINIMAL=false
-LLVM_VERSION=22
+# Single source of truth for the LLVM major version this repo's presets/CI currently
+# validate against -- Renovate's LLVM customManager (.github/renovate.json5) bumps this
+# literal, and the --llvm guard below reads it back rather than hardcoding "22" a second
+# time, so a Renovate-proposed bump can't silently desync the guard from the default it's
+# supposed to be checking.
+readonly LLVM_SUPPORTED_VERSION=22
+LLVM_VERSION=$LLVM_SUPPORTED_VERSION
+
+# Single source of truth for the Python major.minor version this script installs -- Renovate's
+# Python customManager (.github/renovate.json5) bumps this literal, and both the apt package
+# names and the venv-creation command below derive from it instead of hardcoding "3.14" a
+# second and third time.
+readonly PYTHON_VERSION=3.14
 
 usage() {
     cat <<EOF
@@ -31,7 +43,7 @@ Install TaskSmack development prerequisites on Ubuntu.
 Options:
   --dry-run    Print apt commands without executing them
   --minimal    Install build prerequisites only; skip coverage/profiling/format tools
-  --llvm VER   LLVM major version to install (currently must be 22)
+  --llvm VER   LLVM major version to install (currently must be $LLVM_SUPPORTED_VERSION)
   -h, --help   Show this help
 EOF
     exit 0
@@ -54,8 +66,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$LLVM_VERSION" != "22" ]]; then
-    echo "Error: TaskSmack presets currently require LLVM 22; received LLVM $LLVM_VERSION." >&2
+if [[ "$LLVM_VERSION" != "$LLVM_SUPPORTED_VERSION" ]]; then
+    echo "Error: TaskSmack presets currently require LLVM $LLVM_SUPPORTED_VERSION; received LLVM $LLVM_VERSION." >&2
     exit 2
 fi
 
@@ -180,11 +192,11 @@ else
 fi
 
 # ── Step 2: Base build tools ──────────────────────────────────────────────────
-echo "==> Installing base build tools (CMake, Ninja, Python 3.14, ccache)..."
-run_apt cmake ninja-build python3.14 python3.14-venv ccache libfreetype6-dev
+echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
+run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libfreetype6-dev
 
 PYTHON_ENV="${REPO_ROOT}/.venv"
-run_cmd python3.14 -m venv "$PYTHON_ENV"
+run_cmd "python${PYTHON_VERSION}" -m venv "$PYTHON_ENV"
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --upgrade pip
 run_cmd "$PYTHON_ENV/bin/python" -m pip install --require-hashes -r "${REPO_ROOT}/requirements-glad.txt"
 
