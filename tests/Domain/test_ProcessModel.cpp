@@ -526,12 +526,21 @@ TEST(ProcessModelTest, DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAr
     // concurrency. FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother
     // below, which races two real threads, is the only test that actually guards it.
     //
-    // What this test shows instead, deterministically and without any race: the OLD pattern
-    // ShellLayer used to exercise -- findSnapshot() and a separate, later snapshotVersion()
-    // -- really can pair a snapshot from one generation with the version of a different one,
-    // just by having an ordinary refresh() happen between the two calls. That's the concrete
-    // failure mode findSnapshotWithVersion() exists to make impossible for callers who use it
-    // instead of two separate calls.
+    // What this test shows instead, deterministically and without any race: calling
+    // findSnapshot() and a separate, later snapshotVersion() -- generically, the same
+    // "split read" shape as ShellLayer's old bug -- really can pair a snapshot from one
+    // generation with the version of a different one, just by having an ordinary refresh()
+    // happen between the two calls. This is a simplified illustration of the hazard class,
+    // not a literal replay of ShellLayer's exact former call sequence: ShellLayer actually
+    // paired ProcessModel::findSnapshot()'s always-fresh result with
+    // ProcessesPanel::cachedSnapshotVersion() (a separate render-cache value that could lag
+    // behind, only refreshed while the Processes tab was active) -- see
+    // src/App/ShellLayer.cpp's history around the #855 fix -- so the real bug's typical
+    // failure direction was a FRESH snapshot paired with a STALE version, the opposite of
+    // the OLD-snapshot/NEW-version pairing demonstrated below. Both directions are instances
+    // of the same underlying "two separate non-atomic reads" hazard that
+    // findSnapshotWithVersion() closes; this test just uses ProcessModel's own two accessors
+    // for a self-contained, dependency-free demonstration.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     rawProbe->setCounters({makeCounter(100, "gen0", 'R', 1000, 0, 5000)});
@@ -541,7 +550,9 @@ TEST(ProcessModelTest, DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAr
     model.refresh(); // publishes generation 0
     const auto versionAfterGen0 = model.snapshotVersion();
 
-    // Two separate calls, exactly as ShellLayer::onUpdate() used to make them.
+    // Two separate calls -- findSnapshot() then, later, an independent snapshotVersion() --
+    // illustrating the split-read shape generically (see the class-level comment above for
+    // how this differs from ShellLayer's exact former call sequence).
     const auto separateSnapshot = model.findSnapshot(100);
     ASSERT_TRUE(separateSnapshot.has_value());
     EXPECT_EQ(separateSnapshot->name, "gen0");
@@ -556,8 +567,10 @@ TEST(ProcessModelTest, DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAr
     // The mismatch, made concrete: separateSnapshot still holds generation 0's content (read
     // before the refresh), but separateVersion has advanced past versionAfterGen0 -- it now
     // reflects generation 1, published after separateSnapshot was captured. A caller pairing
-    // (separateSnapshot, separateVersion), as ProcessDetailsPanel's history gate did via
-    // ShellLayer, would see generation 1's version attached to generation 0's content.
+    // (separateSnapshot, separateVersion) this way would see generation 1's version attached
+    // to generation 0's content -- the same category of mismatch findSnapshotWithVersion()
+    // exists to make impossible, even though it doesn't literally replay ShellLayer's exact
+    // old values.
     EXPECT_EQ(separateSnapshot->name, "gen0");
     EXPECT_GT(separateVersion, versionAfterGen0) << "expected the version to have advanced to reflect generation 1, "
                                                     "while separateSnapshot still holds generation 0's content";
