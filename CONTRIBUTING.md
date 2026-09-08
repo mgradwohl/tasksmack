@@ -1238,10 +1238,13 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
 `tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
 below. See #798 for the full repo-wide audit and rationale behind this split.
 
-- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (the `clang-format` mirror,
-  `pre-commit-hooks`, `shellcheck-py` -- all `rev:` pins in `.pre-commit-config.yaml`) via
-  Renovate's native `pre-commit` manager, no custom regex needed. The Windows CI's exact
-  Chocolatey pins for `ninja`/`ccache` (both in
+- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`
+  -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
+  custom regex needed. The `clang-format` mirror (same file, same manager) is the one exception:
+  its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
+  bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry
+  keyed on the manager's `pre-commit/mirrors-clang-format` dep name) -- minor/patch bumps still
+  auto-PR freely. The Windows CI's exact Chocolatey pins for `ninja`/`ccache` (both in
   `.github/actions/setup-windows-llvm/action.yml`) track the live Chocolatey community feed
   directly via the `nuget` datasource (Chocolatey packages are NuGet packages under the hood),
   not just upstream GitHub tags, so a proposed bump is guaranteed installable via
@@ -1270,6 +1273,18 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     a semver triplet, so there's no meaningful minor/patch distinction to make). This
     supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the same
     dashboard-approval mechanism used everywhere else in this tier.
+
+    None of the above tracking makes a major LLVM bump a single-PR, mechanical operation --
+    it never has been (see #752), and the dashboard-approval gate exists precisely because a
+    human still has to do real work when approving one. Known locations Renovate does *not*
+    track, that must be updated by hand as part of that same approval (not exhaustive --
+    grep the repo for the old major number too): `CMakePresets.json`'s Linux presets hardcode
+    the compiler binary names (`clang++-22`/`clang-22`); `release.yml`'s
+    `LLVM_LINUX_EXACT_VERSION` is a separate, manually-verified apt package-version pin (see
+    that variable's own comment for the verification command); `tools/pgo.sh`/`tools/pgo.ps1`
+    hardcode "LLVM 22" throughout their `llvm-profdata`-version validation and error text; and
+    `tools/clang-format.sh`'s version-discovery fallback list (`for ver in 22 21 20 19 18 17`)
+    stops at the current major.
   - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
     `python-version: '3.14'`, `.github/workflows/pre-commit.yml`'s `python-version: '3.14'`
     (its own independent pin for `actions/setup-python`, otherwise left stale by a bump to the
@@ -1289,8 +1304,14 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     already pinned, proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump
     require dashboard approval before a PR opens.
   - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
-    `$NinjaVersion`, `$CcacheVersion`), each gated independently. See the prerequisite fix
-    below for why these exist at all now.
+    `$NinjaVersion`, `$CcacheVersion`) are gated on *every* update, not just major, unlike the
+    rest of this tier: these track each project's real upstream `github-tags` releases, but
+    `tools/setup-dev.ps1` installs via `winget install --version <pin>`, and WinGet's own feed
+    lags upstream unpredictably (its CMake feed currently tops out at `3.31.8` while upstream
+    already has `3.31.12` -- a same-major patch bump could still propose an uninstallable
+    version). No CI job exercises this dev-box installer script, so nothing would catch that
+    automatically; a human must manually confirm WinGet catalog availability before approving
+    any bump here. See the prerequisite fix below for why these pins exist at all now.
 - *Tier 3 -- stays manual, no independent version feed exists to track*: `wpr`/`xperf`/`wpa`/
   `wpaexporter`, CPack's NSIS/dpkg/rpmbuild, the `gh` CLI, `xvfb` -- these ride the OS/runner/SDK
   rather than their own release cadence. Optional local-only tools (Inkscape, heaptrack,

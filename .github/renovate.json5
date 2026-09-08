@@ -531,10 +531,27 @@
       dependencyDashboardApproval: true,
     },
     {
-      // CMake/Ninja/ccache dev-box pins: same reasoning as Python -- gate real major bumps
-      // (each already has a stable release history; minor/patch bumps are low-risk and can
-      // auto-PR through the full CI matrix like any other update).
+      // CMake/Ninja/ccache dev-box pins gate EVERY update, not just major, unlike the other
+      // Tier 2 tools above: these track each project's real upstream github-tags releases,
+      // but tools/setup-dev.ps1 installs via `winget install --version <pin>`, and WinGet's
+      // own package feed lags upstream unpredictably (confirmed directly: WinGet's CMake feed
+      // tops out at 3.31.8 while upstream already has 3.31.12 -- a patch-only proposal here
+      // would still generate an uninstallable `winget install` command). No CI job exercises
+      // this dev-box installer script at all, so nothing would catch that automatically; a
+      // human must manually confirm WinGet catalog availability before approving any bump.
       matchPackageNames: ['Kitware/CMake', 'ninja-build/ninja', 'ccache/ccache'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // mirrors-clang-format (enabled via the native `pre-commit` manager, Tier 1 -- see
+      // enabledManagers above) is otherwise completely ungated, unlike every other
+      // LLVM-coupled pin in this file. Its formatting behavior is tied to the same LLVM major
+      // as the compiler toolchain (currently 22; the mirror's own next upstream tag is
+      // already v23.1.0), so an unattended major bump here could have contributors format
+      // locally with clang-format 23 while CI's compiler and clang-tidy stay on 22 --
+      // producing formatting the pre-commit CI job (still running 22) would then reject.
+      // Gated the same way as the rest of the LLVM-major process instead of left automatic.
+      matchPackageNames: ['pre-commit/mirrors-clang-format'],
       matchUpdateTypes: ['major'],
       dependencyDashboardApproval: true,
     },
