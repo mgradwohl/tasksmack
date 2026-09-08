@@ -23,7 +23,8 @@ updates:
       prefix: "ci"
       include: "scope"
 
-  # Python dependencies (for GLAD/jinja2)
+  # Python dependencies (requirements.txt, requirements-glad.txt, requirements-icons.txt,
+  # requirements-dev-tools.txt -- see #856/#857/#858)
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
