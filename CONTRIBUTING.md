@@ -157,7 +157,7 @@ Install Python + jinja2:
 
 ```powershell
 winget install Python.Python.3.14
-py -3.14 -m pip install --require-hashes -r requirements-glad.lock
+py -3.14 -m pip install --require-hashes -r requirements-glad.txt
 ```
 
 ## Pre-commit Hooks (Recommended)
@@ -185,7 +185,7 @@ pre-commit install
 `requirements.txt` is a hash-locked file generated from `requirements.in`. To change or upgrade Python dependencies, edit `requirements.in` and regenerate:
 
 ```bash
-python -m pip install pip-tools==7.6.1
+python -m pip install --require-hashes -r requirements-dev-tools.txt
 pip-compile --generate-hashes --output-file=requirements.txt requirements.in
 ```
 
@@ -1187,10 +1187,10 @@ PR optimization: docs-only pull requests skip compile/test and environment-valid
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
-(via Syft SBOM generated from `CMakeLists.txt`) and both Python dependency manifests against the
+(via Syft SBOM generated from `CMakeLists.txt`) and all four Python dependency manifests against the
 [OSV vulnerability database](https://osv.dev) on pushes to `main` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
-`requirements-glad.lock`; the LLVM bootstrap action also verifies the downloaded installer's
+`requirements-glad.txt`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
 
 ### Keeping Dependencies Current
