@@ -68,9 +68,6 @@ runs:
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
         LLVM_VER="$LLVM_VERSION"
-        if [[ -z "$LLVM_VER" ]]; then
-          LLVM_VER='22'
-        fi
         if [[ ! "$LLVM_VER" =~ ^[0-9]+$ ]]; then
           echo "llvm-version must be a numeric major version" >&2
           exit 1
@@ -152,9 +149,6 @@ runs:
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
         VER="$LLVM_VERSION"
-        if [[ -z "$VER" ]]; then
-          VER='22'
-        fi
 
         # Core LLVM tools (always configured)
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100

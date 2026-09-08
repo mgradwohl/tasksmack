@@ -370,10 +370,30 @@
       datasourceTemplate: 'github-tags',
       extractVersionTemplate: '^llvmorg-(?<version>.*)$',
     },
+    // Same reasoning as setup-windows-llvm/action.yml above, for the Linux equivalent: every
+    // real caller passes llvm-version explicitly (all 15 uses: ./.github/actions/setup-llvm
+    // call sites across ci.yml, heavy-checks.yml, release.yml, static-analysis.yml,
+    // sanitizers.yml, codeql.yml, copilot-setup-steps.yml, and reusable-build-test.yml pass
+    // env.LLVM_VERSION or inputs.llvm-version). The action's own empty-input bash fallbacks
+    // (which duplicated this "22" a second and third time) were removed as dead code rather
+    // than tracked, since no real caller can ever trigger them.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-llvm/action\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
 
-    // ── Python interpreter (setup-python-glad/action.yml, tools/setup-dev.ps1, and CI's own
-    //    pre-commit.yml, which independently pins actions/setup-python's version string --
-    //    all three grouped so a bump can't leave any of them stale). extractVersionTemplate
+    // ── Python interpreter (setup-python-glad/action.yml, tools/setup-dev.ps1,
+    //    tools/setup-dev.sh, and CI's own pre-commit.yml, which independently pins
+    //    actions/setup-python's version string -- all four grouped so a bump can't leave any
+    //    of them stale). extractVersionTemplate
     //    and versioningTemplate are deliberately restricted to major.minor only (dropping
     //    CPython's patch component entirely), for two independent reasons:
     //    1. The WinGet package ID this repo pins (Python.Python.3.14) only exists at
@@ -397,6 +417,22 @@
       managerFilePatterns: ['/^\\.github/actions/setup-python-glad/action\\.yml$/'],
       matchStrings: [
         "python-version: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+    {
+      // Targets the readonly PYTHON_VERSION assignment, not the python${PYTHON_VERSION}
+      // apt package names or the venv-creation command below it, which now derive from this
+      // variable at runtime instead of hardcoding the version a second and third time (see
+      // tools/setup-dev.sh).
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.sh$/'],
+      matchStrings: [
+        'readonly PYTHON_VERSION=(?<currentValue>[0-9.]+)',
       ],
       depNameTemplate: 'python/cpython',
       packageNameTemplate: 'python/cpython',
@@ -541,7 +577,7 @@
       dependencyDashboardApproval: true,
     },
     {
-      // All three Python pin locations move together.
+      // All four Python pin locations move together.
       matchPackageNames: ['python/cpython'],
       groupName: 'Python interpreter',
     },
@@ -572,12 +608,16 @@
     {
       // mirrors-clang-format (enabled via the native `pre-commit` manager, Tier 1 -- see
       // enabledManagers above) is otherwise completely ungated, unlike every other
-      // LLVM-coupled pin in this file. Its formatting behavior is tied to the same LLVM major
-      // as the compiler toolchain (currently 22; the mirror's own next upstream tag is
-      // already v23.1.0), so an unattended major bump here could have contributors format
-      // locally with clang-format 23 while CI's compiler and clang-tidy stay on 22 --
-      // producing formatting the pre-commit CI job (still running 22) would then reject.
-      // Gated the same way as the rest of the LLVM-major process instead of left automatic.
+      // LLVM-coupled pin in this file. Both local and .github/workflows/pre-commit.yml's CI
+      // job run the same .pre-commit-config.yaml, so an unattended major bump here would move
+      // both together -- the risk isn't a CI-vs-local formatting mismatch, it's that
+      // clang-format's major version would silently decouple from the *compiler* toolchain
+      // (currently pinned to LLVM 22; the mirror's own next upstream tag is already v23.1.0):
+      // a newer formatter's style-rule changes reformatting the whole codebase without any of
+      // the deliberate review a real LLVM-major bump gets (new compiler warnings, clang-tidy
+      // behavior changes, etc.), and now coordinated with a compiler/clang-tidy pair that
+      // hasn't itself moved. Gated the same way as the rest of the LLVM-major process instead
+      // of left automatic.
       matchPackageNames: ['pre-commit/mirrors-clang-format'],
       matchUpdateTypes: ['major'],
       dependencyDashboardApproval: true,

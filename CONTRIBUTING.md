@@ -1270,11 +1270,17 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     jobs call that reusable workflow passing only `os`/`build_type`, never the LLVM inputs, so
     it's the reusable workflow's own defaults -- not `ci.yml`'s env vars -- that actually
     govern the compiler the main build+test jobs use. `.github/actions/setup-windows-llvm/
-    action.yml`'s own `llvm-version` default rounds out the list -- every real caller passes
-    this input explicitly today, so it's not the active bug the reusable-workflow one was, but
-    it's still the action's documented contract and would silently go stale for any future
-    caller that omits it. All of the above are grouped into one PR so they can't drift out of
-    sync. Every Linux major-only manager's extraction is anchored to a full stable
+    action.yml`'s and `.github/actions/setup-llvm/action.yml`'s own `llvm-version` input
+    defaults round out the list -- every real caller of both actions passes this input
+    explicitly today (all 15 `setup-llvm` call sites and all 5 `setup-windows-llvm` ones), so
+    neither is the active bug the reusable-workflow one was, but both are still the actions'
+    documented contracts and would silently go stale for a future caller that omits the input.
+    `setup-llvm/action.yml` also had two internal bash fallbacks duplicating "22" a second and
+    third time for when its input arrives empty -- provably unreachable, since every real
+    caller passes a value and the action's own YAML-level `default:` already fills in one even
+    if a caller omitted the input entirely -- so those were deleted as dead code rather than
+    tracked. All of the above are grouped into one PR so they can't drift out of sync. Every
+    Linux major-only manager's extraction is anchored to a full stable
     `llvmorg-X.Y.Z` tag (nothing after the patch digit), the same anchoring reasoning as the
     Python interpreter managers below: without it, a prerelease tag like `llvmorg-23.1.0-rc3`
     would reduce to the same "23" a real major release would, putting a premature update on
@@ -1305,21 +1311,23 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
   - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
     `python-version: '3.14'`, `.github/workflows/pre-commit.yml`'s `python-version: '3.14'`
     (its own independent pin for `actions/setup-python`, otherwise left stale by a bump to the
-    other two), and `tools/setup-dev.ps1`'s `$PythonVersion` param default (the winget `--id`
-    and the `Resolve-Python` install-path probing both derive from that one variable at
-    runtime, so they can't desync from a version Renovate bumps), all three grouped together.
-    This is the interpreter *version string* specifically -- not `actions/setup-python`'s own
-    action-version pin, which Dependabot already covers separately and always did; the version
-    string passed to it was the actual gap. All three managers extract and compare major.minor
-    only, from a *stable* tag only (the extraction regex requires the upstream tag to end in a
-    bare patch digit, e.g. `v3.14.1`, excluding prerelease tags like `v3.15.0rc2` -- CPython
-    publishes those well before the matching stable release, so without this a prerelease could
-    be misread as a stable minor bump and proposed before the real release exists). The WinGet
-    package ID this repo pins (`Python.Python.3.14`) only exists at major.minor granularity, so
-    a patch-shaped proposal like `3.14.1` would rewrite it to a nonexistent ID -- restricting
-    extraction to major.minor means a patch-only stable release reduces to the same value
-    already pinned, proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump
-    require dashboard approval before a PR opens.
+    others), `tools/setup-dev.ps1`'s `$PythonVersion` param default (the winget `--id` and the
+    `Resolve-Python` install-path probing both derive from that one variable at runtime), and
+    `tools/setup-dev.sh`'s `readonly PYTHON_VERSION` (the `python3.14`/`python3.14-venv` apt
+    package names and the venv-creation command both derive from it) -- all four grouped
+    together so none of them can desync from a version Renovate bumps. This is the interpreter
+    *version string* specifically -- not `actions/setup-python`'s own action-version pin, which
+    Dependabot already covers separately and always did; the version string passed to it was
+    the actual gap. All four managers extract and compare major.minor only, from a *stable* tag
+    only (the extraction regex requires the upstream tag to end in a bare patch digit, e.g.
+    `v3.14.1`, excluding prerelease tags like `v3.15.0rc2` -- CPython publishes those well
+    before the matching stable release, so without this a prerelease could be misread as a
+    stable minor bump and proposed before the real release exists). The WinGet package ID this
+    repo pins (`Python.Python.3.14`) only exists at major.minor granularity, so a patch-shaped
+    proposal like `3.14.1` would rewrite it to a nonexistent ID -- restricting extraction to
+    major.minor means a patch-only stable release reduces to the same value already pinned,
+    proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump require dashboard
+    approval before a PR opens.
   - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
     `$NinjaVersion`, `$CcacheVersion`) are gated on *every* update, not just major, unlike the
     rest of this tier: these track each project's real upstream `github-tags` releases, but
