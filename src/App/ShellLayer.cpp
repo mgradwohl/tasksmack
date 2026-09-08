@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -22,7 +23,11 @@
 namespace App
 {
 
-ShellLayer::ShellLayer() : Layer("ShellLayer")
+ShellLayer::ShellLayer()
+    : Layer("ShellLayer"),
+      m_Tabs({{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
+              {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return ICON_FA_LIST "  Processes"; }},
+              {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_CachedDetailsTabLabel.c_str(); }}})
 {}
 
 void ShellLayer::onAttach()
@@ -35,8 +40,7 @@ void ShellLayer::onAttach()
     config.applyToApplication();
 
     // Initialize panels
-    m_ProcessesPanel.onAttach();
-    m_SystemMetricsPanel.onAttach();
+    m_Tabs.onAttach();
 
     // Share the process model with panels that render system-level aggregates
     if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
@@ -93,8 +97,7 @@ void ShellLayer::onDetach()
 
     config.save();
 
-    m_SystemMetricsPanel.onDetach();
-    m_ProcessesPanel.onDetach();
+    m_Tabs.onDetach();
     spdlog::info("ShellLayer detached");
 }
 
@@ -112,9 +115,7 @@ void ShellLayer::onEvent(Core::Event& event)
         });
 
     // Forward events to all panels
-    m_ProcessesPanel.onEvent(event);
-    m_ProcessDetailsPanel.onEvent(event);
-    m_SystemMetricsPanel.onEvent(event);
+    m_Tabs.onEvent(event);
 }
 
 void ShellLayer::onUpdate(float deltaTime)
@@ -130,8 +131,7 @@ void ShellLayer::onUpdate(float deltaTime)
     m_FpsCounter.update(deltaTime);
 
     // Update panels
-    m_ProcessesPanel.onUpdate(deltaTime);
-    m_SystemMetricsPanel.onUpdate(deltaTime);
+    m_Tabs.onUpdate(deltaTime);
 
     // Find the selected process snapshot for rendering
     // Note: Selection is now coordinated via ProcessSelectedEvent, but we still need
@@ -254,18 +254,7 @@ void ShellLayer::onRender()
         // shell-level scrollbar reservations that affect non-process tabs.
         if (ImGui::BeginChild("##ContentArea", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AlwaysUseWindowPadding))
         {
-            switch (m_ActiveTab)
-            {
-            case ActiveTab::SystemOverview:
-                m_SystemMetricsPanel.renderContent();
-                break;
-            case ActiveTab::Processes:
-                m_ProcessesPanel.renderContent();
-                break;
-            case ActiveTab::ProcessDetails:
-                m_ProcessDetailsPanel.renderContent();
-                break;
-            }
+            m_Tabs.renderContent();
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();
@@ -297,50 +286,25 @@ void ShellLayer::renderTabBar()
     if (ImGui::BeginTabBar("##MainTabBar", ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip))
     {
         // Track previous tab to emit change event if selection changes
-        const ActiveTab previousTab = m_ActiveTab;
+        const auto* previousTab = &m_Tabs.activeTab();
 
-        // Tab 1: System Overview (hostname)
-        // m_CachedSystemTabLabel is built in onAttach(); hostname is stable for the process lifetime.
-        if (ImGui::BeginTabItem(m_CachedSystemTabLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+        std::size_t index = 0;
+        for (const auto& tab : m_Tabs.tabs())
         {
-            m_ActiveTab = ActiveTab::SystemOverview;
-            ImGui::EndTabItem();
-        }
-
-        // Tab 2: Processes
-        if (ImGui::BeginTabItem(ICON_FA_LIST "  Processes", nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
-        {
-            m_ActiveTab = ActiveTab::Processes;
-            ImGui::EndTabItem();
-        }
-
-        // Tab 3: Process Details (shows process name or "Select a process")
-        // m_CachedDetailsTabLabel is rebuilt in onUpdate() only when the selected PID changes.
-        if (ImGui::BeginTabItem(m_CachedDetailsTabLabel.c_str(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
-        {
-            m_ActiveTab = ActiveTab::ProcessDetails;
-            ImGui::EndTabItem();
+            if (ImGui::BeginTabItem(tab.label(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+            {
+                m_Tabs.select(index);
+                ImGui::EndTabItem();
+            }
+            ++index;
         }
 
         ImGui::EndTabBar();
 
         // Emit ActiveTabChangedEvent when tab selection changes
-        if (previousTab != m_ActiveTab)
+        if (previousTab != &m_Tabs.activeTab())
         {
-            std::string tabName;
-            switch (m_ActiveTab)
-            {
-            case ActiveTab::SystemOverview:
-                tabName = "SystemOverview";
-                break;
-            case ActiveTab::Processes:
-                tabName = "Processes";
-                break;
-            case ActiveTab::ProcessDetails:
-                tabName = "ProcessDetails";
-                break;
-            }
-            Core::ActiveTabChangedEvent evt(std::move(tabName));
+            Core::ActiveTabChangedEvent evt(std::string(m_Tabs.activeTab().eventName));
             Core::Application::get().raiseEvent(evt);
         }
     }
