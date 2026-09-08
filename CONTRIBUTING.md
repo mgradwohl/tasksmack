@@ -337,6 +337,10 @@ argument.
 
 ### Testing App/UI code that needs a live ImGui context
 
+Shell tab registration and lifecycle forwarding live in the header-only `App/PanelTabs.h`.
+`tests/App/test_PanelTabs.cpp` exercises them with fake panels, including selection, dynamic
+labels, and content-only rendering, without linking ImGui.
+
 `TaskSmackTests` does not link the real ImGui/ImPlot library object code (no `imgui`/`implot`
 library target, no live window or GL context) - only their headers are on the include path. This
 means a `.cpp` file that calls real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions (window setup,

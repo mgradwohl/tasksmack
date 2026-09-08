@@ -45,7 +45,7 @@ class ProcessDetailsPanel : public Panel
     void render(bool* open) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
-    void renderContent();
+    void renderContent() override;
 
     /// Get a label for this panel (process name or "Select a process").
     [[nodiscard]] std::string tabLabel() const;
