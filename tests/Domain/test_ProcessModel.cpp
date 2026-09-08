@@ -515,13 +515,57 @@ TEST(ProcessModelTest, FindSnapshotWithVersionReturnsNulloptForUnknownPid)
     EXPECT_FALSE(model.findSnapshotWithVersion(999).has_value());
 }
 
+TEST(ProcessModelTest, SeparateFindSnapshotAndSnapshotVersionCallsCanMismatchAcrossARefresh)
+{
+    // Deterministic, thread-free reproduction of the exact race findSnapshotWithVersion()
+    // exists to close -- no reliance on OS scheduling, unlike the concurrent stress test
+    // below. Simulates ShellLayer's old bug directly: two SEPARATE calls (findSnapshot()
+    // then a later, independent snapshotVersion()), with a refresh() landing in the gap
+    // between them -- which a caller doing exactly this can always trigger simply by
+    // calling refresh() there, with no race required to reproduce it every single time.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters({makeCounter(100, "gen0", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh(); // publishes generation 0
+
+    // Two separate calls, exactly as ShellLayer::onUpdate() used to make them.
+    const auto separateSnapshot = model.findSnapshot(100);
+    ASSERT_TRUE(separateSnapshot.has_value());
+    EXPECT_EQ(separateSnapshot->name, "gen0");
+
+    // The gap: a refresh() lands between the two separate calls.
+    rawProbe->setCounters({makeCounter(100, "gen1", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh(); // publishes generation 1
+
+    const auto separateVersion = model.snapshotVersion();
+
+    // The mismatch, made concrete: separateSnapshot still holds generation 0's content, but
+    // separateVersion now reflects generation 1 -- exactly what findSnapshotWithVersion()
+    // returns when called after generation 1 is published. A caller pairing
+    // (separateSnapshot, separateVersion) -- as ProcessDetailsPanel's history gate did via
+    // ShellLayer -- would see generation 1's version attached to generation 0's content,
+    // never the coherent pair the atomic API guarantees.
+    const auto atomicLookup = model.findSnapshotWithVersion(100);
+    ASSERT_TRUE(atomicLookup.has_value());
+    EXPECT_EQ(atomicLookup->snapshot.name, "gen1");
+    EXPECT_EQ(atomicLookup->version, separateVersion);
+    EXPECT_NE(separateSnapshot->name, atomicLookup->snapshot.name)
+        << "separateSnapshot (generation 0) is now paired with separateVersion, which actually belongs to generation 1";
+}
+
 TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
 {
     // Sanity check only: confirms the version advances and the snapshot content moves
     // together across two sequential refresh() calls. This does NOT exercise the race
     // findSnapshotWithVersion() exists to close -- see
+    // SeparateFindSnapshotAndSnapshotVersionCallsCanMismatchAcrossARefresh above for a
+    // deterministic reproduction, or
     // FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother below
-    // for the test that actually reproduces the old split-read bug under concurrency.
+    // for concurrent stress coverage of the same property.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
@@ -558,6 +602,20 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
     // a name from one generation paired with the version published for a different
     // generation. This test would fail if findSnapshotWithVersion() were reimplemented as
     // two separate locked calls instead of one, unlike the sequential test above.
+    //
+    // Note on rigor: the checkpoint handshake below guarantees a minimum number of reader
+    // observations, but each guaranteed observation happens once the writer is already
+    // paused waiting for it -- so, in principle, an adversarial scheduler could satisfy the
+    // checkpoints without ever running the reader concurrently with an in-flight write. That
+    // adversarial case is exactly what
+    // SeparateFindSnapshotAndSnapshotVersionCallsCanMismatchAcrossARefresh above
+    // reproduces deterministically instead: it forces a refresh() into the gap between two
+    // separate calls with zero scheduling dependency, which is the actual race
+    // findSnapshotWithVersion() closes (a gap between two separate lock acquisitions, not a
+    // read literally overlapping a write's critical section -- mutual exclusion makes that
+    // impossible by construction, for the correct implementation and the broken one alike).
+    // This test's value is as sustained concurrent-load coverage on top of that, not as the
+    // sole proof the race is closed.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     rawProbe->setTotalCpuTime(100000);
