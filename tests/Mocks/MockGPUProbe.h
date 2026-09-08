@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -141,6 +142,14 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes capabilities() throw once (simulating a transient probe query failure),
+    /// resetting the throw-once flag when it fires so subsequent calls succeed normally.
+    MockGPUProbe& withCapabilitiesQueryThrowingOnce()
+    {
+        m_ThrowOnNextCapabilitiesQuery = true;
+        return *this;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
@@ -168,6 +177,11 @@ class MockGPUProbe : public Platform::IGPUProbe
 
     [[nodiscard]] Platform::GPUCapabilities capabilities() const override
     {
+        if (m_ThrowOnNextCapabilitiesQuery)
+        {
+            m_ThrowOnNextCapabilitiesQuery = false;
+            throw std::runtime_error("MockGPUProbe: simulated capabilities() query failure");
+        }
         return m_Capabilities;
     }
 
@@ -233,6 +247,7 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::vector<Platform::GPUCounters> m_Counters;
     std::vector<Platform::ProcessGPUCounters> m_ProcessCounters;
     Platform::GPUCapabilities m_Capabilities;
+    mutable bool m_ThrowOnNextCapabilitiesQuery = false;
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};

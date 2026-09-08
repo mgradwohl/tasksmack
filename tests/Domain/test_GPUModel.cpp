@@ -29,6 +29,25 @@ using TestMocks::MockGPUProbe;
 namespace
 {
 
+// Bounded wait for a MockGPUProbe's "entered its blocked read" flag. Used by concurrency
+// tests that hold the mock blocked from a background thread: without a deadline, a
+// regression that stops the mock from ever entering its blocking wait would hang the test
+// process indefinitely instead of failing it. Returns false on timeout so the caller can
+// report a clear (non-fatal) failure and still run its own cleanup/release/join.
+[[nodiscard]] bool waitForBlockedEntry(const MockGPUProbe& probe, std::chrono::milliseconds timeout = std::chrono::seconds(5))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!probe.hasEnteredBlockedReadGPUCounters())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
 // =============================================================================
 // Construction Tests
 // =============================================================================
@@ -112,6 +131,31 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
 }
 
+TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscoveryFailed)
+{
+    // Regression test for a review finding on #862: the constructor's capabilities() query
+    // is wrapped in try/catch, and if it throws, m_Capabilities is left at its default
+    // (all-false) values. Treating that as "confirmed unsupported" would permanently and
+    // silently suppress a probe that might genuinely support per-process data, just because
+    // of a one-time query failure at construction -- a real regression versus this method's
+    // behavior before the capability check existed (it always attempted the probe call).
+    // readProcessGPUCounters() must fall through to the lock-and-call path when discovery
+    // failed (unknown), not treat "unknown" the same as "confirmed false".
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withCapabilitiesQueryThrowingOnce(); // fails only the constructor's one query
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+    probe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe)); // constructor's capabilities() query throws here
+
+    const auto counters = model.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].pid, 100);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupported)
 {
     // ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported above only proves the probe
@@ -137,11 +181,12 @@ TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupport
 
     // Wait until the background refresh() is actually inside the blocked probe call (and
     // therefore holding m_ProbeMutex), not just scheduled -- otherwise the timing check
-    // below could race ahead of the lock actually being held.
-    while (!rawProbe->hasEnteredBlockedReadGPUCounters())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    // below could race ahead of the lock actually being held. Bounded (not a bare spin loop):
+    // if a regression stopped refresh() from ever reaching the mock's blocking point, this
+    // would otherwise hang the test process forever instead of failing it. Non-fatal so the
+    // release()/join() cleanup below still runs regardless.
+    EXPECT_TRUE(waitForBlockedEntry(*rawProbe)) << "background refresh() never entered its blocking probe call within the deadline "
+                                                   "-- GPUModel::refresh() or the mock may be broken";
 
     // Run the call under test on its own thread with a bounded wait, rather than calling it
     // inline: if the fix regressed and this call actually blocked on m_ProbeMutex, an inline
@@ -187,10 +232,12 @@ TEST(MockGPUProbeTest, ArmBlockingReadGPUCountersResetsStateFromPriorReleaseCycl
 
         auto future = std::async(std::launch::async, [&probe] { return probe.readGPUCounters(); });
 
-        while (!probe.hasEnteredBlockedReadGPUCounters())
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        // Bounded (not a bare spin loop): if a regression stopped readGPUCounters() from
+        // ever entering its blocking wait, this would otherwise hang the test process
+        // forever instead of failing it. Non-fatal so the release()/wait() cleanup below
+        // still runs regardless, unblocking the async call either way.
+        EXPECT_TRUE(waitForBlockedEntry(probe))
+            << "cycle " << cycle << ": readGPUCounters() never entered its blocking wait within the deadline";
 
         // The call must still be genuinely blocked at this point, not already completed.
         const auto status = future.wait_for(std::chrono::milliseconds(50));
