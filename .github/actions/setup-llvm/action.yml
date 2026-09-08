@@ -68,6 +68,15 @@ runs:
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
         LLVM_VER="$LLVM_VERSION"
+        # Restored after removing this as "provably unreachable": GitHub Copilot's own
+        # code-review setup-step runner invokes this action through a path that does not
+        # resolve `${{ env.LLVM_VERSION }}` the way a normal Actions runner does, sending an
+        # empty string here in practice (reproduced directly -- see PR #859's review thread).
+        # Every real `uses:` call site in this repo's own workflows still passes a value, but
+        # that external caller doesn't, so the fallback stays.
+        if [[ -z "$LLVM_VER" ]]; then
+          LLVM_VER='22'
+        fi
         if [[ ! "$LLVM_VER" =~ ^[0-9]+$ ]]; then
           echo "llvm-version must be a numeric major version" >&2
           exit 1
@@ -149,6 +158,9 @@ runs:
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
         VER="$LLVM_VERSION"
+        if [[ -z "$VER" ]]; then
+          VER='22'
+        fi
 
         # Core LLVM tools (always configured)
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-$VER 100

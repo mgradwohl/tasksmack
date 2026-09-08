@@ -371,12 +371,16 @@
       extractVersionTemplate: '^llvmorg-(?<version>.*)$',
     },
     // Same reasoning as setup-windows-llvm/action.yml above, for the Linux equivalent: every
-    // real caller passes llvm-version explicitly (all 15 uses: ./.github/actions/setup-llvm
-    // call sites across ci.yml, heavy-checks.yml, release.yml, static-analysis.yml,
-    // sanitizers.yml, codeql.yml, copilot-setup-steps.yml, and reusable-build-test.yml pass
-    // env.LLVM_VERSION or inputs.llvm-version). The action's own empty-input bash fallbacks
-    // (which duplicated this "22" a second and third time) were removed as dead code rather
-    // than tracked, since no real caller can ever trigger them.
+    // `uses: ./.github/actions/setup-llvm` call site in this repo's own workflows passes
+    // llvm-version explicitly (all 15 of them, across ci.yml, heavy-checks.yml, release.yml,
+    // static-analysis.yml, sanitizers.yml, codeql.yml, copilot-setup-steps.yml, and
+    // reusable-build-test.yml). This customManager still only needs to track the input
+    // default for that reason -- but the action's own two internal bash fallbacks for an
+    // empty input (duplicating "22" a second and third time) are deliberately kept, NOT
+    // removed as dead code: GitHub Copilot's own code-review setup-step runner invokes this
+    // action through a path that doesn't resolve `${{ env.LLVM_VERSION }}` and sends an
+    // empty string in practice, reproduced directly on this PR (#859) after an earlier
+    // commit here removed those fallbacks and broke Copilot's own review setup step.
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/actions/setup-llvm/action\\.yml$/'],

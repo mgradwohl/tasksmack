@@ -1275,11 +1275,15 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     explicitly today (all 15 `setup-llvm` call sites and all 5 `setup-windows-llvm` ones), so
     neither is the active bug the reusable-workflow one was, but both are still the actions'
     documented contracts and would silently go stale for a future caller that omits the input.
-    `setup-llvm/action.yml` also had two internal bash fallbacks duplicating "22" a second and
-    third time for when its input arrives empty -- provably unreachable, since every real
-    caller passes a value and the action's own YAML-level `default:` already fills in one even
-    if a caller omitted the input entirely -- so those were deleted as dead code rather than
-    tracked. All of the above are grouped into one PR so they can't drift out of sync. Every
+    `setup-llvm/action.yml` also has two internal bash fallbacks duplicating "22" a second and
+    third time for when its input arrives empty. These were briefly removed as apparently dead
+    code (every real `uses:` call site in this repo's own workflows passes a value explicitly)
+    -- but GitHub Copilot's own code-review setup-step runner invokes this action through a
+    path that doesn't resolve `${{ env.LLVM_VERSION }}` and sends an empty string in practice,
+    which broke Copilot's own review setup step on this very PR. Restored; kept deliberately
+    un-tracked rather than added as a fifth/sixth Renovate manager, since they're a defensive
+    fallback for an external caller this repo doesn't control, not a real second pin. All of
+    the above are grouped into one PR so they can't drift out of sync. Every
     Linux major-only manager's extraction is anchored to a full stable
     `llvmorg-X.Y.Z` tag (nothing after the patch digit), the same anchoring reasoning as the
     Python interpreter managers below: without it, a prerelease tag like `llvmorg-23.1.0-rc3`
