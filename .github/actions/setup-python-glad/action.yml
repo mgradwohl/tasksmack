@@ -1,5 +1,5 @@
 name: 'Setup Python for GLAD'
-description: 'Install pinned Python 3.14 with pip cache and install jinja2 for GLAD code generation'
+description: 'Install the pinned Python interpreter with pip cache and install jinja2 for GLAD code generation'
 
 runs:
   using: 'composite'

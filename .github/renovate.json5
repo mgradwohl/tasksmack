@@ -1,16 +1,27 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  extends: ['config:recommended'],
+  // `:enablePreCommit` is required in addition to listing 'pre-commit' in enabledManagers
+  // below -- Renovate's pre-commit manager ships with its own `enabled: false` default
+  // (unrelated to and not overridden by enabledManagers, which only controls which manager
+  // *types* are considered at all), specifically because it's community-maintained and not
+  // supported by the pre-commit maintainers themselves. Without this preset, every
+  // .pre-commit-config.yaml `rev:` pin was silently never extracted at all, despite
+  // 'pre-commit' being listed in enabledManagers below since #798 -- confirmed directly
+  // against Renovate's own pre-commit manager source (modules/manager/pre-commit/index.js's
+  // defaultConfig) and by dry-run extraction before/after adding this preset.
+  extends: ['config:recommended', ':enablePreCommit'],
 
   // Dependabot already covers GitHub Actions (.github/workflows/*) and Python packages
   // (requirements.txt), both weekly on Mondays (see .github/dependabot.yml). This config is
   // scoped to exactly the gap Dependabot doesn't cover: C++ libraries pulled in via CMake
   // FetchContent (SHA-pinned in cmake/Dependencies.cmake, tests/CMakeLists.txt,
-  // benchmarks/CMakeLists.txt) and the LLVM toolchain version pinned for CI/local dev setup.
-  // See issue #89. enabledManagers is restricted to the custom regex manager so this bot never
-  // also tries to manage npm/pip/github-actions and produce duplicate or conflicting PRs
-  // against what Dependabot already does.
-  enabledManagers: ['custom.regex'],
+  // benchmarks/CMakeLists.txt) and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache,
+  // pre-commit's own hook tools) pinned for CI/local dev setup -- see #89 and #798.
+  // enabledManagers is restricted to custom.regex plus Renovate's native pre-commit manager
+  // (for .pre-commit-config.yaml's `rev:` pins) so this bot never also tries to manage
+  // npm/pip/github-actions and produce duplicate or conflicting PRs against what Dependabot
+  // already does.
+  enabledManagers: ['custom.regex', 'pre-commit'],
 
   dependencyDashboard: true,
   labels: ['dependencies', 'ci'],
@@ -137,9 +148,10 @@
       datasourceTemplate: 'github-tags',
     },
 
-    // ── LLVM toolchain (Windows exact semver pin only -- see packageRules below for why
-    //    major bumps are excluded, and why this doesn't also touch the Linux major-version
-    //    pins in ci.yml/tools/setup-dev.sh) ────────────────────────────────
+    // ── LLVM toolchain: Windows exact semver pin plus the Linux major-only pins. Every
+    //    update to this whole group requires dashboard approval (see packageRules below) --
+    //    not just major bumps -- because Windows resolves the pinned version through
+    //    Chocolatey/WinGet, and neither feed's availability is verified before a PR opens. ──
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
@@ -163,24 +175,465 @@
       datasourceTemplate: 'github-tags',
       extractVersionTemplate: '^llvmorg-(?<version>.*)$',
     },
+    {
+      // Linux's LLVM_VERSION is a bare major number (e.g. "22"), unlike the Windows semver
+      // pin above -- extractVersionTemplate reduces every llvm-project tag down to just its
+      // leading major-version digits, and versioningTemplate treats both sides as single-
+      // component "major" versions, so any real change here is always update type "major"
+      // (see the dependencyDashboardApproval packageRule below) rather than being compared
+      // as if "22" meant "22.0.0".
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      // tools/setup-dev.sh tracks LLVM_SUPPORTED_VERSION, not the LLVM_VERSION variable it
+      // seeds -- LLVM_SUPPORTED_VERSION is also the literal the script's own --llvm guard
+      // compares against, so a Renovate bump here can never leave that guard checking a
+      // stale value (see tools/setup-dev.sh).
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.sh$/'],
+      matchStrings: [
+        'LLVM_SUPPORTED_VERSION=(?<currentValue>[0-9]+)',
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    // Every other functional LLVM_VERSION/LLVM_SEMVER_VERSION pin in the repo, so a single
+    // grouped Renovate PR (see the 'LLVM toolchain' packageRule below) updates every location
+    // atomically instead of leaving CI split across LLVM majors. codeql.yml, sanitizers.yml,
+    // and copilot-setup-steps.yml only pin the Linux major (no Windows semver job); cmake's
+    // TASKSMACK_LLVM_VERSION is Linux-major-only too (feeds clang-tidy/IWYU tool discovery,
+    // not a compiler pin).
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/static-analysis\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/static-analysis\\.yml$/'],
+      matchStrings: [
+        "LLVM_SEMVER_VERSION: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/heavy-checks\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/heavy-checks\\.yml$/'],
+      matchStrings: [
+        "LLVM_SEMVER_VERSION: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/release\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/release\\.yml$/'],
+      matchStrings: [
+        "LLVM_SEMVER_VERSION: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/codeql\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/sanitizers\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/copilot-setup-steps\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^cmake/Options\\.cmake$/'],
+      matchStrings: [
+        'set\\(TASKSMACK_LLVM_VERSION "(?<currentValue>[0-9]+)"',
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    // ci.yml's build-linux-*/build-windows-* jobs call reusable-build-test.yml passing only
+    // `os`/`build_type` -- they never pass `llvm-version`/`llvm-semver-version`, so it's this
+    // reusable workflow's OWN input defaults, not ci.yml's LLVM_VERSION/LLVM_SEMVER_VERSION
+    // env vars, that actually govern the compiler the main build+test jobs use. Without these
+    // two managers, a dashboard-approved LLVM bump would update ci.yml's (largely decorative,
+    // for the jobs that don't go through the reusable workflow) env vars while silently
+    // leaving the real build jobs on the old compiler.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/reusable-build-test\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/reusable-build-test\\.yml$/'],
+      matchStrings: [
+        "llvm-semver-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    // Every real caller of this action passes llvm-version explicitly (confirmed by reading
+    // every uses: ./.github/actions/setup-windows-llvm call site: release.yml x2,
+    // reusable-build-test.yml, heavy-checks.yml, static-analysis.yml), so this default is
+    // never actually the effective value today -- but it's still the action's documented
+    // contract default, and tracking it means it can't silently go stale for a future caller
+    // that omits the input, or for anyone reading the action file directly.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>.*)$',
+    },
+    // Same reasoning as setup-windows-llvm/action.yml above, for the Linux equivalent: every
+    // `uses: ./.github/actions/setup-llvm` call site in this repo's own workflows passes
+    // llvm-version explicitly (all 15 of them, across ci.yml, heavy-checks.yml, release.yml,
+    // static-analysis.yml, sanitizers.yml, codeql.yml, copilot-setup-steps.yml, and
+    // reusable-build-test.yml). This customManager still only needs to track the input
+    // default for that reason -- but the action's own two internal bash fallbacks for an
+    // empty input (duplicating "22" a second and third time) are deliberately kept, NOT
+    // removed as dead code: GitHub Copilot's own code-review setup-step runner invokes this
+    // action through a path that doesn't resolve `${{ env.LLVM_VERSION }}` and sends an
+    // empty string in practice, reproduced directly on this PR (#859) after an earlier
+    // commit here removed those fallbacks and broke Copilot's own review setup step.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-llvm/action\\.yml$/'],
+      matchStrings: [
+        "llvm-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+
+    // ── Python interpreter (setup-python-glad/action.yml, tools/setup-dev.ps1,
+    //    tools/setup-dev.sh, and CI's own pre-commit.yml, which independently pins
+    //    actions/setup-python's version string -- all four grouped so a bump can't leave any
+    //    of them stale). extractVersionTemplate
+    //    and versioningTemplate are deliberately restricted to major.minor only (dropping
+    //    CPython's patch component entirely), for two independent reasons:
+    //    1. The WinGet package ID this repo pins (Python.Python.3.14) only exists at
+    //       major.minor granularity, so a patch-shaped proposal like "3.14.1" would rewrite it
+    //       to a WinGet ID that doesn't exist. Restricting extraction to major.minor means a
+    //       patch-only upstream release (v3.14.1) reduces to the same "3.14" value already
+    //       pinned, so no update is proposed for it at all -- only a genuine X.Y change (e.g.
+    //       3.14 -> 3.15) triggers a PR, and with 2-component regex versioning that's always
+    //       classified "minor", gated by the dependencyDashboardApproval packageRule below
+    //       alongside the (rarer) true major.
+    //    2. The trailing `\d+$` anchor requires the matched upstream tag to be a plain stable
+    //       `vX.Y.Z` with nothing after it -- CPython's own prerelease tags (`v3.15.0a1`,
+    //       `v3.15.0b2`, `v3.15.0rc2`, etc.) don't end in a bare digit, so they're excluded
+    //       from ever producing a candidate version. Without the anchor, `v3.15.0rc2` would
+    //       reduce to the same "3.15" a stable release would, proposing an update before a
+    //       stable 3.15.0 actually exists (verified directly against the live tag list: at
+    //       the time this was written, `v3.15.0rc2` is CPython's newest 3.15 tag and no stable
+    //       `v3.15.0` exists yet). ─────────────────────────────────────────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-python-glad/action\\.yml$/'],
+      matchStrings: [
+        "python-version: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+    {
+      // Targets the readonly PYTHON_VERSION assignment, not the python${PYTHON_VERSION}
+      // apt package names or the venv-creation command below it, which now derive from this
+      // variable at runtime instead of hardcoding the version a second and third time (see
+      // tools/setup-dev.sh).
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.sh$/'],
+      matchStrings: [
+        'readonly PYTHON_VERSION=(?<currentValue>[0-9.]+)',
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+    {
+      // Targets the $PythonVersion param default, not the winget --id line below it, which
+      // now derives from this variable at runtime instead of hardcoding the version a second
+      // time (see tools/setup-dev.ps1).
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\[string\\]\\$PythonVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+    {
+      // CI's pre-commit job pins actions/setup-python's version string independently of
+      // GLAD's action and the dev-box script above -- without this, a Python bump would move
+      // those two but leave the pre-commit CI runtime on the old interpreter.
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/pre-commit\\.yml$/'],
+      matchStrings: [
+        "python-version: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
+
+    // ── CMake/Ninja/ccache dev-box pins (tools/setup-dev.ps1) -- major-or-riskier per #798,
+    //    gated the same way as LLVM/Python major below. Tracks each tool's real upstream
+    //    releases (github-tags), not winget's own feed, which can lag upstream -- the same
+    //    tradeoff the existing Windows LLVM pin above already accepts. ─────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$CMakeVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'Kitware/CMake',
+      packageNameTemplate: 'Kitware/CMake',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$NinjaVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'ninja-build/ninja',
+      packageNameTemplate: 'ninja-build/ninja',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$CcacheVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'ccache/ccache (dev-box, winget)',
+      packageNameTemplate: 'ccache/ccache',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+      // ccache's own tags are 2-component too (e.g. "v4.14"), not always 3-component.
+      versioningTemplate: 'semver-coerce',
+    },
+
+    // ── Ninja/ccache exact CI pins (.github/actions/setup-windows-llvm/action.yml), installed
+    //    via Chocolatey, not winget -- tracks Chocolatey's actual community feed (Chocolatey
+    //    packages are NuGet packages under the hood) so a proposed bump is guaranteed
+    //    installable via `choco install`, not just tagged upstream. Verified directly against
+    //    the live feed: both "ninja"/"ccache" package IDs and this registryUrl correctly
+    //    resolve to the exact versions already pinned here (1.13.2 / 4.14.0). Tier 1 (safe to
+    //    auto-PR): no dependencyDashboardApproval gate, same as the FetchContent libs above. ──
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "ninja-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'ninja (Chocolatey, CI)',
+      packageNameTemplate: 'ninja',
+      datasourceTemplate: 'nuget',
+      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "ccache-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'ccache (Chocolatey, CI)',
+      packageNameTemplate: 'ccache',
+      datasourceTemplate: 'nuget',
+      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
+    },
   ],
 
   packageRules: [
     {
-      // Bundle both Windows-LLVM-semver pin locations (ci.yml + tools/setup-dev.ps1) into one
-      // PR so they can't drift out of sync with each other.
+      // Bundle every functional LLVM pin location in the repo into one PR so they can't drift
+      // out of sync with each other: the Windows exact-semver pins (ci.yml, heavy-checks.yml,
+      // release.yml, static-analysis.yml, reusable-build-test.yml, setup-windows-llvm/
+      // action.yml, setup-dev.ps1) and the Linux major-only pins (ci.yml, heavy-checks.yml,
+      // release.yml, static-analysis.yml, codeql.yml, sanitizers.yml,
+      // copilot-setup-steps.yml, reusable-build-test.yml, setup-dev.sh, cmake/Options.cmake).
+      // reusable-build-test.yml matters most of all: its own input defaults, not ci.yml's env
+      // vars, are what actually govern the compiler the main build-linux-*/build-windows-*
+      // jobs use (see the customManagers above).
       matchPackageNames: ['llvm/llvm-project'],
-      groupName: 'LLVM toolchain (Windows pin)',
+      groupName: 'LLVM toolchain',
     },
     {
-      // Major LLVM bumps need real validation (new compiler warnings, clang-tidy behavior
-      // changes, Windows package availability) across 3 files (ci.yml, tools/setup-dev.sh,
-      // tools/setup-dev.ps1) and the apt-repo codename for Linux -- that's the same
-      // deliberate, tracked process already used for #752 (LLVM 23 upgrade), not something
-      // to auto-propose on a schedule.
+      // Every LLVM update -- not just major -- is gated, because the value this group tracks
+      // (upstream llvm-project tags) isn't actually what gets installed on Windows: both CI
+      // (.github/actions/setup-windows-llvm, `choco install llvm`) and the dev-box script
+      // (tools/setup-dev.ps1, `winget install LLVM.LLVM`) resolve the pinned version through
+      // Chocolatey/WinGet, and #752 already recorded a concrete real-world instance of that
+      // feed lagging upstream (upstream had 22.1.8 while Chocolatey still only had 22.1.7) --
+      // an auto-PR'd Windows *patch* bump under the old major-only gate would have generated
+      // an unmergeable PR (every Windows job failing at `choco install`) with nothing to catch
+      // it before CI ran. Detected and listed on the Dependency Dashboard; opens a PR only
+      // once a human ticks the checkbox and (per the same manual-verification precedent as the
+      // CMake/Ninja/ccache dev-box pins below) confirms the proposed version is actually
+      // installable through both feeds first. A true major bump additionally needs the real
+      // compiler/clang-tidy validation and the manual companion-file updates described above
+      // -- the same deliberate process already used for #752's LLVM 23 upgrade. This
+      // supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the
+      // dashboard-approval mechanism used everywhere else in this tier.
       matchPackageNames: ['llvm/llvm-project'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // All four Python pin locations move together.
+      matchPackageNames: ['python/cpython'],
+      groupName: 'Python interpreter',
+    },
+    {
+      // A new Python interpreter needs the same deliberate look as an LLVM major (interpreter
+      // behavior changes matter for the GLAD/jinja2 codegen path this pin feeds, and
+      // setup-dev.ps1's WinGet package ID only exists at major.minor granularity in the first
+      // place -- see the customManagers above). Both 'minor' and 'major' are gated here
+      // because the major.minor-only versioningTemplate above means a realistic bump like
+      // 3.14 -> 3.15 always classifies as "minor", not "major" (a true 3.x -> 4.x is
+      // exceedingly rare, but would also be caught by this same rule).
+      matchPackageNames: ['python/cpython'],
+      matchUpdateTypes: ['minor', 'major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // CMake/Ninja/ccache dev-box pins gate EVERY update, not just major, unlike the other
+      // Tier 2 tools above: these track each project's real upstream github-tags releases,
+      // but tools/setup-dev.ps1 installs via `winget install --version <pin>`, and WinGet's
+      // own package feed lags upstream unpredictably (confirmed directly: WinGet's CMake feed
+      // tops out at 3.31.8 while upstream already has 3.31.12 -- a patch-only proposal here
+      // would still generate an uninstallable `winget install` command). No CI job exercises
+      // this dev-box installer script at all, so nothing would catch that automatically; a
+      // human must manually confirm WinGet catalog availability before approving any bump.
+      matchPackageNames: ['Kitware/CMake', 'ninja-build/ninja', 'ccache/ccache'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // mirrors-clang-format (enabled via the native `pre-commit` manager, Tier 1 -- see
+      // enabledManagers above) is otherwise completely ungated, unlike every other
+      // LLVM-coupled pin in this file. Both local and .github/workflows/pre-commit.yml's CI
+      // job run the same .pre-commit-config.yaml, so an unattended major bump here would move
+      // both together -- the risk isn't a CI-vs-local formatting mismatch, it's that
+      // clang-format's major version would silently decouple from the *compiler* toolchain
+      // (currently pinned to LLVM 22; the mirror's own next upstream tag is already v23.1.0):
+      // a newer formatter's style-rule changes reformatting the whole codebase without any of
+      // the deliberate review a real LLVM-major bump gets (new compiler warnings, clang-tidy
+      // behavior changes, etc.), and now coordinated with a compiler/clang-tidy pair that
+      // hasn't itself moved. Gated the same way as the rest of the LLVM-major process instead
+      // of left automatic.
+      matchPackageNames: ['pre-commit/mirrors-clang-format'],
       matchUpdateTypes: ['major'],
-      enabled: false,
+      dependencyDashboardApproval: true,
     },
   ],
 }
