@@ -1,11 +1,11 @@
 # Wayland Native Support - Test Matrix and Validation
 
 ## Overview
-This document defines the test matrix and acceptance criteria for the Wayland native support implementation (PR #743, implementing issue #593). All tests should be executed on each platform/compositor combination to validate that #382's manual testing gate is satisfied.
+This document defines the test matrix and acceptance criteria for the Wayland native support implementation (PR #743, implementing issue #593). All tests should be executed on each platform/compositor combination to validate that #865's manual testing gate is satisfied.
 
 **Issue Workflow:**
 - #593: Implementation umbrella issue, implemented by PR #743
-- #382: Manual validation gate (re-triage after PR #743 merges, manual test matrix evidence required before close)
+- #865: Manual validation gate (consolidates the original #382 maximize/restore gate and #754's drag/title-bar-button-routing gate into one issue against this same matrix; manual test matrix evidence required before close)
 
 ## Implementation Summary
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
@@ -211,7 +211,7 @@ Test toggle maximize/restore:
 3. ✅ Unit tests pass: 1284/1284 on Linux, 1159/1159 on Windows (both 100%)
 4. ✅ No regressions on Windows -- confirmed on CI run 33661250717 after the #746 fix
 
-**Before closing #382, the following evidence must be attached:**
+**Before closing #865, the following evidence must be attached:**
 
 1. Test results matrix showing ✅ passes for:
    - Maximize/Restore GNOME (Wayland) + multi-monitor
@@ -274,5 +274,5 @@ export SDL_VIDEODRIVER=x11
 
 - Architecture: tasksmack.md - Custom Title Bar Behavior section
 - Code: `Core::VideoBackend` (src/Core/VideoBackend.h/cpp), `Window::maximize()`, `TitleBarLayer::getCurrentMousePosition()`, `TitleBarLayer::hitTestCallback()`/`updateResizeCursor()` (src/App/TitleBarLayer.cpp), `computeTitleBarAreaHitTest()` (src/App/TitleBarGeometry.h)
-- Issue references: #593 (implementation), #382 (validation gate), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression)
+- Issue references: #593 (implementation), #865 (validation gate, consolidating #382 and #754), #744 (native Wayland drag delegation), #745 (native-decorations opt-in setting), #749 (resize-cursor hover regression), #750 (drag/title-bar-button routing fix)
 - Related: #373 (custom title bar intro, historical context)
