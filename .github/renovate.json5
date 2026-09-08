@@ -1,6 +1,15 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  extends: ['config:recommended'],
+  // `:enablePreCommit` is required in addition to listing 'pre-commit' in enabledManagers
+  // below -- Renovate's pre-commit manager ships with its own `enabled: false` default
+  // (unrelated to and not overridden by enabledManagers, which only controls which manager
+  // *types* are considered at all), specifically because it's community-maintained and not
+  // supported by the pre-commit maintainers themselves. Without this preset, every
+  // .pre-commit-config.yaml `rev:` pin was silently never extracted at all, despite
+  // 'pre-commit' being listed in enabledManagers below since #798 -- confirmed directly
+  // against Renovate's own pre-commit manager source (modules/manager/pre-commit/index.js's
+  // defaultConfig) and by dry-run extraction before/after adding this preset.
+  extends: ['config:recommended', ':enablePreCommit'],
 
   // Dependabot already covers GitHub Actions (.github/workflows/*) and Python packages
   // (requirements.txt), both weekly on Mondays (see .github/dependabot.yml). This config is

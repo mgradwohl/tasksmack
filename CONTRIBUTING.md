@@ -1332,6 +1332,15 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     major.minor means a patch-only stable release reduces to the same value already pinned,
     proposing nothing. Both a minor bump (`3.14` -> `3.15`) and a major bump require dashboard
     approval before a PR opens.
+
+    As with the LLVM major checklist above, the four tracked pins aren't the only "3.14" in
+    the repo -- this document's own copy-pasteable instructions hardcode it too (the manual
+    setup command near the top of this guide, the automated-setup description text, and the
+    Windows `winget install Python.Python.3.14` block below), and Dependabot's own comment in
+    `requirements.txt`'s header says "Python 3.14". None of these are simple regex-trackable
+    pins (they're prose and copy-paste command text, not a single assignment), so they're
+    listed here as the known manual-companion-edit checklist for whoever approves a Python
+    interpreter bump via the dashboard, same reasoning as the LLVM one.
   - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
     `$NinjaVersion`, `$CcacheVersion`) are gated on *every* update, not just major, unlike the
     rest of this tier: these track each project's real upstream `github-tags` releases, but
