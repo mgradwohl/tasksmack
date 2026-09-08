@@ -6,11 +6,13 @@
   // (requirements.txt), both weekly on Mondays (see .github/dependabot.yml). This config is
   // scoped to exactly the gap Dependabot doesn't cover: C++ libraries pulled in via CMake
   // FetchContent (SHA-pinned in cmake/Dependencies.cmake, tests/CMakeLists.txt,
-  // benchmarks/CMakeLists.txt) and the LLVM toolchain version pinned for CI/local dev setup.
-  // See issue #89. enabledManagers is restricted to the custom regex manager so this bot never
-  // also tries to manage npm/pip/github-actions and produce duplicate or conflicting PRs
-  // against what Dependabot already does.
-  enabledManagers: ['custom.regex'],
+  // benchmarks/CMakeLists.txt) and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache,
+  // pre-commit's own hook tools) pinned for CI/local dev setup -- see #89 and #798.
+  // enabledManagers is restricted to custom.regex plus Renovate's native pre-commit manager
+  // (for .pre-commit-config.yaml's `rev:` pins) so this bot never also tries to manage
+  // npm/pip/github-actions and produce duplicate or conflicting PRs against what Dependabot
+  // already does.
+  enabledManagers: ['custom.regex', 'pre-commit'],
 
   dependencyDashboard: true,
   labels: ['dependencies', 'ci'],
@@ -137,9 +139,9 @@
       datasourceTemplate: 'github-tags',
     },
 
-    // ── LLVM toolchain (Windows exact semver pin only -- see packageRules below for why
-    //    major bumps are excluded, and why this doesn't also touch the Linux major-version
-    //    pins in ci.yml/tools/setup-dev.sh) ────────────────────────────────
+    // ── LLVM toolchain: Windows exact semver pin (auto-PR'd for minor/patch; major requires
+    //    dashboard approval, see packageRules below) plus the Linux major-only pins (always
+    //    "major" update type by construction below, so always dashboard-gated) ──────────────
     {
       customType: 'regex',
       managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
@@ -163,24 +165,177 @@
       datasourceTemplate: 'github-tags',
       extractVersionTemplate: '^llvmorg-(?<version>.*)$',
     },
+    {
+      // Linux's LLVM_VERSION is a bare major number (e.g. "22"), unlike the Windows semver
+      // pin above -- extractVersionTemplate reduces every llvm-project tag down to just its
+      // leading major-version digits, and versioningTemplate treats both sides as single-
+      // component "major" versions, so any real change here is always update type "major"
+      // (see the dependencyDashboardApproval packageRule below) rather than being compared
+      // as if "22" meant "22.0.0".
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/ci\\.yml$/'],
+      matchStrings: [
+        "LLVM_VERSION: '(?<currentValue>[0-9]+)'",
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.sh$/'],
+      matchStrings: [
+        'LLVM_VERSION=(?<currentValue>[0-9]+)',
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
+
+    // ── Python interpreter (setup-python-glad/action.yml + tools/setup-dev.ps1, both pinned
+    //    to "3.14" -- major-or-riskier per #798, gated the same way as LLVM major below) ────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-python-glad/action\\.yml$/'],
+      matchStrings: [
+        "python-version: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+      // Both pin locations are 2-component ("3.14"), not full 3-component semver.
+      versioningTemplate: 'semver-coerce',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '--id Python\\.Python\\.(?<currentValue>[0-9.]+)',
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+      versioningTemplate: 'semver-coerce',
+    },
+
+    // ── CMake/Ninja/ccache dev-box pins (tools/setup-dev.ps1) -- major-or-riskier per #798,
+    //    gated the same way as LLVM/Python major below. Tracks each tool's real upstream
+    //    releases (github-tags), not winget's own feed, which can lag upstream -- the same
+    //    tradeoff the existing Windows LLVM pin above already accepts. ─────────────────────
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$CMakeVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'Kitware/CMake',
+      packageNameTemplate: 'Kitware/CMake',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$NinjaVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'ninja-build/ninja',
+      packageNameTemplate: 'ninja-build/ninja',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^tools/setup-dev\\.ps1$/'],
+      matchStrings: [
+        '\\$CcacheVersion = "(?<currentValue>[0-9.]+)"',
+      ],
+      depNameTemplate: 'ccache/ccache (dev-box, winget)',
+      packageNameTemplate: 'ccache/ccache',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>.*)$',
+      // ccache's own tags are 2-component too (e.g. "v4.14"), not always 3-component.
+      versioningTemplate: 'semver-coerce',
+    },
+
+    // ── Ninja/ccache exact CI pins (.github/actions/setup-windows-llvm/action.yml), installed
+    //    via Chocolatey, not winget -- tracks Chocolatey's actual community feed (Chocolatey
+    //    packages are NuGet packages under the hood) so a proposed bump is guaranteed
+    //    installable via `choco install`, not just tagged upstream. Verified directly against
+    //    the live feed: both "ninja"/"ccache" package IDs and this registryUrl correctly
+    //    resolve to the exact versions already pinned here (1.13.2 / 4.14.0). Tier 1 (safe to
+    //    auto-PR): no dependencyDashboardApproval gate, same as the FetchContent libs above. ──
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "ninja-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'ninja (Chocolatey, CI)',
+      packageNameTemplate: 'ninja',
+      datasourceTemplate: 'nuget',
+      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
+      matchStrings: [
+        "ccache-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
+      ],
+      depNameTemplate: 'ccache (Chocolatey, CI)',
+      packageNameTemplate: 'ccache',
+      datasourceTemplate: 'nuget',
+      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
+    },
   ],
 
   packageRules: [
     {
-      // Bundle both Windows-LLVM-semver pin locations (ci.yml + tools/setup-dev.ps1) into one
-      // PR so they can't drift out of sync with each other.
+      // Bundle all four LLVM pin locations (Windows exact semver in ci.yml + setup-dev.ps1,
+      // Linux major-only in ci.yml + setup-dev.sh) into one PR so they can't drift out of
+      // sync with each other.
       matchPackageNames: ['llvm/llvm-project'],
-      groupName: 'LLVM toolchain (Windows pin)',
+      groupName: 'LLVM toolchain',
     },
     {
       // Major LLVM bumps need real validation (new compiler warnings, clang-tidy behavior
-      // changes, Windows package availability) across 3 files (ci.yml, tools/setup-dev.sh,
-      // tools/setup-dev.ps1) and the apt-repo codename for Linux -- that's the same
-      // deliberate, tracked process already used for #752 (LLVM 23 upgrade), not something
-      // to auto-propose on a schedule.
+      // changes, Windows package availability) across all four pin locations and the apt-repo
+      // codename for Linux -- the same deliberate process already used for #752 (LLVM 23
+      // upgrade). The Linux major-only managers above always report update type "major" by
+      // construction, so this also covers every Linux LLVM_VERSION change. Detected and
+      // listed on the Dependency Dashboard; opens a PR only once a human ticks the checkbox
+      // (supersedes #752's blanket `enabled: false` for Windows major bumps).
       matchPackageNames: ['llvm/llvm-project'],
       matchUpdateTypes: ['major'],
-      enabled: false,
+      dependencyDashboardApproval: true,
+    },
+    {
+      // Both Python pin locations move together.
+      matchPackageNames: ['python/cpython'],
+      groupName: 'Python interpreter',
+    },
+    {
+      // A new Python interpreter minor/major needs the same deliberate look as an LLVM major
+      // (interpreter behavior changes matter for the GLAD/jinja2 codegen path this pin feeds) --
+      // gate on major here since CPython's own X.Y.Z tags make a Y bump (e.g. 3.14 -> 3.15)
+      // classify as "minor", not "major"; a true major (3.x -> 4.x) is exceedingly rare.
+      matchPackageNames: ['python/cpython'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // CMake/Ninja/ccache dev-box pins: same reasoning as Python -- gate real major bumps
+      // (each already has a stable release history; minor/patch bumps are low-risk and can
+      // auto-PR through the full CI matrix like any other update).
+      matchPackageNames: ['Kitware/CMake', 'ninja-build/ninja', 'ccache/ccache'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
     },
   ],
 }

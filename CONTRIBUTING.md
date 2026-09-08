@@ -1162,7 +1162,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
-- **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the LLVM toolchain version pin -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
+- **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
@@ -1234,29 +1234,61 @@ upstream tags at all, so there's nothing to compare against -- left as an occasi
 check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before merge.
 
 **Tools we build with** (cmake, LLVM/clang, Python, ninja, ccache, git -- see
-`tools/check-prereqs.sh`): these split into two categories that are handled differently.
+`tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
+below. See #798 for the full repo-wide audit and rationale behind this split.
 
-- *Versions CI/setup scripts actually pin*: LLVM is pinned in three places --
-  `.github/workflows/ci.yml` (`LLVM_VERSION` for Linux's major version, `LLVM_SEMVER_VERSION`
-  for Windows' exact version), `tools/setup-dev.sh` (`LLVM_VERSION`), and
-  `tools/setup-dev.ps1` (`$LlvmVersion`). `renovate.json5` automates the Windows semver pin
-  across `ci.yml` and `tools/setup-dev.ps1` together (grouped into one PR so they can't drift
-  out of sync), restricted to minor/patch bumps only -- a major LLVM bump (e.g. 22 → 23) stays
-  a deliberate, manually-tracked decision (see #752), since it touches all three files plus the
-  Linux apt-repo codename and typically needs real validation (new compiler warnings,
-  clang-tidy behavior changes, Windows package availability). Python's interpreter version
-  (`actions/setup-python`'s `python-version: '3.14'`) and `ccache`
-  (`hendrikmuhs/ccache-action@sha`) are both GitHub Action references, so Dependabot already
-  covers them. `cmake`/`ninja`/`git` aren't explicitly version-pinned anywhere in CI --
-  whatever the `ubuntu-24.04`/`windows-2025` runner images ship is used as-is.
-- *`check-prereqs.sh`'s `MIN_*` floors* (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
-  `MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these are **not** automated,
-  by design. They're minimum-requirement floors checked against whatever a contributor already
-  has installed locally, not artifacts to fetch a newer version of. Raising a floor is a
-  project-policy decision (e.g. "we now use a C++23-modules feature that needs clang 23"), not
-  a freshness check -- there's no code-level trigger that would tell a bot when to bump one, and
-  doing so on a schedule risks breaking contributors' environments with no warning. Bump these
-  by hand when there's an actual reason to.
+- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (the `clang-format` mirror,
+  `pre-commit-hooks`, `shellcheck-py` -- all `rev:` pins in `.pre-commit-config.yaml`) via
+  Renovate's native `pre-commit` manager, no custom regex needed. The Windows CI's exact
+  Chocolatey pins for `ninja`/`ccache` (both in
+  `.github/actions/setup-windows-llvm/action.yml`) track the live Chocolatey community feed
+  directly via the `nuget` datasource (Chocolatey packages are NuGet packages under the hood),
+  not just upstream GitHub tags, so a proposed bump is guaranteed installable via
+  `choco install`.
+- *Tier 2 -- detected automatically, but only opens a PR after a human ticks the checkbox on
+  the Dependency Dashboard issue Renovate maintains* (`dependencyDashboardApproval: true`):
+  compiler/interpreter/build-generator bumps that need a deliberate look (new warnings, codegen
+  changes, build-semantics changes) before a PR even opens.
+  - **LLVM** is pinned in four places -- `.github/workflows/ci.yml` (`LLVM_VERSION` for Linux's
+    major version, `LLVM_SEMVER_VERSION` for Windows' exact version), `tools/setup-dev.sh`
+    (`LLVM_VERSION`), and `tools/setup-dev.ps1` (`$LlvmVersion`) -- grouped into one PR so they
+    can't drift out of sync. Windows minor/patch bumps auto-PR normally; a Windows *major* bump
+    and *any* Linux major-pin change both require dashboard approval first (a Linux
+    `LLVM_VERSION` change is always treated as update type "major" -- it's a bare major number
+    like `22`, not a semver triplet, so there's no meaningful minor/patch distinction to make).
+    This supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the
+    same dashboard-approval mechanism used everywhere else in this tier.
+  - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
+    `python-version: '3.14'` and `tools/setup-dev.ps1`'s `--id Python.Python.3.14`, grouped
+    together. This is the interpreter *version string* specifically -- not
+    `actions/setup-python`'s own action-version pin, which Dependabot already covers separately
+    and always did; the version string passed to it was the actual gap.
+  - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
+    `$NinjaVersion`, `$CcacheVersion`), each gated independently. See the prerequisite fix
+    below for why these exist at all now.
+- *Tier 3 -- stays manual, no independent version feed exists to track*: `wpr`/`xperf`/`wpa`/
+  `wpaexporter`, CPack's NSIS/dpkg/rpmbuild, the `gh` CLI, `xvfb` -- these ride the OS/runner/SDK
+  rather than their own release cadence. Optional local-only tools (Inkscape, heaptrack,
+  FlameGraph scripts, hotspot) are also unpinned by design: advisory tooling that never gates
+  CI, low priority to track.
+
+**Prerequisite fix that made Tier 2's CMake/Ninja/ccache tracking possible**: `tools/setup-dev.ps1`
+previously installed CMake and Ninja via a floating `winget install` with no `--version`, and
+ccache with no dev-box pin written down anywhere -- a value can't be tracked for drift if it
+isn't recorded somewhere. All three now pin an explicit version: CMake and Ninja match what the
+`windows-2025` GitHub Actions runner image itself ships (confirmed directly against
+`actions/runner-images`' `Windows2025-Readme.md`, for dev/CI parity); ccache has no CI-side
+winget equivalent to mirror (CI installs it via Chocolatey instead, pinned separately per Tier 1
+above), so it pins the latest version winget actually has available.
+
+**`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
+`MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these remain **not** automated,
+by design, and are unrelated to the tiers above. They're minimum-requirement floors checked
+against whatever a contributor already has installed locally, not artifacts to fetch a newer
+version of. Raising a floor is a project-policy decision (e.g. "we now use a C++23-modules
+feature that needs clang 23"), not a freshness check -- there's no code-level trigger that would
+tell a bot when to bump one, and doing so on a schedule risks breaking contributors'
+environments with no warning. Bump these by hand when there's an actual reason to.
 
 ### Cutting a Release
 
