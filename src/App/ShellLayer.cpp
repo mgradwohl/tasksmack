@@ -138,15 +138,25 @@ void ShellLayer::onUpdate(float deltaTime)
     // to look up the snapshot for ProcessDetailsPanel to render
     const Domain::ProcessSnapshot* selectedSnapshot = nullptr;
     Domain::ProcessSnapshot cachedSnapshot;
+    std::uint64_t selectedSnapshotVersion = 0;
     const std::int32_t selectedPid = m_ProcessesPanel.selectedPid();
     if (selectedPid != -1)
     {
-        // findSnapshot() copies only the one matching entry out of ProcessModel (not the full
-        // 200+ entry vector); foundSnap is a temporary we're about to discard, so move rather
-        // than copy it into cachedSnapshot to avoid a second full-struct copy every frame.
-        if (auto foundSnap = m_ProcessesPanel.findSnapshot(selectedPid))
+        // findSnapshotWithVersion() copies only the one matching entry out of ProcessModel (not
+        // the full 200+ entry vector) and returns it together with the exact publication
+        // version it was read under, atomically. The previous version of this code instead
+        // paired findSnapshot() with a *separately*-read version from ProcessesPanel's own
+        // render cache (which only refreshes while the Processes tab is active), which could
+        // race with an intervening ProcessModel publish: findSnapshot() always reflects the
+        // truly latest data, so while viewing Process Details on its own, the version passed
+        // to updateWithSnapshot() below could stay stuck even as the snapshot content kept
+        // changing, silently freezing history recording (ProcessDetailsPanel gates "is this
+        // new data" on that version) while the live displayed values kept updating from the
+        // snapshot itself.
+        if (auto found = m_ProcessesPanel.findSnapshotWithVersion(selectedPid))
         {
-            cachedSnapshot = std::move(*foundSnap);
+            cachedSnapshot = std::move(found->snapshot);
+            selectedSnapshotVersion = found->version;
             selectedSnapshot = &cachedSnapshot;
 
             // Debug: Log when GPU data becomes available for the selected PID.
@@ -168,7 +178,7 @@ void ShellLayer::onUpdate(float deltaTime)
             }
         }
     }
-    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, m_ProcessesPanel.cachedSnapshotVersion(), deltaTime);
+    m_ProcessDetailsPanel.updateWithSnapshot(selectedSnapshot, selectedSnapshotVersion, deltaTime);
 
     // Update the cached details tab label only when the selected process changes.
     // Rebuilding on every frame would allocate three std::string objects per frame at 60 fps.

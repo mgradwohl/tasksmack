@@ -879,6 +879,21 @@ std::optional<Domain::ProcessSnapshot> ProcessesPanel::findSnapshot(std::int32_t
     return m_ProcessModel->findSnapshot(pid);
 }
 
+std::optional<Domain::ProcessModel::SnapshotLookupResult> ProcessesPanel::findSnapshotWithVersion(std::int32_t pid) const
+{
+    if (!m_ProcessModel)
+    {
+        return std::nullopt;
+    }
+    // See findSnapshot()'s doc comment for why this bypasses m_CachedRenderSnapshots. Unlike
+    // findSnapshot(), this also returns the exact publication version the snapshot was read
+    // under (atomically, under ProcessModel's own lock) -- callers that need to gate on "is
+    // this new data" (e.g. ProcessDetailsPanel's history recording) must use this instead of
+    // pairing findSnapshot() with a separately-read version, which can race with an
+    // intervening publish and pair a snapshot from one generation with another's version.
+    return m_ProcessModel->findSnapshotWithVersion(pid);
+}
+
 void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)
 {
     ImGui::TableNextRow();
