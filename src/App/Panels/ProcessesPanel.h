@@ -111,8 +111,9 @@ class ProcessesPanel : public Panel
 
     /// Same as findSnapshot(), but also returns the exact publication version the snapshot was
     /// read under, atomically. Prefer this over pairing findSnapshot() with a separate
-    /// snapshotVersion()/cachedSnapshotVersion() call when the caller needs to gate behavior on
-    /// "is this new data" -- see Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
+    /// publication-version read (e.g. Domain::ProcessModel::snapshotVersion()) when the caller
+    /// needs to gate behavior on "is this new data" -- see
+    /// Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
     [[nodiscard]] std::optional<Domain::ProcessModel::SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
 
     /// Get column settings (for persistence)
