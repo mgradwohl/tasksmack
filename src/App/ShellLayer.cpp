@@ -304,7 +304,7 @@ void ShellLayer::renderTabBar()
         // Emit ActiveTabChangedEvent when tab selection changes
         if (previousTab != &m_Tabs.activeTab())
         {
-            Core::ActiveTabChangedEvent evt(std::string(m_Tabs.activeTab().eventName));
+            Core::ActiveTabChangedEvent evt(m_Tabs.activeTab().eventName);
             Core::Application::get().raiseEvent(evt);
         }
     }

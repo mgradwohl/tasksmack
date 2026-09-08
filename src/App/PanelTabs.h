@@ -8,14 +8,15 @@
 #include <ranges>
 #include <span>
 #include <stdexcept>
-#include <string_view>
+#include <string>
 #include <vector>
 
 namespace App
 {
 
-/// Non-owning tab registry. Panels, event-name storage, and objects captured by label
-/// providers must outlive the registry. Providers return null-terminated display labels.
+/// Registry owns event names and label-provider callables, but not panels.
+/// Panels and objects referenced by provider captures must outlive the registry.
+/// Providers return null-terminated display labels valid until the caller consumes them.
 /// Registration order defines tab/attach/update/event order; detach runs in reverse.
 class PanelTabs
 {

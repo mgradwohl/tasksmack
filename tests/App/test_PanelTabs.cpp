@@ -103,6 +103,24 @@ TEST(PanelTabsTest, RegistrationDrivesSelectionLabelsAndContent)
     EXPECT_NE(previousTab, &tabs.activeTab());
 }
 
+TEST(PanelTabsTest, OwnsEventNamesAndLabelProviderValues)
+{
+    std::vector<std::string> calls;
+    RecordingPanel panel("panel", calls);
+    std::string eventName = "OriginalEvent";
+    PanelTabs tabs{{.panel = panel, .eventName = eventName, .label = [] { return "Panel"; }},
+                   {.panel = panel,
+                    .eventName = std::string("TemporaryEvent"),
+                    .label = [label = std::string("Owned label")] { return label.c_str(); }}};
+
+    eventName.front() = 'X';
+    EXPECT_EQ(tabs.activeTab().eventName, "OriginalEvent");
+
+    tabs.select(1);
+    EXPECT_EQ(tabs.activeTab().eventName, "TemporaryEvent");
+    EXPECT_STREQ(tabs.activeTab().label(), "Owned label");
+}
+
 TEST(PanelTabsTest, ForwardsLifecycleToInactiveTabsAndDetachesInReverse)
 {
     std::vector<std::string> calls;
