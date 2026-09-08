@@ -35,7 +35,12 @@ jobs:
     steps:
       - name: Detect docs-only and platform-only pull request changes
         id: filter
-        if: github.event_name == 'pull_request'
+        # merge_group is included: dorny/paths-filter natively supports it (it uses the
+        # merge_group event's own base/head commits when `base`/`ref` are left unset), and
+        # without this, docs_only always defaulted to "false" for merge_group runs below,
+        # so a docs-only PR entering the merge queue still ran the full (and, for
+        # static-analysis, ~9-minute) build/lint matrix.
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
           predicate-quantifier: every
@@ -60,6 +65,28 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
+          # Shared by both the pull_request (non-bot-PR) and merge_group branches below --
+          # steps.filter only actually ran (see its own `if:`) for those two event types.
+          emit_platform_outputs() {
+            echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
+            # With predicate-quantifier=every, linux_platform=true only when every changed
+            # file matches the Linux-specific allowlist.
+            if [[ "${{ steps.filter.outputs.linux_platform }}" = 'true' && \
+                  "${{ steps.filter.outputs.windows_platform }}" = 'false' ]]; then
+              echo "linux_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "linux_only=false" >> "$GITHUB_OUTPUT"
+            fi
+            # With predicate-quantifier=every, windows_platform=true only when every changed
+            # file matches the Windows-specific allowlist.
+            if [[ "${{ steps.filter.outputs.windows_platform }}" = 'true' && \
+                  "${{ steps.filter.outputs.linux_platform }}" = 'false' ]]; then
+              echo "windows_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "windows_only=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
           if [[ "${{ github.event_name }}" = 'pull_request' ]]; then
             if [[ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" && \
                   "${{ github.event.pull_request.user.login }}" = 'github-actions[bot]' && \
@@ -68,24 +95,10 @@ jobs:
               echo "linux_only=false" >> "$GITHUB_OUTPUT"
               echo "windows_only=false" >> "$GITHUB_OUTPUT"
             else
-              echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
-              # With predicate-quantifier=every, linux_platform=true only when every changed
-              # file matches the Linux-specific allowlist.
-              if [[ "${{ steps.filter.outputs.linux_platform }}" = 'true' && \
-                    "${{ steps.filter.outputs.windows_platform }}" = 'false' ]]; then
-                echo "linux_only=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "linux_only=false" >> "$GITHUB_OUTPUT"
-              fi
-              # With predicate-quantifier=every, windows_platform=true only when every changed
-              # file matches the Windows-specific allowlist.
-              if [[ "${{ steps.filter.outputs.windows_platform }}" = 'true' && \
-                    "${{ steps.filter.outputs.linux_platform }}" = 'false' ]]; then
-                echo "windows_only=true" >> "$GITHUB_OUTPUT"
-              else
-                echo "windows_only=false" >> "$GITHUB_OUTPUT"
-              fi
+              emit_platform_outputs
             fi
+          elif [[ "${{ github.event_name }}" = 'merge_group' ]]; then
+            emit_platform_outputs
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "linux_only=false" >> "$GITHUB_OUTPUT"
@@ -95,7 +108,7 @@ jobs:
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
       github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
@@ -109,7 +122,7 @@ jobs:
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
@@ -123,7 +136,7 @@ jobs:
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
       github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
@@ -137,7 +150,7 @@ jobs:
   build-windows-release:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
@@ -161,7 +174,16 @@ jobs:
 
   static-analysis:
     needs: [detect-docs-only]
-    if: (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Runs on pull_request and merge_group (the actual PR/merge-queue gate -- #833) plus the
+    # existing schedule/workflow_dispatch coverage, skipping docs-only changes for both event
+    # types (detect-docs-only computes docs_only for merge_group too, not just pull_request).
+    # Deliberately excludes push to main specifically: static-analysis.yml already runs this
+    # identical job on every push to main (but not to dev/**, which this workflow also triggers
+    # on and static-analysis.yml does not cover), so excluding all pushes here would leave
+    # dev/** pushes with no clang-tidy coverage at all.
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -426,6 +448,7 @@ jobs:
       - build-windows-debug
       - build-windows-release
       - docs-hygiene
+      - static-analysis
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -437,11 +460,13 @@ jobs:
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
           EVENT_NAME:     ${{ github.event_name }}
+          REF:            ${{ github.ref }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
           LINUX_RELEASE_RESULT:   ${{ needs.build-linux-release.result }}
           WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
+          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
         run: |
           failed=false
 
@@ -475,6 +500,17 @@ jobs:
             fi
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
+              failed=true
+            fi
+          fi
+
+          # static-analysis is skipped on push to main specifically (static-analysis.yml
+          # already covers that) and on docs-only PRs (both intentional); require success
+          # everywhere else, including push to dev/** branches.
+          if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
+            if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
+                  ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
+              echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"
               failed=true
             fi
           fi
