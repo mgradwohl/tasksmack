@@ -10,7 +10,7 @@ namespace App
 
 /// Base class for all UI panels in the application.
 /// Panels are ImGui-based windows that can be shown/hidden and managed by ShellLayer.
-/// New panels should inherit from this class and implement at minimum render().
+/// New panels should implement render() and renderContent().
 class Panel
 {
   public:
@@ -49,6 +49,9 @@ class Panel
     /// @param open Pointer to visibility flag. Set to false to hide panel.
     ///             If nullptr, the close button is not shown.
     virtual void render(bool* open) = 0;
+
+    /// Render content without an ImGui window wrapper, for embedding in a shell tab.
+    virtual void renderContent() = 0;
 
     /// Get the panel's display name.
     [[nodiscard]] const std::string& name() const noexcept
