@@ -18,6 +18,14 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
+  # IWYU tracks LLVM's major version via its own "clang_<N>" branches, but a branch ref is
+  # mutable -- pin to the exact commit this branch pointed to instead, matching every other
+  # SHA-pinned dependency/action in this repo. Verified compatible with LLVM 22 directly: this
+  # is the tip of upstream's clang_22 branch, and its own commit message ("[ci] Pin to LLVM 22
+  # for clang_22 branch") confirms the branch's intent. To update: check
+  # https://github.com/include-what-you-use/include-what-you-use/commits/clang_22 for a newer
+  # commit, review the diff, then update this value.
+  IWYU_COMMIT_SHA: '01a091d16b3dedb808db21f32ed3e761737a3691'
 
 permissions: {}
 
@@ -256,7 +264,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/iwyu-install
-          key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ runner.os }}-v1
+          key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ env.IWYU_COMMIT_SHA }}-${{ runner.os }}-v1
 
       - name: Build include-what-you-use from source
         if: steps.cache-iwyu.outputs.cache-hit != 'true'
@@ -267,8 +275,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             llvm-${{ env.LLVM_VERSION }}-dev \
             libclang-${{ env.LLVM_VERSION }}-dev
-          git clone --branch clang_${{ env.LLVM_VERSION }} --depth 1 \
-            https://github.com/include-what-you-use/include-what-you-use.git /tmp/iwyu-src
+          # Pinned to an immutable commit SHA (env.IWYU_COMMIT_SHA above), not the mutable
+          # clang_${{ env.LLVM_VERSION }} branch, for reproducible reruns.
+          mkdir -p /tmp/iwyu-src
+          git -C /tmp/iwyu-src init -q
+          git -C /tmp/iwyu-src remote add origin \
+            https://github.com/include-what-you-use/include-what-you-use.git
+          git -C /tmp/iwyu-src fetch --depth 1 origin "${{ env.IWYU_COMMIT_SHA }}"
+          git -C /tmp/iwyu-src checkout --quiet FETCH_HEAD
           cmake -G "Ninja" \
             -DCMAKE_C_COMPILER=clang-${{ env.LLVM_VERSION }} \
             -DCMAKE_CXX_COMPILER=clang++-${{ env.LLVM_VERSION }} \
