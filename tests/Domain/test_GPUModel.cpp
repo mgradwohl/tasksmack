@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <memory>
 #include <thread>
 
@@ -109,6 +110,62 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
     ASSERT_EQ(counters.size(), 1U);
     EXPECT_EQ(counters[0].pid, 100);
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupported)
+{
+    // ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported above only proves the probe
+    // method is skipped -- it would still pass if readProcessGPUCounters() acquired
+    // m_ProbeMutex and checked the capability afterward, since the probe call it's counting
+    // happens inside a different method (readGPUCounters(), called by refresh()). The actual
+    // regression being fixed is lock CONTENTION: readProcessGPUCounters() must return without
+    // ever waiting on m_ProbeMutex when unsupported, even while another thread holds that
+    // mutex doing a (slow) refresh(). Prove that directly: hold the probe lock open via a
+    // background refresh() blocked inside the mock, then confirm the unsupported call
+    // completes promptly instead of waiting for it to be released.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = false;
+    probe->withCapabilities(caps);
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+    auto* rawProbe = probe.get();
+    rawProbe->armBlockingReadGPUCounters();
+
+    Domain::GPUModel model(std::move(probe));
+
+    std::thread blockedRefresh([&model] { model.refresh(); });
+
+    // Wait until the background refresh() is actually inside the blocked probe call (and
+    // therefore holding m_ProbeMutex), not just scheduled -- otherwise the timing check
+    // below could race ahead of the lock actually being held.
+    while (!rawProbe->hasEnteredBlockedReadGPUCounters())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    // Run the call under test on its own thread with a bounded wait, rather than calling it
+    // inline: if the fix regressed and this call actually blocked on m_ProbeMutex, an inline
+    // call would hang the test binary forever (the lock is only released below, after this
+    // check). A bounded wait_for lets that scenario fail with a clear assertion instead.
+    auto future = std::async(std::launch::async, [&model] { return model.readProcessGPUCounters(); });
+    const auto status = future.wait_for(std::chrono::milliseconds(500));
+
+    EXPECT_EQ(status, std::future_status::ready)
+        << "readProcessGPUCounters() did not return promptly -- it appears to be waiting on the probe lock";
+
+    rawProbe->releaseBlockedReadGPUCounters();
+    blockedRefresh.join();
+
+    if (status == std::future_status::ready)
+    {
+        EXPECT_TRUE(future.get().empty());
+    }
+    else
+    {
+        // Let the async task finish before the test function returns and its captures
+        // (model, rawProbe) go out of scope, even though the assertion above already failed.
+        future.wait();
+    }
 }
 
 // =============================================================================

@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -149,6 +151,12 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::GPUCounters> readGPUCounters() override
     {
         ++m_ReadCountersCount;
+        if (m_BlockReadCounters.load(std::memory_order_acquire))
+        {
+            m_EnteredBlockedReadCounters.store(true, std::memory_order_release);
+            std::unique_lock lock(m_BlockMutex);
+            m_BlockCv.wait(lock, [this] { return m_ReleaseRequested; });
+        }
         return m_Counters;
     }
 
@@ -184,6 +192,35 @@ class MockGPUProbe : public Platform::IGPUProbe
         return m_ReadProcessCountersCount.load();
     }
 
+    /// Makes the next (and all subsequent, until released) readGPUCounters() call block
+    /// indefinitely once entered, so a test can hold whatever lock the caller (GPUModel)
+    /// takes around that call from a background thread, for as long as it needs to.
+    void armBlockingReadGPUCounters()
+    {
+        m_BlockReadCounters.store(true, std::memory_order_release);
+    }
+
+    /// Releases a call currently blocked inside readGPUCounters() (see
+    /// armBlockingReadGPUCounters()) and lets future calls proceed without blocking.
+    void releaseBlockedReadGPUCounters()
+    {
+        m_BlockReadCounters.store(false, std::memory_order_release);
+        {
+            const std::scoped_lock lock(m_BlockMutex);
+            m_ReleaseRequested = true;
+        }
+        m_BlockCv.notify_all();
+    }
+
+    /// True once a readGPUCounters() call armed by armBlockingReadGPUCounters() has
+    /// actually entered its blocking wait -- i.e. the caller is now holding whatever lock
+    /// it takes around the call. Lets a test avoid racing its own timing measurement
+    /// against the background thread merely being scheduled.
+    [[nodiscard]] bool hasEnteredBlockedReadGPUCounters() const
+    {
+        return m_EnteredBlockedReadCounters.load(std::memory_order_acquire);
+    }
+
   private:
     std::vector<Platform::GPUInfo> m_GPUInfo;
     std::vector<Platform::GPUCounters> m_Counters;
@@ -193,6 +230,12 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};
     std::atomic<std::uint32_t> m_ReadProcessCountersCount{0};
+
+    std::atomic<bool> m_BlockReadCounters{false};
+    std::atomic<bool> m_EnteredBlockedReadCounters{false};
+    std::mutex m_BlockMutex;
+    std::condition_variable m_BlockCv;
+    bool m_ReleaseRequested = false;
 };
 
 } // namespace TestMocks
