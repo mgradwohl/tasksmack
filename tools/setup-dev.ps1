@@ -25,7 +25,12 @@ param(
     # actually has available.
     [string]$CMakeVersion = "3.31.6",
     [string]$NinjaVersion = "1.13.2",
-    [string]$CcacheVersion = "4.14"
+    [string]$CcacheVersion = "4.14",
+    # Renovate (.github/renovate.json5) bumps this literal directly; every consumer below
+    # (the winget --id, Resolve-Python's install-path probing, and Invoke-Python's log text)
+    # derives from it instead of hardcoding "3.14"/"314" a second time, so a version bump can't
+    # desync the winget package ID from the paths this script searches for afterward.
+    [string]$PythonVersion = "3.14"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,10 +51,11 @@ function Invoke-WinGet {
     }
 }
 
-function Resolve-Python314 {
+function Resolve-Python {
+    $versionCompact = $PythonVersion -replace '\.', ''
     $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python314\python.exe"),
-        (Join-Path $env:ProgramFiles "Python314\python.exe")
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$versionCompact\python.exe"),
+        (Join-Path $env:ProgramFiles "Python$versionCompact\python.exe")
     )
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
@@ -57,12 +63,12 @@ function Resolve-Python314 {
         }
     }
 
-    $command = Get-Command python3.14 -ErrorAction SilentlyContinue
+    $command = Get-Command "python$PythonVersion" -ErrorAction SilentlyContinue
     if ($command) {
         return $command.Source
     }
 
-    throw "Python 3.14 was installed but its executable could not be located. Restart the terminal and rerun this script."
+    throw "Python $PythonVersion was installed but its executable could not be located. Restart the terminal and rerun this script."
 }
 
 function Invoke-Python {
@@ -71,13 +77,13 @@ function Invoke-Python {
         [string[]]$Arguments
     )
     if ($DryRun) {
-        Write-Host "[dry-run] python3.14 $($Arguments -join ' ')"
+        Write-Host "[dry-run] python$PythonVersion $($Arguments -join ' ')"
         return
     }
 
     & $script:PythonExecutable @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Python failed with exit code ${LASTEXITCODE}: python3.14 $($Arguments -join ' ')"
+        throw "Python failed with exit code ${LASTEXITCODE}: python$PythonVersion $($Arguments -join ' ')"
     }
 }
 
@@ -86,6 +92,7 @@ Write-Host "LLVM version: $LlvmVersion"
 Write-Host "CMake version: $CMakeVersion"
 Write-Host "Ninja version: $NinjaVersion"
 Write-Host "ccache version: $CcacheVersion"
+Write-Host "Python version: $PythonVersion"
 if ($DryRun) { Write-Host "(dry-run mode — nothing will be installed)" }
 Write-Host ""
 
@@ -109,10 +116,10 @@ Invoke-WinGet install --id Kitware.CMake --version $CMakeVersion --source winget
 Write-Host "==> Installing Ninja $NinjaVersion..."
 Invoke-WinGet install --id Ninja-build.Ninja --version $NinjaVersion --source winget --silent --accept-package-agreements --accept-source-agreements
 
-Write-Host "==> Installing Python 3..."
-Invoke-WinGet install --id Python.Python.3.14 --source winget --silent --accept-package-agreements --accept-source-agreements
+Write-Host "==> Installing Python $PythonVersion..."
+Invoke-WinGet install --id "Python.Python.$PythonVersion" --source winget --silent --accept-package-agreements --accept-source-agreements
 if (-not $DryRun) {
-    $script:PythonExecutable = Resolve-Python314
+    $script:PythonExecutable = Resolve-Python
 }
 
 # ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────

@@ -1222,8 +1222,9 @@ account/repo-level security settings):
 | Python packages (`requirements.txt`) | Dependabot (weekly, Monday) | `dependency-review.yml` + `osv-scanner.yml` (weekly) |
 | C++ `FetchContent` libraries (`cmake/Dependencies.cmake`, `tests/CMakeLists.txt`, `benchmarks/CMakeLists.txt`) | `renovate.yml` (weekly, Wednesday) | `osv-scanner.yml` (weekly) |
 
-Renovate is configured in `.github/renovate.json5`, restricted (via `enabledManagers`) to a
-custom regex manager so it never also tries to manage the ecosystems Dependabot already covers.
+Renovate is configured in `.github/renovate.json5`, restricted (via `enabledManagers`) to the
+custom regex manager plus Renovate's native `pre-commit` manager (see Tier 1 below), so it never
+also tries to manage the ecosystems Dependabot already covers.
 It matches this project's `GIT_TAG <sha>  # <tag> - pinned to SHA for supply chain security`
 convention and always proposes another full SHA pin, never a floating tag/branch. Each dependency
 needs its own `versioningTemplate` because tag conventions differ (`vX.Y.Z` semver for most,
@@ -1249,20 +1250,32 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
   the Dependency Dashboard issue Renovate maintains* (`dependencyDashboardApproval: true`):
   compiler/interpreter/build-generator bumps that need a deliberate look (new warnings, codegen
   changes, build-semantics changes) before a PR even opens.
-  - **LLVM** is pinned in four places -- `.github/workflows/ci.yml` (`LLVM_VERSION` for Linux's
-    major version, `LLVM_SEMVER_VERSION` for Windows' exact version), `tools/setup-dev.sh`
-    (`LLVM_VERSION`), and `tools/setup-dev.ps1` (`$LlvmVersion`) -- grouped into one PR so they
-    can't drift out of sync. Windows minor/patch bumps auto-PR normally; a Windows *major* bump
-    and *any* Linux major-pin change both require dashboard approval first (a Linux
-    `LLVM_VERSION` change is always treated as update type "major" -- it's a bare major number
-    like `22`, not a semver triplet, so there's no meaningful minor/patch distinction to make).
-    This supersedes #752's blanket "Windows major bumps are entirely disabled" rule with the
-    same dashboard-approval mechanism used everywhere else in this tier.
+  - **LLVM** is pinned across every workflow that runs a compiler or clang-tooling step --
+    `.github/workflows/ci.yml`, `heavy-checks.yml`, `release.yml`, and `static-analysis.yml`
+    each pin both `LLVM_VERSION` (Linux major) and `LLVM_SEMVER_VERSION` (Windows exact
+    version); `codeql.yml`, `sanitizers.yml`, and `copilot-setup-steps.yml` pin the Linux major
+    only; `tools/setup-dev.sh` (`LLVM_SUPPORTED_VERSION`, the single literal its own `--llvm`
+    guard also reads back from, so the guard can't desync from the value Renovate bumps),
+    `tools/setup-dev.ps1` (`$LlvmVersion`), and `cmake/Options.cmake`
+    (`TASKSMACK_LLVM_VERSION`, which feeds clang-tidy/IWYU tool discovery) round out the list --
+    all grouped into one PR so they can't drift out of sync. Windows minor/patch bumps auto-PR
+    normally; a Windows *major* bump and *any* Linux major-pin change both require dashboard
+    approval first (a Linux `LLVM_VERSION`/`TASKSMACK_LLVM_VERSION` change is always treated as
+    update type "major" -- it's a bare major number like `22`, not a semver triplet, so there's
+    no meaningful minor/patch distinction to make). This supersedes #752's blanket "Windows
+    major bumps are entirely disabled" rule with the same dashboard-approval mechanism used
+    everywhere else in this tier.
   - **Python interpreter**: `.github/actions/setup-python-glad/action.yml`'s
-    `python-version: '3.14'` and `tools/setup-dev.ps1`'s `--id Python.Python.3.14`, grouped
-    together. This is the interpreter *version string* specifically -- not
-    `actions/setup-python`'s own action-version pin, which Dependabot already covers separately
-    and always did; the version string passed to it was the actual gap.
+    `python-version: '3.14'` and `tools/setup-dev.ps1`'s `$PythonVersion` param default (the
+    winget `--id` and the `Resolve-Python` install-path probing both derive from that one
+    variable at runtime, so they can't desync from a version Renovate bumps), grouped together.
+    This is the interpreter *version string* specifically -- not `actions/setup-python`'s own
+    action-version pin, which Dependabot already covers separately and always did; the version
+    string passed to it was the actual gap. Both managers extract and compare major.minor only
+    (never a patch component): the WinGet package ID this repo pins
+    (`Python.Python.3.14`) only exists at that granularity, so a patch-shaped proposal like
+    `3.14.1` would rewrite it to a nonexistent ID. Both a minor bump (`3.14` -> `3.15`) and a
+    major bump require dashboard approval before a PR opens.
   - **CMake/Ninja/ccache dev-box pins** in `tools/setup-dev.ps1` (`$CMakeVersion`,
     `$NinjaVersion`, `$CcacheVersion`), each gated independently. See the prerequisite fix
     below for why these exist at all now.

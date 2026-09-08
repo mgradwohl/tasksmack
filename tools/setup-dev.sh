@@ -20,7 +20,13 @@ source "${SCRIPT_DIR}/common.sh"
 
 DRY_RUN=false
 MINIMAL=false
-LLVM_VERSION=22
+# Single source of truth for the LLVM major version this repo's presets/CI currently
+# validate against -- Renovate's LLVM customManager (.github/renovate.json5) bumps this
+# literal, and the --llvm guard below reads it back rather than hardcoding "22" a second
+# time, so a Renovate-proposed bump can't silently desync the guard from the default it's
+# supposed to be checking.
+readonly LLVM_SUPPORTED_VERSION=22
+LLVM_VERSION=$LLVM_SUPPORTED_VERSION
 
 usage() {
     cat <<EOF
@@ -31,7 +37,7 @@ Install TaskSmack development prerequisites on Ubuntu.
 Options:
   --dry-run    Print apt commands without executing them
   --minimal    Install build prerequisites only; skip coverage/profiling/format tools
-  --llvm VER   LLVM major version to install (currently must be 22)
+  --llvm VER   LLVM major version to install (currently must be $LLVM_SUPPORTED_VERSION)
   -h, --help   Show this help
 EOF
     exit 0
@@ -54,8 +60,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$LLVM_VERSION" != "22" ]]; then
-    echo "Error: TaskSmack presets currently require LLVM 22; received LLVM $LLVM_VERSION." >&2
+if [[ "$LLVM_VERSION" != "$LLVM_SUPPORTED_VERSION" ]]; then
+    echo "Error: TaskSmack presets currently require LLVM $LLVM_SUPPORTED_VERSION; received LLVM $LLVM_VERSION." >&2
     exit 2
 fi
 
