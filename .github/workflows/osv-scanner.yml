@@ -70,7 +70,9 @@ jobs:
     with:
       scan-args: |-
         --lockfile=requirements.txt
-        --lockfile=requirements-glad.lock
+        --lockfile=requirements-glad.txt
+        --lockfile=requirements-icons.txt
+        --lockfile=requirements-dev-tools.txt
         --sbom=./sbom.spdx.json
       download-artifact: sbom-file
       results-file-name: results.sarif

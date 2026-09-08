@@ -1,12 +1,14 @@
 # Generate ICO file from SVG using Inkscape and Python/Pillow
 # Requirements:
 #   - Inkscape (for SVG to PNG conversion)
-#   - Python 3 with Pillow (pip install pillow) for ICO creation
+#   - Python 3 with Pillow for ICO creation, hash-pinned in requirements-icons.txt
 
 param(
     [string]$SvgPath = "$PSScriptRoot/../assets/icons/tasksmack.svg",
     [string]$OutputDir = "$PSScriptRoot/../assets/icons"
 )
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 
 $ErrorActionPreference = "Stop"
 
@@ -40,8 +42,8 @@ if (-not $python) {
 
 $pillowCheck = & python -c "import PIL" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing Pillow..."
-    & python -m pip install "pillow==12.3.0" --quiet
+    Write-Host "Installing Pillow (hash-pinned)..."
+    & python -m pip install --require-hashes -r (Join-Path $RepoRoot "requirements-icons.txt") --quiet
 }
 
 # Sizes for icons

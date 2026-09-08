@@ -2,11 +2,13 @@
 # Generate ICO and PNG files from SVG using Inkscape and Python/Pillow
 # Requirements:
 #   - Inkscape: sudo apt install inkscape
-#   - Python 3 with Pillow: pip install pillow
+#   - Python 3 with Pillow, hash-pinned in requirements-icons.txt:
+#       python3 -m pip install --require-hashes -r requirements-icons.txt
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SVG_PATH="${SCRIPT_DIR}/../assets/icons/tasksmack.svg"
 OUTPUT_DIR="${SCRIPT_DIR}/../assets/icons"
 
@@ -28,8 +30,8 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if ! python3 -c "import PIL" 2>/dev/null; then
-    echo "Error: Pillow not found. Install it into your active environment (pinned) with:"
-    echo "  python3 -m pip install pillow==12.3.0"
+    echo "Error: Pillow not found. Install it into your active environment (hash-pinned) with:"
+    echo "  python3 -m pip install --require-hashes -r ${REPO_ROOT}/requirements-icons.txt"
     exit 1
 fi
 
