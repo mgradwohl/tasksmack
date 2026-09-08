@@ -102,17 +102,19 @@ class ProcessesPanel : public Panel
         return m_SelectedPid;
     }
 
-    [[nodiscard]] std::uint64_t cachedSnapshotVersion() const noexcept
-    {
-        return m_CachedSnapshotVersion;
-    }
-
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
     /// Find a single snapshot by PID without copying the full snapshot vector.
     /// Always reflects the latest published data; returns std::nullopt if not found.
     [[nodiscard]] std::optional<Domain::ProcessSnapshot> findSnapshot(std::int32_t pid) const;
+
+    /// Same as findSnapshot(), but also returns the exact publication version the snapshot was
+    /// read under, atomically. Prefer this over pairing findSnapshot() with a separate
+    /// publication-version read (e.g. Domain::ProcessModel::snapshotVersion()) when the caller
+    /// needs to gate behavior on "is this new data" -- see
+    /// Domain::ProcessModel::findSnapshotWithVersion()'s doc comment.
+    [[nodiscard]] std::optional<Domain::ProcessModel::SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
 
     /// Get column settings (for persistence)
     [[nodiscard]] const ProcessColumnSettings& columnSettings() const
