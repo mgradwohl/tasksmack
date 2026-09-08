@@ -14,10 +14,34 @@ name: OSV Dependency Scan
 # google/osv-scanner-action is a reusable workflow, not a step-level composite action.
 # The SBOM is generated and uploaded as an artifact by the first job, then downloaded
 # inside the reusable workflow via its download-artifact input.
+#
+# Also runs on pull_request (see #830): dependency-review.yml already gates PRs against known
+# CVEs, but only for ecosystems GitHub's dependency graph understands -- it has no CMake/
+# FetchContent parser, so a PR bumping a FetchContent SHA to a vulnerable version previously
+# sailed through review with no CVE check until this workflow's push-to-main trigger caught it
+# *after* merge. Scoped via `paths:` to only the files that can actually change what gets
+# scanned, so most PRs don't pay for a Syft+OSV run. Deliberately `pull_request`, not
+# `pull_request_target`: this SBOM step builds directly from the PR's own (untrusted)
+# CMakeLists.txt content, and pull_request_target would run that under the base branch's
+# elevated permissions -- the classic GitHub Actions privilege-escalation pattern. The
+# `security-events: write` permission requested below is capped to read-only by GitHub for
+# fork-originated PRs regardless of what's requested here, so `upload-sarif` is turned off for
+# those (the scan and its pass/fail gate still run either way; only the Security-tab SARIF
+# upload -- which needs the write scope forks never get -- is skipped), the same
+# fork-vs-same-repo distinction dependency-review.yml already makes for its own PR-comment step.
 
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'tests/CMakeLists.txt'
+      - 'benchmarks/CMakeLists.txt'
+      - 'requirements*.txt'
+      - '.github/workflows/osv-scanner.yml'
   schedule:
     # Run weekly on Sundays at 06:00 UTC (offset from CodeQL at 10:00 UTC)
     - cron: '0 6 * * 0'
@@ -76,3 +100,9 @@ jobs:
         --sbom=./sbom.spdx.json
       download-artifact: sbom-file
       results-file-name: results.sarif
+      # Fork PRs never receive a write-capable token regardless of the security-events: write
+      # requested above (GitHub caps it to read-only for pull_request events from forks), so
+      # attempting the upload there would just fail -- skip it for forks; same-repo PRs, push,
+      # schedule, and workflow_dispatch all keep uploading normally. fail-on-vuln (default
+      # true) still gates the check either way.
+      upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
