@@ -410,6 +410,23 @@ std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) cons
     return std::nullopt;
 }
 
+std::optional<ProcessModel::SnapshotLookupResult> ProcessModel::findSnapshotWithVersion(std::int32_t pid) const
+{
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    for (const auto& snap : m_Snapshots)
+    {
+        if (snap.pid == pid)
+        {
+            // Read under the same lock as the scan above, so this can never observe a version
+            // from a different publish than the snapshot it's paired with: the writer (refresh()/
+            // updateFromCounters()) updates m_Snapshots and m_PublishedSnapshotVersion together
+            // under its own exclusive lock on this same mutex.
+            return SnapshotLookupResult{.snapshot = snap, .version = m_PublishedSnapshotVersion.load(std::memory_order_acquire)};
+        }
+    }
+    return std::nullopt;
+}
+
 std::uint64_t ProcessModel::snapshotVersion() const
 {
     return m_PublishedSnapshotVersion.load(std::memory_order_acquire);

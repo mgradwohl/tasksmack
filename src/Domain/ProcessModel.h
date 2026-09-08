@@ -71,6 +71,23 @@ class ProcessModel : public ISamplable
     /// Always reflects the latest published data, unlike a version-gated render cache.
     [[nodiscard]] std::optional<ProcessSnapshot> findSnapshot(std::int32_t pid) const;
 
+    /// Result of findSnapshotWithVersion(): a snapshot paired with the exact publication
+    /// version it was read from.
+    struct SnapshotLookupResult
+    {
+        ProcessSnapshot snapshot;
+        std::uint64_t version = 0;
+    };
+
+    /// Same lookup as findSnapshot(), but also returns the publication version the snapshot
+    /// was read under, both under the same lock. A caller that instead calls findSnapshot()
+    /// and snapshotVersion() as two separate calls can have a publish land in between them,
+    /// pairing a snapshot from one generation with the version number of another -- e.g. a
+    /// consumer using that version to gate "is this new data worth recording" (like
+    /// ProcessDetailsPanel's history) could see a version that never actually matched the
+    /// snapshot content it was given, silently skipping or duplicating a history point.
+    [[nodiscard]] std::optional<SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
+
     /// Copy snapshots only when a newer version exists.
     /// Returns true and copies data when an update is available; otherwise returns false.
     [[nodiscard]] bool
