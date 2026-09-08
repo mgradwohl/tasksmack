@@ -16,10 +16,15 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Use shared mock from TestMocks namespace
@@ -510,13 +515,11 @@ TEST(ProcessModelTest, FindSnapshotWithVersionReturnsNulloptForUnknownPid)
 
 TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
 {
-    // Regression test for the ShellLayer race this method was introduced to fix: a caller
-    // that reads a snapshot and the version as two separate calls (findSnapshot() then
-    // snapshotVersion()) can have a refresh() land in between them, pairing a snapshot from
-    // one generation with the version number of the next. findSnapshotWithVersion() must
-    // always return a version that matches the exact generation the returned snapshot came
-    // from, so two calls made across a refresh() must report two distinct, increasing
-    // versions -- never the same version for two different snapshot generations.
+    // Sanity check only: confirms the version advances and the snapshot content moves
+    // together across two sequential refresh() calls. This does NOT exercise the race
+    // findSnapshotWithVersion() exists to close -- see
+    // FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother below
+    // for the test that actually reproduces the old split-read bug under concurrency.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
@@ -538,6 +541,74 @@ TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
     ASSERT_TRUE(after.has_value());
     EXPECT_GT(after->snapshot.cpuPercent, 0.0);
     EXPECT_GT(after->version, before->version);
+}
+
+TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother)
+{
+    // Reproduces the ShellLayer race under concurrency: a background writer thread
+    // continuously republishes new generations while a reader thread concurrently calls
+    // findSnapshotWithVersion(). Each generation's process name encodes which generation
+    // produced it (name is copied verbatim into the snapshot -- see
+    // ProcessModel.cpp:computeSnapshot() `snapshot.name = current.name;`), and the writer
+    // records which published version corresponds to which generation. If snapshot and
+    // version were ever read as two separate, non-atomic steps (the actual bug: ShellLayer
+    // called findSnapshot() then a separate cachedSnapshotVersion()), a reader could observe
+    // a name from one generation paired with the version published for a different
+    // generation. This test would fail if findSnapshotWithVersion() were reimplemented as
+    // two separate locked calls instead of one, unlike the sequential test above.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+
+    constexpr std::int32_t kPid = 100;
+    constexpr int kIterations = 2000;
+
+    std::mutex registryMutex;
+    std::unordered_map<std::uint64_t, std::string> versionToName;
+
+    std::atomic<bool> writerDone{false};
+
+    std::thread writer(
+        [&]
+        {
+            for (int i = 0; i < kIterations; ++i)
+            {
+                std::string name = "gen_" + std::to_string(i);
+                rawProbe->setCounters({makeCounter(kPid, name, 'R', static_cast<uint64_t>(i) * 1000, 0, 5000)});
+                model.refresh();
+                const auto version = model.snapshotVersion();
+                const std::scoped_lock lock(registryMutex);
+                versionToName.emplace(version, std::move(name));
+            }
+            writerDone.store(true);
+        });
+
+    std::vector<std::pair<std::uint64_t, std::string>> observed;
+    while (!writerDone.load())
+    {
+        if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
+        {
+            observed.emplace_back(found->version, found->snapshot.name);
+        }
+    }
+    // One final read after the writer stops, to also cover the last published generation.
+    if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
+    {
+        observed.emplace_back(found->version, found->snapshot.name);
+    }
+
+    writer.join();
+
+    ASSERT_FALSE(observed.empty());
+    const std::scoped_lock lock(registryMutex);
+    for (const auto& [version, name] : observed)
+    {
+        const auto entry = versionToName.find(version);
+        ASSERT_TRUE(entry != versionToName.end()) << "version " << version << " was never recorded by the writer";
+        EXPECT_EQ(entry->second, name) << "version " << version << " observed with a mismatched process name";
+    }
 }
 
 // =============================================================================
