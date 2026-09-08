@@ -264,7 +264,12 @@ Platform::GPUCapabilities GPUModel::capabilities() const
 
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
 {
-    if (!m_Probe)
+    // m_Capabilities is set once at construction and never mutated afterward, so this read
+    // needs no lock (same reasoning as capabilities() below). Checking it before acquiring
+    // m_ProbeMutex avoids contending with concurrent system-GPU sampling (GPUModel::refresh(),
+    // which takes the same mutex) for backends that can never return per-process data anyway
+    // -- e.g. Linux Intel DRM, which always returns empty here.
+    if (!m_Probe || !m_Capabilities.hasPerProcessMetrics)
     {
         return {};
     }

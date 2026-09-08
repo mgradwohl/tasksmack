@@ -72,6 +72,45 @@ TEST(GPUModelTest, CapabilitiesAreExposedFromProbe)
     EXPECT_TRUE(modelCaps.hasPerProcessMetrics);
 }
 
+TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
+{
+    // Regression test for #843 Phase 3b: backends that can never return per-process data
+    // (e.g. Linux Intel DRM) should never even acquire the probe lock for this call, since
+    // that lock is shared with concurrent system-GPU sampling. Verified here by checking the
+    // probe's call count directly, not just the (already-empty) return value.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = false;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe));
+
+    const auto counters = model.readProcessGPUCounters();
+
+    EXPECT_TRUE(counters.empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe));
+
+    const auto counters = model.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].pid, 100);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+}
+
 // =============================================================================
 // Single GPU Refresh Tests
 // =============================================================================
@@ -1157,6 +1196,9 @@ TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
 TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     probe->withGPU("GPU0", "Test GPU", "TestVendor")
         .withProcessGPU(1234, "GPU0", 512ULL * 1024 * 1024)
         .withProcessGPU(5678, "GPU0", 256ULL * 1024 * 1024);
@@ -1182,6 +1224,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
 TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     probe->withGPU("GPU0", "GPU 0", "Vendor")
         .withGPU("GPU1", "GPU 1", "Vendor")
         .withProcessGPU(1000, "GPU0", 100ULL * 1024 * 1024)
@@ -1221,6 +1266,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersWithNullProbe)
 TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     // rawProbe remains valid after std::move(probe) because GPUModel stores the unique_ptr
     auto* rawProbe = probe.get();
     probe->withGPU("GPU0", "Test GPU", "Vendor").withProcessGPU(100, "GPU0", 50ULL * 1024 * 1024);
