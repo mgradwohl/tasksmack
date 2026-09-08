@@ -484,7 +484,13 @@ jobs:
   benchmark-regression:
     needs: [validate-environment]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
+    # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top
+    # of setup/build time) -- shared 4-vCPU hosted runners are simply slower per-repetition
+    # than the wall-clock budget this job originally had. Raised with real margin rather than
+    # tuned to the exact observed runtime, since --benchmark_min_time and per-benchmark cost
+    # can shift over time.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
