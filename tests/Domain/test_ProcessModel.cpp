@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -515,13 +516,78 @@ TEST(ProcessModelTest, FindSnapshotWithVersionReturnsNulloptForUnknownPid)
     EXPECT_FALSE(model.findSnapshotWithVersion(999).has_value());
 }
 
+TEST(ProcessModelTest, DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe)
+{
+    // Illustrative only -- deliberately NOT a regression test for findSnapshotWithVersion()
+    // itself (an earlier version of this test incorrectly claimed to be one; a review
+    // caught the error). A single-threaded test can never make a refresh() land "during" a
+    // call, atomic or not: calls in one thread execute strictly in sequence, so there is no
+    // sequence of calls here that would look any different if findSnapshotWithVersion() were
+    // reverted to two separate calls -- that regression can only be caught by genuine
+    // concurrency. FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother
+    // below, which races two real threads, is the only test that actually guards it.
+    //
+    // What this test shows instead, deterministically and without any race: calling
+    // findSnapshot() and a separate, later snapshotVersion() -- generically, the same
+    // "split read" shape as ShellLayer's old bug -- really can pair a snapshot from one
+    // generation with the version of a different one, just by having an ordinary refresh()
+    // happen between the two calls. This is a simplified illustration of the hazard class,
+    // not a literal replay of ShellLayer's exact former call sequence: ShellLayer actually
+    // paired ProcessModel::findSnapshot()'s always-fresh result with
+    // ProcessesPanel::cachedSnapshotVersion() (a separate render-cache value that could lag
+    // behind, only refreshed while the Processes tab was active) -- see
+    // src/App/ShellLayer.cpp's history around the #855 fix -- so the real bug's typical
+    // failure direction was a FRESH snapshot paired with a STALE version, the opposite of
+    // the OLD-snapshot/NEW-version pairing demonstrated below. Both directions are instances
+    // of the same underlying "two separate non-atomic reads" hazard that
+    // findSnapshotWithVersion() closes; this test just uses ProcessModel's own two accessors
+    // for a self-contained, dependency-free demonstration.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters({makeCounter(100, "gen0", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh(); // publishes generation 0
+    const auto versionAfterGen0 = model.snapshotVersion();
+
+    // Two separate calls -- findSnapshot() then, later, an independent snapshotVersion() --
+    // illustrating the split-read shape generically (see the class-level comment above for
+    // how this differs from ShellLayer's exact former call sequence).
+    const auto separateSnapshot = model.findSnapshot(100);
+    ASSERT_TRUE(separateSnapshot.has_value());
+    EXPECT_EQ(separateSnapshot->name, "gen0");
+
+    // The gap: an ordinary refresh() lands between the two separate calls.
+    rawProbe->setCounters({makeCounter(100, "gen1", 'R', 2000, 0, 5000)});
+    rawProbe->setTotalCpuTime(200000);
+    model.refresh(); // publishes generation 1
+
+    const auto separateVersion = model.snapshotVersion();
+
+    // The mismatch, made concrete: separateSnapshot still holds generation 0's content (read
+    // before the refresh), but separateVersion has advanced past versionAfterGen0 -- it now
+    // reflects generation 1, published after separateSnapshot was captured. A caller pairing
+    // (separateSnapshot, separateVersion) this way would see generation 1's version attached
+    // to generation 0's content -- the same category of mismatch findSnapshotWithVersion()
+    // exists to make impossible, even though it doesn't literally replay ShellLayer's exact
+    // old values.
+    EXPECT_EQ(separateSnapshot->name, "gen0");
+    EXPECT_GT(separateVersion, versionAfterGen0) << "expected the version to have advanced to reflect generation 1, "
+                                                    "while separateSnapshot still holds generation 0's content";
+}
+
 TEST(ProcessModelTest, FindSnapshotWithVersionAdvancesVersionAfterEachRefresh)
 {
     // Sanity check only: confirms the version advances and the snapshot content moves
     // together across two sequential refresh() calls. This does NOT exercise the race
     // findSnapshotWithVersion() exists to close -- see
     // FindSnapshotWithVersionNeverPairsSnapshotFromOneGenerationWithVersionFromAnother below
-    // for the test that actually reproduces the old split-read bug under concurrency.
+    // for the test that actually reproduces the old split-read bug (via genuine
+    // concurrency; a single-threaded test cannot force a refresh() to land "during" any
+    // call, so no sequential test can regression-test this method's atomicity), or
+    // DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe above for a
+    // deterministic (but illustrative-only) look at the failure mode being closed.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
 
@@ -558,6 +624,21 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
     // a name from one generation paired with the version published for a different
     // generation. This test would fail if findSnapshotWithVersion() were reimplemented as
     // two separate locked calls instead of one, unlike the sequential test above.
+    //
+    // Note on rigor: the checkpoint handshake below guarantees a minimum number of reader
+    // observations, but each guaranteed observation happens once the writer is already
+    // paused waiting for it -- so, in principle, an adversarial scheduler could satisfy the
+    // checkpoints without ever running the reader concurrently with an in-flight write.
+    // DemonstratesSeparateFindSnapshotAndSnapshotVersionCallsAreUnsafe above does NOT close
+    // that gap (an earlier version of this comment incorrectly claimed it did; a review
+    // caught the error): it's a single-threaded test, and a single thread can never make a
+    // refresh() land "during" any call, atomic or not, so it cannot regression-test
+    // findSnapshotWithVersion()'s atomicity -- it only illustrates why the old two-call
+    // pattern is unsafe. This test, exercising two real racing threads, remains the sole
+    // regression detector for findSnapshotWithVersion() itself; the adversarial-scheduler
+    // caveat above is a real, currently-unclosed limitation of that detector, not one this
+    // suite has a production-code-test-seam-free way to eliminate (see the PR discussion on
+    // #864 for why one wasn't added).
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     rawProbe->setTotalCpuTime(100000);
@@ -566,9 +647,18 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
 
     constexpr std::int32_t kPid = 100;
     constexpr int kIterations = 2000;
+    // The writer pauses for the reader every kCheckpointInterval generations (see below):
+    // deterministic pacing, not a probability tuned against past CI flakiness.
+    constexpr int kCheckpointInterval = 10;
+    constexpr auto kCheckpointTimeout = std::chrono::seconds(5);
 
     std::mutex registryMutex;
     std::unordered_map<std::uint64_t, std::string> versionToName;
+
+    std::mutex checkpointMutex;
+    std::condition_variable checkpointCv;
+    int readerObservationCount = 0; // guarded by checkpointMutex
+    std::atomic<bool> checkpointTimedOut{false};
 
     std::atomic<bool> writerDone{false};
 
@@ -581,8 +671,34 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
                 rawProbe->setCounters({makeCounter(kPid, name, 'R', static_cast<uint64_t>(i) * 1000, 0, 5000)});
                 model.refresh();
                 const auto version = model.snapshotVersion();
-                const std::scoped_lock lock(registryMutex);
-                versionToName.emplace(version, std::move(name));
+                {
+                    const std::scoped_lock lock(registryMutex);
+                    versionToName.emplace(version, std::move(name));
+                }
+
+                // Deterministic pacing, not incidental OS scheduling luck: block until the
+                // reader records at least one more successful observation than it had at the
+                // start of this batch. C++ gives no fairness guarantee between these two
+                // threads, so without an explicit handshake like this, the writer could in
+                // principle finish all kIterations generations before the reader ever gets a
+                // time slice -- making any fixed-ratio liveness threshold still flaky in
+                // principle, however unlikely in practice (as raised in review on #864).
+                if ((i + 1) % kCheckpointInterval == 0)
+                {
+                    std::unique_lock checkpointLock(checkpointMutex);
+                    const int target = readerObservationCount + 1;
+                    const bool reachedTarget =
+                        checkpointCv.wait_for(checkpointLock, kCheckpointTimeout, [&] { return readerObservationCount >= target; });
+                    if (!reachedTarget)
+                    {
+                        // Don't hang the test process indefinitely if the reader is stuck
+                        // (e.g. findSnapshotWithVersion() never finds the pid due to some
+                        // unrelated regression) -- stop publishing and let the assertion below
+                        // fail with a clear message instead.
+                        checkpointTimedOut.store(true);
+                        break;
+                    }
+                }
             }
             writerDone.store(true);
         });
@@ -593,6 +709,9 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
         if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
         {
             observed.emplace_back(found->version, found->snapshot.name);
+            const std::scoped_lock checkpointLock(checkpointMutex);
+            ++readerObservationCount;
+            checkpointCv.notify_all();
         }
     }
     // One final read after the writer stops, to also cover the last published generation.
@@ -603,20 +722,17 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
 
     writer.join();
 
-    // Liveness check: prove the reader genuinely raced the writer across many distinct
-    // generations rather than, say, running once after the writer already finished (which
-    // would make the mismatch check below vacuously true regardless of whether the lookup
-    // is actually atomic). A low distinct-version count here would mean this run gave the
-    // race little chance to manifest and the pass/fail result below carries little weight.
-    std::unordered_map<std::uint64_t, std::string> distinctVersionsObserved;
-    for (const auto& [version, name] : observed)
-    {
-        distinctVersionsObserved.emplace(version, name);
-    }
-    EXPECT_GT(distinctVersionsObserved.size(), static_cast<std::size_t>(kIterations) / 10)
-        << "reader only observed " << distinctVersionsObserved.size() << " distinct generations out of " << kIterations
-        << " published -- too little interleaving for this "
-        << "run to meaningfully exercise the race";
+    ASSERT_FALSE(checkpointTimedOut.load()) << "the reader never caught up to a writer checkpoint within the deadline -- "
+                                            << "findSnapshotWithVersion() may be broken (e.g. never finding the pid)";
+
+    // Deterministic liveness guarantee (not a probabilistic threshold): the checkpoint
+    // handshake above guarantees the reader at least one successful observation every
+    // kCheckpointInterval generations, so it must have recorded at least kIterations /
+    // kCheckpointInterval observations by the time the writer finishes -- regardless of how
+    // the OS happens to schedule these two threads.
+    EXPECT_GE(observed.size(), static_cast<std::size_t>(kIterations / kCheckpointInterval))
+        << "reader only recorded " << observed.size() << " observations; the writer's checkpoint pacing should have "
+        << "guaranteed at least " << (kIterations / kCheckpointInterval);
 
     ASSERT_FALSE(observed.empty());
     const std::scoped_lock lock(registryMutex);
