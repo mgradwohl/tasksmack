@@ -30,9 +30,8 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 if ! python3 -c "import PIL" 2>/dev/null; then
-    echo "Error: Pillow not found. Install it into your active environment (hash-pinned) with:"
-    echo "  python3 -m pip install --require-hashes -r \"${REPO_ROOT}/requirements-icons.txt\""
-    exit 1
+    echo "Installing Pillow (hash-pinned) into the active environment..."
+    python3 -m pip install --require-hashes -r "${REPO_ROOT}/requirements-icons.txt"
 fi
 
 # Sizes for icon files

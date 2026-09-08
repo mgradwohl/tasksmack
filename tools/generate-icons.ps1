@@ -44,6 +44,10 @@ $pillowCheck = & python -c "import PIL" 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing Pillow (hash-pinned)..."
     & python -m pip install --require-hashes -r (Join-Path $RepoRoot "requirements-icons.txt") --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "pip install failed with exit code ${LASTEXITCODE}; Pillow was not installed."
+        exit 1
+    }
 }
 
 # Sizes for icons
