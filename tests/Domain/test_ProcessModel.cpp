@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -565,9 +566,18 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
 
     constexpr std::int32_t kPid = 100;
     constexpr int kIterations = 2000;
+    // The writer pauses for the reader every kCheckpointInterval generations (see below):
+    // deterministic pacing, not a probability tuned against past CI flakiness.
+    constexpr int kCheckpointInterval = 10;
+    constexpr auto kCheckpointTimeout = std::chrono::seconds(5);
 
     std::mutex registryMutex;
     std::unordered_map<std::uint64_t, std::string> versionToName;
+
+    std::mutex checkpointMutex;
+    std::condition_variable checkpointCv;
+    int readerObservationCount = 0; // guarded by checkpointMutex
+    std::atomic<bool> checkpointTimedOut{false};
 
     std::atomic<bool> writerDone{false};
 
@@ -580,8 +590,34 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
                 rawProbe->setCounters({makeCounter(kPid, name, 'R', static_cast<uint64_t>(i) * 1000, 0, 5000)});
                 model.refresh();
                 const auto version = model.snapshotVersion();
-                const std::scoped_lock lock(registryMutex);
-                versionToName.emplace(version, std::move(name));
+                {
+                    const std::scoped_lock lock(registryMutex);
+                    versionToName.emplace(version, std::move(name));
+                }
+
+                // Deterministic pacing, not incidental OS scheduling luck: block until the
+                // reader records at least one more successful observation than it had at the
+                // start of this batch. C++ gives no fairness guarantee between these two
+                // threads, so without an explicit handshake like this, the writer could in
+                // principle finish all kIterations generations before the reader ever gets a
+                // time slice -- making any fixed-ratio liveness threshold still flaky in
+                // principle, however unlikely in practice (as raised in review on #864).
+                if ((i + 1) % kCheckpointInterval == 0)
+                {
+                    std::unique_lock checkpointLock(checkpointMutex);
+                    const int target = readerObservationCount + 1;
+                    const bool reachedTarget =
+                        checkpointCv.wait_for(checkpointLock, kCheckpointTimeout, [&] { return readerObservationCount >= target; });
+                    if (!reachedTarget)
+                    {
+                        // Don't hang the test process indefinitely if the reader is stuck
+                        // (e.g. findSnapshotWithVersion() never finds the pid due to some
+                        // unrelated regression) -- stop publishing and let the assertion below
+                        // fail with a clear message instead.
+                        checkpointTimedOut.store(true);
+                        break;
+                    }
+                }
             }
             writerDone.store(true);
         });
@@ -592,6 +628,9 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
         if (const auto found = model.findSnapshotWithVersion(kPid); found.has_value())
         {
             observed.emplace_back(found->version, found->snapshot.name);
+            const std::scoped_lock checkpointLock(checkpointMutex);
+            ++readerObservationCount;
+            checkpointCv.notify_all();
         }
     }
     // One final read after the writer stops, to also cover the last published generation.
@@ -602,26 +641,17 @@ TEST(ProcessModelTest, FindSnapshotWithVersionNeverPairsSnapshotFromOneGeneratio
 
     writer.join();
 
-    // Liveness check: prove the reader genuinely raced the writer across many distinct
-    // generations rather than, say, running once after the writer already finished (which
-    // would make the mismatch check below vacuously true regardless of whether the lookup
-    // is actually atomic). A low distinct-version count here would mean this run gave the
-    // race little chance to manifest and the pass/fail result below carries little weight.
-    //
-    // Threshold is deliberately loose (kIterations / 40, not / 10): on a loaded/contended CI
-    // runner the reader can get fewer scheduling slices per writer iteration than on a quiet
-    // local machine. A run observed 198/2000 (9.9%) on such a runner, just under a prior
-    // 10% threshold -- this simply proves interleaving happened at all, not any particular
-    // rate of it, so a much lower floor still serves the check's purpose without flaking.
-    std::unordered_map<std::uint64_t, std::string> distinctVersionsObserved;
-    for (const auto& [version, name] : observed)
-    {
-        distinctVersionsObserved.emplace(version, name);
-    }
-    EXPECT_GT(distinctVersionsObserved.size(), static_cast<std::size_t>(kIterations) / 40)
-        << "reader only observed " << distinctVersionsObserved.size() << " distinct generations out of " << kIterations
-        << " published -- too little interleaving for this "
-        << "run to meaningfully exercise the race";
+    ASSERT_FALSE(checkpointTimedOut.load()) << "the reader never caught up to a writer checkpoint within the deadline -- "
+                                            << "findSnapshotWithVersion() may be broken (e.g. never finding the pid)";
+
+    // Deterministic liveness guarantee (not a probabilistic threshold): the checkpoint
+    // handshake above guarantees the reader at least one successful observation every
+    // kCheckpointInterval generations, so it must have recorded at least kIterations /
+    // kCheckpointInterval observations by the time the writer finishes -- regardless of how
+    // the OS happens to schedule these two threads.
+    EXPECT_GE(observed.size(), static_cast<std::size_t>(kIterations / kCheckpointInterval))
+        << "reader only recorded " << observed.size() << " observations; the writer's checkpoint pacing should have "
+        << "guaranteed at least " << (kIterations / kCheckpointInterval);
 
     ASSERT_FALSE(observed.empty());
     const std::scoped_lock lock(registryMutex);
