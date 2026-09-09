@@ -4,21 +4,30 @@ tools/check-benchmark-regression.py — Compare benchmark results against a base
 
 Usage:
     python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
-        --current perf-data/benchmark-latest.json [--threshold 15]
+        --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90]
 
 Exit codes:
-    0  All matched benchmarks are within threshold
-    1  One or more benchmarks regressed beyond the threshold
-    2  Usage error, invalid input, or no matching benchmarks
+    0  All matched benchmarks are within threshold, and coverage meets --min-coverage
+    1  One or more benchmarks regressed beyond the threshold, or coverage is too low
+    2  Usage error, invalid input, or no comparable benchmarks at all
 
 The threshold is a percentage: a benchmark that is more than THRESHOLD% slower than the
-baseline is considered a regression.  Improvements are always accepted.
+baseline is considered a regression. Improvements are always accepted.
+
+--min-coverage is the minimum percentage of baseline benchmarks that must be present and
+validly comparable in the current run. A benchmark missing from the current run, or one with
+no usable timing data on either side, counts against coverage rather than being silently
+ignored -- a regression-detection gate that quietly compares less and less over time as
+benchmarks disappear or degrade is not trustworthy. Default 90% tolerates the occasional
+counter-only benchmark that structurally has no timing field (e.g. BM_GPUModel_UtilizationHistory)
+without masking a real, larger coverage loss.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -29,6 +38,12 @@ UNIT_TO_NANOSECONDS = {
     "ms": 1000_000.0,
     "s": 1000_000_000.0,
 }
+
+# Preference order for picking a common timing field between two benchmark records. Both
+# sides must have the *same* field for a comparison to be valid -- independently falling back
+# from real_time to cpu_time per side can silently compare two different kinds of time for the
+# same benchmark (see #871).
+TIMING_FIELDS = ("real_time", "cpu_time")
 
 
 def normalize_time(value: float, unit: str) -> float:
@@ -58,6 +73,23 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
     return result
 
 
+def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
+    """Return the first timing field present on *both* records, or None if none match."""
+    for field in TIMING_FIELDS:
+        if field in base_bm and field in cur_bm:
+            return field
+    return None
+
+
+def is_valid_time(value: object) -> bool:
+    """True if value is a finite, non-negative number."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and value >= 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check for benchmark regressions.")
     parser.add_argument("--baseline", required=True, type=Path, help="Baseline JSON file")
@@ -67,6 +99,15 @@ def main() -> int:
         type=float,
         default=15.0,
         help="Regression threshold in percent (default: 15)",
+    )
+    parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=90.0,
+        help=(
+            "Minimum percent of baseline benchmarks that must be present and validly "
+            "comparable in the current run (default: 90)"
+        ),
     )
     args = parser.parse_args()
 
@@ -93,41 +134,54 @@ def main() -> int:
 
     print(f"Comparing {len(current)} current benchmark(s) against {len(baseline)} baseline(s).")
     print(f"Regression threshold: {args.threshold:.1f}%")
+    print(f"Minimum required coverage: {args.min_coverage:.1f}%")
     print()
+
+    # A benchmark present in the baseline but absent from the current run is a real coverage
+    # gap, not something to silently ignore -- it means this run tells us nothing about
+    # whether that benchmark regressed (see #871: "removing a required baseline benchmark
+    # returned success").
+    missing_from_current = sorted(set(baseline) - set(current))
+    new_in_current = sorted(set(current) - set(baseline))
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
+    invalid: list[tuple[str, str]] = []
     compared = 0
 
-    for name, cur_bm in current.items():
-        if name not in baseline:
-            # New benchmark — no comparison possible
-            continue
+    for name in sorted(set(baseline) & set(current)):
         base_bm = baseline[name]
+        cur_bm = current[name]
 
-        # Prefer real_time, fall back to cpu_time
-        cur_time = cur_bm.get("real_time")
-        if cur_time is None:
-            cur_time = cur_bm.get("cpu_time")
-        base_time = base_bm.get("real_time")
-        if base_time is None:
-            base_time = base_bm.get("cpu_time")
-        cur_unit = cur_bm.get("time_unit", "ns")
-        base_unit = base_bm.get("time_unit", "ns")
-
-        if cur_time is None or base_time is None or base_time == 0:
-            print(f"  SKIP  {name}: missing timing data")
+        field = common_timing_field(base_bm, cur_bm)
+        if field is None:
+            invalid.append((name, "no common timing field (real_time/cpu_time) present on both sides"))
             continue
+
+        base_time_raw = base_bm.get(field)
+        cur_time_raw = cur_bm.get(field)
+
+        if not is_valid_time(base_time_raw):
+            invalid.append((name, f"baseline {field} is missing, non-finite, or negative: {base_time_raw!r}"))
+            continue
+        if not is_valid_time(cur_time_raw):
+            invalid.append((name, f"current {field} is missing, non-finite, or negative: {cur_time_raw!r}"))
+            continue
+
+        base_time = float(base_time_raw)
+        cur_time = float(cur_time_raw)
+        base_unit = base_bm.get("time_unit", "ns")
+        cur_unit = cur_bm.get("time_unit", "ns")
 
         try:
             cur_time_normalized = normalize_time(cur_time, cur_unit)
             base_time_normalized = normalize_time(base_time, base_unit)
         except ValueError as exc:
-            print(f"  SKIP  {name}: {exc}")
+            invalid.append((name, str(exc)))
             continue
 
         if base_time_normalized == 0:
-            print(f"  SKIP  {name}: baseline timing normalized to zero")
+            invalid.append((name, "baseline timing normalized to zero"))
             continue
 
         compared += 1
@@ -137,6 +191,26 @@ def main() -> int:
             regressions.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
         elif pct_change < -5.0:
             improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
+
+    # ── Report coverage gaps ────────────────────────────────────────────────────
+    if missing_from_current:
+        print(f"Missing from current run ({len(missing_from_current)}) -- present in baseline "
+              "but not measured this run:")
+        for name in missing_from_current:
+            print(f"   {name}")
+        print()
+
+    if invalid:
+        print(f"Invalid/unusable comparisons ({len(invalid)}):")
+        for name, reason in invalid:
+            print(f"  SKIP  {name}: {reason}")
+        print()
+
+    if new_in_current:
+        print(f"New in current run ({len(new_in_current)}, not in baseline, no comparison possible):")
+        for name in new_in_current:
+            print(f"   {name}")
+        print()
 
     if compared == 0:
         print("ERROR: no valid matching benchmarks could be compared.", file=sys.stderr)
@@ -158,7 +232,18 @@ def main() -> int:
         print(f"FAILED: {len(regressions)} benchmark(s) regressed beyond {args.threshold:.1f}%.")
         return 1
 
-    print(f"All {compared} matched benchmark(s) within {args.threshold:.1f}% threshold.")
+    # ── Coverage gate ─────────────────────────────────────────────────────────
+    coverage_pct = (compared / len(baseline)) * 100.0
+    if coverage_pct < args.min_coverage:
+        print(
+            f"FAILED: coverage {coverage_pct:.1f}% is below the required "
+            f"{args.min_coverage:.1f}% ({len(missing_from_current)} missing, "
+            f"{len(invalid)} invalid/unusable, out of {len(baseline)} baseline benchmark(s))."
+        )
+        return 1
+
+    print(f"All {compared} matched benchmark(s) within {args.threshold:.1f}% threshold; "
+          f"coverage {coverage_pct:.1f}%.")
     return 0
 
 
