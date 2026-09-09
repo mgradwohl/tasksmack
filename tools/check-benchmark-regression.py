@@ -39,13 +39,6 @@ UNIT_TO_NANOSECONDS = {
     "s": 1000_000_000.0,
 }
 
-# Preference order for picking a common timing field between two benchmark records. Both
-# sides must have the *same* field for a comparison to be valid -- independently falling back
-# from real_time to cpu_time per side can silently compare two different kinds of time for the
-# same benchmark (see #871).
-TIMING_FIELDS = ("real_time", "cpu_time")
-
-
 def normalize_time(value: float, unit: str) -> float:
     """Convert a benchmark time value into nanoseconds for comparison."""
     factor = UNIT_TO_NANOSECONDS.get(unit)
@@ -74,10 +67,21 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
 
 
 def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
-    """Return the first timing field present on *both* records, or None if none match."""
-    for field in TIMING_FIELDS:
-        if field in base_bm and field in cur_bm:
-            return field
+    """Return the shared timing field to compare, preferring real_time.
+
+    cpu_time is only used as a fallback when real_time is absent from *both* records. If
+    real_time is present on one side but missing on the other, that's a genuine data mismatch
+    between the two records (e.g. different Google Benchmark reporting settings) -- not a case
+    where quietly comparing cpu_time on both sides instead would be a safe substitute, since the
+    side that *does* have real_time was never validated against cpu_time for equivalence. No
+    comparison is made in that case rather than silently downgrading to a lesser-preferred field
+    only one side actually needed to fall back to.
+    """
+    if "real_time" in base_bm and "real_time" in cur_bm:
+        return "real_time"
+    if "real_time" not in base_bm and "real_time" not in cur_bm:
+        if "cpu_time" in base_bm and "cpu_time" in cur_bm:
+            return "cpu_time"
     return None
 
 
