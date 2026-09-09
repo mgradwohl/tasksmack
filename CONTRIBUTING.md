@@ -664,6 +664,23 @@ flagged machine-class differences as regressions on every single run (65/84 benc
 "regressed," up to +813%, including pure-arithmetic microbenchmarks -- see #683). Comparing
 CI-recorded-vs-CI-recorded instead removes that machine-class variance entirely.
 
+Removing machine-class variance does not remove all hosted-runner noise, though: capturing the
+baseline required three separate `heavy-checks.yml` dispatches to characterize, and the CPU
+performance ubuntu-24.04 hosted runners actually deliver appears **bimodal**, not a smooth
+noise distribution around one typical value -- two of the three captures were closely
+consistent with each other (within ~16% on every benchmark), while the third was consistently
+20-60% faster across essentially all 78 comparable benchmarks simultaneously (a uniform,
+systemic shift, not the mixed-sign scatter true noise would produce). The committed baseline
+intentionally uses one of the two *slower*-class samples: comparing a future run against it can
+only ever show a large "improvement" if that run lands on the faster class (never a false
+regression, since improvements never fail the gate), whereas the reverse choice (a fast-class
+baseline) would make roughly half of all future runs report a 50-150%+ false "regression" purely
+from landing on the slower class. This trades some sensitivity to genuinely small/moderate
+regressions for eliminating false positives outright -- which was the explicit problem #682 was
+created to solve (a red gate nobody could trust). Catching smaller regressions reliably despite
+this would need either a same-job speed-calibration measurement to normalize away the class
+effect, or requiring two independent runs to agree before failing; neither is implemented here.
+
 **Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
 changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
 deliberate, reviewed performance change that the gate should treat as the new normal):
@@ -677,6 +694,10 @@ deliberate, reviewed performance change that the gate should treat as the new no
    ```
 3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
+   Given the bimodal runner behavior above, if every benchmark shifted by roughly the same
+   percentage in the same direction, that's very likely a runner-class difference, not a real
+   change -- dispatch one more run and compare it to the candidate before deciding which to
+   keep, rather than trusting a single capture.
 4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
    ```bash
    cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
