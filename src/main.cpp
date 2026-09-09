@@ -191,7 +191,11 @@ auto runApp() -> int
         appRef.getWindow().maximize();
     }
 
-    // Push UI layer (initializes ImGui/ImPlot backends)
+    // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
+    // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is
+    // what actually advances ImGui::GetFrameCount() -- ShellLayer::onRender() reads that count
+    // to publish RenderMetrics' per-frame totals (see #875) and needs the *current* frame's
+    // value, not the previous one.
     appRef.pushLayer<UI::UILayer>();
 
     // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
