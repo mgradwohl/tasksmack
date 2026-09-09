@@ -650,6 +650,62 @@ python -m google_benchmark.compare perf-data/win-baseline.json perf-data/win-ben
 python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/benchmark-<timestamp>.json
 ```
 
+### CI Benchmark Regression Gate
+
+`heavy-checks.yml`'s `benchmark-regression` job runs on every push to `main`, gating against
+`perf-data/linux-ci-baseline.json` via `tools/check-benchmark-regression.py` (40% threshold,
+comparing medians of `tools/bench.sh`'s 10 repetitions per benchmark) -- a failure here **fails
+the job** (`exit 1`), unlike the informational-only mode this ran in before #683.
+
+This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
+was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
+comparisons, and comparing it against hosted `ubuntu-24.04` runners (shared 4-vCPU machines)
+flagged machine-class differences as regressions on every single run (65/84 benchmarks
+"regressed," up to +813%, including pure-arithmetic microbenchmarks -- see #683). Comparing
+CI-recorded-vs-CI-recorded instead removes that machine-class variance entirely.
+
+Removing machine-class variance does not remove all hosted-runner noise, though: capturing the
+baseline required three separate `heavy-checks.yml` dispatches to characterize, and the CPU
+performance ubuntu-24.04 hosted runners actually deliver appears **bimodal**, not a smooth
+noise distribution around one typical value -- two of the three captures were closely
+consistent with each other (within ~16% on every benchmark), while the third was consistently
+20-60% faster across essentially all 78 comparable benchmarks simultaneously (a uniform,
+systemic shift, not the mixed-sign scatter true noise would produce). The committed baseline
+intentionally uses one of the two *slower*-class samples: comparing a future run against it can
+only ever show a large "improvement" if that run lands on the faster class (never a false
+regression, since improvements never fail the gate), whereas the reverse choice (a fast-class
+baseline) would make roughly half of all future runs report a 50-150%+ false "regression" purely
+from landing on the slower class. This trades some sensitivity to genuinely small/moderate
+regressions for eliminating false positives outright -- which was the explicit problem #682 was
+created to solve (a red gate nobody could trust). Catching smaller regressions reliably despite
+this would need either a same-job speed-calibration measurement to normalize away the class
+effect, or requiring two independent runs to agree before failing; neither is implemented here.
+
+**Refreshing `perf-data/linux-ci-baseline.json`** (only needed when hosted-runner hardware
+changes, e.g. a `ubuntu-24.04` image update measurably shifts baseline timings, or after a
+deliberate, reviewed performance change that the gate should treat as the new normal):
+
+1. Manually trigger `heavy-checks.yml` via `gh workflow run heavy-checks.yml --ref <branch>` (or
+   the Actions tab's "Run workflow" button), and wait for the `benchmark-regression` job to
+   finish.
+2. Download its `benchmark-results` artifact and extract `perf-data/benchmark-current.json`:
+   ```bash
+   gh run download <run-id> --name benchmark-results --dir /tmp/benchmark-results
+   ```
+3. Review the new numbers against the old baseline before replacing it -- a baseline refresh
+   should be a deliberate, reviewed change, not a way to silently paper over a real regression.
+   Given the bimodal runner behavior above, if every benchmark shifted by roughly the same
+   percentage in the same direction, that's very likely a runner-class difference, not a real
+   change -- dispatch one more run and compare it to the candidate before deciding which to
+   keep, rather than trusting a single capture.
+4. Replace the baseline and commit it in its own PR (not bundled with unrelated changes):
+   ```bash
+   cp /tmp/benchmark-results/perf-data/benchmark-current.json perf-data/linux-ci-baseline.json
+   git add perf-data/linux-ci-baseline.json
+   git commit -m "chore(perf): refresh CI benchmark baseline"
+   ```
+5. Push and confirm the next `heavy-checks.yml` run passes against the refreshed baseline.
+
 ### Available Benchmarks
 
 | Benchmark | Description |

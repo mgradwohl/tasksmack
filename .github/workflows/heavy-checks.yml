@@ -484,7 +484,13 @@ jobs:
   benchmark-regression:
     needs: [validate-environment]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
+    # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top
+    # of setup/build time) -- shared 4-vCPU hosted runners are simply slower per-repetition
+    # than the wall-clock budget this job originally had. Raised with real margin rather than
+    # tuned to the exact observed runtime, since --benchmark_min_time and per-benchmark cost
+    # can shift over time.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -530,32 +536,32 @@ jobs:
           cp "$latest_json" perf-data/benchmark-current.json
           echo "BENCHMARK_JSON=$latest_json" >> "$GITHUB_ENV"
 
-      # Informational only: perf-data/linux-baseline.json was recorded on a
-      # local developer machine (10 cores @ 3.7 GHz), so comparing against
-      # shared 4-vCPU hosted runners flags machine-class differences, not real
-      # regressions (65/84 benchmarks "regressed" on every run, including pure
-      # arithmetic microbenchmarks). Do not gate CI on this until a
-      # CI-recorded baseline exists — see the tracking issue for that work.
-      - name: Check for regression (informational)
+      # perf-data/linux-ci-baseline.json was recorded on this same ubuntu-24.04 hosted-runner
+      # class (see CONTRIBUTING.md's "Refreshing the CI benchmark baseline" section for the
+      # exact procedure and when to redo this) -- unlike the original local-machine baseline
+      # (10 cores @ 3.7 GHz, still kept as perf-data/linux-baseline.json for `tools/bench.sh`'s
+      # own local-vs-local comparisons), comparing hosted-vs-hosted removes the machine-class
+      # variance that made every run "regress" 65/84 benchmarks (see #683). The threshold is
+      # raised from bench.sh's local-use default of 15% to 40% to absorb the remaining
+      # shared-vCPU neighbor-noise a hosted runner still has even against another hosted run,
+      # and bench.sh's existing --benchmark_repetitions=10 + median-of-repetitions comparison
+      # (already load_benchmarks()-filtered to aggregate_name == "median") further damps
+      # single-run noise on both sides of the comparison.
+      - name: Check for regression
         id: regression-check
         run: |
           python3 tools/check-benchmark-regression.py \
-            --baseline perf-data/linux-baseline.json \
+            --baseline perf-data/linux-ci-baseline.json \
             --current  perf-data/benchmark-current.json \
-            --threshold 15 \
+            --threshold 40 \
             2>&1 | tee benchmark-regression-output.txt
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Add benchmark summary to workflow summary
         if: always()
         run: |
-          echo "## Benchmark Regression Check (informational)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Benchmark Regression Check" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${{ steps.regression-check.outputs.exit_code }}" != "0" ]]; then
-            echo "> [!NOTE]" >> "$GITHUB_STEP_SUMMARY"
-            echo "> Differences vs. the locally recorded baseline are expected on hosted runners and do not fail this job. A CI-recorded baseline is tracked in a follow-up issue." >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-          fi
           if [[ -f benchmark-regression-output.txt ]]; then
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat benchmark-regression-output.txt >> "$GITHUB_STEP_SUMMARY"
@@ -572,8 +578,9 @@ jobs:
             benchmark-regression-output.txt
           retention-days: 30
 
-      - name: Report regression status (informational)
+      - name: Fail on regression
         if: steps.regression-check.outputs.exit_code != '0'
         run: |
-          echo "Benchmarks differ from the local baseline beyond the threshold. See summary for details."
-          echo "Informational only — not failing the job (local baseline is not comparable to hosted runners)."
+          echo "One or more benchmarks regressed beyond the threshold vs. the CI baseline. See the job summary for details." >&2
+          echo "If this is a real, accepted regression (not noise), refresh perf-data/linux-ci-baseline.json per CONTRIBUTING.md's baseline-refresh procedure." >&2
+          exit 1
