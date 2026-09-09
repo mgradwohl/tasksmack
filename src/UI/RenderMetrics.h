@@ -168,10 +168,10 @@ class RenderMetrics
             {
                 csv += std::format("{},{},{},{},{},{},{},{:.1f}\n",
                                    timestampUs,
-                                   m_Scenario,
+                                   csvField(m_Scenario),
                                    m_LastFrameIndex,
                                    m_PublicationId,
-                                   sample.id,
+                                   csvField(sample.id),
                                    sample.vertices,
                                    sample.indices,
                                    sample.micros);
@@ -190,6 +190,32 @@ class RenderMetrics
 
   private:
     static constexpr int NO_FRAME = -1;
+
+    /// RFC 4180-style CSV field encoding: wrap in double quotes (doubling any embedded quote)
+    /// whenever the field contains a comma, quote, or newline. Needed for m_Scenario (free-form
+    /// user input via the overlay's text field) and, defensively, chart ids, so a value like
+    /// `resize, tab A` doesn't silently split into extra columns or corrupt the row.
+    [[nodiscard]] static std::string csvField(std::string_view field)
+    {
+        if (field.find_first_of(",\"\r\n") == std::string_view::npos)
+        {
+            return std::string(field);
+        }
+
+        std::string escaped;
+        escaped.reserve(field.size() + 2);
+        escaped.push_back('"');
+        for (const char character : field)
+        {
+            if (character == '"')
+            {
+                escaped.push_back('"');
+            }
+            escaped.push_back(character);
+        }
+        escaped.push_back('"');
+        return escaped;
+    }
 
     std::vector<ChartRenderSample> m_Current;
     std::vector<ChartRenderSample> m_LastFrame;

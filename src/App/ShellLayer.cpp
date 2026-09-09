@@ -210,16 +210,22 @@ void ShellLayer::onUpdate(float deltaTime)
     // Sync capture state before any charts render this frame; renderOverlay runs at the
     // end of onRender, so relying on it alone leaves capture one frame out of phase.
     UI::RenderMetrics::get().setEnabled(m_ShowRenderMetrics);
-    // Publish the previous frame's totals unconditionally, before any chart has a chance to
-    // render this frame. Doing this here (not leaving it to record(), which only runs when a
-    // chart actually renders) means a frame with zero chart activity still correctly publishes
-    // an empty "last frame" instead of leaving the previous chart-bearing frame's totals in
-    // place (see #875).
-    UI::RenderMetrics::get().beginFrame(ImGui::GetFrameCount());
 }
 
 void ShellLayer::onRender()
 {
+    // Publish the previous frame's totals unconditionally, before any chart has a chance to
+    // render this frame. Doing this here (not leaving it to record(), which only runs when a
+    // chart actually renders) means a frame with zero chart activity still correctly publishes
+    // an empty "last frame" instead of leaving the previous chart-bearing frame's totals in
+    // place (see #875). Must run in onRender, not onUpdate: Application::run() calls onUpdate()
+    // for every layer before onRender() for any layer, and ImGui::GetFrameCount() only advances
+    // inside UILayer::onRender()'s call to ImGui::NewFrame() -- calling this from onUpdate reads
+    // the *previous* frame's count, making it a no-op against the already-equal m_CurrentFrame
+    // and silently reintroducing the exact bug this is meant to fix. This relies on UILayer
+    // being pushed (and therefore rendered) before ShellLayer -- see main.cpp's pushLayer order.
+    UI::RenderMetrics::get().beginFrame(ImGui::GetFrameCount());
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
     // Get dynamic title bar height (matches tab bars). Zero when native OS decorations are in

@@ -193,5 +193,46 @@ TEST_F(RenderMetricsTest, ToCsvPublicationIdIncrementsPerPublishedFrame)
     EXPECT_NE(metrics.toCsv().find(",2,2,##B,"), std::string::npos);
 }
 
+// Scenario is free-form text typed into the overlay; a comma, quote, or newline in it must not
+// silently split into extra columns or corrupt the row (RFC 4180-style quoting).
+TEST_F(RenderMetricsTest, ToCsvEscapesScenarioContainingComma)
+{
+    auto& metrics = RenderMetrics::get();
+    metrics.setScenario("resize, tab A");
+
+    metrics.beginFrame(1);
+    metrics.record("##A", 1, 2, 0.5, 1);
+    metrics.beginFrame(2); // Publish frame 1
+
+    const std::string csv = metrics.toCsv();
+    EXPECT_NE(csv.find("\"resize, tab A\",1,1,##A,1,2,0.5\n"), std::string::npos);
+}
+
+TEST_F(RenderMetricsTest, ToCsvEscapesScenarioContainingQuote)
+{
+    auto& metrics = RenderMetrics::get();
+    metrics.setScenario(R"(say "hi")");
+
+    metrics.beginFrame(1);
+    metrics.record("##A", 1, 2, 0.5, 1);
+    metrics.beginFrame(2); // Publish frame 1
+
+    const std::string csv = metrics.toCsv();
+    EXPECT_NE(csv.find(R"("say ""hi""",1,1,##A,1,2,0.5)"), std::string::npos);
+}
+
+TEST_F(RenderMetricsTest, ToCsvDoesNotQuoteOrdinaryScenario)
+{
+    auto& metrics = RenderMetrics::get();
+    metrics.setScenario("idle");
+
+    metrics.beginFrame(1);
+    metrics.record("##A", 1, 2, 0.5, 1);
+    metrics.beginFrame(2); // Publish frame 1
+
+    // No quotes should appear for a field that needs none.
+    EXPECT_NE(metrics.toCsv().find(",idle,1,1,##A,"), std::string::npos);
+}
+
 } // namespace
 } // namespace UI
