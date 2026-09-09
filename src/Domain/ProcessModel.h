@@ -88,10 +88,15 @@ class ProcessModel : public ISamplable
     /// snapshot content it was given, silently skipping or duplicating a history point.
     [[nodiscard]] std::optional<SnapshotLookupResult> findSnapshotWithVersion(std::int32_t pid) const;
 
-    /// Copy snapshots only when a newer version exists.
-    /// Returns true and copies data when an update is available; otherwise returns false.
-    [[nodiscard]] bool
-    tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion, std::vector<ProcessSnapshot>& outSnapshots, std::uint64_t& outVersion) const;
+    /// Copy the snapshot generation only when a newer version exists. "Copy" is a shared_ptr
+    /// assignment (an O(1) refcount bump), not a deep copy of the underlying vector: the
+    /// vector is immutable once published, so readers can share it directly instead of each
+    /// duplicating every process's data under the lock. Returns true and updates outSnapshots
+    /// when a newer generation is available; otherwise returns false and leaves outSnapshots
+    /// untouched.
+    [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
+                                               std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
+                                               std::uint64_t& outVersion) const;
 
     /// Monotonically increasing counter, incremented each time snapshots are updated.
     /// UI can compare against a cached value to skip redundant copies when data hasn't changed.
@@ -225,8 +230,10 @@ class ProcessModel : public ISamplable
     HistoryBuffer<double> m_Timestamps;
     double m_MaxHistorySeconds = 300.0; // Align with Storage/System defaults
 
-    // Latest computed snapshots
-    std::vector<ProcessSnapshot> m_Snapshots;
+    // Latest computed snapshots. Immutable once published (replaced wholesale by the writer,
+    // never mutated in place), so it's handed to readers as a shared_ptr<const ...> instead of
+    // being deep-copied under the lock -- see tryCopySnapshotsIfNewer()'s doc comment.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> m_Snapshots = std::make_shared<const std::vector<ProcessSnapshot>>();
     std::uint64_t m_SnapshotVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSnapshotVersion{0};
     std::atomic<bool> m_InteractionActive{false};

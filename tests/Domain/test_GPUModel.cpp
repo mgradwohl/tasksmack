@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <memory>
 #include <thread>
 
@@ -27,6 +28,25 @@ using TestMocks::MockGPUProbe;
 
 namespace
 {
+
+// Bounded wait for a MockGPUProbe's "entered its blocked read" flag. Used by concurrency
+// tests that hold the mock blocked from a background thread: without a deadline, a
+// regression that stops the mock from ever entering its blocking wait would hang the test
+// process indefinitely instead of failing it. Returns false on timeout so the caller can
+// report a clear (non-fatal) failure and still run its own cleanup/release/join.
+[[nodiscard]] bool waitForBlockedEntry(const MockGPUProbe& probe, std::chrono::milliseconds timeout = std::chrono::seconds(5))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!probe.hasEnteredBlockedReadGPUCounters())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
 
 // =============================================================================
 // Construction Tests
@@ -70,6 +90,162 @@ TEST(GPUModelTest, CapabilitiesAreExposedFromProbe)
     EXPECT_TRUE(modelCaps.hasTemperature);
     EXPECT_TRUE(modelCaps.hasPowerMetrics);
     EXPECT_TRUE(modelCaps.hasPerProcessMetrics);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
+{
+    // Regression test for #843 Phase 3b: backends that can never return per-process data
+    // (e.g. Linux Intel DRM) should never even acquire the probe lock for this call, since
+    // that lock is shared with concurrent system-GPU sampling. Verified here by checking the
+    // probe's call count directly, not just the (already-empty) return value.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = false;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe));
+
+    const auto counters = model.readProcessGPUCounters();
+
+    EXPECT_TRUE(counters.empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersCallsProbeWhenCapabilitySupported)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe));
+
+    const auto counters = model.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].pid, 100);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscoveryFailed)
+{
+    // Regression test for a review finding on #862: the constructor's capabilities() query
+    // is wrapped in try/catch, and if it throws, m_Capabilities is left at its default
+    // (all-false) values. Treating that as "confirmed unsupported" would permanently and
+    // silently suppress a probe that might genuinely support per-process data, just because
+    // of a one-time query failure at construction -- a real regression versus this method's
+    // behavior before the capability check existed (it always attempted the probe call).
+    // readProcessGPUCounters() must fall through to the lock-and-call path when discovery
+    // failed (unknown), not treat "unknown" the same as "confirmed false".
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withCapabilitiesQueryThrowingOnce(); // fails only the constructor's one query
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+    probe->withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto* rawProbe = probe.get();
+
+    Domain::GPUModel model(std::move(probe)); // constructor's capabilities() query throws here
+
+    const auto counters = model.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].pid, 100);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+}
+
+TEST(GPUModelTest, ReadProcessGPUCountersDoesNotWaitBehindProbeLockWhenUnsupported)
+{
+    // ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported above only proves the probe
+    // method is skipped -- it would still pass if readProcessGPUCounters() acquired
+    // m_ProbeMutex and checked the capability afterward, since the probe call it's counting
+    // happens inside a different method (readGPUCounters(), called by refresh()). The actual
+    // regression being fixed is lock CONTENTION: readProcessGPUCounters() must return without
+    // ever waiting on m_ProbeMutex when unsupported, even while another thread holds that
+    // mutex doing a (slow) refresh(). Prove that directly: hold the probe lock open via a
+    // background refresh() blocked inside the mock, then confirm the unsupported call
+    // completes promptly instead of waiting for it to be released.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = false;
+    probe->withCapabilities(caps);
+    probe->withGPU("GPU0", "Test GPU", "TestVendor");
+    auto* rawProbe = probe.get();
+    rawProbe->armBlockingReadGPUCounters();
+
+    Domain::GPUModel model(std::move(probe));
+
+    std::thread blockedRefresh([&model] { model.refresh(); });
+
+    // Wait until the background refresh() is actually inside the blocked probe call (and
+    // therefore holding m_ProbeMutex), not just scheduled -- otherwise the timing check
+    // below could race ahead of the lock actually being held. Bounded (not a bare spin loop):
+    // if a regression stopped refresh() from ever reaching the mock's blocking point, this
+    // would otherwise hang the test process forever instead of failing it. Non-fatal so the
+    // release()/join() cleanup below still runs regardless.
+    EXPECT_TRUE(waitForBlockedEntry(*rawProbe)) << "background refresh() never entered its blocking probe call within the deadline "
+                                                   "-- GPUModel::refresh() or the mock may be broken";
+
+    // Run the call under test on its own thread with a bounded wait, rather than calling it
+    // inline: if the fix regressed and this call actually blocked on m_ProbeMutex, an inline
+    // call would hang the test binary forever (the lock is only released below, after this
+    // check). A bounded wait_for lets that scenario fail with a clear assertion instead.
+    auto future = std::async(std::launch::async, [&model] { return model.readProcessGPUCounters(); });
+    const auto status = future.wait_for(std::chrono::milliseconds(500));
+
+    EXPECT_EQ(status, std::future_status::ready)
+        << "readProcessGPUCounters() did not return promptly -- it appears to be waiting on the probe lock";
+
+    rawProbe->releaseBlockedReadGPUCounters();
+    blockedRefresh.join();
+
+    if (status == std::future_status::ready)
+    {
+        EXPECT_TRUE(future.get().empty());
+    }
+    else
+    {
+        // Let the async task finish before the test function returns and its captures
+        // (model, rawProbe) go out of scope, even though the assertion above already failed.
+        future.wait();
+    }
+}
+
+TEST(MockGPUProbeTest, ArmBlockingReadGPUCountersResetsStateFromPriorReleaseCycle)
+{
+    // Regression test for a review finding on #862: releaseBlockedReadGPUCounters() left
+    // m_ReleaseRequested and the "entered" flag set to true, so re-arming the mock without
+    // resetting them made the next blocked call's wait predicate succeed immediately (never
+    // actually blocking) and made hasEnteredBlockedReadGPUCounters() report true before the
+    // new block even started. Exercise two full arm/release cycles on the same mock and
+    // confirm the second one genuinely blocks and genuinely reports "entered" only once it
+    // has, not from stale state left over by the first cycle.
+    MockGPUProbe probe;
+
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+        probe.armBlockingReadGPUCounters();
+        ASSERT_FALSE(probe.hasEnteredBlockedReadGPUCounters())
+            << "cycle " << cycle << ": entered flag should start false immediately after arming";
+
+        auto future = std::async(std::launch::async, [&probe] { return probe.readGPUCounters(); });
+
+        // Bounded (not a bare spin loop): if a regression stopped readGPUCounters() from
+        // ever entering its blocking wait, this would otherwise hang the test process
+        // forever instead of failing it. Non-fatal so the release()/wait() cleanup below
+        // still runs regardless, unblocking the async call either way.
+        EXPECT_TRUE(waitForBlockedEntry(probe))
+            << "cycle " << cycle << ": readGPUCounters() never entered its blocking wait within the deadline";
+
+        // The call must still be genuinely blocked at this point, not already completed.
+        const auto status = future.wait_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(status, std::future_status::timeout) << "cycle " << cycle << ": call returned before being released";
+
+        probe.releaseBlockedReadGPUCounters();
+        future.wait();
+    }
 }
 
 // =============================================================================
@@ -1157,6 +1333,9 @@ TEST(GPUModelTest, ConcurrentHistoryAccessDuringRefresh)
 TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     probe->withGPU("GPU0", "Test GPU", "TestVendor")
         .withProcessGPU(1234, "GPU0", 512ULL * 1024 * 1024)
         .withProcessGPU(5678, "GPU0", 256ULL * 1024 * 1024);
@@ -1182,6 +1361,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersReturnsProbeData)
 TEST(GPUModelTest, ReadProcessGPUCountersMultiGPU)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     probe->withGPU("GPU0", "GPU 0", "Vendor")
         .withGPU("GPU1", "GPU 1", "Vendor")
         .withProcessGPU(1000, "GPU0", 100ULL * 1024 * 1024)
@@ -1221,6 +1403,9 @@ TEST(GPUModelTest, ReadProcessGPUCountersWithNullProbe)
 TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
 {
     auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    probe->withCapabilities(caps);
     // rawProbe remains valid after std::move(probe) because GPUModel stores the unique_ptr
     auto* rawProbe = probe.get();
     probe->withGPU("GPU0", "Test GPU", "Vendor").withProcessGPU(100, "GPU0", 50ULL * 1024 * 1024);

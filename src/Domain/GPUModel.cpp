@@ -42,6 +42,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
     try
     {
         m_Capabilities = m_Probe->capabilities();
+        m_CapabilitiesKnown = true;
     }
     catch (const std::exception& e)
     {
@@ -264,7 +265,21 @@ Platform::GPUCapabilities GPUModel::capabilities() const
 
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
 {
+    // m_Capabilities and m_CapabilitiesKnown are set once at construction and never mutated
+    // afterward, so this read needs no lock (same reasoning as capabilities() above).
+    // Checking m_CapabilitiesKnown first matters: if the constructor's capabilities() query
+    // threw, m_Capabilities is left at its default (all-false) values, and treating that as
+    // "confirmed unsupported" would permanently and silently suppress a probe that might
+    // genuinely support per-process data, just because of a one-time query failure. Only
+    // skip the probe lock when discovery actually succeeded and reported no support --
+    // e.g. Linux Intel DRM, which always returns empty here. When discovery failed, fall
+    // through to the lock-and-call path unconditionally, matching this method's behavior
+    // before this capability check existed.
     if (!m_Probe)
+    {
+        return {};
+    }
+    if (m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics)
     {
         return {};
     }

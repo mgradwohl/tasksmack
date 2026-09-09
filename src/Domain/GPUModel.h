@@ -135,6 +135,10 @@ class GPUModel : public ISamplable
     mutable std::mutex m_ProbeMutex;
     std::vector<Platform::GPUInfo> m_GPUInfo;
     Platform::GPUCapabilities m_Capabilities;
+    // False if the constructor's capabilities() query threw, leaving m_Capabilities at its
+    // default (all-false) values. readProcessGPUCounters() must not treat that as proof
+    // per-process metrics are unsupported -- see its use of this flag for why.
+    bool m_CapabilitiesKnown = false;
 
     // Current snapshots per GPU
     using SnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentStringHash, TransparentStringEqual>;
