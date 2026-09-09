@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessRowFormat.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
@@ -26,27 +27,11 @@ struct ImFont; // Forward declaration for TextSizeCache
 namespace App
 {
 
-/// A pre-formatted right-aligned cell's text plus its CalcTextSize width, measured lazily (on
-/// first render, not at RowFormatCache population time) and cached from then on (perf-plan #843
-/// phase 1). Populating widths eagerly for every process at cache-rebuild time -- before
-/// ImGuiListClipper gets a chance to restrict work to visible rows -- would concentrate
-/// thousands of CalcTextSize calls into a single snapshot-update frame on the app's "thousands
-/// of processes" scenario, working directly against the frame-budget goal this cache exists to
-/// serve. `width` is `mutable` so renderRightAlignedText() can fill it in through a `const
-/// AlignedCellText&` the first time this specific cell is actually drawn; every later frame
-/// (until the next cache rebuild resets it) reuses the cached value. Bundling text+width in one
-/// type still means a caller can't use one without the other being kept in sync. Namespace-scope
-/// (not nested in ProcessesPanel) so the free renderRightAlignedText()/makeAlignedCellText()
-/// helpers in ProcessesPanel.cpp's anonymous namespace can use it without needing member/friend
-/// access to a private nested type.
-struct AlignedCellText
-{
-    /// Sentinel meaning "not measured yet". Real widths are never negative.
-    static constexpr float UNMEASURED_WIDTH = -1.0F;
-
-    std::string text;
-    mutable float width = UNMEASURED_WIDTH;
-};
+/// Pulled in from ProcessRowFormat.h so existing bare references throughout this header and
+/// ProcessesPanel.cpp keep compiling unchanged after the row-formatting logic moved to a
+/// standalone, ImGui-free, unit-testable header (see ProcessRowFormat.h's doc comment).
+using ProcessRowFormat::AlignedCellText;
+using ProcessRowFormat::RowFormatCache;
 
 /// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values, derived
 /// by calling the real function at one representative nice value per threshold bucket instead
@@ -237,41 +222,17 @@ class ProcessesPanel : public Panel
 
     TextSizeCache m_TextSizeCache;
 
-    /// Cache of pre-formatted strings per process row, keyed by uniqueKey.
-    /// Rebuilt once when snapshot data changes (~1Hz), not per frame (60fps).
-    /// Eliminates heap allocations for slow-changing formatted columns in renderProcessRow.
-    struct RowFormatCache
-    {
-        AlignedCellText ppid;       // formatId(parentPid)          — immutable
-        AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
-        AlignedCellText cpuTime;    // formatCpuTimeCompact          — changes at 1Hz
-        AlignedCellText cpuPercent; // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText memPercent; // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText virtualMem; // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText resident;   // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText peakRss;    // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText shared;     // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText ioRead;     // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText netSent;    // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText netRecv;    // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText power;      // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
-        AlignedCellText gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
-        std::string gpuEngines;     // comma-joined engine list; avoids per-frame string joins; left-aligned, no width needed
-        AlignedCellText threads;    // formatOrDash/formatIntLocalized(threadCount)
-        AlignedCellText handles;    // formatOrDash/formatIntLocalized(handleCount)
-        AlignedCellText pageFaults; // formatOrDash/formatIntLocalized(pageFaults)
-        AlignedCellText affinity;   // formatCpuAffinityMask         — rarely changes
-        AlignedCellText gdiObjects; // formatIntLocalized(*gdiObjectCount) or "-"
-    };
-
+    /// Cache of pre-formatted strings per process row, keyed by uniqueKey. Unlike a version-only
+    /// cache, each entry is built lazily (only when that specific row is actually rendered) and
+    /// stamps its own `generation`/`fontPtr` (see ProcessRowFormat.h's RowFormatCache doc
+    /// comment) so renderProcessRow() can detect a stale entry (new snapshot data, or a font/
+    /// size/DPI change) and rebuild just that one row on demand -- cost scales with visible
+    /// rows, not total process count (perf-plan #843).
     std::unordered_map<std::uint64_t, RowFormatCache> m_RowFormatCache;
-    std::uint64_t m_RowFormatCacheVersion = std::numeric_limits<std::uint64_t>::max();
-    // Font used the last time m_RowFormatCache was populated. A font/size/DPI change alone
-    // (without a new data version) must still force a rebuild, or every AlignedCellText's width
-    // goes stale for whatever's cached until the next ~1Hz data refresh happens to land.
-    const ImFont* m_RowFormatCacheFontPtr = nullptr;
+    // Generation m_RowFormatCache was last pruned at (entries for processes no longer present
+    // are erased once per new snapshot generation, not per frame, to bound the map's size
+    // without adding per-frame cost).
+    std::uint64_t m_RowFormatCachePrunedVersion = std::numeric_limits<std::uint64_t>::max();
 
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();

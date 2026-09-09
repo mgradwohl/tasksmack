@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -102,13 +103,14 @@ void renderRightAlignedText(std::string_view text, float textWidth)
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
-/// Common case: a RowFormatCache-backed cell whose text is cached (rebuilt only at ~1Hz, not
-/// per frame) and whose width is measured lazily -- the first time this specific cell is
-/// actually drawn -- and cached into `cell.width` (mutable; see AlignedCellText's doc comment
-/// for why this must be lazy rather than done for every process at cache-population time).
-/// ImFontCalcTextSizeEx and ImGui::ItemSize showed up as real, non-trivial costs in interactive-
-/// frame profiling; this keeps that cost paid at most once per visible row per cache generation,
-/// instead of every frame or (worse) for every process regardless of visibility.
+/// Common case: a RowFormatCache-backed cell whose text is built lazily, on demand, only for
+/// rows that are actually rendered (see renderProcessRow()'s get-or-build lookup), and whose
+/// width is likewise measured lazily -- the first time this specific cell is actually drawn --
+/// and cached into `cell.width` (mutable; see AlignedCellText's doc comment for why this must be
+/// lazy rather than done for every process at cache-population time). ImFontCalcTextSizeEx and
+/// ImGui::ItemSize showed up as real, non-trivial costs in interactive-frame profiling; this
+/// keeps that cost paid at most once per visible row per cache generation, instead of every
+/// frame or (worse) for every process regardless of visibility.
 void renderRightAlignedText(const AlignedCellText& cell)
 {
     if (cell.width < 0.0F)
@@ -116,60 +118,6 @@ void renderRightAlignedText(const AlignedCellText& cell)
         cell.width = ImGui::CalcTextSize(cell.text.c_str(), cell.text.c_str() + cell.text.size()).x;
     }
     renderRightAlignedText(cell.text, cell.width);
-}
-
-/// Wraps `text` for a RowFormatCache population site, deferring width measurement to the first
-/// time renderRightAlignedText() actually draws this cell (see AlignedCellText's doc comment).
-[[nodiscard]] AlignedCellText makeAlignedCellText(std::string text)
-{
-    return AlignedCellText{.text = std::move(text)};
-}
-
-[[nodiscard]] auto formatAlignedPercentString(double percent) -> std::string
-{
-    const auto parts = UI::Format::splitPercentForAlignment(percent);
-
-    std::string out;
-    out.reserve(parts.wholePart.size() + 2);
-    out.append(parts.wholePart.data(), parts.wholePart.size());
-    out.push_back(parts.decimalDigit);
-    out.append(UI::Format::AlignedPercentParts::unitPart.data(), UI::Format::AlignedPercentParts::unitPart.size());
-    return out;
-}
-
-[[nodiscard]] auto formatAlignedBytesString(double bytes, UI::Format::ByteUnit unit) -> std::string
-{
-    const auto parts = UI::Format::splitBytesForAlignmentFast(bytes, unit);
-    const auto wholePart = parts.wholePart();
-    std::string out;
-    out.reserve(wholePart.size() + parts.unitPart.size() + 1);
-    out.append(wholePart.data(), wholePart.size());
-    out.push_back(parts.decimalDigit);
-    out.append(parts.unitPart.data(), parts.unitPart.size());
-    return out;
-}
-
-[[nodiscard]] auto formatAlignedBytesPerSecString(double bytesPerSec, UI::Format::ByteUnit unit) -> std::string
-{
-    const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(bytesPerSec, unit);
-    const auto wholePart = parts.wholePart();
-    std::string out;
-    out.reserve(wholePart.size() + parts.unitPart.size() + 1);
-    out.append(wholePart.data(), wholePart.size());
-    out.push_back(parts.decimalDigit);
-    out.append(parts.unitPart.data(), parts.unitPart.size());
-    return out;
-}
-
-[[nodiscard]] auto formatAlignedPowerString(double watts) -> std::string
-{
-    const auto parts = UI::Format::splitPowerForAlignment(watts);
-    std::string out;
-    out.reserve(parts.wholePart.size() + parts.decimalPart.size() + parts.unitPart.size());
-    out.append(parts.wholePart);
-    out.append(parts.decimalPart);
-    out.append(parts.unitPart);
-    return out;
 }
 
 } // namespace
@@ -468,81 +416,21 @@ void ProcessesPanel::renderContent()
     }
     const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
-    // Rebuild row format cache when snapshot data changes (~1Hz), never per frame (60fps), or
-    // when the font used to measure the cached AlignedCellText widths has changed (a font-size/
-    // DPI change alone, with no new data version, would otherwise leave every cached width
-    // stale until the next data refresh happens to land).
-    if (m_CachedSnapshotVersion != m_RowFormatCacheVersion || m_TextSizeCache.fontPtr != m_RowFormatCacheFontPtr)
+    // Prune row format cache entries for processes no longer present, once per new snapshot
+    // generation (not per frame). Entries themselves are built lazily, on demand, by
+    // renderProcessRow() -- see m_RowFormatCache's doc comment -- so this pass only bounds the
+    // map's size; it does not rebuild anything. Live keys are collected into a set first so the
+    // prune is O(n) overall rather than O(cache size * process count).
+    if (m_CachedSnapshotVersion != m_RowFormatCachePrunedVersion)
     {
-        m_RowFormatCache.clear();
-        m_RowFormatCache.reserve(currentSnapshots.size());
+        std::unordered_set<std::uint64_t> liveKeys;
+        liveKeys.reserve(currentSnapshots.size());
         for (const auto& proc : currentSnapshots)
         {
-            RowFormatCache fmt;
-            fmt.ppid = makeAlignedCellText(UI::Format::formatId(proc.parentPid));
-            fmt.startTime = makeAlignedCellText(UI::Format::formatEpochDateTimeShort(proc.startTimeEpoch));
-            fmt.cpuTime = makeAlignedCellText(UI::Format::formatCpuTimeCompact(proc.cpuTimeSeconds));
-            fmt.cpuPercent = makeAlignedCellText(formatAlignedPercentString(proc.cpuPercent));
-            fmt.memPercent = makeAlignedCellText(formatAlignedPercentString(proc.memoryPercent));
-            fmt.virtualMem = makeAlignedCellText(
-                formatAlignedBytesString(static_cast<double>(proc.virtualBytes), UI::Format::unitForTotalBytes(proc.virtualBytes)));
-            fmt.resident = makeAlignedCellText(
-                formatAlignedBytesString(static_cast<double>(proc.memoryBytes), UI::Format::unitForTotalBytes(proc.memoryBytes)));
-            fmt.peakRss = makeAlignedCellText(
-                formatAlignedBytesString(static_cast<double>(proc.peakMemoryBytes), UI::Format::unitForTotalBytes(proc.peakMemoryBytes)));
-            fmt.shared = makeAlignedCellText(
-                formatAlignedBytesString(static_cast<double>(proc.sharedBytes), UI::Format::unitForTotalBytes(proc.sharedBytes)));
-            fmt.ioRead = makeAlignedCellText(
-                (proc.ioReadBytesPerSec > 0.0)
-                    ? formatAlignedBytesPerSecString(proc.ioReadBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioReadBytesPerSec))
-                    : "-");
-            fmt.ioWrite = makeAlignedCellText(
-                (proc.ioWriteBytesPerSec > 0.0)
-                    ? formatAlignedBytesPerSecString(proc.ioWriteBytesPerSec, UI::Format::unitForBytesPerSecond(proc.ioWriteBytesPerSec))
-                    : "-");
-            fmt.netSent = makeAlignedCellText(
-                (proc.netSentBytesPerSec > 0.0)
-                    ? formatAlignedBytesPerSecString(proc.netSentBytesPerSec, UI::Format::unitForBytesPerSecond(proc.netSentBytesPerSec))
-                    : "-");
-            fmt.netRecv =
-                makeAlignedCellText((proc.netReceivedBytesPerSec > 0.0)
-                                        ? formatAlignedBytesPerSecString(proc.netReceivedBytesPerSec,
-                                                                         UI::Format::unitForBytesPerSecond(proc.netReceivedBytesPerSec))
-                                        : "-");
-            fmt.power = makeAlignedCellText(formatAlignedPowerString(proc.powerWatts));
-            fmt.gpuPercent = makeAlignedCellText((proc.gpuUtilPercent > 0.0) ? formatAlignedPercentString(proc.gpuUtilPercent) : "-");
-            fmt.gpuMemory =
-                makeAlignedCellText((proc.gpuMemoryBytes > 0) ? formatAlignedBytesString(static_cast<double>(proc.gpuMemoryBytes),
-                                                                                         UI::Format::unitForTotalBytes(proc.gpuMemoryBytes))
-                                                              : "-");
-            if (proc.gpuEngines.empty())
-            {
-                fmt.gpuEngines = "-";
-            }
-            else
-            {
-                for (size_t i = 0; i < proc.gpuEngines.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        fmt.gpuEngines += ", ";
-                    }
-                    fmt.gpuEngines += proc.gpuEngines[i];
-                }
-            }
-            fmt.threads =
-                makeAlignedCellText(UI::Format::formatOrDash(proc.threadCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-            fmt.handles =
-                makeAlignedCellText(UI::Format::formatOrDash(proc.handleCount, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-            fmt.pageFaults =
-                makeAlignedCellText(UI::Format::formatOrDash(proc.pageFaults, [](auto v) { return UI::Format::formatIntLocalized(v); }));
-            fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));
-            fmt.gdiObjects =
-                makeAlignedCellText(proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-");
-            m_RowFormatCache.emplace(proc.uniqueKey, std::move(fmt));
+            liveKeys.insert(proc.uniqueKey);
         }
-        m_RowFormatCacheVersion = m_CachedSnapshotVersion;
-        m_RowFormatCacheFontPtr = m_TextSizeCache.fontPtr;
+        std::erase_if(m_RowFormatCache, [&liveKeys](const auto& entry) { return !liveKeys.contains(entry.first); });
+        m_RowFormatCachePrunedVersion = m_CachedSnapshotVersion;
     }
 
     // Search bar
@@ -898,10 +786,20 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 {
     ImGui::TableNextRow();
 
-    // Look up pre-formatted strings for this row (built at 1Hz, not 60fps)
-    static const RowFormatCache s_EmptyRowCache{};
-    const auto fmtIt = m_RowFormatCache.find(proc.uniqueKey);
-    const RowFormatCache& fmt = (fmtIt != m_RowFormatCache.end()) ? fmtIt->second : s_EmptyRowCache;
+    // Get-or-build the pre-formatted strings for this row. Built lazily here -- the first time
+    // this specific row is actually rendered after its snapshot data or the current font
+    // changes -- rather than eagerly for every process whenever the snapshot version advances,
+    // so cost scales with visible rows (bounded by ImGuiListClipper), not total process count
+    // (perf-plan #843). A font/size/DPI change alone, with no new data version, must still force
+    // a rebuild of this entry, or its cached AlignedCellText widths (measured for the old font)
+    // would stay wrong until the next ~1Hz data refresh happens to land.
+    RowFormatCache& fmt = m_RowFormatCache[proc.uniqueKey];
+    if (fmt.generation != m_CachedSnapshotVersion || fmt.fontPtr != m_TextSizeCache.fontPtr)
+    {
+        fmt = ProcessRowFormat::buildRowFormatCache(proc);
+        fmt.generation = m_CachedSnapshotVersion;
+        fmt.fontPtr = m_TextSizeCache.fontPtr;
+    }
 
     // Render all columns
     int colIdx = 0;
