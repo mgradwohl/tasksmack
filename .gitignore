@@ -11,6 +11,10 @@
 /.cache/
 /.venv/
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+
 # CodeQL build artifacts
 /_codeql_build_dir/
 /_codeql_detected_source_root
