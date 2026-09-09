@@ -655,7 +655,11 @@ python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/bench
 `heavy-checks.yml`'s `benchmark-regression` job runs on every push to `main`, gating against
 `perf-data/linux-ci-baseline.json` via `tools/check-benchmark-regression.py` (40% threshold,
 comparing medians of `tools/bench.sh`'s 10 repetitions per benchmark) -- a failure here **fails
-the job** (`exit 1`), unlike the informational-only mode this ran in before #683.
+the job** (`exit 1`), unlike the informational-only mode this ran in before #683. The script also
+enforces a `--min-coverage` floor (default 90%): a benchmark missing from the current run, or one
+with no usable timing data on either side, counts against coverage instead of being silently
+ignored (see #871 -- this closed three concrete false-pass paths: a missing baseline benchmark,
+a non-finite/`NaN` timing, and comparing two different timing fields for the same benchmark).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
