@@ -86,7 +86,12 @@ def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
 
 
 def is_valid_time(value: object) -> bool:
-    """True if value is a finite, non-negative number."""
+    """True if value is a finite, non-negative number (excluding bool)."""
+    # bool is a subclass of int in Python, so float(True) == 1.0 and float(False) == 0.0 would
+    # otherwise pass this check silently -- a corrupted JSON input with a literal true/false
+    # where a timing number belongs must not slip through as "1ns"/"0ns".
+    if isinstance(value, bool):
+        return False
     try:
         value = float(value)
     except (TypeError, ValueError):
@@ -204,10 +209,14 @@ def main() -> int:
         cur_unit = cur_bm.get("time_unit", "ns")
 
         try:
-            cur_time_normalized = normalize_time(cur_time, cur_unit)
             base_time_normalized = normalize_time(base_time, base_unit)
         except ValueError as exc:
-            invalid.append((name, str(exc)))
+            invalid.append((name, f"baseline: {exc}"))
+            continue
+        try:
+            cur_time_normalized = normalize_time(cur_time, cur_unit)
+        except ValueError as exc:
+            invalid.append((name, f"current: {exc}"))
             continue
 
         if base_time_normalized == 0:
