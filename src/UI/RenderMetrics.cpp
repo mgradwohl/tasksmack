@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <misc/cpp/imgui_stdlib.h>
+
 namespace UI
 {
 
@@ -29,10 +31,26 @@ void RenderMetrics::renderOverlay(bool* open)
     // Cast to double: printf-style varargs promote float anyway; make it explicit for -Wdouble-promotion.
     const double framerate = static_cast<double>(std::max(io.Framerate, 1.0F));
     ImGui::Text("Frame: %.2f ms (%.0f FPS)", 1000.0 / framerate, framerate);
-    ImGui::Text("Total: %d vertices, %d indices, %d draw calls",
+
+    // ImDrawData::CmdListsCount is the number of ImDrawList objects (roughly one per ImGui
+    // window/viewport) -- NOT the number of actual GPU draw calls. Each ImDrawList's own
+    // CmdBuffer holds one ImDrawCmd per real draw call, so the true draw-call count is the sum
+    // of every list's CmdBuffer size. Report both, correctly labeled (see #875).
+    int commandLists = 0;
+    int drawCalls = 0;
+    if (const ImDrawData* drawData = ImGui::GetDrawData(); drawData != nullptr)
+    {
+        commandLists = drawData->CmdListsCount;
+        for (const ImDrawList* cmdList : drawData->CmdLists)
+        {
+            drawCalls += cmdList->CmdBuffer.Size;
+        }
+    }
+    ImGui::Text("Total: %d vertices, %d indices, %d draw calls (%d command lists)",
                 io.MetricsRenderVertices,
                 io.MetricsRenderIndices,
-                ImGui::GetDrawData() != nullptr ? ImGui::GetDrawData()->CmdListsCount : 0);
+                drawCalls,
+                commandLists);
 
     int chartVertices = 0;
     int chartIndices = 0;
@@ -44,6 +62,17 @@ void RenderMetrics::renderOverlay(bool* open)
         chartMicros += sample.micros;
     }
     ImGui::Text("Charts: %d vertices, %d indices, %.0f us CPU (%zu charts)", chartVertices, chartIndices, chartMicros, m_LastFrame.size());
+
+    // Free-form label identifying what's currently being profiled (e.g. "idle",
+    // "process-list-1000-rows"), included in every exported CSV row so pasted exports from
+    // different capture sessions can be told apart later. Synced from the persisted value once;
+    // edits below flow back into m_Scenario immediately so a mid-session export picks them up.
+    static std::string scenarioInput = scenario();
+    ImGui::SetNextItemWidth(200.0F);
+    if (ImGui::InputTextWithHint("Scenario", "e.g. idle, resize, 1000-processes", &scenarioInput))
+    {
+        setScenario(scenarioInput);
+    }
 
     if (ImGui::Button("Copy CSV"))
     {
