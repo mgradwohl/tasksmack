@@ -107,31 +107,37 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
 
+    std::shared_ptr<const std::vector<ProcessSnapshot>> previousSnapshots;
     {
         std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
         gpuModel = m_GPUModel;
-        reserveSize = std::max(counters.size(), m_Snapshots.size());
+        // m_Snapshots is immutable once published, so grabbing the shared_ptr here is an O(1)
+        // refcount bump -- the loop below (previously run while still holding this lock) can
+        // run against the local copy after the lock is released, instead of holding readers of
+        // m_Snapshots (tryCopySnapshotsIfNewer(), findSnapshot(), etc.) out for its duration.
+        previousSnapshots = m_Snapshots;
+    }
+    reserveSize = std::max(counters.size(), previousSnapshots->size());
 
-        if (interactionActive)
+    if (interactionActive)
+    {
+        cachedGpuByUniqueKey.reserve(previousSnapshots->size());
+        for (const auto& previousSnapshot : *previousSnapshots)
         {
-            cachedGpuByUniqueKey.reserve(m_Snapshots.size());
-            for (const auto& previousSnapshot : m_Snapshots)
+            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) && previousSnapshot.gpuDevices.empty() &&
+                previousSnapshot.perGpuUsage.empty())
             {
-                if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
-                    previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
-                {
-                    continue;
-                }
-
-                cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
-                                             CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
-                                                                     .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
-                                                                     .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
-                                                                     .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
-                                                                     .gpuEngines = previousSnapshot.gpuEngines,
-                                                                     .perGpuUsage = previousSnapshot.perGpuUsage,
-                                                                     .gpuDevices = previousSnapshot.gpuDevices});
+                continue;
             }
+
+            cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
+                                         CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
+                                                                 .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
+                                                                 .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
+                                                                 .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
+                                                                 .gpuEngines = previousSnapshot.gpuEngines,
+                                                                 .perGpuUsage = previousSnapshot.perGpuUsage,
+                                                                 .gpuDevices = previousSnapshot.gpuDevices});
         }
     }
 
@@ -380,7 +386,7 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             trimHistory();
         }
 
-        m_Snapshots = std::move(newSnapshots);
+        m_Snapshots = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
         ++m_SnapshotVersion;
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
@@ -394,13 +400,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Snapshots;
+    return *m_Snapshots;
 }
 
 std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : m_Snapshots)
+    for (const auto& snap : *m_Snapshots)
     {
         if (snap.pid == pid)
         {
@@ -413,7 +419,7 @@ std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) cons
 std::optional<ProcessModel::SnapshotLookupResult> ProcessModel::findSnapshotWithVersion(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : m_Snapshots)
+    for (const auto& snap : *m_Snapshots)
     {
         if (snap.pid == pid)
         {
@@ -455,7 +461,7 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
 }
 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
-                                           std::vector<ProcessSnapshot>& outSnapshots,
+                                           std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                            std::uint64_t& outVersion) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
@@ -530,7 +536,7 @@ void ProcessModel::setMaxHistorySeconds(double seconds)
 std::size_t ProcessModel::processCount() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Snapshots.size();
+    return m_Snapshots->size();
 }
 
 const Platform::ProcessCapabilities& ProcessModel::capabilities() const

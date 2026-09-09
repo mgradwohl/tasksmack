@@ -168,9 +168,14 @@ class ProcessesPanel : public Panel
     bool m_TreeViewEnabled = false;
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
-    // Snapshot copy cache: only re-copy from ProcessModel when version changes (data updates at 1Hz,
-    // but render runs at 60fps — this avoids 59/60 redundant copies of 50-100 ProcessSnapshot objects)
-    std::vector<Domain::ProcessSnapshot> m_CachedRenderSnapshots;
+    // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
+    // but render runs at 60fps). A shared_ptr to ProcessModel's immutable published vector, not
+    // an owned copy: tryCopySnapshotsIfNewer() hands out the same vector every reader shares,
+    // so re-fetching is an O(1) refcount bump rather than a deep copy of 50-100+
+    // ProcessSnapshot objects (see #843 Phase 3b). Default-constructed to an empty (never null)
+    // vector so callers can dereference it before the first successful fetch.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
+        std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt

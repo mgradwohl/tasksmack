@@ -466,7 +466,7 @@ void ProcessesPanel::renderContent()
             m_CachedSnapshotVersion = copiedVersion;
         }
     }
-    const auto& currentSnapshots = m_CachedRenderSnapshots;
+    const auto& currentSnapshots = *m_CachedRenderSnapshots;
 
     // Rebuild row format cache when snapshot data changes (~1Hz), never per frame (60fps), or
     // when the font used to measure the cached AlignedCellText widths has changed (a font-size/

@@ -412,7 +412,7 @@ TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
     model.refresh();
 
     const auto initialVersion = model.snapshotVersion();
-    std::vector<Domain::ProcessSnapshot> copiedSnapshots;
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> copiedSnapshots;
     std::uint64_t copiedVersion = 0;
 
     EXPECT_FALSE(model.tryCopySnapshotsIfNewer(initialVersion, copiedSnapshots, copiedVersion));
@@ -423,7 +423,36 @@ TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)
 
     EXPECT_TRUE(model.tryCopySnapshotsIfNewer(initialVersion, copiedSnapshots, copiedVersion));
     EXPECT_EQ(copiedVersion, model.snapshotVersion());
-    ASSERT_EQ(copiedSnapshots.size(), 1);
+    ASSERT_TRUE(copiedSnapshots != nullptr);
+    ASSERT_EQ(copiedSnapshots->size(), 1);
+}
+
+TEST(ProcessModelTest, TryCopySnapshotsIfNewerHandsOutSharedVectorNotADeepCopy)
+{
+    // Regression test for #843 Phase 3b: tryCopySnapshotsIfNewer() used to deep-copy every
+    // process (including strings/nested data) into outSnapshots under a shared_lock,
+    // contending with the writer's next unique_lock for however long that copy took. It now
+    // hands out a shared_ptr to ProcessModel's own immutable published vector instead, so two
+    // callers that both fetch the same generation must observe the identical vector object
+    // (same address), not two independently-copied ones -- proving no deep copy happened.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    rawProbe->setCounters({makeCounter(100, "test", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> first;
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> second;
+    std::uint64_t firstVersion = 0;
+    std::uint64_t secondVersion = 0;
+
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, first, firstVersion));
+    ASSERT_TRUE(model.tryCopySnapshotsIfNewer(0, second, secondVersion));
+
+    EXPECT_EQ(first.get(), second.get()) << "two readers of the same generation should share the identical vector object";
+    EXPECT_GT(first.use_count(), 1) << "the model itself should still hold a reference alongside the readers'";
 }
 
 TEST(ProcessModelTest, FindSnapshotReturnsMatchingProcessAmongMultiple)
