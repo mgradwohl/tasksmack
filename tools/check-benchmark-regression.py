@@ -90,19 +90,45 @@ def is_valid_time(value: object) -> bool:
     return math.isfinite(value) and value >= 0
 
 
+def finite_percentage(min_value: float, max_value: float | None = None):
+    """argparse type factory: a finite float within [min_value, max_value].
+
+    Plain `type=float` accepts "nan"/"inf"/"-inf" from the command line. Since every gate in
+    this script is a `>`/`<` comparison against these values, a NaN threshold or coverage floor
+    would make every such comparison silently evaluate False -- bypassing the regression and
+    coverage gates entirely rather than erroring. Rejecting non-finite/out-of-range values here
+    makes that a usage error (exit 2, via argparse's own ArgumentTypeError handling) instead.
+    """
+
+    def convert(value: str) -> float:
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{value!r} is not a valid number") from exc
+        if not math.isfinite(parsed):
+            raise argparse.ArgumentTypeError(f"{value!r} must be a finite number")
+        if parsed < min_value:
+            raise argparse.ArgumentTypeError(f"{value!r} must be >= {min_value}")
+        if max_value is not None and parsed > max_value:
+            raise argparse.ArgumentTypeError(f"{value!r} must be <= {max_value}")
+        return parsed
+
+    return convert
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check for benchmark regressions.")
     parser.add_argument("--baseline", required=True, type=Path, help="Baseline JSON file")
     parser.add_argument("--current",  required=True, type=Path, help="Current run JSON file")
     parser.add_argument(
         "--threshold",
-        type=float,
+        type=finite_percentage(min_value=0.0),
         default=15.0,
         help="Regression threshold in percent (default: 15)",
     )
     parser.add_argument(
         "--min-coverage",
-        type=float,
+        type=finite_percentage(min_value=0.0, max_value=100.0),
         default=90.0,
         help=(
             "Minimum percent of baseline benchmarks that must be present and validly "
@@ -182,6 +208,14 @@ def main() -> int:
 
         if base_time_normalized == 0:
             invalid.append((name, "baseline timing normalized to zero"))
+            continue
+        if cur_time_normalized == 0:
+            # A genuine 0ns/0us/etc. measurement is implausible for anything Google Benchmark's
+            # own timer resolution can report -- almost certainly a broken/skipped measurement,
+            # not a real result. Without this, a 0 current timing against a non-zero baseline
+            # computes a "-100% improvement" and counts as successfully compared, which can mask
+            # exactly the kind of measurement failure --min-coverage exists to catch.
+            invalid.append((name, "current timing normalized to zero"))
             continue
 
         compared += 1
