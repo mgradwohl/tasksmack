@@ -107,31 +107,37 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 
     const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
 
+    std::shared_ptr<const std::vector<ProcessSnapshot>> previousSnapshots;
     {
         std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
         gpuModel = m_GPUModel;
-        reserveSize = std::max(counters.size(), m_Snapshots.size());
+        // m_Snapshots is immutable once published, so grabbing the shared_ptr here is an O(1)
+        // refcount bump -- the loop below (previously run while still holding this lock) can
+        // run against the local copy after the lock is released, instead of holding readers of
+        // m_Snapshots (tryCopySnapshotsIfNewer(), findSnapshot(), etc.) out for its duration.
+        previousSnapshots = m_Snapshots;
+    }
+    reserveSize = std::max(counters.size(), previousSnapshots->size());
 
-        if (interactionActive)
+    if (interactionActive)
+    {
+        cachedGpuByUniqueKey.reserve(previousSnapshots->size());
+        for (const auto& previousSnapshot : *previousSnapshots)
         {
-            cachedGpuByUniqueKey.reserve(m_Snapshots.size());
-            for (const auto& previousSnapshot : m_Snapshots)
+            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) && previousSnapshot.gpuDevices.empty() &&
+                previousSnapshot.perGpuUsage.empty())
             {
-                if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
-                    previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
-                {
-                    continue;
-                }
-
-                cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
-                                             CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
-                                                                     .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
-                                                                     .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
-                                                                     .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
-                                                                     .gpuEngines = previousSnapshot.gpuEngines,
-                                                                     .perGpuUsage = previousSnapshot.perGpuUsage,
-                                                                     .gpuDevices = previousSnapshot.gpuDevices});
+                continue;
             }
+
+            cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
+                                         CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
+                                                                 .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
+                                                                 .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
+                                                                 .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
+                                                                 .gpuEngines = previousSnapshot.gpuEngines,
+                                                                 .perGpuUsage = previousSnapshot.perGpuUsage,
+                                                                 .gpuDevices = previousSnapshot.gpuDevices});
         }
     }
 
@@ -363,6 +369,16 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
     }
 
+    // Build the new immutable generation before taking the lock: std::make_shared allocates
+    // (control block + vector shell), and that allocator call must not happen while readers
+    // are blocked on m_Mutex -- that would add allocator latency to exactly the
+    // reader-blocking critical section this shared_ptr scheme exists to shrink.
+    auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
+
+    // Holds the outgoing generation so its destruction (freeing however many hundred
+    // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
+    // reference to it) happens after the lock below is released, not while it's held.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> previousGeneration;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
 
@@ -380,7 +396,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             trimHistory();
         }
 
-        m_Snapshots = std::move(newSnapshots);
+        previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
+        m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
@@ -394,13 +411,13 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
 std::vector<ProcessSnapshot> ProcessModel::snapshots() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Snapshots;
+    return *m_Snapshots;
 }
 
 std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : m_Snapshots)
+    for (const auto& snap : *m_Snapshots)
     {
         if (snap.pid == pid)
         {
@@ -413,7 +430,7 @@ std::optional<ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t pid) cons
 std::optional<ProcessModel::SnapshotLookupResult> ProcessModel::findSnapshotWithVersion(std::int32_t pid) const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    for (const auto& snap : m_Snapshots)
+    for (const auto& snap : *m_Snapshots)
     {
         if (snap.pid == pid)
         {
@@ -455,7 +472,7 @@ bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, 
 }
 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
-                                           std::vector<ProcessSnapshot>& outSnapshots,
+                                           std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                            std::uint64_t& outVersion) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
@@ -466,14 +483,29 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         return false;
     }
 
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    if (m_SnapshotVersion == lastSeenVersion)
+    // Capture into locals under the lock rather than assigning directly into outSnapshots:
+    // outSnapshots is typically the caller's long-lived cache (e.g. ProcessesPanel's render
+    // cache), which is often the last owner of the *previous* generation by the time a newer
+    // one is fetched. Assigning straight into it here would destroy that previous
+    // generation -- freeing however many hundred ProcessSnapshots' worth of strings/vectors
+    // -- while still holding the shared lock, continuing to block the writer's next unique_lock
+    // for the deep-copy-equivalent cost this shared_ptr scheme exists to avoid.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> newSnapshots;
+    std::uint64_t newVersion = 0;
     {
-        return false;
+        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+        if (m_SnapshotVersion == lastSeenVersion)
+        {
+            return false;
+        }
+        newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
+        newVersion = m_SnapshotVersion;
     }
 
-    outSnapshots = m_Snapshots;
-    outVersion = m_SnapshotVersion;
+    // The caller's previous generation, if this assignment drops its last reference, is
+    // destroyed here -- after the lock above has already been released.
+    outSnapshots = std::move(newSnapshots);
+    outVersion = newVersion;
     return true;
 }
 
@@ -530,7 +562,7 @@ void ProcessModel::setMaxHistorySeconds(double seconds)
 std::size_t ProcessModel::processCount() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Snapshots.size();
+    return m_Snapshots->size();
 }
 
 const Platform::ProcessCapabilities& ProcessModel::capabilities() const
