@@ -369,6 +369,16 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
         }
     }
 
+    // Build the new immutable generation before taking the lock: std::make_shared allocates
+    // (control block + vector shell), and that allocator call must not happen while readers
+    // are blocked on m_Mutex -- that would add allocator latency to exactly the
+    // reader-blocking critical section this shared_ptr scheme exists to shrink.
+    auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
+
+    // Holds the outgoing generation so its destruction (freeing however many hundred
+    // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
+    // reference to it) happens after the lock below is released, not while it's held.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> previousGeneration;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
 
@@ -386,7 +396,8 @@ void ProcessModel::computeSnapshots(const std::vector<Platform::ProcessCounters>
             trimHistory();
         }
 
-        m_Snapshots = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
+        previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
+        m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         if (shouldMergeGpuData)
@@ -472,14 +483,29 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         return false;
     }
 
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    if (m_SnapshotVersion == lastSeenVersion)
+    // Capture into locals under the lock rather than assigning directly into outSnapshots:
+    // outSnapshots is typically the caller's long-lived cache (e.g. ProcessesPanel's render
+    // cache), which is often the last owner of the *previous* generation by the time a newer
+    // one is fetched. Assigning straight into it here would destroy that previous
+    // generation -- freeing however many hundred ProcessSnapshots' worth of strings/vectors
+    // -- while still holding the shared lock, continuing to block the writer's next unique_lock
+    // for the deep-copy-equivalent cost this shared_ptr scheme exists to avoid.
+    std::shared_ptr<const std::vector<ProcessSnapshot>> newSnapshots;
+    std::uint64_t newVersion = 0;
     {
-        return false;
+        std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+        if (m_SnapshotVersion == lastSeenVersion)
+        {
+            return false;
+        }
+        newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
+        newVersion = m_SnapshotVersion;
     }
 
-    outSnapshots = m_Snapshots;
-    outVersion = m_SnapshotVersion;
+    // The caller's previous generation, if this assignment drops its last reference, is
+    // destroyed here -- after the lock above has already been released.
+    outSnapshots = std::move(newSnapshots);
+    outVersion = newVersion;
     return true;
 }
 
