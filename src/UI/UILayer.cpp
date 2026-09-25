@@ -3,6 +3,7 @@
 #include "Core/Application.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/ResizePerfOperation.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/DpiScale.h"
@@ -253,7 +254,10 @@ void UILayer::onAttach()
             SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
             if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
             {
-                glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport,
+                                          m_CachedPixelW,
+                                          m_CachedPixelH,
+                                          [&] { glViewport(0, 0, m_CachedPixelW, m_CachedPixelH); });
             }
         }
     }
@@ -320,7 +324,7 @@ void UILayer::onEvent(Core::Event& event)
             {
                 m_CachedPixelW = w;
                 m_CachedPixelH = h;
-                glViewport(0, 0, w, h);
+                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
             }
             return false; // Do not consume; other layers may need the resize notification
         });
@@ -363,8 +367,11 @@ void UILayer::endFrame()
         m_PushedFont = nullptr;
     }
 
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::ImGuiFinalize, 0, 0, [] { ImGui::Render(); });
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::OpenGLSubmit,
+                              m_CachedPixelW,
+                              m_CachedPixelH,
+                              [] { ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); });
 
     // Handle multi-viewport
     const ImGuiIO& imguiIO = ImGui::GetIO();

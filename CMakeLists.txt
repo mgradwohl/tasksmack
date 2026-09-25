@@ -52,6 +52,33 @@ if(GIT_COMMIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUTPUT STREQUAL "")
     set(GIT_COMMIT ${GIT_COMMIT_OUTPUT})
 endif()
 
+set(GIT_FULL_COMMIT "unknown")
+set(GIT_SOURCE_STATE "unknown")
+execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_FULL_COMMIT_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE GIT_FULL_COMMIT_RESULT
+)
+execute_process(
+    COMMAND git status --porcelain --untracked-files=normal
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_STATUS_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE GIT_STATUS_RESULT
+)
+if(GIT_FULL_COMMIT_RESULT EQUAL 0 AND NOT GIT_FULL_COMMIT_OUTPUT STREQUAL "")
+    set(GIT_FULL_COMMIT ${GIT_FULL_COMMIT_OUTPUT})
+endif()
+if(GIT_STATUS_RESULT EQUAL 0)
+    if(GIT_STATUS_OUTPUT STREQUAL "")
+        set(GIT_SOURCE_STATE "clean")
+    else()
+        set(GIT_SOURCE_STATE "dirty")
+    endif()
+endif()
+
 # Build date/time embedded in version.h. string(TIMESTAMP) honors the
 # reproducible-builds.org SOURCE_DATE_EPOCH environment variable when it is
 # set, producing an identical value for a given commit instead of true

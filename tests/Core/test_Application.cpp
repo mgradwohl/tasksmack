@@ -17,17 +17,26 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/PathService.h"
+#include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
 #include "Core/WindowEvents.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <memory>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace
@@ -660,6 +669,148 @@ TEST(ResizePerfTraceStatsTest, LogSummaryLogsWhenSamplesPresent)
     stats.recordEventBatch(2, 1, 1.0, 1.0, false);
     stats.recordFrame(true, 1.0, 1.0, 1.0, 1.0);
     EXPECT_NO_THROW(Core::logResizePerfTraceSummary(stats, "test-populated"));
+}
+
+TEST(ResizePerfDurationStatsTest, StrictThresholdCountsRetainRareOutliers)
+{
+    Core::ResizePerfDurationStats stats;
+    for (const double ms : {0.0, 100.0, 100.001, 250.0, 250.001, 2221.132})
+    {
+        stats.record(ms);
+    }
+    EXPECT_EQ(stats.count, 6U);
+    EXPECT_EQ(stats.over100, 4U);
+    EXPECT_EQ(stats.over250, 2U);
+    EXPECT_DOUBLE_EQ(stats.maxMs, 2221.132);
+}
+
+TEST(ResizePerfLoopTimingTest, AccountsForWaitDrainTransitionAndUnmeasuredOverhead)
+{
+    const Core::ResizePerfLoopTiming timing{.drainMs = 8.0, .waitMs = 50.0, .vsyncMs = 2000.0, .frameMs = 5.0};
+    EXPECT_DOUBLE_EQ(timing.otherMs(2070.0), 7.0);
+    EXPECT_DOUBLE_EQ(timing.otherMs(2062.999), 0.0);
+}
+
+TEST(ResizePerfTraceStatsTest, FrameTailCountsResetWithIntervalNotRollingWindow)
+{
+    Core::ResizePerfTraceStats stats;
+    stats.recordFrame(true, 2221.132, 0.0, 0.0, 0.0);
+    stats.recordFrame(false, 0.0, 0.0, 100.0, 0.0);
+    EXPECT_EQ(stats.frameTail.count, 2U);
+    EXPECT_EQ(stats.frameTail.over100, 1U);
+    EXPECT_EQ(stats.frameTail.over250, 1U);
+    stats.resetIntervalCounters();
+    EXPECT_EQ(stats.frameTail.count, 0U);
+    EXPECT_EQ(stats.frameTail.over250, 0U);
+    EXPECT_EQ(stats.totalFrameSamplesMs.size(), 2U);
+}
+
+namespace
+{
+class ResizePerfOperationTest : public testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_Saved = Core::resizePerfOperations();
+        Core::resizePerfOperations() = {};
+        Core::resizePerfOperations().enabled = true;
+        m_PreviousLogger = spdlog::default_logger();
+        auto logger = std::make_shared<spdlog::logger>("resize-perf-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(m_Output));
+        logger->set_level(spdlog::level::info);
+        spdlog::set_default_logger(std::move(logger));
+    }
+    void TearDown() override
+    {
+        Core::resizePerfOperations() = m_Saved;
+        spdlog::set_default_logger(m_PreviousLogger);
+    }
+
+    std::ostringstream m_Output;
+
+  private:
+    Core::ResizePerfOperations m_Saved;
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+};
+} // namespace
+
+TEST_F(ResizePerfOperationTest, DisabledCallsExecuteOnceAndPreserveReturnWithoutRecording)
+{
+    auto& trace = Core::resizePerfOperations();
+    trace.enabled = false;
+    int calls = 0;
+    EXPECT_FALSE(Core::traceResizePerfSDL(Core::ResizePerfOperation::SizeCommit,
+                                          10,
+                                          20,
+                                          [&]
+                                          {
+                                              ++calls;
+                                              return false;
+                                          }));
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, 10, 20, [&] { ++calls; });
+    EXPECT_EQ(calls, 2);
+    for (const auto& duration : trace.durations)
+    {
+        EXPECT_EQ(duration.count, 0U);
+    }
+    EXPECT_TRUE(m_Output.str().empty());
+}
+
+TEST_F(ResizePerfOperationTest, FinalCommitFailureIsSeparateFromNormalCommit)
+{
+    EXPECT_TRUE(Core::traceResizePerfSDL(Core::ResizePerfOperation::SizeCommit, 640, 480, [] { return true; }));
+    EXPECT_FALSE(Core::traceResizePerfSDL(
+        Core::ResizePerfOperation::FinalSizeCommit, 800, 600, [] { return SDL_SetError("synthetic resize failure"); }));
+    const auto& trace = Core::resizePerfOperations();
+    const auto normal = static_cast<std::size_t>(Core::ResizePerfOperation::SizeCommit);
+    const auto final = static_cast<std::size_t>(Core::ResizePerfOperation::FinalSizeCommit);
+    EXPECT_EQ(trace.durations[normal].count, 1U);
+    EXPECT_EQ(trace.durations[final].count, 1U);
+    EXPECT_EQ(trace.failures[normal], 0U);
+    EXPECT_EQ(trace.failures[final], 1U);
+    EXPECT_EQ(trace.maxRequests[final], (std::pair{800, 600}));
+    EXPECT_TRUE(m_Output.str().contains("op=final-size-commit"));
+    EXPECT_TRUE(m_Output.str().contains("requestedA=800 requestedB=600 result=false error='synthetic resize failure'"));
+}
+
+TEST_F(ResizePerfOperationTest, FinalizationAndSubmissionRemainDistinct)
+{
+    int calls = 0;
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::ImGuiFinalize, 0, 0, [&] { ++calls; });
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::OpenGLSubmit, 640, 480, [&] { ++calls; });
+    const auto& trace = Core::resizePerfOperations();
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(trace.durations[static_cast<std::size_t>(Core::ResizePerfOperation::ImGuiFinalize)].count, 1U);
+    EXPECT_EQ(trace.durations[static_cast<std::size_t>(Core::ResizePerfOperation::OpenGLSubmit)].count, 1U);
+}
+
+TEST_F(ResizePerfOperationTest, FirstFrameHasNoFabricatedGapAndSkippedLoopsRemainInNextGap)
+{
+    const auto frequency = SDL_GetPerformanceFrequency();
+    Core::recordResizePerfFrameEnd(frequency);
+    EXPECT_EQ(Core::resizePerfOperations().frameGaps.count, 0U);
+    Core::recordResizePerfFrameEnd(frequency * 3);
+    EXPECT_EQ(Core::resizePerfOperations().frameGaps.count, 1U);
+    EXPECT_EQ(Core::resizePerfOperations().frameGaps.over250, 1U);
+    EXPECT_DOUBLE_EQ(Core::resizePerfOperations().frameGaps.maxMs, 2000.0);
+}
+
+TEST_F(ResizePerfOperationTest, SlowVoidOperationReportsCounterBoundsWithoutInventingGpuStatus)
+{
+    const auto frequency = SDL_GetPerformanceFrequency();
+    Core::recordResizePerfOperation(Core::ResizePerfOperation::OpenGLSubmit, frequency, frequency * 3, std::nullopt, 640, 480);
+    const auto output = m_Output.str();
+    EXPECT_TRUE(output.contains("op=opengl-submit beginCounter="));
+    EXPECT_TRUE(output.contains("endCounter="));
+    EXPECT_TRUE(output.contains("duration=2000.000 ms"));
+    EXPECT_TRUE(output.contains("result=not-queried error=''"));
+}
+
+TEST(ResizePerfClockTest, SubtractsCountersBeforeFloatingPointConversion)
+{
+    constexpr std::uint64_t LARGE_EPOCH = std::uint64_t{1} << 60U;
+    const double expectedMs = 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
+    EXPECT_DOUBLE_EQ(Core::resizePerfElapsedMs(LARGE_EPOCH, LARGE_EPOCH + 1), expectedMs);
 }
 
 // =============================================================================

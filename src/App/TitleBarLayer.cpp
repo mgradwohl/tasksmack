@@ -5,6 +5,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvUtils.h"
 #include "Core/Layer.h"
+#include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
@@ -651,7 +652,15 @@ void TitleBarLayer::updateResize(
         const bool commitIntervalElapsed = (now - m_Resize.lastSizeCommitTime) >= RESIZE_SIZE_COMMIT_INTERVAL_SECONDS;
         if (commitIntervalElapsed)
         {
-            timedOp(m_TraceEnabled, setSizeMs, [&] { SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+            timedOp(m_TraceEnabled,
+                    setSizeMs,
+                    [&]
+                    {
+                        Core::traceResizePerfSDL(Core::ResizePerfOperation::SizeCommit,
+                                                 newWidth,
+                                                 newHeight,
+                                                 [&] { return SDL_SetWindowSize(window.getHandle(), newWidth, newHeight); });
+                    });
             Core::Application::get().signalWindowGeometryChanged();
             m_Resize.lastAppliedWidth = newWidth;
             m_Resize.lastAppliedHeight = newHeight;
@@ -706,7 +715,10 @@ void TitleBarLayer::endWindowInteraction()
         SDL_Window* sdlWindow = window.getHandle();
         if (sdlWindow != nullptr)
         {
-            SDL_SetWindowSize(sdlWindow, m_Resize.pendingWidth, m_Resize.pendingHeight);
+            Core::traceResizePerfSDL(Core::ResizePerfOperation::FinalSizeCommit,
+                                     m_Resize.pendingWidth,
+                                     m_Resize.pendingHeight,
+                                     [&] { return SDL_SetWindowSize(sdlWindow, m_Resize.pendingWidth, m_Resize.pendingHeight); });
         }
         // m_Resize will be zeroed below
     }
