@@ -22,6 +22,11 @@ class RenderMetricsTest : public ::testing::Test
     void TearDown() override
     {
         RenderMetrics::get().setEnabled(false);
+        // setEnabled(false) deliberately preserves the scenario label (it identifies a whole
+        // capture session, not a single frame), so it has to be cleared explicitly here.
+        // Without this the singleton leaks a scenario from one test into the next, and
+        // ScenarioDefaultsToEmpty only passes because of the order tests happen to appear in.
+        RenderMetrics::get().setScenario("");
     }
 };
 

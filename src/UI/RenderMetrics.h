@@ -80,11 +80,19 @@ class RenderMetrics
     }
 
     /// Publish the previous frame's accumulated samples as "last frame" and start a new,
-    /// empty accumulation for frameIndex. Must be called once per frame by the per-frame
-    /// driver (ShellLayer::onUpdate), unconditionally -- unlike record(), which only runs
-    /// when a chart actually renders, this runs every frame so a zero-chart frame correctly
-    /// publishes empty totals rather than leaving stale data in place. Idempotent within a
-    /// single frame (repeat calls with the same frameIndex are no-ops). No-op while disabled.
+    /// empty accumulation for frameIndex. Must be called once per frame, unconditionally, from
+    /// the top of ShellLayer::onRender -- unlike record(), which only runs when a chart actually
+    /// renders, this runs every frame so a zero-chart frame correctly publishes empty totals
+    /// rather than leaving stale data in place (see #875).
+    ///
+    /// The call site must be onRender, NOT onUpdate: Application::run() calls onUpdate() on every
+    /// layer before onRender() on any layer, and ImGui::GetFrameCount() only advances inside
+    /// UILayer::onRender()'s call to ImGui::NewFrame(). Driving this from onUpdate would pass the
+    /// *previous* frame's count, which is already equal to m_CurrentFrame, making every call a
+    /// no-op and silently reintroducing the exact staleness bug this exists to fix.
+    ///
+    /// Idempotent within a single frame (repeat calls with the same frameIndex are no-ops).
+    /// No-op while disabled.
     void beginFrame(int frameIndex) noexcept
     {
         if (!m_Enabled || frameIndex == m_CurrentFrame)

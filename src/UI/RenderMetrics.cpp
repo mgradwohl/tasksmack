@@ -1,12 +1,16 @@
 #include "RenderMetrics.h"
 
+// clang-format off
+// imgui_stdlib.h has to follow imgui.h (it extends ImGui's API for std::string) and belongs with
+// the third-party group, but clang-format's IncludeCategories sort <misc/cpp/...> into the
+// POSIX/C bucket below the standard library. Same guard as src/App/Panels/ProcessesPanel.cpp.
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
+// clang-format on
 
 #include <algorithm>
 #include <string>
 #include <vector>
-
-#include <misc/cpp/imgui_stdlib.h>
 
 namespace UI
 {
