@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace App
 {
@@ -19,6 +20,7 @@ using ProcessRowFormat::formatAlignedBytesPerSecString;
 using ProcessRowFormat::formatAlignedBytesString;
 using ProcessRowFormat::formatAlignedPercentString;
 using ProcessRowFormat::formatAlignedPowerString;
+using ProcessRowFormat::getOrBuildRowFormatCache;
 using ProcessRowFormat::makeAlignedCellText;
 using ProcessRowFormat::RowFormatCache;
 
@@ -62,7 +64,7 @@ TEST(ProcessRowFormatTest, MakeAlignedCellTextStartsUnmeasured)
     const AlignedCellText cell = makeAlignedCellText("hello");
 
     EXPECT_EQ(cell.text, "hello");
-    EXPECT_EQ(cell.width, AlignedCellText::UNMEASURED_WIDTH);
+    EXPECT_FLOAT_EQ(cell.width, AlignedCellText::UNMEASURED_WIDTH);
 }
 
 // =============================================================================
@@ -89,11 +91,9 @@ TEST(ProcessRowFormatTest, FormatAlignedBytesPerSecStringUsesGivenUnit)
     EXPECT_EQ(formatted, "1.0 MB/s");
 }
 
-TEST(ProcessRowFormatTest, FormatAlignedPowerStringProducesNonEmptyResult)
+TEST(ProcessRowFormatTest, FormatAlignedPowerStringConcatenatesPartsInOrder)
 {
-    // Exact bucket/unit thresholds belong to UI::Format::splitPowerForAlignment's own tests;
-    // this only guards that the three parts are concatenated in the right order.
-    EXPECT_FALSE(formatAlignedPowerString(5.5).empty());
+    EXPECT_EQ(formatAlignedPowerString(5.5), "5.5 W");
 }
 
 // =============================================================================
@@ -115,6 +115,9 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.shared.text, "64.0 MB");
     EXPECT_EQ(fmt.ioRead.text, "1.0 MB/s");
     EXPECT_EQ(fmt.ioWrite.text, "2.0 MB/s");
+    EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
+    EXPECT_EQ(fmt.netRecv.text, "4.0 KB/s");
+    EXPECT_EQ(fmt.power.text, "5.5 W");
     EXPECT_EQ(fmt.gpuPercent.text, "15.0%");
     EXPECT_EQ(fmt.gpuMemory.text, "256.0 MB");
     EXPECT_EQ(fmt.gpuEngines, "3D, Compute");
@@ -150,8 +153,84 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeas
     // relies on this to know a rebuilt entry needs re-measuring, not the stale width from a discarded copy.
     const RowFormatCache fmt = buildRowFormatCache(makeSnapshot());
 
-    EXPECT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH);
-    EXPECT_EQ(fmt.resident.width, AlignedCellText::UNMEASURED_WIDTH);
+    EXPECT_FLOAT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH);
+    EXPECT_FLOAT_EQ(fmt.resident.width, AlignedCellText::UNMEASURED_WIDTH);
+}
+
+// =============================================================================
+// getOrBuildRowFormatCache -- the lazy get-or-build policy itself, not just the formatting
+// buildRowFormatCache() produces. ImGui-free (only touches the map), so first access, same-
+// generation reuse, and generation/font invalidation are all directly testable here rather than
+// only indirectly through renderProcessRow()'s live ImGui context.
+// =============================================================================
+
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccess)
+{
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    ProcessSnapshot snap = makeSnapshot();
+    snap.uniqueKey = 1;
+
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/nullptr);
+
+    EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
+    EXPECT_EQ(fmt.generation, 1U);
+    EXPECT_EQ(fmt.fontPtr, nullptr);
+}
+
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationAndFont)
+{
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    ProcessSnapshot snapA = makeSnapshot();
+    snapA.uniqueKey = 1;
+    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontPtr=*/nullptr);
+
+    // A second call for the same key/generation/font, with a snapshot whose data has since
+    // changed (cpuPercent differs), must reuse the existing entry rather than rebuilding: a
+    // regression that always rebuilds would defeat the entire point of this cache and would
+    // still pass every buildRowFormatCache() test, since those never call this function twice.
+    ProcessSnapshot snapB = makeSnapshot();
+    snapB.uniqueKey = 1;
+    snapB.cpuPercent = 99.0;
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/1, /*fontPtr=*/nullptr);
+
+    EXPECT_EQ(fmt.cpuPercent.text, "25.0%"); // Still snapA's value -- not rebuilt.
+}
+
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenGenerationAdvances)
+{
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    ProcessSnapshot snapA = makeSnapshot();
+    snapA.uniqueKey = 1;
+    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontPtr=*/nullptr);
+
+    ProcessSnapshot snapB = makeSnapshot();
+    snapB.uniqueKey = 1;
+    snapB.cpuPercent = 99.0;
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/2, /*fontPtr=*/nullptr);
+
+    EXPECT_EQ(fmt.cpuPercent.text, "99.0%");
+    EXPECT_EQ(fmt.generation, 2U);
+}
+
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithoutAGenerationBump)
+{
+    // A font/size/DPI change alone, with no new data version, must still force a rebuild -- an
+    // AlignedCellText's cached width was measured under the old font and would otherwise stay
+    // wrong until the next data refresh happens to land.
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    ProcessSnapshot snap = makeSnapshot();
+    snap.uniqueKey = 1;
+    const int oldFontToken = 0;
+    const int newFontToken = 0;
+    getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/&oldFontToken);
+
+    // Simulate the old entry's width having already been measured by a prior render.
+    cache.at(1).cpuPercent.width = 42.0F;
+
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/&newFontToken);
+
+    EXPECT_FLOAT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH); // Rebuilt, not reusing the stale width.
+    EXPECT_EQ(fmt.fontPtr, &newFontToken);
 }
 
 } // namespace

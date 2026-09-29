@@ -36,7 +36,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -792,14 +791,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // so cost scales with visible rows (bounded by ImGuiListClipper), not total process count
     // (perf-plan #843). A font/size/DPI change alone, with no new data version, must still force
     // a rebuild of this entry, or its cached AlignedCellText widths (measured for the old font)
-    // would stay wrong until the next ~1Hz data refresh happens to land.
-    RowFormatCache& fmt = m_RowFormatCache[proc.uniqueKey];
-    if (fmt.generation != m_CachedSnapshotVersion || fmt.fontPtr != m_TextSizeCache.fontPtr)
-    {
-        fmt = ProcessRowFormat::buildRowFormatCache(proc);
-        fmt.generation = m_CachedSnapshotVersion;
-        fmt.fontPtr = m_TextSizeCache.fontPtr;
-    }
+    // would stay wrong until the next ~1Hz data refresh happens to land. The get-or-build
+    // decision itself lives in ProcessRowFormat.h (ImGui-free) so it's directly unit-testable.
+    RowFormatCache& fmt =
+        ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.fontPtr);
 
     // Render all columns
     int colIdx = 0;

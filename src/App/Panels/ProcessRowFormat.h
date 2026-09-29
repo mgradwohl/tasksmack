@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace App::ProcessRowFormat
@@ -192,6 +193,26 @@ struct RowFormatCache
     fmt.affinity = makeAlignedCellText(UI::Format::formatCpuAffinityMask(proc.cpuAffinityMask));
     fmt.gdiObjects = makeAlignedCellText(proc.gdiObjectCount.has_value() ? UI::Format::formatIntLocalized(*proc.gdiObjectCount) : "-");
     return fmt;
+}
+
+/// Get-or-build one row's cache entry: reuses it as-is if it was already built for this exact
+/// `generation`/`fontPtr`, otherwise (re)builds it from `proc` via buildRowFormatCache() and
+/// stamps the new generation/fontPtr. ImGui-free (only touches the map and calls
+/// buildRowFormatCache()) so the lazy-invalidation policy itself -- not just the formatting it
+/// produces -- is directly unit-testable, separate from renderProcessRow()'s live ImGui context.
+inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t, RowFormatCache>& cache,
+                                                const Domain::ProcessSnapshot& proc,
+                                                std::uint64_t generation,
+                                                const void* fontPtr)
+{
+    RowFormatCache& entry = cache[proc.uniqueKey];
+    if (entry.generation != generation || entry.fontPtr != fontPtr)
+    {
+        entry = buildRowFormatCache(proc);
+        entry.generation = generation;
+        entry.fontPtr = fontPtr;
+    }
+    return entry;
 }
 
 } // namespace App::ProcessRowFormat
