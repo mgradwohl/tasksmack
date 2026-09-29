@@ -613,9 +613,19 @@ void ProcessesPanel::renderContent()
             // Columns with a positive default width are initialized as width-based columns.
             if (info.defaultWidth > 0.0F)
             {
+                // The Name column hosts the tree indent and expander (see renderProcessRow), so in
+                // tree view it needs that much extra width or deep rows lose trailing characters --
+                // the same truncation the PID column used to suffer (#906). This keeps the text
+                // room at every depth equal to what a flat list gets.
+                float width = info.defaultWidth;
+                if (col == ProcessColumn::Name && m_TreeViewEnabled)
+                {
+                    width += (TREE_INDENT_WIDTH * static_cast<float>(m_MaxTreeDepth)) + ImGui::GetFrameHeight();
+                }
+
                 // Use menuName for TableSetupColumn (shown in context menu)
                 // We render custom headers with info.name below
-                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, info.defaultWidth, toImGuiId(col));
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, width, toImGuiId(col));
             }
             else
             {
@@ -1181,6 +1191,15 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
             ProcessTreeFlatten::collectProcessTreeRows(snapshots, filteredSet, m_CollapsedKeys, idx, 0, rows);
         }
     }
+
+    // Widest indent the Name column must accommodate next frame (see m_MaxTreeDepth). Taken over
+    // every flattened row, not just the visible ones, so scrolling doesn't resize the column.
+    int maxDepth = 0;
+    for (const ProcessTreeFlatten::ProcessTreeRow& row : rows)
+    {
+        maxDepth = std::max(maxDepth, row.depth);
+    }
+    m_MaxTreeDepth = maxDepth;
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
