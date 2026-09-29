@@ -36,25 +36,20 @@ void RenderMetrics::renderOverlay(bool* open)
     const double framerate = static_cast<double>(std::max(io.Framerate, 1.0F));
     ImGui::Text("Frame: %.2f ms (%.0f FPS)", 1000.0 / framerate, framerate);
 
-    // ImDrawData::CmdListsCount is the number of ImDrawList objects (roughly one per ImGui
-    // window/viewport) -- NOT the number of actual GPU draw calls. Each ImDrawList's own
-    // CmdBuffer holds one ImDrawCmd per real draw call, so the true draw-call count is the sum
-    // of every list's CmdBuffer size. Report both, correctly labeled (see #875).
-    int commandLists = 0;
-    int drawCalls = 0;
-    if (const ImDrawData* drawData = ImGui::GetDrawData(); drawData != nullptr)
-    {
-        commandLists = drawData->CmdListsCount;
-        for (const ImDrawList* cmdList : drawData->CmdLists)
-        {
-            drawCalls += cmdList->CmdBuffer.Size;
-        }
-    }
+    // Draw calls and command lists are read from the values UILayer published after
+    // ImGui::Render(), NOT from ImGui::GetDrawData() here. ImDrawData is only valid between
+    // Render() and the next NewFrame() -- NewFrame() sets DrawDataP.Valid = false and
+    // GetDrawData() then returns null -- and this overlay draws during the build phase, so
+    // reading it here reported a confident 0 on every frame (see #907).
+    //
+    // The two counts are distinct: ImDrawData::CmdListsCount is the number of ImDrawList objects
+    // (roughly one per ImGui window), while each list's own CmdBuffer holds one ImDrawCmd per real
+    // draw call, so the true draw-call count is the sum over every list's CmdBuffer (see #875).
     ImGui::Text("Total: %d vertices, %d indices, %d draw calls (%d command lists)",
                 io.MetricsRenderVertices,
                 io.MetricsRenderIndices,
-                drawCalls,
-                commandLists);
+                drawCalls(),
+                commandLists());
 
     int chartVertices = 0;
     int chartIndices = 0;

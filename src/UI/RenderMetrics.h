@@ -55,7 +55,44 @@ class RenderMetrics
             m_CurrentFrame = NO_FRAME;
             m_LastFrameIndex = NO_FRAME;
             m_PublicationId = 0;
+            m_DrawCalls = 0;
+            m_CommandLists = 0;
         }
+    }
+
+    /// Publish the draw-call and command-list counts for the frame that just finished rendering.
+    ///
+    /// Must be called from UILayer immediately after ImGui::Render(), because that is the only
+    /// window in which ImDrawData is valid: ImGui::NewFrame() sets DrawDataP.Valid = false, and
+    /// ImGui::GetDrawData() returns null whenever it is not valid. The overlay itself draws during
+    /// the frame-build phase, so it cannot read these counts for itself -- doing so reported a
+    /// confident 0 on every frame (see #907). Taking ints (rather than an ImDrawData*) keeps this
+    /// header free of any ImGui dependency.
+    ///
+    /// Like io.MetricsRenderVertices/Indices, these describe the *previous* completed frame by the
+    /// time the overlay displays them; that is the same one-frame lag the rest of the overlay
+    /// already has, not an additional one.
+    void recordFrameDrawData(int drawCalls, int commandLists) noexcept
+    {
+        if (!m_Enabled)
+        {
+            return;
+        }
+        m_DrawCalls = drawCalls;
+        m_CommandLists = commandLists;
+    }
+
+    /// Real GPU draw calls in the last completed frame (sum of every ImDrawList's CmdBuffer size).
+    [[nodiscard]] int drawCalls() const noexcept
+    {
+        return m_DrawCalls;
+    }
+
+    /// ImDrawList objects in the last completed frame (ImDrawData::CmdListsCount) -- roughly one
+    /// per ImGui window, and NOT a draw-call count.
+    [[nodiscard]] int commandLists() const noexcept
+    {
+        return m_CommandLists;
     }
 
     /// Set a free-form label identifying what's currently being profiled (e.g. "idle",
@@ -198,6 +235,9 @@ class RenderMetrics
 
   private:
     static constexpr int NO_FRAME = -1;
+
+    int m_DrawCalls = 0;    // Last completed frame's real draw calls; published by UILayer (#907).
+    int m_CommandLists = 0; // Last completed frame's ImDrawList count; published by UILayer (#907).
 
     /// RFC 4180-style CSV field encoding: wrap in double quotes (doubling any embedded quote)
     /// whenever the field contains a comma, quote, or newline. Needed for m_Scenario (free-form

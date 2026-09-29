@@ -9,6 +9,7 @@
 #include "UI/DpiScale.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/MonospaceFontPath.h"
+#include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
@@ -368,10 +369,30 @@ void UILayer::endFrame()
     }
 
     Core::traceResizePerfVoid(Core::ResizePerfOperation::ImGuiFinalize, 0, 0, [] { ImGui::Render(); });
+
+    // Captured once, between ImGui::Render() and the next ImGui::NewFrame(), because both the
+    // submit call and the draw-call accounting below need the same ImDrawData.
+    ImDrawData* drawData = ImGui::GetDrawData();
     Core::traceResizePerfVoid(Core::ResizePerfOperation::OpenGLSubmit,
                               m_CachedPixelW,
                               m_CachedPixelH,
-                              [] { ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); });
+                              [drawData] { ImGui_ImplOpenGL3_RenderDrawData(drawData); });
+
+    // Publish this frame's draw-call/command-list counts for the Render Metrics overlay. This is
+    // the only place they can be sampled: ImDrawData is valid only between ImGui::Render() and the
+    // next ImGui::NewFrame(), and the overlay itself draws during the build phase, where
+    // GetDrawData() returns null -- which is why it reported 0 on every frame (see #907).
+    // Kept outside the OpenGLSubmit timer above so that measurement stays the GL submission
+    // alone: it is load-bearing evidence for #882 and must not absorb this bookkeeping.
+    if (RenderMetrics::get().enabled() && (drawData != nullptr))
+    {
+        int drawCalls = 0;
+        for (const ImDrawList* cmdList : drawData->CmdLists)
+        {
+            drawCalls += cmdList->CmdBuffer.Size;
+        }
+        RenderMetrics::get().recordFrameDrawData(drawCalls, drawData->CmdListsCount);
+    }
 
     // Handle multi-viewport
     const ImGuiIO& imguiIO = ImGui::GetIO();

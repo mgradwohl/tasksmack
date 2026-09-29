@@ -160,6 +160,61 @@ TEST_F(RenderMetricsTest, SetEnabledFalseDoesNotClearScenario)
     EXPECT_EQ(metrics.scenario(), "resize-stress");
 }
 
+// ========== Draw-call publication (#907) ==========
+
+TEST_F(RenderMetricsTest, DrawCallCountsDefaultToZero)
+{
+    EXPECT_EQ(RenderMetrics::get().drawCalls(), 0);
+    EXPECT_EQ(RenderMetrics::get().commandLists(), 0);
+}
+
+TEST_F(RenderMetricsTest, RecordFrameDrawDataPublishesBothCounts)
+{
+    // Draw calls and command lists are deliberately separate numbers: CmdListsCount counts
+    // ImDrawList objects (roughly one per window), while the draw-call total sums each list's
+    // CmdBuffer, so the two are unequal in any real frame.
+    auto& metrics = RenderMetrics::get();
+    metrics.recordFrameDrawData(/*drawCalls=*/37, /*commandLists=*/5);
+
+    EXPECT_EQ(metrics.drawCalls(), 37);
+    EXPECT_EQ(metrics.commandLists(), 5);
+}
+
+TEST_F(RenderMetricsTest, RecordFrameDrawDataIsNoOpWhenDisabled)
+{
+    auto& metrics = RenderMetrics::get();
+    metrics.setEnabled(false);
+
+    metrics.recordFrameDrawData(/*drawCalls=*/37, /*commandLists=*/5);
+
+    EXPECT_EQ(metrics.drawCalls(), 0);
+    EXPECT_EQ(metrics.commandLists(), 0);
+}
+
+TEST_F(RenderMetricsTest, SetEnabledFalseClearsDrawCallCounts)
+{
+    // Stale draw-call counts surviving a capture stop would be the same class of bug as #875's
+    // stale chart totals: numbers left on screen that no longer describe anything being rendered.
+    auto& metrics = RenderMetrics::get();
+    metrics.recordFrameDrawData(/*drawCalls=*/37, /*commandLists=*/5);
+
+    metrics.setEnabled(false);
+
+    EXPECT_EQ(metrics.drawCalls(), 0);
+    EXPECT_EQ(metrics.commandLists(), 0);
+}
+
+TEST_F(RenderMetricsTest, RecordFrameDrawDataOverwritesPreviousFrameCounts)
+{
+    auto& metrics = RenderMetrics::get();
+    metrics.recordFrameDrawData(/*drawCalls=*/37, /*commandLists=*/5);
+
+    metrics.recordFrameDrawData(/*drawCalls=*/12, /*commandLists=*/3);
+
+    EXPECT_EQ(metrics.drawCalls(), 12);
+    EXPECT_EQ(metrics.commandLists(), 3);
+}
+
 // ========== CSV export ==========
 
 TEST_F(RenderMetricsTest, ToCsvContainsHeaderWhenEmpty)
