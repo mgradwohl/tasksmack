@@ -629,7 +629,8 @@ struct HistoryChartConfig
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
 /// and applies the shared legend/axis/format/limit setup so all charts look and behave
 /// identically. When the Render Metrics overlay is active it also captures this chart's
-/// vertex/index counts and CPU time. Call series-plotting code only when active() is true;
+/// vertex count and CPU time (not indices -- see ChartRenderSample in RenderMetrics.h for why).
+/// Call series-plotting code only when active() is true;
 /// extra axis setup (e.g., a Y2 axis) may be added right after construction.
 ///
 /// Usage:
