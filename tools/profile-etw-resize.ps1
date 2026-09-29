@@ -82,10 +82,41 @@ function Assert-ResizeRunDirectoryIgnored {
     }
 }
 
+# Ring-buffer coverage. Deliberately weaker than Test-ResizeCaptureOverlap and NOT a
+# substitute for it: in ring mode the operator saves the buffer the moment a freeze is seen,
+# while the app is usually still running, so the app legitimately exits AFTER the ETL is
+# written. What must still hold is that the app started inside the recording and before the
+# save. Whether the ring actually still reaches back to the stall cannot be decided from
+# timestamps -- the buffer is memory-bounded and silently discards its oldest events -- so
+# Check reports that as a required manual verification rather than claiming coverage.
+function Test-ResizeRingCoverage {
+    param($Collector, $App)
+    if ($Collector.State -ne 'saved' -and $Collector.State -ne 'saved-with-errors') { return $false }
+    if ($App.State -ne 'exited' -or $App.ExitCode -ne 0) { return $false }
+    $appStart = [DateTimeOffset]::Parse($App.StartUtc)
+    return $appStart -ge [DateTimeOffset]::Parse($Collector.StartUtc) -and
+        $appStart -le [DateTimeOffset]::Parse($Collector.StopRequestedUtc)
+}
+
+# Ring mode records until an operator who just saw a freeze asks for the buffer to be written,
+# rather than stopping on a timer and hoping a rare stall landed inside a fixed window. The
+# request is a file so the normal-user terminal can trigger the elevated collector without
+# either terminal holding a handle to the other; the bounded deadline still applies.
+function Wait-ResizeSaveRequest {
+    param([string]$RunDirectory, [int]$TimeoutSeconds)
+    $request = Join-Path $RunDirectory 'save.request'
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $request) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
 function Invoke-ResizeCapture {
     param(
         [string]$Phase, [string]$RunDirectory, [string]$Preset, [switch]$SkipBuild,
-        [int]$DurationSeconds, [string]$RepoRoot
+        [int]$DurationSeconds, [string]$RepoRoot, [string]$Buffering = 'File'
     )
     $ErrorActionPreference = 'Stop'
     if ([string]::IsNullOrWhiteSpace($RunDirectory)) {
@@ -162,10 +193,13 @@ function Invoke-ResizeCapture {
         $claim = [IO.File]::Open($collectorPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $claim.Dispose()
         $instance = "TaskSmackResize-$([guid]::NewGuid().ToString('N'))"
+        $ring = $Buffering -eq 'Ring'
         $collector = @{
             State = 'starting'; Identity = $identity; Instance = $instance
             Profiles = @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')
+            Buffering = if ($ring) { 'ring' } else { 'file' }
             StartUtc = $null; StopRequestedUtc = $null; EndUtc = $null; Error = $null
+            SaveTrigger = $null
         }
         Write-ResizeCaptureJson $collectorPath $collector
         $started = $false
@@ -175,17 +209,28 @@ function Invoke-ResizeCapture {
                 Invoke-ResizeCaptureCommand $wpr @('-profiledetails', $profileName, '-filemode') `
                     (Join-Path $RunDirectory "$profileName.txt")
             }
-            Invoke-ResizeCaptureCommand $wpr @(
-                '-start', 'GeneralProfile.Verbose', '-start', 'GPU.Verbose', '-start', 'DesktopComposition.Verbose',
-                '-filemode', '-instancename', $instance
-            ) (Join-Path $RunDirectory 'wpr-start.log')
+            # Omitting -filemode selects WPR's in-memory ring buffer: events accumulate and the
+            # oldest are overwritten until -stop writes whatever the buffer still holds.
+            $startArgs = @('-start', 'GeneralProfile.Verbose', '-start', 'GPU.Verbose', '-start', 'DesktopComposition.Verbose')
+            if (-not $ring) { $startArgs += '-filemode' }
+            $startArgs += @('-instancename', $instance)
+            Invoke-ResizeCaptureCommand $wpr $startArgs (Join-Path $RunDirectory 'wpr-start.log')
             $started = $true
             $collector.StartUtc = [DateTimeOffset]::UtcNow.ToString('o')
             $collector.DeadlineUtc = [DateTimeOffset]::UtcNow.AddSeconds($DurationSeconds).ToString('o')
             $collector.State = 'recording'
             Write-ResizeCaptureJson $collectorPath $collector
-            Write-Host "Recording $instance for $DurationSeconds seconds. Run resize -Phase App in the normal-user terminal now."
-            Start-Sleep -Seconds $DurationSeconds
+            if ($ring) {
+                Write-Host "Ring buffer recording $instance (deadline $DurationSeconds s). Run resize -Phase App in the normal-user terminal,"
+                Write-Host 'resize until you SEE a freeze, then run resize -Phase Save there to write the buffer.'
+                $requested = Wait-ResizeSaveRequest -RunDirectory $RunDirectory -TimeoutSeconds $DurationSeconds
+                $collector.SaveTrigger = if ($requested) { 'requested' } else { 'deadline' }
+            }
+            else {
+                Write-Host "Recording $instance for $DurationSeconds seconds. Run resize -Phase App in the normal-user terminal now."
+                Start-Sleep -Seconds $DurationSeconds
+                $collector.SaveTrigger = 'deadline'
+            }
         }
         catch {
             $collector.State = 'failed'
@@ -223,6 +268,20 @@ function Invoke-ResizeCapture {
                 }
             }
         }
+        return
+    }
+
+    # Save runs the instant the operator sees a freeze, so it deliberately skips the snapshot
+    # hash re-verification: every second spent hashing is ring-buffer depth overwritten. Check
+    # still verifies hashes afterwards.
+    if ($Phase -eq 'Save') {
+        $collector = Get-Content -LiteralPath $collectorPath -Raw | ConvertFrom-Json
+        if ($collector.State -ne 'recording') { throw "Collector is not recording (state '$($collector.State)'); nothing to save." }
+        if ($collector.Buffering -ne 'ring') { throw 'Save applies only to a ring-buffer collector started with -Buffering Ring.' }
+        $request = Join-Path $RunDirectory 'save.request'
+        if (Test-Path -LiteralPath $request) { throw 'A save was already requested for this run.' }
+        Set-Content -LiteralPath $request -Value ([DateTimeOffset]::UtcNow.ToString('o')) -Encoding utf8
+        Write-Host 'Save requested. The elevated collector will stop and write trace.etl; then close the app and run Check.'
         return
     }
 
@@ -277,7 +336,15 @@ function Invoke-ResizeCapture {
     }
 
     $app = Get-Content -LiteralPath $appPath -Raw | ConvertFrom-Json
-    if (-not (Test-ResizeCaptureOverlap $collector $app)) { throw 'Incomplete capture: app did not exit successfully entirely inside this ETW recording.' }
+    $ringRun = $collector.PSObject.Properties.Name -contains 'Buffering' -and $collector.Buffering -eq 'ring'
+    if ($ringRun) {
+        if (-not (Test-ResizeRingCoverage $collector $app)) {
+            throw 'Incomplete ring capture: app did not start inside the recording before the save, or did not exit successfully.'
+        }
+    }
+    elseif (-not (Test-ResizeCaptureOverlap $collector $app)) {
+        throw 'Incomplete capture: app did not exit successfully entirely inside this ETW recording.'
+    }
     if (-not (Test-Path -LiteralPath $tracePath) -or (Get-Item -LiteralPath $tracePath).Length -eq 0) { throw 'ETL is missing or empty.' }
     $stdout = Get-Content -LiteralPath (Join-Path $RunDirectory 'stdout.log') -Raw
     $anchors = @([regex]::Matches($stdout, "ResizePerfAnchor: pid=$($app.Pid) uiTid=\d+ clock=QPC "))
@@ -290,8 +357,22 @@ function Invoke-ResizeCapture {
     Write-ResizeCaptureJson (Join-Path $RunDirectory 'check.json') @{
         CheckedBy = $identity; SameRun = $true
         TraceSha256 = (Get-FileHash -LiteralPath $tracePath -Algorithm SHA256).Hash
-        Diagnostics = 'Review required: trace-statistics.txt, wpr logs, scheduler stacks and GPU/DWM provider presence in WPA. No automatic loss-free claim.'
+        Buffering = if ($ringRun) { 'ring' } else { 'file' }
+        # Absent on collector.json written before ring mode existed; StrictMode makes a bare
+        # property read on a PSCustomObject fatal, so probe rather than assume.
+        SaveTrigger = if ($collector.PSObject.Properties.Name -contains 'SaveTrigger') { $collector.SaveTrigger } else { $null }
+        Diagnostics = if ($ringRun) {
+            'Review required: trace-statistics.txt, wpr logs, scheduler stacks and GPU/DWM provider presence in WPA. ' +
+            'No automatic loss-free claim. RING MODE: the buffer is memory-bounded and silently overwrites its oldest ' +
+            'events, so timestamps cannot show whether the ETL still reaches the stall. Confirm in WPA that the ETL ' +
+            'time range actually covers the app-log counter interval before attributing anything.'
+        } else {
+            'Review required: trace-statistics.txt, wpr logs, scheduler stacks and GPU/DWM provider presence in WPA. No automatic loss-free claim.'
+        }
     }
     Write-Host 'Same-run artifacts verified. Review trace-statistics.txt and wpr-*.log for loss/decoder diagnostics before attribution.'
+    if ($ringRun) {
+        Write-Host 'RING MODE: verify in WPA that the ETL time range still covers the stall; the buffer discards its oldest events.'
+    }
     Write-Host "Symbols: $($manifest.SymbolPath). In WPA verify UI TID, CSwitch/ReadyThread stacks, DxgKrnl and DWM events."
 }

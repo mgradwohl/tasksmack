@@ -20,7 +20,8 @@
     resize - separated normal-user app / elevated collector diagnostic capture (#882).
 .PARAMETER Phase
     resize mode only: Prepare snapshots binaries, Collect records ETW in a separate elevated
-    terminal, App launches normally with stdout/stderr, Check verifies overlap and exports loss diagnostics.
+    terminal, App launches normally with stdout/stderr, Save asks a -Buffering Ring collector to
+    write its buffer now, Check verifies overlap and exports loss diagnostics.
 .PARAMETER RunDirectory
     resize mode only: unique directory shared by all four phases; must not exist at Prepare.
 .PARAMETER Preset
@@ -71,8 +72,14 @@ param(
 
     [string]$Timestamp,
 
-    [ValidateSet('Prepare', 'Collect', 'App', 'Check')]
+    [ValidateSet('Prepare', 'Collect', 'App', 'Save', 'Check')]
     [string]$Phase = 'Prepare',
+
+    # resize mode only: File records straight to disk for a fixed window; Ring records into
+    # WPR's in-memory buffer until Save is requested, so a rare stall can be captured after it
+    # is observed instead of having to occur inside a fixed window.
+    [ValidateSet('File', 'Ring')]
+    [string]$Buffering = 'File',
 
     [string]$RunDirectory,
 
@@ -99,7 +106,7 @@ if ($Mode -eq 'resize') {
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'resize capture requires PowerShell 7 (pwsh).' }
     . (Join-Path $scriptDir 'profile-etw-resize.ps1')
     Invoke-ResizeCapture -Phase $Phase -RunDirectory $RunDirectory -Preset $Preset -SkipBuild:$SkipBuild `
-        -DurationSeconds $DurationSeconds -RepoRoot $repoRoot
+        -DurationSeconds $DurationSeconds -RepoRoot $repoRoot -Buffering $Buffering
     return
 }
 

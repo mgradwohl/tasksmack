@@ -919,6 +919,36 @@ pwsh -File tools\profile-etw.ps1 resize -Phase App -RunDirectory $run
 pwsh -File tools\profile-etw.ps1 resize -Phase Check -RunDirectory $run
 ```
 
+**Ring buffering for rare stalls (`-Buffering Ring`).** File mode records a fixed window and
+depends on the stall happening inside it, which is the wrong shape for a freeze that occurs
+once in many minutes. `-Buffering Ring` omits WPR's `-filemode` so events accumulate in an
+in-memory ring buffer; you resize until you actually *see* a freeze, then request the save and
+only the buffer's remaining contents are written. Elevated terminal:
+
+```powershell
+pwsh -File tools\profile-etw.ps1 resize -Phase Collect -RunDirectory $run -Buffering Ring -DurationSeconds 600
+```
+
+`-Phase App` blocks until the app exits, so `Save` needs a terminal of its own: use a THIRD
+normal-user terminal (this writes the buffer closest to the freeze), or close the app first
+and then run `Save` immediately, accepting the app-shutdown time as extra ring depth
+consumed. Start `-Phase App` as above; the moment a freeze is visible:
+
+```powershell
+pwsh -File tools\profile-etw.ps1 resize -Phase Save -RunDirectory $run   # writes trace.etl now
+```
+
+Close the app afterwards, then run `-Phase Check`. `Save` is normal-user, ring-only and
+single-shot; the collector still stops only the recording it started, and the bounded deadline
+still applies if no save is requested.
+
+Two consequences are specific to ring mode and Check enforces the first, not the second. The
+app normally exits *after* the ETL is written, so Check applies a coverage rule (app started
+inside the recording and before the save) rather than file mode's stricter containment rule.
+And the buffer is memory-bounded and silently overwrites its oldest events, so no timestamp
+can show whether the ETL still reaches back to the stall -- Check marks that as required
+manual verification in WPA rather than claiming coverage.
+
 Prepare copies the executable, PDBs, sidecar DLLs and assets into `binary\` and records
 SHA-256/length for each file, the preset, CMake cache, generated `version.h`, and capture-time
 checkout identity. App runs that snapshot, not mutable build output; Check rechecks its

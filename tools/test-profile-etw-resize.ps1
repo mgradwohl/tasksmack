@@ -200,7 +200,92 @@ try {
     Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15
     Assert-True ((Get-Content (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json).State -eq 'saved') 'Run unusable after a missing-wpr failure'
 
-    Write-Host 'Resize capture lifecycle, overlap, privilege, identity and failure tests passed.'
+
+    # ---- Ring-buffer mode -------------------------------------------------------------
+    # Pure predicates first, independent of the capture lifecycle.
+    # The defining difference from file mode: the operator saves the buffer the moment a freeze
+    # is seen, so the app legitimately exits AFTER the ETL is written. File mode must still
+    # reject that shape, or the two rules would be interchangeable and the guarantee meaningless.
+    $ringCollector = @{ State = 'saved'; StartUtc = '2026-09-09T03:00:00Z'; StopRequestedUtc = '2026-09-09T03:02:00Z' }
+    $lateApp = @{ State = 'exited'; ExitCode = 0; StartUtc = '2026-09-09T03:00:30Z'; EndUtc = '2026-09-09T03:05:00Z' }
+    Assert-True (Test-ResizeRingCoverage $ringCollector $lateApp) 'Ring run rejected an app that exited after the save'
+    Assert-True (-not (Test-ResizeCaptureOverlap $ringCollector $lateApp)) 'File-mode rule accepted a post-save exit'
+    # App must still start inside the recording and before the save, and exit cleanly.
+    Assert-True (-not (Test-ResizeRingCoverage $ringCollector @{ State = 'exited'; ExitCode = 0; StartUtc = '2026-09-09T02:59:00Z'; EndUtc = '2026-09-09T03:05:00Z' })) 'Ring accepted an app started before the recording'
+    Assert-True (-not (Test-ResizeRingCoverage $ringCollector @{ State = 'exited'; ExitCode = 0; StartUtc = '2026-09-09T03:03:00Z'; EndUtc = '2026-09-09T03:05:00Z' })) 'Ring accepted an app started after the save'
+    Assert-True (-not (Test-ResizeRingCoverage $ringCollector @{ State = 'exited'; ExitCode = 7; StartUtc = '2026-09-09T03:00:30Z'; EndUtc = '2026-09-09T03:05:00Z' })) 'Ring accepted a failed app'
+    Assert-True (-not (Test-ResizeRingCoverage @{ State = 'recording'; StartUtc = '2026-09-09T03:00:00Z'; StopRequestedUtc = '2026-09-09T03:02:00Z' } $lateApp)) 'Ring accepted an unsaved collector'
+
+    # Save request signalling, exercised directly so the bounded wait stays fast.
+    $waitRun = New-TestRun
+    Assert-True (-not (Wait-ResizeSaveRequest -RunDirectory $waitRun -TimeoutSeconds 1)) 'Wait reported a save nobody requested'
+    'now' | Set-Content -LiteralPath (Join-Path $waitRun 'save.request')
+    Assert-True (Wait-ResizeSaveRequest -RunDirectory $waitRun -TimeoutSeconds 1) 'Wait missed an existing save request'
+
+    # Collect -Buffering Ring must omit -filemode (that is what selects WPR's memory buffer)
+    # and must stop on the save request rather than only on the deadline.
+    $script:elevated = $true
+    $script:failOn = ''
+    $script:calls.Clear()
+    $run = New-TestRun
+    function Wait-ResizeSaveRequest { param([string]$RunDirectory, [int]$TimeoutSeconds) return $true }
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -Buffering Ring
+    $ringSaved = Get-Content -LiteralPath (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json
+    Assert-True ($ringSaved.State -eq 'saved') 'Ring collector did not save'
+    Assert-True ($ringSaved.Buffering -eq 'ring') 'Ring buffering not recorded'
+    Assert-True ($ringSaved.SaveTrigger -eq 'requested') 'Save trigger not recorded'
+    $ringStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
+    Assert-True (-not ($ringStart.Arguments -contains '-filemode')) 'Ring mode still passed -filemode'
+    Assert-True ($ringStart.Arguments[-2] -eq '-instancename') 'Instance option must remain last in ring mode'
+    foreach ($needed in @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')) {
+        Assert-True ($ringStart.Arguments -contains $needed) "Ring mode dropped $needed"
+    }
+    # File mode must be unchanged.
+    $script:calls.Clear()
+    $run2 = New-TestRun
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run2 -DurationSeconds 15
+    $fileStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
+    Assert-True ($fileStart.Arguments -contains '-filemode') 'File mode lost -filemode'
+    Assert-True ((Get-Content (Join-Path $run2 'collector.json') -Raw | ConvertFrom-Json).Buffering -eq 'file') 'File buffering not recorded'
+
+    # Save phase: normal-user, ring-only, single-shot.
+    $script:elevated = $false
+    $saveRun = New-TestRun
+    Write-ResizeCaptureJson (Join-Path $saveRun 'collector.json') @{ State = 'saved'; Buffering = 'ring' }
+    Assert-Throws { Invoke-ResizeCapture -Phase Save -RunDirectory $saveRun } 'not recording'
+    Write-ResizeCaptureJson (Join-Path $saveRun 'collector.json') @{ State = 'recording'; Buffering = 'file' }
+    Assert-Throws { Invoke-ResizeCapture -Phase Save -RunDirectory $saveRun } 'only to a ring-buffer'
+    Write-ResizeCaptureJson (Join-Path $saveRun 'collector.json') @{ State = 'recording'; Buffering = 'ring' }
+    Invoke-ResizeCapture -Phase Save -RunDirectory $saveRun
+    Assert-True (Test-Path -LiteralPath (Join-Path $saveRun 'save.request')) 'Save did not signal the collector'
+    Assert-Throws { Invoke-ResizeCapture -Phase Save -RunDirectory $saveRun } 'already requested'
+
+    # Check on a ring run: accepts the post-save exit and must carry the depth caveat, because
+    # timestamps cannot prove the memory buffer still reaches back to the stall.
+    $checkRun = New-TestRun
+    $ringStartUtc = [DateTimeOffset]::UtcNow.AddSeconds(-120).ToString('o')
+    Write-ResizeCaptureJson (Join-Path $checkRun 'collector.json') @{
+        State = 'saved'; Buffering = 'ring'; SaveTrigger = 'requested'
+        StartUtc = $ringStartUtc; StopRequestedUtc = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToString('o')
+    }
+    Write-ResizeCaptureJson (Join-Path $checkRun 'app.json') @{
+        State = 'exited'; ExitCode = 0; Pid = 4242
+        StartUtc = [DateTimeOffset]::UtcNow.AddSeconds(-110).ToString('o')
+        EndUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    }
+    @(
+        'ResizePerfAnchor: pid=4242 uiTid=99 clock=QPC frequency=10000000'
+        'ResizePerfAnchor: pid=4242 uiTid=99 clock=QPC frequency=10000000'
+        'ResizePerfWallSummary: loops=10 loopMax=1.0 ms'
+    ) | Set-Content -LiteralPath (Join-Path $checkRun 'stdout.log')
+    'mock ETL' | Set-Content -LiteralPath (Join-Path $checkRun 'trace.etl')
+    Invoke-ResizeCapture -Phase Check -RunDirectory $checkRun
+    $ringCheck = Get-Content -LiteralPath (Join-Path $checkRun 'check.json') -Raw | ConvertFrom-Json
+    Assert-True $ringCheck.SameRun 'Ring Check rejected a valid ring run'
+    Assert-True ($ringCheck.Buffering -eq 'ring') 'Ring Check did not record buffering'
+    Assert-True ($ringCheck.Diagnostics -like '*RING MODE*') 'Ring Check dropped the buffer-depth caveat'
+
+    Write-Host 'Resize capture lifecycle, overlap, ring-buffer, privilege, identity and failure tests passed.'
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force
