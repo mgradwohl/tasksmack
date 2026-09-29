@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTreeFlatten.h"
+#include "App/Panels/ProcessTreeIndent.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -48,6 +49,10 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+// Name text kept visible past the expander no matter how deep the row or how narrow the user has
+// dragged the Name column. Bounds the tree indent so the expand/collapse button can never be
+// pushed out of its cell, which would make a deep parent impossible to toggle (#906).
+constexpr float MIN_TREE_NAME_WIDTH = 40.0F;
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -958,10 +963,22 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 
         case ProcessColumn::Name:
         {
-            // Tree depth is expressed here rather than in the PID column: Name is a stretch
-            // column, so the indent has room to grow without clipping its own content (#906).
-            const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
-            const bool indented = m_TreeViewEnabled && depth > 0;
+            // Tree depth is expressed here rather than in the PID column, which is a fixed 60px
+            // and truncated PIDs once the indent was inside it (#906). Name is fixed-width too
+            // (120px), so it is widened by the deepest indent in renderColumns() -- see
+            // m_MaxTreeDepth -- to keep the text room at every depth equal to a flat list's.
+            //
+            // That widening can still be overridden: ImGui persists a user-dragged column width in
+            // its ini and ignores the width we pass to TableSetupColumn(). So the indent is also
+            // clamped here against the cell's actual width, reserving room for the expander plus a
+            // minimum slice of the name. Without the clamp, a user who narrows this column would
+            // push the expand/collapse button out of the cell and be unable to toggle deep parents.
+            const float reservedForControls = ImGui::GetFrameHeight() + MIN_TREE_NAME_WIDTH;
+            const float indentWidth =
+                m_TreeViewEnabled
+                    ? ProcessTreeIndent::clampedIndent(depth, TREE_INDENT_WIDTH, ImGui::GetContentRegionAvail().x, reservedForControls)
+                    : 0.0F;
+            const bool indented = indentWidth > 0.0F;
             if (indented)
             {
                 ImGui::Indent(indentWidth);
