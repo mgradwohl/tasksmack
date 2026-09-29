@@ -125,7 +125,9 @@ function Invoke-ResizeCapture {
     $RunDirectory = [IO.Path]::GetFullPath($RunDirectory)
     $identity = Get-ResizeCaptureIdentity
     if ($Phase -ne 'Collect' -and $identity.Elevated) {
-        throw 'Run Prepare/App/Check in a normal-user terminal; only Collect may be elevated.'
+        throw ('Run Prepare/App/Save/Check in a normal-user terminal; only Collect may be elevated. ' +
+               'An elevated target changes the workload being measured (see #872), so this is refused rather ' +
+               'than warned about. Open a separate non-elevated PowerShell 7 window for this phase.')
     }
     if ($Phase -eq 'Check') {
         Write-ResizeCaptureJson (Join-Path $RunDirectory 'check.json') @{
