@@ -205,8 +205,14 @@ inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t
                                                 std::uint64_t generation,
                                                 const void* fontPtr)
 {
-    RowFormatCache& entry = cache[proc.uniqueKey];
-    if (entry.generation != generation || entry.fontPtr != fontPtr)
+    // try_emplace, not operator[]: a freshly default-constructed entry carries generation == 0 /
+    // fontPtr == nullptr, which are themselves legal stamp values, so a stamp comparison alone
+    // can't tell "never built" from "already built for generation 0 with no font" and would hand
+    // back an empty, unformatted entry. `inserted` makes first access unambiguous, independent of
+    // whatever the caller happens to seed its generation counter and font pointer with.
+    const auto [it, inserted] = cache.try_emplace(proc.uniqueKey);
+    RowFormatCache& entry = it->second;
+    if (inserted || entry.generation != generation || entry.fontPtr != fontPtr)
     {
         entry = buildRowFormatCache(proc);
         entry.generation = generation;

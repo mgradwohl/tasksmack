@@ -177,6 +177,23 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccess)
     EXPECT_EQ(fmt.fontPtr, nullptr);
 }
 
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGenerationAndNullFont)
+{
+    // generation == 0 / fontPtr == nullptr are legal stamp values that also happen to match a
+    // default-constructed RowFormatCache, so a stamp comparison alone can't distinguish "never
+    // built" from "already built for exactly these stamps". A get-or-build that only compares
+    // stamps would return an empty, unformatted entry here and render a row of blank cells.
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    ProcessSnapshot snap = makeSnapshot();
+    snap.uniqueKey = 1;
+
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/0, /*fontPtr=*/nullptr);
+
+    EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
+    EXPECT_EQ(fmt.generation, 0U);
+    EXPECT_EQ(fmt.fontPtr, nullptr);
+}
+
 TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationAndFont)
 {
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
