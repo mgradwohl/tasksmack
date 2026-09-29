@@ -40,6 +40,20 @@ try {
     $app.ExitCode = 7
     Assert-True (-not (Test-ResizeCaptureOverlap $collector $app)) 'Failed app accepted'
 
+    # Run directories inside the worktree must be git-ignored, or Prepare's own output is
+    # stamped into the binary as configureSourceState=dirty and reported by checkout-status.txt
+    # as a source change. Uses the real repository and real `git check-ignore` (read-only, and
+    # deliberately before the mocks below), including a path that does not exist yet -- the
+    # guard runs before Prepare creates the directory.
+    $repo = Split-Path -Parent $PSScriptRoot
+    Assert-Throws { Assert-ResizeRunDirectoryIgnored -RunDirectory (Join-Path $repo 'not-ignored-run') -RepoRoot $repo } 'not git-ignored'
+    Assert-Throws { Assert-ResizeRunDirectoryIgnored -RunDirectory (Join-Path $repo 'perf-data\notmatching') -RepoRoot $repo } 'not git-ignored'
+    foreach ($allowed in @('perf-data\resize-001', 'perf-data\resize-042', 'build\resize-captures\p01')) {
+        Assert-ResizeRunDirectoryIgnored -RunDirectory (Join-Path $repo $allowed) -RepoRoot $repo
+    }
+    # Outside the worktree there is no provenance to pollute, so no git query and no refusal.
+    Assert-ResizeRunDirectoryIgnored -RunDirectory (Join-Path ([IO.Path]::GetTempPath()) 'resize-outside') -RepoRoot $repo
+
     $script:elevated = $false
     function Get-ResizeCaptureIdentity { @{ Elevated = $script:elevated; LauncherPid = $PID } }
     $script:calls = [Collections.Generic.List[object]]::new()
@@ -170,6 +184,22 @@ try {
     Assert-Throws { Invoke-ResizeCapture -Phase App -RunDirectory $run } 'Left running'
     Assert-True $script:closeRequested 'Deadline did not request graceful close'
     Assert-True ((Get-Content (Join-Path $run 'app.json') -Raw | ConvertFrom-Json).State -eq 'failed') 'Hung app treated as completed'
+    # A missing Windows Performance Toolkit must not consume the run's one-shot collector claim.
+    # Resolving wpr after the claim left a zero-byte collector.json, so every retry failed with
+    # 'already exists' and no failure metadata was retained, stranding a good prepared snapshot.
+    $script:elevated = $true
+    $script:failOn = ''
+    $script:calls.Clear()
+    $run = New-TestRun
+    function Get-Command { param($Name, $ErrorAction) throw "mock: '$Name' is not recognized" }
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'not recognized'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $run 'collector.json'))) 'Missing wpr consumed the collector claim'
+    Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-start' }).Count -eq 0) 'Started a recording without wpr'
+    # The prepared run must still be usable once the toolkit is available.
+    function Get-Command { param($Name, $ErrorAction) @{ Source = "mock-$Name.exe" } }
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15
+    Assert-True ((Get-Content (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json).State -eq 'saved') 'Run unusable after a missing-wpr failure'
+
     Write-Host 'Resize capture lifecycle, overlap, privilege, identity and failure tests passed.'
 }
 finally {

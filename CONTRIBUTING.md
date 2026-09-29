@@ -893,6 +893,13 @@ Prepare/App/Check refuse elevated terminals. This avoids the workload-elevation 
 without replacing the legacy profiling modes. No driver changes, TDR settings, GPU
 synchronization queries, or automatic cancellation of other recordings are involved.
 
+A run directory inside the worktree must be git-ignored, and `Prepare` refuses one that
+isn't. `Prepare` writes into it before CMake evaluates `GIT_SOURCE_STATE`, so a tracked
+run directory stamps the captured binary as `configureSourceState=dirty` and makes
+`checkout-status.txt` report the capture's own output as a source change -- destroying the
+provenance the capture exists to establish. `perf-data/resize-*/` and `build/` are already
+ignored; anywhere outside the repository is also fine.
+
 ```powershell
 # Normal-user terminal, repository root. Pick a NEW directory for EVERY run.
 $run = Join-Path $PWD 'perf-data\resize-001'

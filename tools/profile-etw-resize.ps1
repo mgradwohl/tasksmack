@@ -55,6 +55,33 @@ function Test-ResizeCaptureOverlap {
         [DateTimeOffset]::Parse($App.EndUtc) -le [DateTimeOffset]::Parse($Collector.StopRequestedUtc)
 }
 
+# A run directory inside the worktree that git does not ignore corrupts the provenance this
+# capture exists to establish: Prepare writes configure.log before CMake evaluates
+# GIT_SOURCE_STATE, so the binary is stamped configureSourceState=dirty by the capture's own
+# output, and checkout-status.txt then reports diagnostic artifacts as source changes. Refuse
+# such a directory up front rather than producing artifacts whose provenance describes itself.
+function Assert-ResizeRunDirectoryIgnored {
+    param([string]$RunDirectory, [string]$RepoRoot)
+    $root = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $run = [IO.Path]::GetFullPath($RunDirectory)
+    if (-not $run.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        return  # Outside the worktree: nothing to pollute.
+    }
+    # Probe a file path inside the run directory, not the directory itself: the guard runs
+    # before the directory exists, and `git check-ignore` cannot match a directory-only
+    # pattern (a .gitignore entry with a trailing slash) against a not-yet-existing path.
+    # configure.log is the first artifact Prepare writes, so this is the exact question we mean.
+    $probe = Join-Path $run 'configure.log'
+    $PSNativeCommandUseErrorActionPreference = $false
+    & git -C $RepoRoot check-ignore --quiet -- $probe 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Run directory is inside the worktree but not git-ignored: $run`n" +
+               'Capture output would be stamped into version.h as configureSourceState=dirty and ' +
+               'reported by checkout-status.txt as a source change. Add it to .gitignore ' +
+               '(perf-data/resize-*/ and build/ are already ignored) or choose a path outside the repository.')
+    }
+}
+
 function Invoke-ResizeCapture {
     param(
         [string]$Phase, [string]$RunDirectory, [string]$Preset, [switch]$SkipBuild,
@@ -77,6 +104,7 @@ function Invoke-ResizeCapture {
 
     if ($Phase -eq 'Prepare') {
         if (Test-Path -LiteralPath $RunDirectory) { throw "Run directory already exists: $RunDirectory" }
+        Assert-ResizeRunDirectoryIgnored -RunDirectory $RunDirectory -RepoRoot $RepoRoot
         if (-not $Preset) { $Preset = 'win-optimized' }
         New-Item -ItemType Directory -Path $RunDirectory | Out-Null
         if (-not $SkipBuild) {
@@ -125,10 +153,14 @@ function Invoke-ResizeCapture {
         if (-not $identity.Elevated) { throw 'Collect requires a separately opened elevated terminal. It never launches the app.' }
         if ($DurationSeconds -eq 0) { $DurationSeconds = 180 }
         if ($DurationSeconds -lt 15 -or $DurationSeconds -gt 600) { throw 'Collector duration must be 15-600 seconds.' }
+        # Resolve wpr BEFORE the one-shot claim below. Resolving after it means a missing
+        # Windows Performance Toolkit consumes the run's only collector claim, leaves a
+        # zero-byte collector.json, and makes every retry fail with "already exists" with no
+        # failure metadata retained -- stranding an otherwise good prepared snapshot.
+        $wpr = (Get-Command wpr -ErrorAction Stop).Source
         # CreateNew prevents simultaneous/repeated collectors from claiming this run.
         $claim = [IO.File]::Open($collectorPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $claim.Dispose()
-        $wpr = (Get-Command wpr -ErrorAction Stop).Source
         $instance = "TaskSmackResize-$([guid]::NewGuid().ToString('N'))"
         $collector = @{
             State = 'starting'; Identity = $identity; Instance = $instance
@@ -139,9 +171,9 @@ function Invoke-ResizeCapture {
         $started = $false
         try {
             Invoke-ResizeCaptureCommand whoami @('/all') (Join-Path $RunDirectory 'collector-token.txt')
-            foreach ($profile in $collector.Profiles) {
-                Invoke-ResizeCaptureCommand $wpr @('-profiledetails', $profile, '-filemode') `
-                    (Join-Path $RunDirectory "$profile.txt")
+            foreach ($profileName in $collector.Profiles) {
+                Invoke-ResizeCaptureCommand $wpr @('-profiledetails', $profileName, '-filemode') `
+                    (Join-Path $RunDirectory "$profileName.txt")
             }
             Invoke-ResizeCaptureCommand $wpr @(
                 '-start', 'GeneralProfile.Verbose', '-start', 'GPU.Verbose', '-start', 'DesktopComposition.Verbose',
