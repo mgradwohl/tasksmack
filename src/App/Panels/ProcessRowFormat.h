@@ -97,12 +97,16 @@ struct AlignedCellText
 /// ProcessesPanel::m_RowFormatCache). Built lazily, on demand, the first time a row is actually
 /// rendered after its snapshot generation changes -- not eagerly for every process in the
 /// snapshot -- so cost scales with visible rows, not total process count (perf-plan #843).
-/// `generation`/`fontPtr` record what this entry was built from, so ProcessesPanel can detect
+/// `generation`/`fontId` record what this entry was built from, so ProcessesPanel can detect
 /// staleness (a new snapshot version, or a font/size/DPI change) without a separate map lookup.
 struct RowFormatCache
 {
-    std::uint64_t generation = 0;  // Snapshot version this entry was built from.
-    const void* fontPtr = nullptr; // ImFont* used to build this entry; opaque here to avoid an ImGui dependency.
+    std::uint64_t generation = 0; // Snapshot version this entry was built from.
+    // Identity of the ImFont this entry was built under. Deliberately a std::uintptr_t rather
+    // than an ImFont*/const void*: it is only ever compared for equality, never dereferenced, and
+    // storing it as an integer keeps a caller-supplied address from escaping into this long-lived
+    // map (CodeQL cpp/stack-address-escape, see #904). Also keeps this header ImGui-free.
+    std::uintptr_t fontId = 0;
 
     AlignedCellText ppid;       // formatId(parentPid)          — immutable
     AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
@@ -131,7 +135,7 @@ struct RowFormatCache
 /// Formats every RowFormatCache field for one process snapshot. Pure (no ImGui calls, no shared
 /// state) so it can run on demand from renderProcessRow() for exactly the rows ImGuiListClipper
 /// decides are visible, instead of eagerly for every process every time the snapshot version
-/// changes. `generation`/`fontPtr` are stamped by the caller after construction (they're not
+/// changes. `generation`/`fontId` are stamped by the caller after construction (they're not
 /// derivable from `proc` alone).
 [[nodiscard]] inline RowFormatCache buildRowFormatCache(const Domain::ProcessSnapshot& proc)
 {
@@ -196,27 +200,27 @@ struct RowFormatCache
 }
 
 /// Get-or-build one row's cache entry: reuses it as-is if it was already built for this exact
-/// `generation`/`fontPtr`, otherwise (re)builds it from `proc` via buildRowFormatCache() and
-/// stamps the new generation/fontPtr. ImGui-free (only touches the map and calls
+/// `generation`/`fontId`, otherwise (re)builds it from `proc` via buildRowFormatCache() and
+/// stamps the new generation/fontId. ImGui-free (only touches the map and calls
 /// buildRowFormatCache()) so the lazy-invalidation policy itself -- not just the formatting it
 /// produces -- is directly unit-testable, separate from renderProcessRow()'s live ImGui context.
 inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t, RowFormatCache>& cache,
                                                 const Domain::ProcessSnapshot& proc,
                                                 std::uint64_t generation,
-                                                const void* fontPtr)
+                                                std::uintptr_t fontId)
 {
     // try_emplace, not operator[]: a freshly default-constructed entry carries generation == 0 /
-    // fontPtr == nullptr, which are themselves legal stamp values, so a stamp comparison alone
+    // fontId == 0, which are themselves legal stamp values, so a stamp comparison alone
     // can't tell "never built" from "already built for generation 0 with no font" and would hand
     // back an empty, unformatted entry. `inserted` makes first access unambiguous, independent of
-    // whatever the caller happens to seed its generation counter and font pointer with.
+    // whatever the caller happens to seed its generation counter and font identity with.
     const auto [it, inserted] = cache.try_emplace(proc.uniqueKey);
     RowFormatCache& entry = it->second;
-    if (inserted || entry.generation != generation || entry.fontPtr != fontPtr)
+    if (inserted || entry.generation != generation || entry.fontId != fontId)
     {
         entry = buildRowFormatCache(proc);
         entry.generation = generation;
-        entry.fontPtr = fontPtr;
+        entry.fontId = fontId;
     }
     return entry;
 }

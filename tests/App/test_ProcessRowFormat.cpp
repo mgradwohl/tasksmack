@@ -170,16 +170,16 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccess)
     ProcessSnapshot snap = makeSnapshot();
     snap.uniqueKey = 1;
 
-    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/nullptr);
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontId=*/0);
 
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
     EXPECT_EQ(fmt.generation, 1U);
-    EXPECT_EQ(fmt.fontPtr, nullptr);
+    EXPECT_EQ(fmt.fontId, 0U);
 }
 
-TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGenerationAndNullFont)
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGenerationAndZeroFontId)
 {
-    // generation == 0 / fontPtr == nullptr are legal stamp values that also happen to match a
+    // generation == 0 / fontId == 0 are legal stamp values that also happen to match a
     // default-constructed RowFormatCache, so a stamp comparison alone can't distinguish "never
     // built" from "already built for exactly these stamps". A get-or-build that only compares
     // stamps would return an empty, unformatted entry here and render a row of blank cells.
@@ -187,11 +187,11 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGe
     ProcessSnapshot snap = makeSnapshot();
     snap.uniqueKey = 1;
 
-    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/0, /*fontPtr=*/nullptr);
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/0, /*fontId=*/0);
 
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
     EXPECT_EQ(fmt.generation, 0U);
-    EXPECT_EQ(fmt.fontPtr, nullptr);
+    EXPECT_EQ(fmt.fontId, 0U);
 }
 
 TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationAndFont)
@@ -199,7 +199,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationA
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
     ProcessSnapshot snapA = makeSnapshot();
     snapA.uniqueKey = 1;
-    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontPtr=*/nullptr);
+    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontId=*/0);
 
     // A second call for the same key/generation/font, with a snapshot whose data has since
     // changed (cpuPercent differs), must reuse the existing entry rather than rebuilding: a
@@ -208,7 +208,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationA
     ProcessSnapshot snapB = makeSnapshot();
     snapB.uniqueKey = 1;
     snapB.cpuPercent = 99.0;
-    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/1, /*fontPtr=*/nullptr);
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/1, /*fontId=*/0);
 
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%"); // Still snapA's value -- not rebuilt.
 }
@@ -218,12 +218,12 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenGenerationAdvance
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
     ProcessSnapshot snapA = makeSnapshot();
     snapA.uniqueKey = 1;
-    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontPtr=*/nullptr);
+    getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontId=*/0);
 
     ProcessSnapshot snapB = makeSnapshot();
     snapB.uniqueKey = 1;
     snapB.cpuPercent = 99.0;
-    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/2, /*fontPtr=*/nullptr);
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/2, /*fontId=*/0);
 
     EXPECT_EQ(fmt.cpuPercent.text, "99.0%");
     EXPECT_EQ(fmt.generation, 2U);
@@ -237,17 +237,20 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithou
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
     ProcessSnapshot snap = makeSnapshot();
     snap.uniqueKey = 1;
-    const int oldFontToken = 0;
-    const int newFontToken = 0;
-    getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/&oldFontToken);
+    // Two distinct font identities. These are plain integer tokens, not addresses of locals:
+    // the stamp is a std::uintptr_t precisely so no caller address is stored in the cache
+    // (CodeQL cpp/stack-address-escape, see #904).
+    constexpr std::uintptr_t oldFontToken = 0xF001;
+    constexpr std::uintptr_t newFontToken = 0xF002;
+    getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontId=*/oldFontToken);
 
     // Simulate the old entry's width having already been measured by a prior render.
     cache.at(1).cpuPercent.width = 42.0F;
 
-    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontPtr=*/&newFontToken);
+    const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontId=*/newFontToken);
 
     EXPECT_FLOAT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH); // Rebuilt, not reusing the stale width.
-    EXPECT_EQ(fmt.fontPtr, &newFontToken);
+    EXPECT_EQ(fmt.fontId, newFontToken);
 }
 
 } // namespace

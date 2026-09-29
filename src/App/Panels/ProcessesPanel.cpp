@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -793,8 +794,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     // a rebuild of this entry, or its cached AlignedCellText widths (measured for the old font)
     // would stay wrong until the next ~1Hz data refresh happens to land. The get-or-build
     // decision itself lives in ProcessRowFormat.h (ImGui-free) so it's directly unit-testable.
-    RowFormatCache& fmt =
-        ProcessRowFormat::getOrBuildRowFormatCache(m_RowFormatCache, proc, m_CachedSnapshotVersion, m_TextSizeCache.fontPtr);
+    // The font is passed as an identity value, not a pointer: RowFormatCache only ever compares
+    // this stamp for equality, so it stores a std::uintptr_t and no address escapes into the
+    // long-lived cache map (see #904).
+    RowFormatCache& fmt = ProcessRowFormat::getOrBuildRowFormatCache(
+        m_RowFormatCache, proc, m_CachedSnapshotVersion, std::bit_cast<std::uintptr_t>(m_TextSizeCache.fontPtr));
 
     // Render all columns
     int colIdx = 0;
