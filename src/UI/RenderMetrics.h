@@ -16,11 +16,17 @@ struct ChartRenderSample
 {
     std::string id;
     int vertices = 0;
-    int indices = 0;
     double micros = 0.0;
 };
 
-/// Frame-scoped registry of per-chart render cost (vertices, indices, CPU time).
+// Indices are deliberately NOT recorded. ImDrawList::IdxBuffer.Size cannot be differenced across a
+// capture scope: ImGui swaps the index buffer per draw-list channel (ImDrawListSplitter, used by
+// the tables/columns these charts sit inside), so the "before" reading comes from a different
+// buffer instance than the "after" one and is always 0. That made per-chart index counts report the
+// frame's running total instead of the chart's own geometry -- summing to several times the frame's
+// real index count (see #908). VtxBuffer is shared across channels, so vertex counts stay valid.
+
+/// Frame-scoped registry of per-chart render cost (vertices and CPU time).
 ///
 /// HistoryChart records a sample per chart per frame while capture is enabled; the overlay
 /// (renderOverlay) displays the totals for the last completed frame alongside ImGui's
@@ -165,7 +171,7 @@ class RenderMetrics
     /// noexcept: called from destructors (HistoryChart, RenderMetricsScope), so a throwing
     /// allocation would hit std::terminate. Metrics are best-effort — on any failure the
     /// sample is dropped rather than propagating the exception.
-    void record(std::string_view id, int vertices, int indices, double micros, int frameIndex) noexcept
+    void record(std::string_view id, int vertices, double micros, int frameIndex) noexcept
     {
         if (!m_Enabled)
         {
@@ -181,7 +187,7 @@ class RenderMetrics
 
         try
         {
-            m_Current.push_back({.id = std::string(id), .vertices = vertices, .indices = indices, .micros = micros});
+            m_Current.push_back({.id = std::string(id), .vertices = vertices, .micros = micros});
         }
         // NOLINTNEXTLINE(bugprone-empty-catch) -- intentional: instrumentation must never crash the app
         catch (...)
@@ -208,17 +214,16 @@ class RenderMetrics
         try
         {
             const auto timestampUs = std::chrono::duration_cast<std::chrono::microseconds>(m_LastFrameTimestamp.time_since_epoch()).count();
-            csv = "timestamp_us,scenario,frame_id,publication_id,chart,vertices,indices,cpu_us\n";
+            csv = "timestamp_us,scenario,frame_id,publication_id,chart,vertices,cpu_us\n";
             for (const auto& sample : m_LastFrame)
             {
-                csv += std::format("{},{},{},{},{},{},{},{:.1f}\n",
+                csv += std::format("{},{},{},{},{},{},{:.1f}\n",
                                    timestampUs,
                                    csvField(m_Scenario),
                                    m_LastFrameIndex,
                                    m_PublicationId,
                                    csvField(sample.id),
                                    sample.vertices,
-                                   sample.indices,
                                    sample.micros);
             }
         }

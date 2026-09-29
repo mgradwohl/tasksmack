@@ -52,15 +52,13 @@ void RenderMetrics::renderOverlay(bool* open)
                 commandLists());
 
     int chartVertices = 0;
-    int chartIndices = 0;
     double chartMicros = 0.0;
     for (const auto& sample : m_LastFrame)
     {
         chartVertices += sample.vertices;
-        chartIndices += sample.indices;
         chartMicros += sample.micros;
     }
-    ImGui::Text("Charts: %d vertices, %d indices, %.0f us CPU (%zu charts)", chartVertices, chartIndices, chartMicros, m_LastFrame.size());
+    ImGui::Text("Charts: %d vertices, %.0f us CPU (%zu charts)", chartVertices, chartMicros, m_LastFrame.size());
 
     // Free-form label identifying what's currently being profiled (e.g. "idle",
     // "process-list-1000-rows"), included in every exported CSV row so pasted exports from
@@ -82,12 +80,11 @@ void RenderMetrics::renderOverlay(bool* open)
 
     constexpr ImGuiTableFlags TABLE_FLAGS =
         ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY;
-    if (ImGui::BeginTable("##RenderMetricsTable", 4, TABLE_FLAGS))
+    if (ImGui::BeginTable("##RenderMetricsTable", 3, TABLE_FLAGS))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Chart", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 80.0F);
-        ImGui::TableSetupColumn("Indices", ImGuiTableColumnFlags_WidthFixed, 80.0F);
         ImGui::TableSetupColumn("CPU (us)", ImGuiTableColumnFlags_WidthFixed, 80.0F);
         ImGui::TableHeadersRow();
 
@@ -115,8 +112,6 @@ void RenderMetrics::renderOverlay(bool* open)
                                   case 1:
                                       return ordered(a->vertices, b->vertices);
                                   case 2:
-                                      return ordered(a->indices, b->indices);
-                                  case 3:
                                       return ordered(a->micros, b->micros);
                                   default:
                                       return ordered(a->id, b->id);
@@ -131,8 +126,6 @@ void RenderMetrics::renderOverlay(bool* open)
             ImGui::TextUnformatted(sample->id.c_str());
             ImGui::TableNextColumn();
             ImGui::Text("%d", sample->vertices);
-            ImGui::TableNextColumn();
-            ImGui::Text("%d", sample->indices);
             ImGui::TableNextColumn();
             ImGui::Text("%.1f", sample->micros);
         }

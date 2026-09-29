@@ -629,7 +629,8 @@ struct HistoryChartConfig
 /// RAII frame for every history chart in the app: pushes the chart font, begins the plot,
 /// and applies the shared legend/axis/format/limit setup so all charts look and behave
 /// identically. When the Render Metrics overlay is active it also captures this chart's
-/// vertex/index counts and CPU time. Call series-plotting code only when active() is true;
+/// vertex count and CPU time (not indices -- see ChartRenderSample in RenderMetrics.h for why).
+/// Call series-plotting code only when active() is true;
 /// extra axis setup (e.g., a Y2 axis) may be added right after construction.
 ///
 /// Usage:
@@ -647,7 +648,6 @@ class HistoryChart
         if (m_Measure)
         {
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
-            m_IdxBefore = m_DrawList->IdxBuffer.Size;
             m_Start = std::chrono::steady_clock::now();
         }
 
@@ -703,8 +703,7 @@ class HistoryChart
         if (m_Active && m_Measure && (m_DrawList != nullptr))
         {
             const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
-            RenderMetrics::get().record(
-                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+            RenderMetrics::get().record(m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, elapsed, ImGui::GetFrameCount());
         }
     }
 
@@ -724,7 +723,6 @@ class HistoryChart
     std::chrono::steady_clock::time_point m_Start;
     const char* m_Id = "";
     int m_VtxBefore = 0;
-    int m_IdxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
     bool m_Measure = false;
     bool m_Active = false;
@@ -754,7 +752,6 @@ class RenderMetricsScope
             }
             m_DrawList = ImGui::GetWindowDrawList();
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
-            m_IdxBefore = m_DrawList->IdxBuffer.Size;
             m_Start = std::chrono::steady_clock::now();
         }
     }
@@ -764,8 +761,7 @@ class RenderMetricsScope
         if (m_Measure && (m_DrawList != nullptr))
         {
             const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
-            RenderMetrics::get().record(
-                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+            RenderMetrics::get().record(m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, elapsed, ImGui::GetFrameCount());
         }
     }
 
@@ -779,7 +775,6 @@ class RenderMetricsScope
     ImDrawList* m_DrawList = nullptr;
     std::chrono::steady_clock::time_point m_Start;
     int m_VtxBefore = 0;
-    int m_IdxBefore = 0;
     bool m_Measure = false;
 };
 
