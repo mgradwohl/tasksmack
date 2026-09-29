@@ -647,7 +647,6 @@ class HistoryChart
         if (m_Measure)
         {
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
-            m_IdxBefore = m_DrawList->IdxBuffer.Size;
             m_Start = std::chrono::steady_clock::now();
         }
 
@@ -703,8 +702,7 @@ class HistoryChart
         if (m_Active && m_Measure && (m_DrawList != nullptr))
         {
             const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
-            RenderMetrics::get().record(
-                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+            RenderMetrics::get().record(m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, elapsed, ImGui::GetFrameCount());
         }
     }
 
@@ -724,7 +722,6 @@ class HistoryChart
     std::chrono::steady_clock::time_point m_Start;
     const char* m_Id = "";
     int m_VtxBefore = 0;
-    int m_IdxBefore = 0;
     ImDrawListFlags m_SavedDrawListFlags = 0;
     bool m_Measure = false;
     bool m_Active = false;
@@ -754,7 +751,6 @@ class RenderMetricsScope
             }
             m_DrawList = ImGui::GetWindowDrawList();
             m_VtxBefore = m_DrawList->VtxBuffer.Size;
-            m_IdxBefore = m_DrawList->IdxBuffer.Size;
             m_Start = std::chrono::steady_clock::now();
         }
     }
@@ -764,8 +760,7 @@ class RenderMetricsScope
         if (m_Measure && (m_DrawList != nullptr))
         {
             const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - m_Start).count();
-            RenderMetrics::get().record(
-                m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, m_DrawList->IdxBuffer.Size - m_IdxBefore, elapsed, ImGui::GetFrameCount());
+            RenderMetrics::get().record(m_Id, m_DrawList->VtxBuffer.Size - m_VtxBefore, elapsed, ImGui::GetFrameCount());
         }
     }
 
@@ -779,7 +774,6 @@ class RenderMetricsScope
     ImDrawList* m_DrawList = nullptr;
     std::chrono::steady_clock::time_point m_Start;
     int m_VtxBefore = 0;
-    int m_IdxBefore = 0;
     bool m_Measure = false;
 };
 
