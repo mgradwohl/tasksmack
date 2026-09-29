@@ -816,41 +816,11 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         {
             const bool isSelected = (m_SelectedPid == proc.pid);
 
-            // Indent for tree depth
-            if (m_TreeViewEnabled && depth > 0)
-            {
-                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
-                ImGui::Indent(indentWidth);
-            }
-
-            // Tree expand/collapse button
-            if (m_TreeViewEnabled && hasChildren)
-            {
-                // Stack-allocated button ID: avoids heap allocation per visible row per frame
-                std::array<char, 40> buttonIdBuf{};
-                const char buttonChar = isExpanded ? '-' : '+';
-                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
-                *btnRes.out = '\0';
-                if (ImGui::SmallButton(buttonIdBuf.data()))
-                {
-                    // Toggle collapsed state using uniqueKey
-                    if (isExpanded)
-                    {
-                        m_CollapsedKeys.insert(proc.uniqueKey);
-                    }
-                    else
-                    {
-                        m_CollapsedKeys.erase(proc.uniqueKey);
-                    }
-                }
-                ImGui::SameLine();
-            }
-            else if (m_TreeViewEnabled)
-            {
-                // Add spacing for processes without children
-                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
-                ImGui::SameLine();
-            }
+            // The tree indent and expand/collapse button live in the Name column, not here. This
+            // column is a fixed 60px, so indenting it pushed the PID text past the cell's clip
+            // rect and silently truncated digits at depth >= 1 -- 589 rendered as "5" (see #906).
+            // Name is a stretch column with room to absorb the indent, and indenting the name is
+            // also what comparable process viewers do.
 
             // Stack-allocated label and selectable ID — avoids heap allocations per visible row per frame
             std::array<char, 16> labelBuf{};
@@ -877,12 +847,6 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             const float pidCurrentX = ImGui::GetCursorPosX();
             ImGui::SetCursorPosX(pidCurrentX + std::max(0.0F, pidAvailWidth - pidTextWidth));
             ImGui::TextUnformatted(label.data(), label.data() + label.size());
-
-            if (m_TreeViewEnabled && depth > 0)
-            {
-                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
-                ImGui::Unindent(indentWidth);
-            }
             continue;
         }
 
@@ -983,8 +947,52 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::Name:
+        {
+            // Tree depth is expressed here rather than in the PID column: Name is a stretch
+            // column, so the indent has room to grow without clipping its own content (#906).
+            const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
+            const bool indented = m_TreeViewEnabled && depth > 0;
+            if (indented)
+            {
+                ImGui::Indent(indentWidth);
+            }
+
+            if (m_TreeViewEnabled && hasChildren)
+            {
+                // Stack-allocated button ID: avoids heap allocation per visible row per frame
+                std::array<char, 40> buttonIdBuf{};
+                const char buttonChar = isExpanded ? '-' : '+';
+                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
+                *btnRes.out = '\0';
+                if (ImGui::SmallButton(buttonIdBuf.data()))
+                {
+                    // Toggle collapsed state using uniqueKey
+                    if (isExpanded)
+                    {
+                        m_CollapsedKeys.insert(proc.uniqueKey);
+                    }
+                    else
+                    {
+                        m_CollapsedKeys.erase(proc.uniqueKey);
+                    }
+                }
+                ImGui::SameLine();
+            }
+            else if (m_TreeViewEnabled)
+            {
+                // Keep names aligned with their siblings that do have an expander.
+                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
+                ImGui::SameLine();
+            }
+
             ImGui::TextUnformatted(proc.name.c_str());
+
+            if (indented)
+            {
+                ImGui::Unindent(indentWidth);
+            }
             break;
+        }
 
         case ProcessColumn::PPID:
             renderRightAlignedText(fmt.ppid);
