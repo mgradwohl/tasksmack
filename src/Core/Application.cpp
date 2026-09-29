@@ -4,10 +4,12 @@
 #include "Core/Event.h"
 #include "Core/FramePacing.h"
 #include "Core/Layer.h"
+#include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
+#include "version.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -30,7 +32,12 @@
 #include <utility>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -90,12 +97,43 @@ constexpr double DRAIN_BUDGET_MS = 8.0;
 // this frame. The event queue is fully processed; rendering catches up next frame.
 constexpr double DRAIN_SKIP_RENDER_MS = 16.0;
 
-// Slow-frame thresholds for per-phase logging during resize tracing.
-// Compute phases (update, render, post) are CPU work we control; threshold is one
-// 60 fps budget slice. Swap includes compositor hold time on Wayland, which routinely
-// reaches 8-15 ms even on smooth frames — only log truly bad stalls there.
-constexpr double RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS = 8.0;
-constexpr double RESIZE_PERF_TRACE_SLOW_SWAP_THRESHOLD_MS = 30.0;
+// Keep routine budget misses in periodic percentile summaries; synchronous per-layer
+// logging at 8 ms can itself dominate a capture. Detail only exceptional stalls.
+constexpr double RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS = 100.0;
+constexpr double RESIZE_PERF_TRACE_SLOW_SWAP_THRESHOLD_MS = 100.0;
+
+void logResizePerfAnchor()
+{
+    const auto counterBefore = SDL_GetPerformanceCounter();
+    const auto utcNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto counterAfter = SDL_GetPerformanceCounter();
+#ifdef _WIN32
+    const auto pid = GetCurrentProcessId();
+    const auto tid = GetCurrentThreadId();
+    constexpr std::string_view CLOCK_NAME = "QPC";
+#else
+    const auto pid = getpid();
+    const auto tid = SDL_GetCurrentThreadID();
+    constexpr std::string_view CLOCK_NAME = "SDL-performance-counter";
+#endif
+    spdlog::info("ResizePerfAnchor: pid={} uiTid={} clock={} frequency={} counterBefore={} utcUnixNs={} counterAfter={} "
+                 "commit={} configureSourceState={} version={} buildType={} compiler={}-{} configuredUTC='{} {}'",
+                 pid,
+                 tid,
+                 CLOCK_NAME,
+                 SDL_GetPerformanceFrequency(),
+                 counterBefore,
+                 utcNs,
+                 counterAfter,
+                 TASKSMACK_GIT_FULL_COMMIT,
+                 TASKSMACK_GIT_SOURCE_STATE,
+                 TASKSMACK_VERSION,
+                 TASKSMACK_BUILD_TYPE,
+                 TASKSMACK_COMPILER_ID,
+                 TASKSMACK_COMPILER_VERSION,
+                 TASKSMACK_BUILD_DATE,
+                 TASKSMACK_BUILD_TIME);
+}
 
 #ifndef _WIN32
 [[nodiscard]] bool hasSafeOwnerOnlyPermissions(const std::filesystem::perms perms)
@@ -299,10 +337,12 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     try
     {
         m_ResizePerfTraceEnabled = isEnvFlagEnabled(SDL_getenv(RESIZE_PERF_TRACE_ENV));
+        resizePerfOperations() = {};
         spdlog::info("Initializing {} application", m_Spec.Name);
         if (m_ResizePerfTraceEnabled)
         {
             spdlog::info("Resize performance tracing enabled via {}", RESIZE_PERF_TRACE_ENV);
+            logResizePerfAnchor();
         }
 
         // Validate window dimensions; fall back to a sensible default rather than
@@ -431,11 +471,42 @@ void Application::run()
     // changed last frame, we allow the idle sleep even inside the interaction grace window,
     // preventing wasted renders when the window is stationary post-interaction.
     bool geometryChangedLastFrame = false;
+    std::uint64_t loopStart = 0;
+    ResizePerfLoopTiming loopTiming;
+    const auto finishTracedLoop = [&](std::uint64_t end)
+    {
+        if (loopStart == 0)
+        {
+            return;
+        }
+        const double wallMs = resizePerfElapsedMs(loopStart, end);
+        resizePerfOperations().loops.record(wallMs);
+        if (wallMs > 100.0)
+        {
+            spdlog::info("ResizePerfLoop: beginCounter={} endCounter={} wall={:.3f} ms drain={:.3f} ms wait={:.3f} ms "
+                         "vsync={:.3f} ms framePhases={:.3f} ms other={:.3f} ms",
+                         loopStart,
+                         end,
+                         wallMs,
+                         loopTiming.drainMs,
+                         loopTiming.waitMs,
+                         loopTiming.vsyncMs,
+                         loopTiming.frameMs,
+                         loopTiming.otherMs(wallMs));
+        }
+    };
 
     spdlog::info("Entering main loop");
 
     while (m_Running)
     {
+        if (m_ResizePerfTraceEnabled)
+        {
+            const auto now = SDL_GetPerformanceCounter();
+            finishTracedLoop(now);
+            loopStart = now;
+            loopTiming = {};
+        }
         // Process SDL events
         bool hadEvents = false;
         bool needsResizeRedraw = false;
@@ -525,6 +596,10 @@ void Application::run()
         // Always capture end time; used for both trace recording and P3 skip-render decision.
         const auto eventDrainEnd = std::chrono::steady_clock::now();
         const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
+        if (traceResizePerfThisFrame)
+        {
+            loopTiming.drainMs = totalDrainMs;
+        }
         // recordEventBatch() for THIS drain is deferred until after the interaction-transition
         // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
         // same drain), so the batch that triggers a transition lands in the correctly-reset
@@ -547,6 +622,7 @@ void Application::run()
         // vsync/compositor-stall coupling that causes drain and swap spikes on
         // Wayland. Restore adaptive vsync when the interaction ends (after the
         // grace period expires) so idle frames remain tear-free.
+        const auto vsyncStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
         switch (FramePacing::computeVsyncTransition(wasInteracting, isInteracting, m_Spec.VSync, m_VsyncDisabledForInteraction))
         {
         case FramePacing::VsyncTransition::Disable:
@@ -560,6 +636,10 @@ void Application::run()
         case FramePacing::VsyncTransition::NoChange:
             break;
         }
+        if (traceResizePerfThisFrame)
+        {
+            loopTiming.vsyncMs = resizePerfElapsedMs(vsyncStart, SDL_GetPerformanceCounter());
+        }
 
         if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
         {
@@ -572,12 +652,11 @@ void Application::run()
             // moment idle begins.
             lastResizeTraceLogTime = getTime();
         }
-        // Reset stats at interaction start so idle-frame event batches accumulated before
-        // the interaction do not skew the first interaction-progress log averages. This
-        // intentionally discards an at-most-partial idle window (idle-progress already logs
-        // independently on its own cadence, so the loss is bounded and not a correctness bug).
+        // Flush the partial idle interval before resetting, so rare stalls and tail counts
+        // are not discarded when the user begins the next interaction.
         if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
         {
+            logResizePerfTraceSummary(resizeTraceStats, "idle-end");
             resizeTraceStats = {};
             lastResizeTraceLogTime = getTime();
         }
@@ -626,6 +705,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
+                loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
             didImmediateResizeRedraw = true;
         }
@@ -647,7 +727,12 @@ void Application::run()
             if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
             {
                 const int sleepMs = FramePacing::computeIdleSleepMs(m_Window->isMinimized(), IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS);
+                const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
                 SDL_WaitEventTimeout(nullptr, sleepMs);
+                if (traceResizePerfThisFrame)
+                {
+                    loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
+                }
             }
         }
 
@@ -666,6 +751,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
+                loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
         }
 
@@ -694,7 +780,10 @@ void Application::run()
 
     if (m_ResizePerfTraceEnabled)
     {
+        finishTracedLoop(SDL_GetPerformanceCounter());
         logResizePerfTraceSummary(resizeTraceStats, "shutdown");
+        logResizePerfOperationSummary();
+        logResizePerfAnchor();
     }
 
     spdlog::info("Exiting main loop");
@@ -765,6 +854,7 @@ void Application::renderFrame(
 
     m_Window->swapBuffers();
     const auto swapEnd = tracing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const auto frameEndCounter = tracing ? SDL_GetPerformanceCounter() : 0;
 
     if (updateMs != nullptr)
     {
@@ -785,6 +875,7 @@ void Application::renderFrame(
 
     if (tracing)
     {
+        recordResizePerfFrameEnd(frameEndCounter);
         const double measuredUpdateMs = std::chrono::duration<double, std::milli>(updateEnd - updateStart).count();
         const double measuredPostMs = std::chrono::duration<double, std::milli>(postRenderEnd - renderEnd).count();
         const double measuredSwapMs = std::chrono::duration<double, std::milli>(swapEnd - postRenderEnd).count();
@@ -792,8 +883,7 @@ void Application::renderFrame(
         const bool slowUpdate = measuredUpdateMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
         const bool slowRender = measuredRenderMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
         const bool slowPost = measuredPostMs >= RESIZE_PERF_TRACE_SLOW_COMPUTE_THRESHOLD_MS;
-        // Swap threshold is higher: Wayland compositor hold routinely adds 8-15 ms on
-        // smooth frames. Only flag genuine stalls that exceed a full frame budget.
+        // Wall durations include scheduler/driver waits; these are not CPU utilization.
         const bool slowSwap = measuredSwapMs >= RESIZE_PERF_TRACE_SLOW_SWAP_THRESHOLD_MS;
 
         if (slowUpdate || slowRender || slowPost || slowSwap)
@@ -820,8 +910,7 @@ void Application::renderFrame(
                 }
             };
 
-            // Main frame header fires only for slow compute phases (CPU work we control).
-            // Swap has its own higher threshold and its own log line below.
+            // Swap has its own detail line below.
             if (slowUpdate || slowRender || slowPost)
             {
                 spdlog::info("ResizePerfSlowFrame: resizeFrame={} update={:.3f} ms render={:.3f} ms post={:.3f} ms swap={:.3f} ms",
@@ -838,8 +927,7 @@ void Application::renderFrame(
             }
             if (slowRender)
             {
-                spdlog::info("ResizePerfSlowFrame[render]: {:.3f} ms (ImGui draw; consider reducing content complexity at this size)",
-                             measuredRenderMs);
+                spdlog::info("ResizePerfSlowFrame[render]: {:.3f} ms (layer onRender wall time)", measuredRenderMs);
             }
             if (slowPost)
             {
@@ -847,7 +935,7 @@ void Application::renderFrame(
             }
             if (slowSwap)
             {
-                spdlog::info("ResizePerfSlowFrame[swap]: {:.3f} ms (compositor hold or vsync stall)", measuredSwapMs);
+                spdlog::info("ResizePerfSlowFrame[swap]: {:.3f} ms (SDL_GL_SwapWindow wall time)", measuredSwapMs);
             }
         }
     }

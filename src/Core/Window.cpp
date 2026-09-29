@@ -1,5 +1,6 @@
 #include "Window.h"
 
+#include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 
@@ -207,14 +208,14 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
         // Prefer adaptive vsync: presents immediately when a frame is late instead of
         // stalling until the next vblank. Falls back to regular vsync if the driver
         // does not support GLX_EXT_swap_control_tear / WGL_EXT_swap_control_tear.
-        if (!SDL_GL_SetSwapInterval(-1))
+        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
         {
-            SDL_GL_SetSwapInterval(1);
+            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
         }
     }
     else
     {
-        SDL_GL_SetSwapInterval(0);
+        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
     }
 
 #ifdef _WIN32
@@ -267,14 +268,14 @@ void Window::setVSync(bool enabled)
     {
         // Mirror the logic used during initialisation: prefer adaptive vsync
         // (swap-interval -1) and fall back to regular vsync (1) if unsupported.
-        if (!SDL_GL_SetSwapInterval(-1))
+        if (!traceResizePerfSDL(ResizePerfOperation::SwapInterval, -1, 0, [] { return SDL_GL_SetSwapInterval(-1); }))
         {
-            SDL_GL_SetSwapInterval(1);
+            traceResizePerfSDL(ResizePerfOperation::SwapInterval, 1, 0, [] { return SDL_GL_SetSwapInterval(1); });
         }
     }
     else
     {
-        SDL_GL_SetSwapInterval(0);
+        traceResizePerfSDL(ResizePerfOperation::SwapInterval, 0, 0, [] { return SDL_GL_SetSwapInterval(0); });
     }
 }
 
@@ -338,13 +339,16 @@ void Window::setSize(int width, int height)
 
     const int clampedWidth = clampWindowDimension(width);
     const int clampedHeight = clampWindowDimension(height);
-    SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight);
+    traceResizePerfSDL(ResizePerfOperation::WindowSize,
+                       clampedWidth,
+                       clampedHeight,
+                       [&] { return SDL_SetWindowSize(m_Handle, clampedWidth, clampedHeight); });
     // Block until the OS has applied the resize so that subsequent SDL_GetWindowSize
     // calls return the new dimensions immediately. On asynchronous windowing systems
     // (X11, Wayland) this pumps X11 events internally and waits for the ConfigureNotify.
     // NOTE: Do not call setSize() from the render loop or from any hot path — this call
     // can block for the duration of a window-manager animation on async platforms.
-    SDL_SyncWindow(m_Handle);
+    traceResizePerfSDL(ResizePerfOperation::WindowSync, clampedWidth, clampedHeight, [&] { return SDL_SyncWindow(m_Handle); });
     m_Spec.Width = clampedWidth;
     m_Spec.Height = clampedHeight;
 }

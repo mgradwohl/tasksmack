@@ -24,6 +24,37 @@
 namespace Core
 {
 
+/// Run-wide tail counts: strict "above" thresholds, never inferred from a rolling percentile.
+struct ResizePerfDurationStats
+{
+    std::uint64_t count = 0;
+    std::uint64_t over100 = 0;
+    std::uint64_t over250 = 0;
+    double maxMs = 0.0;
+
+    void record(double durationMs) noexcept
+    {
+        ++count;
+        maxMs = std::max(maxMs, durationMs);
+        over100 += durationMs > 100.0 ? 1U : 0U;
+        over250 += durationMs > 250.0 ? 1U : 0U;
+    }
+};
+
+struct ResizePerfLoopTiming
+{
+    double drainMs = 0.0;
+    double waitMs = 0.0;
+    double vsyncMs = 0.0;
+    double frameMs = 0.0;
+
+    /// Includes logging, instrumentation, bookkeeping and scheduling outside timed phases.
+    [[nodiscard]] double otherMs(double wallMs) const noexcept
+    {
+        return std::max(0.0, wallMs - (drainMs + waitMs + vsyncMs + frameMs));
+    }
+};
+
 /// Percentile (nearest-rank) of a set of samples, computed on a mutable copy since the
 /// underlying partial sort (nth_element) reorders its input. Pure/allocation-only, so it's
 /// cheap to call at log time (every 0.5-5s) even though it's not meant for the render hot path.
@@ -86,6 +117,7 @@ struct ResizePerfTraceStats
     /// their sum still misses the frame budget.
     double totalFrameMs = 0.0;
     double maxTotalFrameMs = 0.0;
+    ResizePerfDurationStats frameTail;
     /// Number of times P0 (drain budget cap) fired and broke the poll loop early.
     std::uint32_t p0BudgetCapHits = 0;
     /// Number of frames skipped by P3 (drain-overrun skip-render).
@@ -148,6 +180,7 @@ struct ResizePerfTraceStats
         const double totalDurationMs = updateDurationMs + renderDurationMs + postRenderDurationMs + swapDurationMs;
         totalFrameMs += totalDurationMs;
         maxTotalFrameMs = std::max(maxTotalFrameMs, totalDurationMs);
+        frameTail.record(totalDurationMs);
         pushRollingSample(totalFrameSamplesMs, totalDurationMs);
     }
 
@@ -182,6 +215,7 @@ struct ResizePerfTraceStats
         maxSwapMs = 0.0;
         totalFrameMs = 0.0;
         maxTotalFrameMs = 0.0;
+        frameTail = {};
         p0BudgetCapHits = 0;
         skippedRenderFrames = 0;
         maxSinglePollBatchMs = 0.0;
@@ -236,7 +270,7 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
 
     spdlog::info("ResizePerf[{}]: batches={} events={} resizeEvents={} maxBatchEvents={} "
                  "p0Hits={} skippedFrames={} maxPollBatch={:.3f} ms "
-                 "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
+                 "frames={} resizeFrames={} frame avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms over100={} over250={} "
                  "drain avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "update avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
                  "render avg/p95/p99/max={:.3f}/{:.3f}/{:.3f}/{:.3f} ms "
@@ -256,6 +290,8 @@ inline void logResizePerfTraceSummary(const ResizePerfTraceStats& stats, const s
                  totalP95,
                  totalP99,
                  stats.maxTotalFrameMs,
+                 stats.frameTail.over100,
+                 stats.frameTail.over250,
                  avg(stats.drainMs, stats.eventBatches),
                  drainP95,
                  drainP99,

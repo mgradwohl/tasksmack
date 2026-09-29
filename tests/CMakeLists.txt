@@ -39,6 +39,14 @@ endforeach()
 
 include(GoogleTest)
 
+if(WIN32)
+    find_program(TASKSMACK_PWSH NAMES pwsh)
+    if(TASKSMACK_PWSH)
+        add_test(NAME ResizeCaptureScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
+    endif()
+endif()
+
 # Platform-specific test sources
 if(WIN32)
     set(PLATFORM_TEST_SOURCES

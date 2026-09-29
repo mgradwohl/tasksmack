@@ -842,7 +842,9 @@ heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
 ### Windows — CPU profiling (ETW)
 
 Use `tools/profile-etw.ps1` to capture and `tools/analyze-etw.ps1` to analyze.
-ETW capture self-elevates; the scripts build before prompting for elevation by default.
+Legacy `app`/`bench` capture self-elevates the wrapper **and workload**; the scripts build
+before prompting for elevation by default. For normal-user resize diagnosis, use the
+separated `resize` procedure below instead (#872).
 
 ```powershell
 # App trace — exercise the app, then close it (defaults to win-optimized)
@@ -872,7 +874,8 @@ vtune -collect hotspots -- .\build\win-profile\bin\TaskSmack.exe
 Notes:
 - `wpr`, `xperf`, and `wpa` ship with the Windows Performance Toolkit (install via Windows SDK).
 - ETW capture requires elevation; `profile-etw.ps1` relaunches itself as Administrator automatically and validates all output artifacts before returning.
-- `wpr -cancel` returns a non-zero exit code when no trace is active; the scripts treat that as non-fatal.
+- Captures use unique WPR instance names and never cancel an existing recording. If
+  another recorder prevents startup, leave it alone and coordinate with its owner.
 - Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
 - Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
 - Capture uses `tools/TaskSmackCPU.wprp`, a custom WPR profile with larger buffers than the
@@ -881,6 +884,115 @@ Notes:
 - The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
   the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
   the entire suite instead.
+
+#### Same-run resize diagnostics (normal-user app, elevated collector)
+
+`profile-etw.ps1 resize` uses PowerShell 7 and four explicit phases. Only **Collect**
+requires elevation; it never launches the app or executes commands from the run manifest.
+Prepare/App/Check refuse elevated terminals. This avoids the workload-elevation confound
+without replacing the legacy profiling modes. No driver changes, TDR settings, GPU
+synchronization queries, or automatic cancellation of other recordings are involved.
+
+A run directory inside the worktree must be git-ignored, and `Prepare` refuses one that
+isn't. `Prepare` writes into it before CMake evaluates `GIT_SOURCE_STATE`, so a tracked
+run directory stamps the captured binary as `configureSourceState=dirty` and makes
+`checkout-status.txt` report the capture's own output as a source change -- destroying the
+provenance the capture exists to establish. `perf-data/resize-*/` and `build/` are already
+ignored; anywhere outside the repository is also fine.
+
+```powershell
+# Normal-user terminal, repository root. Pick a NEW directory for EVERY run.
+$run = Join-Path $PWD 'perf-data\resize-001'
+pwsh -File tools\profile-etw.ps1 resize -Phase Prepare -RunDirectory $run -Preset win-profile
+# Use win-optimized for production-like timing; it may have no PDB.
+# -SkipBuild snapshots existing files, but cannot establish their source provenance.
+
+# Separate elevated terminal, repository root; set $run to the SAME absolute path.
+pwsh -File tools\profile-etw.ps1 resize -Phase Collect -RunDirectory $run -DurationSeconds 90
+
+# Once Collect prints "Recording", run in the ORIGINAL normal-user terminal:
+pwsh -File tools\profile-etw.ps1 resize -Phase App -RunDirectory $run
+# Idle briefly, repeatedly resize edges/corners for 20-30 seconds, then close the app.
+# Let the collector's timer expire (default 180s; allowed 15-600s).
+
+# After BOTH commands finish, normal-user terminal:
+pwsh -File tools\profile-etw.ps1 resize -Phase Check -RunDirectory $run
+```
+
+**Ring buffering for rare stalls (`-Buffering Ring`).** File mode records a fixed window and
+depends on the stall happening inside it, which is the wrong shape for a freeze that occurs
+once in many minutes. `-Buffering Ring` omits WPR's `-filemode` so events accumulate in an
+in-memory ring buffer; you resize until you actually *see* a freeze, then request the save and
+only the buffer's remaining contents are written. Elevated terminal:
+
+```powershell
+pwsh -File tools\profile-etw.ps1 resize -Phase Collect -RunDirectory $run -Buffering Ring -DurationSeconds 600
+```
+
+`-Phase App` blocks until the app exits, so `Save` needs a terminal of its own: use a THIRD
+normal-user terminal (this writes the buffer closest to the freeze), or close the app first
+and then run `Save` immediately, accepting the app-shutdown time as extra ring depth
+consumed. Start `-Phase App` as above; the moment a freeze is visible:
+
+```powershell
+pwsh -File tools\profile-etw.ps1 resize -Phase Save -RunDirectory $run   # writes trace.etl now
+```
+
+Close the app afterwards, then run `-Phase Check`. `Save` is normal-user, ring-only and
+single-shot; the collector still stops only the recording it started, and the bounded deadline
+still applies if no save is requested.
+
+Two consequences are specific to ring mode and Check enforces the first, not the second. The
+app normally exits *after* the ETL is written, so Check applies a coverage rule (app started
+inside the recording and before the save) rather than file mode's stricter containment rule.
+And the buffer is memory-bounded and silently overwrites its oldest events, so no timestamp
+can show whether the ETL still reaches back to the stall -- Check marks that as required
+manual verification in WPA rather than claiming coverage.
+
+Prepare copies the executable, PDBs, sidecar DLLs and assets into `binary\` and records
+SHA-256/length for each file, the preset, CMake cache, generated `version.h`, and capture-time
+checkout identity. App runs that snapshot, not mutable build output; Check rechecks its
+hashes. PDB absence is explicit: an optimized timing run is not a symbol-rich attribution
+run, and a same-named PDB from a different build is not a substitute. CMake embeds the full
+commit and clean/dirty/unknown state **at configure time**; reconfigure after source changes.
+Neither capture-time HEAD nor `-SkipBuild` proves what produced an old executable. Preserve
+the exact snapshot and confirm symbol GUID/age matching in WPA.
+
+The shared directory retains `run.json`, `collector.json`, `app.json`, `stdout.log`,
+`stderr.log`, `trace.etl`, command outputs and exit-code/timestamp sidecars. Identity
+records include UTC/QPC, PID and actual launcher elevation; `*-token.txt` retains
+`whoami /all` including integrity level. The app inherits the non-elevated launcher's token
+(no RunAs; TaskSmack's manifest is asInvoker). These artifacts include machine/process
+information: inspect them before sharing.
+
+Collect requests `GeneralProfile.Verbose`, `GPU.Verbose` and
+`DesktopComposition.Verbose` in file mode. The installed profile definitions are retained
+as `*.Verbose.txt`; GeneralProfile supplies CSwitch/ReadyThread **stacks**, not just sampled
+CPU, while GPU/DesktopComposition add DxgKrnl/DWM. Profile availability/buffer sizes vary
+with the installed WPT version. Do not assume a requested provider emitted usable events:
+verify scheduler stacks and graphics/compositor events in the resulting trace.
+
+Collector stop always targets its own generated instance, including on failures. A failed
+start never triggers a stop. Failed shutdown records the exact instance-specific recovery
+command; never substitute an unqualified stop/cancel. App timeout requests a normal close
+on **only its own process**; if it remains hung, it is left running and the run is incomplete.
+The timer bounds collection even if the app hangs. A crash, launch failure, missing anchors,
+changed snapshot, non-overlapping timestamps or failed WPR command prevents a clean Check.
+
+Check validates conservative full-process overlap and the app's startup/shutdown QPC anchors,
+then runs `xperf -a tracestats`, retaining output, decoder warnings and exit status. It does
+**not** use `-tle` or claim zero loss from successful process exit. Inspect
+`trace-statistics.txt` and WPR logs for event/buffer loss and decoder diagnostics (#873);
+`check.json` explicitly leaves this review pending. Missing xperf or failed decoding is an
+error, not an empty successful report. Use WPA CPU Usage (Precise) on the recorded PID/UI
+TID and marked counter intervals to distinguish running, waiting and runnable delay, then
+correlate GPU/DWM events. Sampled CPU totals alone do not explain a two-second wall stall.
+
+Repeat the same workload across multiple captures on the affected hardware. Record max
+and counts strictly above 100/250 ms alongside rolling p99; absence of a reproduced freeze
+in one run is not a root-cause fix. Script lifecycle/error tests run via
+`ctest --preset win-debug -R ResizeCaptureScript` when PowerShell 7 is available, or
+`pwsh -File tools\test-profile-etw-resize.ps1`; they mock WPR and never start a recording.
 
 ### Compile-Time Profiling (-ftime-trace)
 
@@ -930,7 +1042,7 @@ $env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 |
 
 Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
 window (edges and corners) for 20–30 seconds to capture interactive numbers, then close the app.
-The log contains `ResizePerf[idle-progress|interaction-progress|interaction-end|shutdown]` lines.
+The log contains `ResizePerf[idle-progress|idle-end|interaction-progress|interaction-end|shutdown]` lines.
 Idle frames log every 5 s (`IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS`); interaction frames log every
 0.5 s (`RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS`) since an interaction is a short, bounded burst
 where more frequent logging is useful. Each line reports avg/p95/p99/max per phase, not just
@@ -975,8 +1087,38 @@ degenerate case in steady, continuous idle/interaction periods.
 (Figures above are illustrative shapes, not a specific captured run — always compare against a
 fresh capture on your own machine, not these numbers.)
 
-Frames or layers that exceed 250 ms emit additional `ResizePerfSlowFrame` /
-`ResizePerfSlowLayer` / `ResizePerfTitleBarSlowUpdate` lines for pinpoint attribution.
+`over100`/`over250` count frame phase sums strictly above those thresholds in the current
+interval. Partial idle intervals are flushed at interaction start instead of discarded.
+Frames/layers at or above 100 ms emit `ResizePerfSlowFrame`/`ResizePerfSlowLayer`;
+`ResizePerfTitleBarSlowUpdate` retains its 250 ms threshold. Routine budget misses stay in
+periodic summaries instead of producing synchronous per-frame log spam.
+
+`ResizePerfOperation` isolates regular and final mouse-release SDL size calls, wrapper
+size/sync calls, viewport updates, swap-interval changes, ImGui CPU finalization and
+OpenGL backend submission. Detail is emitted only on SDL failure or durations above 100 ms,
+with begin/end performance counters and requested geometry (`requestedA/B`: logical
+width/height for size, pixel width/height for viewport/submission, interval/0 for vsync).
+SDL result/error is preserved; void GL/ImGui operations explicitly report
+`result=not-queried`, not GPU success. `ResizePerfOperations` shutdown lines retain run-wide
+count/max/over100/over250/failures and the requested values of the longest call. There are
+no `glFinish`, `glGetError`, or synchronous GPU timing queries; backend submission wall
+time includes its texture/state/buffer/callback work and possible driver waits.
+
+`ResizePerfLoop` records actual loop-boundary wall time, drain, wait, vsync transition and
+frame phase sum for loops above 100 ms. `other` is the residual (logging, instrumentation,
+bookkeeping and scheduling outside measured phases); it is not assumed to be CPU work.
+The loop closes at the next loop boundary, so end-of-loop summary logging is included.
+`ResizePerfFrameGap` measures consecutive swap completions, including intervening sleeps
+and skipped-render loops; the first frame has no fabricated gap. These measures include
+intentional 50/200 ms idle/minimized waits, unlike the 16.6 ms phase-sum target.
+`ResizePerfWallSummary` retains their run-wide maxima and threshold counts.
+
+Startup/shutdown `ResizePerfAnchor` records PID/UI TID, full configure-time build identity,
+UTC Unix nanoseconds bracketed by performance-counter samples, and counter frequency.
+On Windows the SDL counter is raw QPC; begin/end counter ranges can be aligned directly
+with ETW's QPC timebase. The bracket exposes sampling uncertainty, and two anchors expose
+wall-clock changes. Human-readable spdlog timestamps are local time and may be delayed by
+logging; use the numeric anchors, not timestamps from a different capture.
 
 You can also control the spdlog runtime level directly (useful for CI or scripted runs). This
 only changes which already-emitted log messages are visible — it does **not** enable ResizePerf
