@@ -17,6 +17,13 @@
     app   - launch TaskSmack.exe, then either wait for it to be closed manually (default) or
             run for a fixed window and close it automatically (-DurationSeconds)
     bench - run TaskSmackBenchmarks.exe with the supplied benchmark filter
+    resize - separated normal-user app / elevated collector diagnostic capture (#882).
+.PARAMETER Phase
+    resize mode only: Prepare snapshots binaries, Collect records ETW in a separate elevated
+    terminal, App launches normally with stdout/stderr, Save asks a -Buffering Ring collector to
+    write its buffer now, Check verifies overlap and exports loss diagnostics.
+.PARAMETER RunDirectory
+    resize mode only: unique directory shared by all four phases; must not exist at Prepare.
 .PARAMETER Preset
         Build preset that contains the binaries to run. Defaults depend on mode:
             - app   -> win-optimized for production-like timings
@@ -26,6 +33,7 @@
 .PARAMETER SkipBuild
     Skip configure/build and use the existing binaries.
 .PARAMETER DurationSeconds
+    Mode=resize/Phase=Collect: bounded recording duration (15-600 seconds; default 180).
     Mode=app only: instead of waiting indefinitely for a human to exercise and close the
     app, run it for this many seconds (idle - no interaction, so this captures background
     refresh/render cost, not click/scroll/hover load) and then close it automatically. Lets
@@ -52,15 +60,28 @@
     pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'
 .EXAMPLE
     pwsh tools/profile-etw.ps1 app -Preset win-profile
+.EXAMPLE
+    pwsh tools/profile-etw.ps1 resize -Phase Prepare -RunDirectory .\perf-data\resize-001 -Preset win-profile
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('app', 'bench')]
+    [ValidateSet('app', 'bench', 'resize')]
     [string]$Mode = 'app',
 
     [string]$Preset = '',
 
     [string]$Timestamp,
+
+    [ValidateSet('Prepare', 'Collect', 'App', 'Save', 'Check')]
+    [string]$Phase = 'Prepare',
+
+    # resize mode only: File records straight to disk for a fixed window; Ring records into
+    # WPR's in-memory buffer until Save is requested, so a rare stall can be captured after it
+    # is observed instead of having to occur inside a fixed window.
+    [ValidateSet('File', 'Ring')]
+    [string]$Buffering = 'File',
+
+    [string]$RunDirectory,
 
     [switch]$SkipBuild,
 
@@ -80,6 +101,14 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $perfDir = Join-Path $repoRoot 'perf-data'
 $wprProfilePath = Join-Path $scriptDir 'TaskSmackCPU.wprp'
+
+if ($Mode -eq 'resize') {
+    if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'resize capture requires PowerShell 7 (pwsh).' }
+    . (Join-Path $scriptDir 'profile-etw-resize.ps1')
+    Invoke-ResizeCapture -Phase $Phase -RunDirectory $RunDirectory -Preset $Preset -SkipBuild:$SkipBuild `
+        -DurationSeconds $DurationSeconds -RepoRoot $repoRoot -Buffering $Buffering
+    return
+}
 
 if ([string]::IsNullOrWhiteSpace($Preset)) {
     $Preset = if ($Mode -eq 'app') { 'win-optimized' } else { 'win-benchmark' }
@@ -206,14 +235,15 @@ Ensure-Binary $wprProfilePath
 $logPath = $childLogPath
 
 Start-Transcript -Path $logPath -Force | Out-Null
+$instanceName = "TaskSmack-$([guid]::NewGuid().ToString('N'))"
+$recordingStarted = $false
 try {
     Write-Host "Starting ETW capture ($Mode)"
     Write-Host "Trace: $tracePath"
     Write-Host "Preset: $Preset"
 
-    & wpr -cancel 2>&1 | Out-Null
-
-    Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode'
+    Invoke-Native wpr '-start' "$wprProfilePath!TaskSmackCPU" '-filemode' '-instancename' $instanceName
+    $recordingStarted = $true
 
     if ($Mode -eq 'app') {
         $proc = Start-Process -FilePath $binaryPath -PassThru
@@ -228,7 +258,7 @@ try {
         else {
             Write-Host 'Exercise the application, then close it to finish the trace.'
             # Wait up to 4 hours; if the app crashes without exiting, this unblocks
-            # so the finally block can still run wpr -cancel and stop the transcript.
+            # so the finally block can still save our recording and stop the transcript.
             Wait-Process -Id $proc.Id -Timeout 14400 -ErrorAction SilentlyContinue
         }
     }
@@ -237,15 +267,22 @@ try {
         Write-Host "Benchmark JSON: $benchJsonPath"
     }
 
-    Invoke-Native wpr '-stop' $tracePath
+    Invoke-Native wpr '-stop' $tracePath '-instancename' $instanceName
+    $recordingStarted = $false
     Write-Host "ETW_TRACE=$tracePath"
     if ($Mode -eq 'bench') {
         Write-Host "ETW_BENCH=$benchJsonPath"
     }
 }
 finally {
-    & wpr -cancel 2>&1 | Out-Null
-    Stop-Transcript | Out-Null
+    try {
+        if ($recordingStarted) {
+            Invoke-Native wpr '-stop' $tracePath '-instancename' $instanceName
+        }
+    }
+    finally {
+        Stop-Transcript | Out-Null
+    }
 }
 
 Write-Host "TRACE=$tracePath"

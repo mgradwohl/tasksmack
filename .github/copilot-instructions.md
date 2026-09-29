@@ -37,6 +37,15 @@ The `docs/dev/` pages are navigation pages, not duplicate developer references. 
 
 **Build/Test/Tools**: See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+**Resize diagnostics (#882):** Extend `Core/ResizePerfTrace.h`/`ResizePerfOperation.h`,
+not a competing profiler. `tools/profile-etw.ps1 resize` delegates to the narrowly scoped
+`profile-etw-resize.ps1`: Prepare/App/Check run unelevated, Collect alone runs in a separate
+elevated terminal with a unique WPR instance. Never cancel another recording or suppress
+loss diagnostics. `tools/test-profile-etw-resize.ps1` is registered with CTest on Windows
+when pwsh is available and uses mocks, not real captures. Full-commit/source-state metadata
+in generated `version.h` is configure-time only; exact captured EXE/PDB hashes are authoritative
+for artifact identity. See CONTRIBUTING's same-run capture procedure and limitations.
+
 **Essential commands:**
 ```bash
 # Configure, build, and test

@@ -3,6 +3,7 @@
 #include "Core/Application.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/ResizePerfOperation.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/DpiScale.h"
@@ -254,7 +255,10 @@ void UILayer::onAttach()
             SDL_GetWindowSizeInPixels(window, &m_CachedPixelW, &m_CachedPixelH);
             if (m_CachedPixelW > 0 && m_CachedPixelH > 0)
             {
-                glViewport(0, 0, m_CachedPixelW, m_CachedPixelH);
+                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport,
+                                          m_CachedPixelW,
+                                          m_CachedPixelH,
+                                          [&] { glViewport(0, 0, m_CachedPixelW, m_CachedPixelH); });
             }
         }
     }
@@ -321,7 +325,7 @@ void UILayer::onEvent(Core::Event& event)
             {
                 m_CachedPixelW = w;
                 m_CachedPixelH = h;
-                glViewport(0, 0, w, h);
+                Core::traceResizePerfVoid(Core::ResizePerfOperation::Viewport, w, h, [&] { glViewport(0, 0, w, h); });
             }
             return false; // Do not consume; other layers may need the resize notification
         });
@@ -364,14 +368,22 @@ void UILayer::endFrame()
         m_PushedFont = nullptr;
     }
 
-    ImGui::Render();
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::ImGuiFinalize, 0, 0, [] { ImGui::Render(); });
+
+    // Captured once, between ImGui::Render() and the next ImGui::NewFrame(), because both the
+    // submit call and the draw-call accounting below need the same ImDrawData.
     ImDrawData* drawData = ImGui::GetDrawData();
-    ImGui_ImplOpenGL3_RenderDrawData(drawData);
+    Core::traceResizePerfVoid(Core::ResizePerfOperation::OpenGLSubmit,
+                              m_CachedPixelW,
+                              m_CachedPixelH,
+                              [drawData] { ImGui_ImplOpenGL3_RenderDrawData(drawData); });
 
     // Publish this frame's draw-call/command-list counts for the Render Metrics overlay. This is
     // the only place they can be sampled: ImDrawData is valid only between ImGui::Render() and the
     // next ImGui::NewFrame(), and the overlay itself draws during the build phase, where
     // GetDrawData() returns null -- which is why it reported 0 on every frame (see #907).
+    // Kept outside the OpenGLSubmit timer above so that measurement stays the GL submission
+    // alone: it is load-bearing evidence for #882 and must not absorb this bookkeeping.
     if (RenderMetrics::get().enabled() && (drawData != nullptr))
     {
         int drawCalls = 0;
