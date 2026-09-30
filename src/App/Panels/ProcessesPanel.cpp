@@ -4,6 +4,7 @@
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
+#include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/ProcessColumnConfig.h"
@@ -579,12 +580,9 @@ void ProcessesPanel::renderContent()
     // This adapts to whichever parent layout is active instead of assuming a fixed child height contract.
     const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
 
-    if (ImGui::BeginTable("ProcessTable",
-                          totalColumns,
-                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg |
-                              ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-                              ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingFixedFit,
-                          tableOuterSize))
+    // Sortable only in list view -- tree view ignores sort specs entirely, so offering sortable
+    // headers there would accept the click and do nothing (#926).
+    if (ImGui::BeginTable("ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(m_TreeViewEnabled), tableOuterSize))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
