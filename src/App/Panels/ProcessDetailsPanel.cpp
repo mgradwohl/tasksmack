@@ -1009,13 +1009,21 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
                         .color = theme.accentColor(4)};
 #endif
 
+    // Bound must cover every series drawn on this axis. GDI is plotted below on Windows, so leaving
+    // it out would let a GDI spike above the thread/handle/fault maxima be clipped by the locked
+    // axis -- something the previous auto-fit path could not do, since it fitted whatever was drawn.
+    double resourceAxisMax = UI::Widgets::maxOfSeries(threadData, handleData, faultData);
+#ifdef _WIN32
+    resourceAxisMax = std::max(resourceAxisMax, UI::Widgets::maxOfSeries(gdiData));
+#endif
+
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##ProcThreadsFaults",
                                                                              axisConfig.xMin,
                                                                              axisConfig.xMax,
                                                                              formatAxisLocalized,
-                                                                             UI::Widgets::maxOfSeries(threadData, handleData, faultData),
+                                                                             resourceAxisMax,
                                                                              UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
         if (chart.active())
         {
