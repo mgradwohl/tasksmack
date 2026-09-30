@@ -18,28 +18,26 @@
 #include <SDL3/SDL.h>
 #include <spdlog/common.h>
 #include <spdlog/logger.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <utility>
-
 #ifdef _WIN32
-#include <spdlog/sinks/basic_file_sink.h>
+// spdlog's msvc_sink.h is itself guarded on _WIN32; the other sinks are portable.
 #include <spdlog/sinks/msvc_sink.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 #endif
 
-#ifdef _WIN32
-#include <filesystem>
-#include <locale>
-#include <memory>
-#include <vector>
-#endif
 #include <algorithm>
 #include <clocale>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <exception>
+#include <filesystem>
 #include <iostream>
+#include <locale>
+#include <memory>
 #include <print>
+#include <vector>
 
 namespace
 {
@@ -74,7 +72,8 @@ auto runApp() -> int
 {
     initializeLocale();
 
-// Required on Windows to see console output when launching from an IDE or debugger
+// Required on Windows to see console output when launching from an IDE or debugger. Debug-only
+// on purpose: a release-class GUI build must not pop up a console window.
 #if defined(_WIN32) && !defined(NDEBUG)
     // Try to attach to parent console if it's a console app
     // If no parent console exists because it's a Windows app create our own console
@@ -95,45 +94,48 @@ auto runApp() -> int
             // Redirection failed, but continue - spdlog will still work via msvc_sink
         }
     }
-    auto msvcSink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
-    auto consoleSink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+#endif
 
-    std::shared_ptr<spdlog::sinks::basic_file_sink_mt> fileSink;
+    // Logger construction runs in EVERY configuration. It used to sit inside the console-attach
+    // guard above, so every NDEBUG build (win-release/win-optimized/win-profile) and every Linux
+    // build fell back to spdlog's implicit default logger: no log file, no MSVC sink, and none of
+    // this project's sink configuration. Because output still reached stdout, the app looked fine
+    // and the loss was silent. Diagnostics matter most in exactly those builds (#915): on Windows
+    // TaskSmack is a GUI-subsystem binary with no console of its own, so without a file sink the
+    // only record of a run is a stdout stream the launcher had to redirect in advance -- a
+    // TASKSMACK_TRACE_RESIZE_PERF capture started from Explorer discarded all of its evidence.
+    std::vector<spdlog::sink_ptr> sinks;
+    sinks.reserve(3);
+#ifdef _WIN32
+    sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>());
+#endif
+    sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+
     std::filesystem::path logPath;
     try
     {
         logPath = std::filesystem::temp_directory_path() / "tasksmack-debug.log";
-        fileSink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.string(), true);
+        sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.string(), true));
     }
     catch (const std::exception& e)
     {
-        // Best-effort: if log file setup fails, still keep console + MSVC sinks.
+        // Best-effort: keep the console (and MSVC) sinks. Clear logPath so the message below
+        // cannot name a file that nothing is writing to.
+        logPath.clear();
         std::println(stderr, "Failed to initialize file logging: {}", e.what());
     }
     catch (...)
     {
+        logPath.clear();
         std::println(stderr, "Failed to initialize file logging (unknown error)");
     }
 
-    std::vector<spdlog::sink_ptr> sinks;
-    sinks.reserve(3);
-    sinks.push_back(msvcSink);
-    sinks.push_back(consoleSink);
-    if (fileSink)
-    {
-        sinks.push_back(fileSink);
-    }
-
-    auto logger = std::make_shared<spdlog::logger>("TaskSmack", sinks.begin(), sinks.end());
-
-    spdlog::set_default_logger(logger);
+    spdlog::set_default_logger(std::make_shared<spdlog::logger>("TaskSmack", sinks.begin(), sinks.end()));
 
     if (!logPath.empty())
     {
         spdlog::info("Debug log file: {}", logPath.string());
     }
-
-#endif
 
 #ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);
