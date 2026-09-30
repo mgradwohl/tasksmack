@@ -52,7 +52,10 @@ constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pix
 // Name text kept visible past the expander no matter how deep the row or how narrow the user has
 // dragged the Name column. Bounds the tree indent so the expand/collapse button can never be
 // pushed out of its cell, which would make a deep parent impossible to toggle (#906).
-constexpr float MIN_TREE_NAME_WIDTH = 40.0F;
+// Sized so a clamped row still shows a recognisable chunk of the process name rather than a few
+// characters; the indent gives way first, because depth is also conveyed by the expander column
+// alignment and the PPID column, whereas a truncated name has no other source (#906, #913).
+constexpr float MIN_TREE_NAME_WIDTH = 72.0F;
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -618,19 +621,9 @@ void ProcessesPanel::renderContent()
             // Columns with a positive default width are initialized as width-based columns.
             if (info.defaultWidth > 0.0F)
             {
-                // The Name column hosts the tree indent and expander (see renderProcessRow), so in
-                // tree view it needs that much extra width or deep rows lose trailing characters --
-                // the same truncation the PID column used to suffer (#906). This keeps the text
-                // room at every depth equal to what a flat list gets.
-                float width = info.defaultWidth;
-                if (col == ProcessColumn::Name && m_TreeViewEnabled)
-                {
-                    width += (TREE_INDENT_WIDTH * static_cast<float>(m_MaxTreeDepth)) + ImGui::GetFrameHeight();
-                }
-
                 // Use menuName for TableSetupColumn (shown in context menu)
                 // We render custom headers with info.name below
-                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, width, toImGuiId(col));
+                ImGui::TableSetupColumn(std::string(info.menuName).c_str(), flags, info.defaultWidth, toImGuiId(col));
             }
             else
             {
@@ -834,8 +827,9 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             // The tree indent and expand/collapse button live in the Name column, not here. This
             // column is a fixed 60px, so indenting it pushed the PID text past the cell's clip
             // rect and silently truncated digits at depth >= 1 -- 589 rendered as "5" (see #906).
-            // Name is a stretch column with room to absorb the indent, and indenting the name is
-            // also what comparable process viewers do.
+            // Name is fixed-width too (120px), so it cannot absorb the indent for free -- the
+            // indent is clamped against the cell instead, see the Name case below. Indenting the
+            // name is what comparable process viewers do.
 
             // Stack-allocated label and selectable ID — avoids heap allocations per visible row per frame
             std::array<char, 16> labelBuf{};
@@ -964,16 +958,25 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         case ProcessColumn::Name:
         {
             // Tree depth is expressed here rather than in the PID column, which is a fixed 60px
-            // and truncated PIDs once the indent was inside it (#906). Name is fixed-width too
-            // (120px), so it is widened by the deepest indent in renderColumns() -- see
-            // m_MaxTreeDepth -- to keep the text room at every depth equal to a flat list's.
+            // and truncated PIDs once the indent was inside it (#906).
             //
-            // That widening can still be overridden: ImGui persists a user-dragged column width in
-            // its ini and ignores the width we pass to TableSetupColumn(). So the indent is also
-            // clamped here against the cell's actual width, reserving room for the expander plus a
-            // minimum slice of the name. Without the clamp, a user who narrows this column would
-            // push the expand/collapse button out of the cell and be unable to toggle deep parents.
-            const float reservedForControls = ImGui::GetFrameHeight() + MIN_TREE_NAME_WIDTH;
+            // Name is fixed-width too (120px by default), so the indent has to come out of the
+            // name's own room; it cannot be granted extra width per frame. TableSetupColumn()'s
+            // init_width_or_weight is applied to a *resizable* column only while the table is
+            // initializing (imgui_tables.cpp:989 gates it on !column_is_resizable), so passing a
+            // depth-dependent width on later frames is silently ignored.
+            //
+            // So the indent yields instead: it is clamped against the cell's actual width, always
+            // reserving the expander slot plus MIN_TREE_NAME_WIDTH of name. Deep rows therefore
+            // show less indentation than their depth would suggest rather than losing the name or,
+            // worse, the expander -- a parent whose expander is pushed out of the cell cannot be
+            // collapsed back to a usable width, which is a dead end rather than a cosmetic clip.
+            // Restoring full indent fidelity needs a wider default Name column, tracked in #913.
+            // The expander slot is the control itself plus the ItemSpacing.x that SameLine() adds
+            // after it -- both the button and the leaf Dummy are followed by SameLine(), so the
+            // spacing is always paid and must be reserved or the name keeps less room than promised.
+            const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+            const float reservedForControls = expanderSlotWidth + MIN_TREE_NAME_WIDTH;
             const float indentWidth =
                 m_TreeViewEnabled
                     ? ProcessTreeIndent::clampedIndent(depth, TREE_INDENT_WIDTH, ImGui::GetContentRegionAvail().x, reservedForControls)
@@ -1208,15 +1211,6 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
             ProcessTreeFlatten::collectProcessTreeRows(snapshots, filteredSet, m_CollapsedKeys, idx, 0, rows);
         }
     }
-
-    // Widest indent the Name column must accommodate next frame (see m_MaxTreeDepth). Taken over
-    // every flattened row, not just the visible ones, so scrolling doesn't resize the column.
-    int maxDepth = 0;
-    for (const ProcessTreeFlatten::ProcessTreeRow& row : rows)
-    {
-        maxDepth = std::max(maxDepth, row.depth);
-    }
-    m_MaxTreeDepth = maxDepth;
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));

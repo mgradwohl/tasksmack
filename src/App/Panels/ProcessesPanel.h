@@ -153,13 +153,6 @@ class ProcessesPanel : public Panel
     bool m_TreeViewEnabled = false;
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
 
-    // Deepest tree row rendered last frame. The Name column carries the tree indent (see
-    // renderProcessRow), so its width has to grow by that indent or deep rows lose the same
-    // trailing characters the PID column used to lose (#906). Read one frame late because
-    // TableSetupColumn() runs before the tree is flattened; depth only changes when the user
-    // expands/collapses, so a one-frame lag is invisible.
-    int m_MaxTreeDepth = 0;
-
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps). A shared_ptr to ProcessModel's immutable published vector, not
     // an owned copy: tryCopySnapshotsIfNewer() hands out the same vector every reader shares,
