@@ -21,6 +21,7 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <cmath>
 #include <filesystem>
 
 namespace
@@ -157,19 +158,27 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
         theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
     }
 
-    // Load Sixtyfour pixel font for custom title bar
-    // This is a fixed-size font that looks best at specific pixel sizes
-    constexpr float TITLE_FONT_SIZE_PX = 18.0F;
+    // Load Sixtyfour display font for the custom title bar.
+    //
+    // Specified in points and converted against the measured display scale, like every other font
+    // here, so the title bar tracks display density. It deliberately does NOT track the Font Size
+    // setting: the title bar is chrome, and its height (and therefore its icon and window buttons)
+    // is derived from this size.
+    //
+    // Rounded to a whole pixel because this face is rasterized as a bitmap
+    // (ImGuiFreeTypeBuilderFlags_Bitmap below); a fractional size would render it soft.
+    constexpr float TITLE_FONT_PT = 18.0F;
+    const float titleFontPx = std::round(pointsToPixels(TITLE_FONT_PT));
     auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
     if (std::filesystem::exists(titleFontPath))
     {
         ImFontConfig titleConfig;
         titleConfig.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_Bitmap;
-        ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), TITLE_FONT_SIZE_PX, &titleConfig);
+        ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), titleFontPx, &titleConfig);
         if (titleFont != nullptr)
         {
-            theme.registerTitleFont(titleFont);
-            spdlog::info("Loaded Sixtyfour title font at {}px", TITLE_FONT_SIZE_PX);
+            theme.registerTitleFont(titleFont, titleFontPx);
+            spdlog::info("Loaded Sixtyfour title font at {}pt -> {}px", TITLE_FONT_PT, titleFontPx);
         }
         else
         {

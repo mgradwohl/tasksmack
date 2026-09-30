@@ -23,6 +23,47 @@ enum class ResizeEdge : std::uint8_t
     BottomRight,
 };
 
+/// Height of the custom title bar, in pixels.
+///
+/// Deliberately independent of the application's Font Size setting. The title bar is chrome, not
+/// content: its label is drawn in the fixed Sixtyfour display font, and its icon and window buttons
+/// are sized from this height, so tying it to the body font made the icon and buttons balloon when
+/// the user picked a larger font -- which is not how a window frame behaves on either platform.
+///
+/// Being font-independent also fixes a latent bug rather than only a cosmetic one. SDL calls
+/// hitTestCallback() outside any ImGui frame, and that callback needs this height to decide what is
+/// a drag region and what is a resize edge. A body-font-derived height queried there returned a
+/// 6px title bar (ImGui::GetFontSize() is 0 with no font pushed), so drag and resize hit-testing was
+/// computed against nonsense. Nothing here touches ImGui state, so it is valid at any time.
+///
+/// @param titleFontPx  Pixel size the title font was rasterized at (already DPI-derived).
+/// @param paddingPx    Total vertical padding above plus below the title text.
+/// @return Height in pixels, never below the font size itself.
+[[nodiscard]] inline auto computeTitleBarHeight(const float titleFontPx, const float paddingPx) -> float
+{
+    const float safeFont = (titleFontPx > 0.0F) ? titleFontPx : 1.0F;
+    const float safePadding = (paddingPx > 0.0F) ? paddingPx : 0.0F;
+    return safeFont + safePadding;
+}
+
+/// Size of the square application icon drawn at the left of the title bar.
+///
+/// Inset from the bar height so the icon never touches the window edge. Clamped at zero because a
+/// degenerate bar height would otherwise ask ImGui::Image() for a negative extent.
+[[nodiscard]] inline auto computeTitleBarIconSize(const float titleBarHeightPx, const float insetPx) -> float
+{
+    return std::max(0.0F, titleBarHeightPx - insetPx);
+}
+
+/// Width of one window control button (minimize / maximize / close).
+///
+/// Proportional to the bar height so the controls keep their aspect as the bar scales with display
+/// density, instead of staying at a fixed pixel width that is too small on a HiDPI display.
+[[nodiscard]] inline auto computeTitleBarButtonWidth(const float titleBarHeightPx, const float aspect) -> float
+{
+    return std::max(0.0F, titleBarHeightPx * aspect);
+}
+
 /// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
 /// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
 /// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.

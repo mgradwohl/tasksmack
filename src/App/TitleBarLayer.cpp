@@ -33,14 +33,33 @@
 namespace App
 {
 
-// Height matches the tab bar row height in ShellLayer
-// Tab bar uses FramePadding(16, 10) + TOP_EDGE_PADDING(4) = GetFrameHeight() + 24px
+// Vertical breathing room above plus below the title text, as a fraction of the title font size.
+// Expressed relative to the font rather than in pixels so the bar keeps its proportions as display
+// density changes; 0.75 reproduces the bar's previous look at the default density.
+constexpr float TITLE_BAR_PADDING_RATIO = 0.75F;
+
+// How far the icon is inset from the bar's full height, as a fraction of that height.
+constexpr float TITLE_BAR_ICON_INSET_RATIO = 0.06F;
+
+// Window control button width as a multiple of the bar height. Keeps the controls' aspect stable
+// instead of pinning them to a pixel width that is too small on a HiDPI display.
+constexpr float TITLE_BAR_BUTTON_ASPECT = 1.15F;
+
+// Left margin before the icon, and the gap between icon and title text, as fractions of the bar
+// height. Reproduce the previous 8px and 12px at the default density.
+constexpr float TITLE_BAR_EDGE_MARGIN_RATIO = 0.20F;
+constexpr float TITLE_BAR_TITLE_GAP_RATIO = 0.29F;
+
+// Gap separating the window controls from the app buttons, as a fraction of the bar height.
+constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
+
+// The title bar is chrome and is sized from the title font and display density only -- never from
+// the application's Font Size setting. See computeTitleBarHeight() in TitleBarGeometry.h for why,
+// including the hit-test bug that a body-font-derived height caused.
 auto TitleBarLayer::height() -> float
 {
-    // Match ShellLayer tab bar: base frame height + vertical padding (10*2) + top edge padding (4)
-    constexpr float TAB_BAR_VERTICAL_PADDING = 10.0F * 2.0F; // FramePadding.y * 2
-    constexpr float TAB_BAR_TOP_PADDING = 4.0F;              // TOP_EDGE_PADDING
-    return ImGui::GetFrameHeight() + TAB_BAR_VERTICAL_PADDING + TAB_BAR_TOP_PADDING;
+    const float titleFontPx = UI::Theme::get().titleFontSizePx();
+    return computeTitleBarHeight(titleFontPx, titleFontPx * TITLE_BAR_PADDING_RATIO);
 }
 
 namespace
@@ -179,9 +198,11 @@ void TitleBarLayer::onAttach()
     int windowHeight = 0;
     SDL_GetWindowSize(sdlWindow, &windowWidth, &windowHeight);
 
-    constexpr float buttonWidth = 46.0F;
-    const auto rightX = static_cast<float>(windowWidth);
+    // Must match renderTitleBar()'s drawing exactly, or the click targets drift away from the
+    // painted buttons -- both derive from the same helper for that reason.
     const float titleBarHeight = height();
+    const float buttonWidth = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
+    const auto rightX = static_cast<float>(windowWidth);
 
     // Right to left: Close, Maximize, Minimize, (gap), Settings, Help
     float buttonX = rightX - buttonWidth;
@@ -193,7 +214,7 @@ void TitleBarLayer::onAttach()
     buttonX -= buttonWidth;
     m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
-    buttonX -= 16.0F; // Separator gap
+    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO; // Separator before the app buttons
     buttonX -= buttonWidth;
     m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
 
@@ -965,10 +986,11 @@ void TitleBarLayer::renderTitleBar()
 
     // Icon (left side) - clickable for system menu
     // Size: title bar height minus 2px border on top and bottom
-    const float ICON_SIZE = titleBarHeight - 4.0F;
+    const float ICON_SIZE = computeTitleBarIconSize(titleBarHeight, titleBarHeight * TITLE_BAR_ICON_INSET_RATIO);
     const float centerY = titleBarHeight * 0.5F;
     const float iconY = centerY - (ICON_SIZE * 0.5F);
-    constexpr float iconX = 8.0F;
+    // Left margin and the gap after the icon, proportional to the bar so they hold at any density.
+    const float iconX = titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
 
     if (m_IconTexture.valid())
     {
@@ -1023,7 +1045,7 @@ void TitleBarLayer::renderTitleBar()
 
     // Title text using Sixtyfour font - centered vertically
     ImGui::SameLine();
-    ImGui::SetCursorPosX(8 + ICON_SIZE + 12);
+    ImGui::SetCursorPosX(iconX + ICON_SIZE + (titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO));
 
     // Get the font to use and center the text vertically
     ImFont* titleFont = UI::Theme::get().titleFont();
@@ -1045,7 +1067,7 @@ void TitleBarLayer::renderTitleBar()
     }
 
     // Right side buttons
-    constexpr float BUTTON_WIDTH = 46.0F;
+    const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
     const float BUTTON_HEIGHT = titleBarHeight;
     const auto rightX = static_cast<float>(windowWidth);
 
@@ -1097,8 +1119,8 @@ void TitleBarLayer::renderTitleBar()
     }
     m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
-    // Separator
-    buttonX -= 16.0F;
+    // Separator -- same ratio as the hit-bounds pass, so the two stay aligned.
+    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO;
 
     // Settings button
     buttonX -= BUTTON_WIDTH;

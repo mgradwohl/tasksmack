@@ -616,9 +616,13 @@ void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont*
     m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
 }
 
-void Theme::registerTitleFont(ImFont* font)
+void Theme::registerTitleFont(ImFont* font, float sizePx)
 {
     m_TitleFont = font;
+    if (sizePx > 0.0F)
+    {
+        m_TitleFontSizePx = sizePx;
+    }
 }
 
 auto Theme::titleFont() const -> ImFont*
