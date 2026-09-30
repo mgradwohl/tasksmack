@@ -784,9 +784,14 @@ void SystemMetricsPanel::renderOverview()
 
             auto plot = [&]()
             {
-                // Primary Y-axis: Power (Watts, auto-fit)
-                const UI::Widgets::HistoryChart chart(
-                    UI::Widgets::autoFitHistoryConfig("##PowerBatteryHistory", axis.xMin, axis.xMax, formatAxisWatts));
+                // Primary Y-axis: Power (Watts), pinned to 0 at the bottom. Battery sits on Y2
+                // below, so these limits apply to the watts series only.
+                const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##PowerBatteryHistory",
+                                                                                     axis.xMin,
+                                                                                     axis.xMax,
+                                                                                     formatAxisWatts,
+                                                                                     UI::Widgets::maxOfSeries(powerHist),
+                                                                                     UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
                 if (chart.active())
                 {
                     // Secondary Y-axis: Battery % (0-100) - hidden ticks to keep X-axis alignment
@@ -1023,7 +1028,12 @@ void SystemMetricsPanel::renderOverview()
         auto plot = [&]()
         {
             const UI::Widgets::HistoryChart chart(
-                UI::Widgets::autoFitHistoryConfig("##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized));
+                UI::Widgets::rateHistoryConfig("##ResourcesHistory",
+                                               axis.xMin,
+                                               axis.xMax,
+                                               formatAxisLocalized,
+                                               UI::Widgets::maxOfSeries(threadData, handleData, faultData),
+                                               UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
             if (chart.active())
             {
                 const int count = UI::Format::checkedCount(alignedCount);

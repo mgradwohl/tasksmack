@@ -461,6 +461,36 @@ TEST(HistoryChartConfigTest, AutoFitConfigHasNoYLimits)
     EXPECT_EQ(cfg.yFormatter, &formatAxisBytesPerSec);
 }
 
+TEST(HistoryChartConfigTest, RateConfigPinsZeroAndSizesTheTopFromTheData)
+{
+    const auto cfg = rateHistoryConfig("##Disk", -300.0, 0.0, formatAxisBytesPerSec, 10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    EXPECT_STREQ(cfg.id, "##Disk");
+    EXPECT_DOUBLE_EQ(cfg.xMin, -300.0);
+    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.yLimits->second, rateAxisUpperBound(10'000.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+    EXPECT_EQ(cfg.yFormatter, &formatAxisBytesPerSec);
+}
+
+TEST(HistoryChartConfigTest, RateConfigStillSetsLimitsForAnAllZeroSeries)
+{
+    // The regression that matters: if rateHistoryConfig() ever stopped assigning yLimits, the axis
+    // would fall back to ImPlot's auto-fit and reproduce #920 exactly -- a +/-0.5 sliver with a
+    // negative tick. The RateAxis unit tests would not notice, because they only cover the maths.
+    const auto cfg = rateHistoryConfig("##Idle", -300.0, 0.0, formatAxisBytesPerSec, 0.0, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    ASSERT_TRUE(cfg.yLimits.has_value());
+    EXPECT_DOUBLE_EQ(cfg.yLimits->first, 0.0);
+    EXPECT_DOUBLE_EQ(cfg.yLimits->second, RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+    EXPECT_GT(cfg.yLimits->second, cfg.yLimits->first);
+}
+
+TEST(HistoryChartConfigTest, RateConfigTakesTheLockedAxisPathNotAutoFit)
+{
+    const auto cfg = rateHistoryConfig("##Watts", -60.0, 0.0, formatAxisWatts, 0.0, RATE_AXIS_MIN_SPAN_WATTS);
+    EXPECT_EQ(historyChartYAxisFlags(cfg.yLimits.has_value()), ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+}
+
 TEST(HistoryChartConfigTest, YAxisFlagsLockWithFixedLimitsAutoFitOtherwise)
 {
     EXPECT_EQ(historyChartYAxisFlags(true), ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);

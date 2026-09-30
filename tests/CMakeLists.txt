@@ -151,6 +151,7 @@ add_executable(TaskSmackTests
     UI/test_ChartGridLayout.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
+    UI/test_RateAxis.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp

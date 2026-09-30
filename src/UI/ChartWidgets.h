@@ -2,6 +2,7 @@
 
 #include "Domain/Numeric.h"
 #include "UI/Format.h"
+#include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -572,8 +573,10 @@ inline void setupLegendDefault()
 }
 
 /// Declarative configuration for a standard TaskSmack history chart.
-/// yLimits set → Y axis locked to that range (e.g., percent charts pin 0-100).
-/// yLimits empty → Y axis auto-fits the plotted data (rates, counts, watts).
+/// yLimits set → Y axis locked to that range (percent charts pin 0-100; the non-negative charts
+///   compute theirs from the data via rateHistoryConfig()).
+/// yLimits empty → Y axis auto-fits the plotted data, including below zero. No chart does this
+///   today -- see autoFitHistoryConfig() for why (#920).
 struct HistoryChartConfig
 {
     const char* id = "";
@@ -598,7 +601,12 @@ struct HistoryChartConfig
     return cfg;
 }
 
-/// Config for an auto-fit history chart (rates, counts, watts): Y axis fits the plotted data.
+/// Config for an auto-fit history chart: Y axis fits the plotted data, including below zero.
+///
+/// Prefer rateHistoryConfig() for any series that cannot be negative -- rates, counts and watts all
+/// use that instead, so nothing in the app calls this today. Kept for a genuinely signed series:
+/// plain auto-fit degenerates on an all-zero window into a +/-0.5 sliver, which renders an
+/// impossible negative rate and a column of identical tick labels (#920).
 [[nodiscard]] inline HistoryChartConfig autoFitHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter)
 {
     HistoryChartConfig cfg;
@@ -606,6 +614,24 @@ struct HistoryChartConfig
     cfg.xMin = xMin;
     cfg.xMax = xMax;
     cfg.yFormatter = yFormatter;
+    return cfg;
+}
+
+/// Config for a non-negative history chart (rates, counts, watts): Y axis pinned to 0 at the bottom
+/// and sized to the data above, never collapsing below `minSpan`.
+///
+/// `dataMax` is the largest value plotted in the window -- use maxOfSeries() over the same series
+/// being plotted. See rateAxisUpperBound() in RateAxis.h for why the limits are computed here
+/// rather than left to ImPlot's auto-fit or its axis constraints.
+[[nodiscard]] inline HistoryChartConfig
+rateHistoryConfig(const char* id, double xMin, double xMax, ImPlotFormatter yFormatter, double dataMax, double minSpan)
+{
+    HistoryChartConfig cfg;
+    cfg.id = id;
+    cfg.xMin = xMin;
+    cfg.xMax = xMax;
+    cfg.yFormatter = yFormatter;
+    cfg.yLimits = std::pair{0.0, rateAxisUpperBound(dataMax, minSpan)};
     return cfg;
 }
 
