@@ -326,6 +326,15 @@ if(WIN32)
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
         NTDDI_VERSION=0x0A000000
+        # Make spdlog's filename_t std::wstring on Windows so the log path is opened as the
+        # native wide path. Without this spdlog uses std::string + _fsopen, so a %TEMP% path
+        # containing characters outside the active ANSI code page (a non-ASCII user name, say)
+        # fails or resolves to the wrong file -- and the app.manifest does not opt into
+        # activeCodePage=UTF-8, so narrow paths really do go through the ANSI code page.
+        # PRIVATE is consistent here: filename_t is used only in src/main.cpp, which belongs to
+        # this target alone, and spdlog is consumed header-only (spdlog::spdlog_header_only) so
+        # there is no prebuilt library whose ABI could disagree.
+        SPDLOG_WCHAR_FILENAMES
     )
 endif()
 
