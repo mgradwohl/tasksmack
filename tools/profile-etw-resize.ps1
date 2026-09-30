@@ -230,11 +230,15 @@ function Invoke-ResizeCapture {
             # used, so a capture's configuration is recoverable from its own artifacts instead of
             # having to be inferred from the samples afterwards (#912). A focused profile spec is a
             # path plus '!Name', so the log filename is sanitised rather than derived verbatim.
+            # -filemode must match the recording: it is what selects a profile's .File variant
+            # over its .Memory variant, so passing it unconditionally documented the File variant
+            # of a ring capture that is actually running the Memory one.
+            $detailArgs = if ($ring) { @() } else { @('-filemode') }
             $detailIndex = 0
             foreach ($profileName in $profiles) {
                 ++$detailIndex
                 $safe = if ($focused) { "profiledetails-$detailIndex" } else { $profileName }
-                Invoke-ResizeCaptureCommand $wpr @('-profiledetails', $profileName, '-filemode') `
+                Invoke-ResizeCaptureCommand $wpr (@('-profiledetails', $profileName) + $detailArgs) `
                     (Join-Path $RunDirectory "$safe.txt")
             }
             # Omitting -filemode selects WPR's in-memory ring buffer: events accumulate and the

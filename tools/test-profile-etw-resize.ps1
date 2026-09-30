@@ -241,12 +241,18 @@ try {
     Assert-True (-not ($ringStart.Arguments -contains '-filemode')) 'Ring mode still passed -filemode'
     Assert-True ($ringStart.Arguments[-2] -eq '-instancename') 'Instance option must remain last in ring mode'
     Assert-True (@($ringStart.Arguments | Where-Object { $_ -like '*TaskSmackResize.wprp!TaskSmackResize' }).Count -eq 1) 'Ring mode dropped the focused profile'
+    # -filemode selects a profile's .File variant, so a ring capture's retained profile details
+    # must omit it or they describe a variant the recording is not using.
+    $ringDetail = @($script:calls | Where-Object { $_.Arguments -contains '-profiledetails' })[0]
+    Assert-True (-not ($ringDetail.Arguments -contains '-filemode')) 'Ring mode documented the File variant'
     # File mode must be unchanged.
     $script:calls.Clear()
     $run2 = New-TestRun
     Invoke-ResizeCapture -Phase Collect -RunDirectory $run2 -DurationSeconds 15 -RepoRoot $repo
     $fileStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
     Assert-True ($fileStart.Arguments -contains '-filemode') 'File mode lost -filemode'
+    $fileDetail = @($script:calls | Where-Object { $_.Arguments -contains '-profiledetails' })[0]
+    Assert-True ($fileDetail.Arguments -contains '-filemode') 'File mode stopped documenting the File variant'
     Assert-True ((Get-Content (Join-Path $run2 'collector.json') -Raw | ConvertFrom-Json).Buffering -eq 'file') 'File buffering not recorded'
 
     # Save phase: normal-user, ring-only, single-shot.

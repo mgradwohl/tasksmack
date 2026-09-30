@@ -985,12 +985,16 @@ records include UTC/QPC, PID and actual launcher elevation; `*-token.txt` retain
 (no RunAs; TaskSmack's manifest is asInvoker). These artifacts include machine/process
 information: inspect them before sharing.
 
-Collect requests `GeneralProfile.Verbose`, `GPU.Verbose` and
-`DesktopComposition.Verbose` in file mode. The installed profile definitions are retained
-as `*.Verbose.txt`; GeneralProfile supplies CSwitch/ReadyThread **stacks**, not just sampled
-CPU, while GPU/DesktopComposition add DxgKrnl/DWM. Profile availability/buffer sizes vary
-with the installed WPT version. Do not assume a requested provider emitted usable events:
-verify scheduler stacks and graphics/compositor events in the resulting trace.
+Collect requests whichever provider set `-ProviderSet` selects (see above): by default the single
+`tools/TaskSmackResize.wprp!TaskSmackResize` profile, whose resolved definition is retained as
+`profiledetails-1.txt`; with `-ProviderSet Verbose`, the three built-in profiles, retained as
+`*.Verbose.txt`. Either way the retained definition describes the variant actually recorded --
+`-profiledetails` is passed `-filemode` only when the capture uses file mode, since that flag is
+what selects a profile's `.File` variant over its `.Memory` one. The focused profile supplies
+CSwitch/ReadyThread **stacks**, not just sampled CPU, plus DxgKrnl/DWM/DXGI. Profile
+availability/buffer sizes vary with the installed WPT version. Do not assume a requested provider
+emitted usable events: verify scheduler stacks and graphics/compositor events in the resulting
+trace.
 
 Collector stop always targets its own generated instance, including on failures. A failed
 start never triggers a stop. Failed shutdown records the exact instance-specific recovery
