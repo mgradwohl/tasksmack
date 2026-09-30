@@ -308,12 +308,19 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##SystemNetHistory",
-                                                                             axis.xMin,
-                                                                             axis.xMax,
-                                                                             formatAxisBytesPerSec,
-                                                                             UI::Widgets::maxOfSeries(sentData, recvData),
-                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+        const UI::Widgets::HistoryChart chart(
+            UI::Widgets::rateHistoryConfig("##SystemNetHistory",
+                                           axis.xMin,
+                                           axis.xMax,
+                                           formatAxisBytesPerSec,
+                                           // Every series drawn on this axis, not just the
+                                           // totals: a selected interface is plotted here too,
+                                           // and total vs per-interface rates are derived
+                                           // independently, so the interface rate can exceed
+                                           // the total's. The interface vectors are empty when
+                                           // none is selected; maxOfSeries() ignores those.
+                                           UI::Widgets::maxOfSeries(sentData, recvData, ifaceSentData, ifaceRecvData),
+                                           UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(aligned);
