@@ -161,6 +161,7 @@ add_executable(TaskSmackTests
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
     App/test_ProcessTreeFlatten.cpp
+    App/test_ProcessTreeIndent.cpp
     App/test_ProcessRowFormat.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
