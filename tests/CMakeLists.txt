@@ -138,6 +138,7 @@ add_executable(TaskSmackTests
     Core/test_Window.cpp
     Core/test_WindowEvents.cpp
     Domain/test_History.cpp
+    Domain/test_SingleLineText.cpp
     Domain/test_ProcessModel.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
