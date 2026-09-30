@@ -15,6 +15,7 @@ namespace UI::Widgets
 /// Minimum spans for the non-negative history axes, chosen so an all-zero window renders one
 /// readable decade rather than a sliver around zero.
 inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KB/s
+inline constexpr double RATE_AXIS_MIN_SPAN_BYTES = 1024.0;         // 1 KiB (a size, not a rate)
 inline constexpr double RATE_AXIS_MIN_SPAN_WATTS = 1.0;            // 1 W
 inline constexpr double RATE_AXIS_MIN_SPAN_COUNT = 10.0;           // 10 items
 

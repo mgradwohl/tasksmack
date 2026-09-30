@@ -1673,7 +1673,7 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
                                                                                  axisConfig.xMax,
                                                                                  formatAxisLocalized,
                                                                                  UI::Widgets::maxOfSeries(gpuMemVec),
-                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
+                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES));
             if (chart.active())
             {
                 if (plotCount > 0)
