@@ -919,6 +919,26 @@ pwsh -File tools\profile-etw.ps1 resize -Phase App -RunDirectory $run
 pwsh -File tools\profile-etw.ps1 resize -Phase Check -RunDirectory $run
 ```
 
+**Provider set (`-ProviderSet`).** The default `Focused` uses `tools/TaskSmackResize.wprp`, which
+keeps exactly what attribution needs -- `CSwitch`, `ReadyThread` and `SampledProfile` with stacks on
+all three, plus `DxgKrnl`, `Dwm-Core`, `DXGI` and `Kernel-EventTracing` -- and deliberately omits
+`GeneralProfile.Verbose`'s stack-walked `Microsoft-Windows-Win32k` provider and its
+`DiskIO`/`DPC`/`Interrupt`/fault keywords. Note that basing a profile on the built-in `CPU.Verbose`
+is *not* sufficient: its own event collector still enables Win32k with stacks, which is why this
+profile declares its collectors explicitly.
+
+`-ProviderSet Verbose` restores the earlier `GeneralProfile.Verbose` + `GPU.Verbose` +
+`DesktopComposition.Verbose` set. It is an explicit opt-in rather than the default because, measured
+inside a real 1064 ms stall, that set accounted for **48.1%** of the sampled CPU it was recording
+(dominated by `EtwpLogKernelEvent`/`EtwpReserveTraceBuffer`/`KeQueryPerformanceCounter`) -- it was
+measuring its own logging more than the stall. On an identical 20-second workload the focused
+profile produced a **93 MB** ETL against **1026 MB**, both loss-free, with the ETW share of sampled
+CPU down to **1.8%**. See #912.
+
+The resolved providers, keywords and stack settings of whichever profile was used are retained in
+the run directory (`profiledetails-*.txt` for the focused profile, `<ProfileName>.txt` for the
+built-ins), so a capture's configuration is recoverable from its own artifacts.
+
 **Ring buffering for rare stalls (`-Buffering Ring`).** File mode records a fixed window and
 depends on the stall happening inside it, which is the wrong shape for a freeze that occurs
 once in many minutes. `-Buffering Ring` omits WPR's `-filemode` so events accumulate in an

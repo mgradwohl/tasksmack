@@ -116,7 +116,8 @@ function Wait-ResizeSaveRequest {
 function Invoke-ResizeCapture {
     param(
         [string]$Phase, [string]$RunDirectory, [string]$Preset, [switch]$SkipBuild,
-        [int]$DurationSeconds, [string]$RepoRoot, [string]$Buffering = 'File'
+        [int]$DurationSeconds, [string]$RepoRoot, [string]$Buffering = 'File',
+        [string]$ProviderSet = 'Focused'
     )
     $ErrorActionPreference = 'Stop'
     if ([string]::IsNullOrWhiteSpace($RunDirectory)) {
@@ -191,14 +192,32 @@ function Invoke-ResizeCapture {
         # zero-byte collector.json, and makes every retry fail with "already exists" with no
         # failure metadata retained -- stranding an otherwise good prepared snapshot.
         $wpr = (Get-Command wpr -ErrorAction Stop).Source
+        $ring = $Buffering -eq 'Ring'
+        # Focused is the default because the original three-Verbose-profile set accounted for
+        # 48.1% of the sampled CPU inside the 1064 ms stall it was recording (#912): it measured
+        # its own logging more than the stall. TaskSmackResize.wprp keeps the scheduler and
+        # sampling data attribution needs, with the GPU/compositor providers, and drops
+        # GeneralProfile's stack-walked Win32k provider and its DiskIO/DPC/Interrupt/fault
+        # keywords. Verbose remains available for cases that genuinely need the wider set.
+        $focused = $ProviderSet -ne 'Verbose'
+        if ($focused) {
+            $wprp = Join-Path $RepoRoot 'tools\TaskSmackResize.wprp'
+            if (-not (Test-Path -LiteralPath $wprp)) { throw "Provider profile is missing: $wprp" }
+            # wpr selects the .File or .Memory variant of this profile from the presence of
+            # -filemode below, exactly as it does for the built-in profiles.
+            $profiles = @("$wprp!TaskSmackResize")
+        }
+        else {
+            $profiles = @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')
+        }
         # CreateNew prevents simultaneous/repeated collectors from claiming this run.
         $claim = [IO.File]::Open($collectorPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $claim.Dispose()
         $instance = "TaskSmackResize-$([guid]::NewGuid().ToString('N'))"
-        $ring = $Buffering -eq 'Ring'
         $collector = @{
             State = 'starting'; Identity = $identity; Instance = $instance
-            Profiles = @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')
+            ProviderSet = if ($focused) { 'focused' } else { 'verbose' }
+            Profiles = $profiles
             Buffering = if ($ring) { 'ring' } else { 'file' }
             StartUtc = $null; StopRequestedUtc = $null; EndUtc = $null; Error = $null
             SaveTrigger = $null
@@ -207,13 +226,21 @@ function Invoke-ResizeCapture {
         $started = $false
         try {
             Invoke-ResizeCaptureCommand whoami @('/all') (Join-Path $RunDirectory 'collector-token.txt')
-            foreach ($profileName in $collector.Profiles) {
+            # Retains the resolved providers, keywords and stack settings for the profile actually
+            # used, so a capture's configuration is recoverable from its own artifacts instead of
+            # having to be inferred from the samples afterwards (#912). A focused profile spec is a
+            # path plus '!Name', so the log filename is sanitised rather than derived verbatim.
+            $detailIndex = 0
+            foreach ($profileName in $profiles) {
+                ++$detailIndex
+                $safe = if ($focused) { "profiledetails-$detailIndex" } else { $profileName }
                 Invoke-ResizeCaptureCommand $wpr @('-profiledetails', $profileName, '-filemode') `
-                    (Join-Path $RunDirectory "$profileName.txt")
+                    (Join-Path $RunDirectory "$safe.txt")
             }
             # Omitting -filemode selects WPR's in-memory ring buffer: events accumulate and the
             # oldest are overwritten until -stop writes whatever the buffer still holds.
-            $startArgs = @('-start', 'GeneralProfile.Verbose', '-start', 'GPU.Verbose', '-start', 'DesktopComposition.Verbose')
+            $startArgs = @()
+            foreach ($profileName in $profiles) { $startArgs += @('-start', $profileName) }
             if (-not $ring) { $startArgs += '-filemode' }
             $startArgs += @('-instancename', $instance)
             Invoke-ResizeCaptureCommand $wpr $startArgs (Join-Path $RunDirectory 'wpr-start.log')
