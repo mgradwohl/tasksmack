@@ -819,7 +819,8 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         }
         ++colIdx;
 
-        // PID column with tree indent and expand/collapse indicator
+        // PID column: selectable row anchor and right-aligned PID text. The tree indent and
+        // expand/collapse control deliberately do NOT live here -- see the comment below and #906.
         if (col == ProcessColumn::PID)
         {
             const bool isSelected = (m_SelectedPid == proc.pid);
