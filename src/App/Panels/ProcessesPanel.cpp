@@ -5,6 +5,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessTreeFlatten.h"
+#include "App/Panels/ProcessTreeIndent.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -48,6 +49,13 @@ namespace
 {
 
 constexpr float TREE_INDENT_WIDTH = 16.0F; // Indent width per tree level in pixels
+// Name text kept visible past the expander no matter how deep the row or how narrow the user has
+// dragged the Name column. Bounds the tree indent so the expand/collapse button can never be
+// pushed out of its cell, which would make a deep parent impossible to toggle (#906).
+// Sized so a clamped row still shows a recognisable chunk of the process name rather than a few
+// characters; the indent gives way first, because depth is also conveyed by the expander column
+// alignment and the PPID column, whereas a truncated name has no other source (#906, #913).
+constexpr float MIN_TREE_NAME_WIDTH = 72.0F;
 
 constexpr float INTERACTION_INTERVAL_HOLD_SECONDS = 0.40F;
 
@@ -811,46 +819,18 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
         }
         ++colIdx;
 
-        // PID column with tree indent and expand/collapse indicator
+        // PID column: selectable row anchor and right-aligned PID text. The tree indent and
+        // expand/collapse control deliberately do NOT live here -- see the comment below and #906.
         if (col == ProcessColumn::PID)
         {
             const bool isSelected = (m_SelectedPid == proc.pid);
 
-            // Indent for tree depth
-            if (m_TreeViewEnabled && depth > 0)
-            {
-                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
-                ImGui::Indent(indentWidth);
-            }
-
-            // Tree expand/collapse button
-            if (m_TreeViewEnabled && hasChildren)
-            {
-                // Stack-allocated button ID: avoids heap allocation per visible row per frame
-                std::array<char, 40> buttonIdBuf{};
-                const char buttonChar = isExpanded ? '-' : '+';
-                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
-                *btnRes.out = '\0';
-                if (ImGui::SmallButton(buttonIdBuf.data()))
-                {
-                    // Toggle collapsed state using uniqueKey
-                    if (isExpanded)
-                    {
-                        m_CollapsedKeys.insert(proc.uniqueKey);
-                    }
-                    else
-                    {
-                        m_CollapsedKeys.erase(proc.uniqueKey);
-                    }
-                }
-                ImGui::SameLine();
-            }
-            else if (m_TreeViewEnabled)
-            {
-                // Add spacing for processes without children
-                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
-                ImGui::SameLine();
-            }
+            // The tree indent and expand/collapse button live in the Name column, not here. This
+            // column is a fixed 60px, so indenting it pushed the PID text past the cell's clip
+            // rect and silently truncated digits at depth >= 1 -- 589 rendered as "5" (see #906).
+            // Name is fixed-width too (120px), so it cannot absorb the indent for free -- the
+            // indent is clamped against the cell instead, see the Name case below. Indenting the
+            // name is what comparable process viewers do.
 
             // Stack-allocated label and selectable ID — avoids heap allocations per visible row per frame
             std::array<char, 16> labelBuf{};
@@ -877,12 +857,6 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             const float pidCurrentX = ImGui::GetCursorPosX();
             ImGui::SetCursorPosX(pidCurrentX + std::max(0.0F, pidAvailWidth - pidTextWidth));
             ImGui::TextUnformatted(label.data(), label.data() + label.size());
-
-            if (m_TreeViewEnabled && depth > 0)
-            {
-                const float indentWidth = TREE_INDENT_WIDTH * static_cast<float>(depth);
-                ImGui::Unindent(indentWidth);
-            }
             continue;
         }
 
@@ -983,8 +957,73 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             break;
 
         case ProcessColumn::Name:
+        {
+            // Tree depth is expressed here rather than in the PID column, which is a fixed 60px
+            // and truncated PIDs once the indent was inside it (#906).
+            //
+            // Name is fixed-width too (120px by default), so the indent has to come out of the
+            // name's own room; it cannot be granted extra width per frame. TableSetupColumn()'s
+            // init_width_or_weight is applied to a *resizable* column only while the table is
+            // initializing (imgui_tables.cpp:989 gates it on !column_is_resizable), so passing a
+            // depth-dependent width on later frames is silently ignored.
+            //
+            // So the indent yields instead: it is clamped against the cell's actual width, always
+            // reserving the expander slot plus MIN_TREE_NAME_WIDTH of name. Deep rows therefore
+            // show less indentation than their depth would suggest rather than losing the name or,
+            // worse, the expander -- a parent whose expander is pushed out of the cell cannot be
+            // collapsed back to a usable width, which is a dead end rather than a cosmetic clip.
+            // Restoring full indent fidelity needs a wider default Name column, tracked in #913.
+            // The expander slot is the control itself plus the ItemSpacing.x that SameLine() adds
+            // after it -- both the button and the leaf Dummy are followed by SameLine(), so the
+            // spacing is always paid and must be reserved or the name keeps less room than promised.
+            const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+            const float reservedForControls = expanderSlotWidth + MIN_TREE_NAME_WIDTH;
+            const float indentWidth =
+                m_TreeViewEnabled
+                    ? ProcessTreeIndent::clampedIndent(depth, TREE_INDENT_WIDTH, ImGui::GetContentRegionAvail().x, reservedForControls)
+                    : 0.0F;
+            const bool indented = indentWidth > 0.0F;
+            if (indented)
+            {
+                ImGui::Indent(indentWidth);
+            }
+
+            if (m_TreeViewEnabled && hasChildren)
+            {
+                // Stack-allocated button ID: avoids heap allocation per visible row per frame
+                std::array<char, 40> buttonIdBuf{};
+                const char buttonChar = isExpanded ? '-' : '+';
+                auto btnRes = std::format_to_n(buttonIdBuf.data(), buttonIdBuf.size() - 1, "{}##tree_btn_{}", buttonChar, proc.uniqueKey);
+                *btnRes.out = '\0';
+                if (ImGui::SmallButton(buttonIdBuf.data()))
+                {
+                    // Toggle collapsed state using uniqueKey
+                    if (isExpanded)
+                    {
+                        m_CollapsedKeys.insert(proc.uniqueKey);
+                    }
+                    else
+                    {
+                        m_CollapsedKeys.erase(proc.uniqueKey);
+                    }
+                }
+                ImGui::SameLine();
+            }
+            else if (m_TreeViewEnabled)
+            {
+                // Keep names aligned with their siblings that do have an expander.
+                ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0F));
+                ImGui::SameLine();
+            }
+
             ImGui::TextUnformatted(proc.name.c_str());
+
+            if (indented)
+            {
+                ImGui::Unindent(indentWidth);
+            }
             break;
+        }
 
         case ProcessColumn::PPID:
             renderRightAlignedText(fmt.ppid);
