@@ -308,8 +308,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig("##SystemNetHistory", axis.xMin, axis.xMax, formatAxisBytesPerSec));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##SystemNetHistory",
+                                                                             axis.xMin,
+                                                                             axis.xMax,
+                                                                             formatAxisBytesPerSec,
+                                                                             UI::Widgets::maxOfSeries(sentData, recvData),
+                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
             const int count = UI::Format::checkedCount(aligned);

@@ -1011,8 +1011,12 @@ void ProcessDetailsPanel::renderThreadAndFaultHistory()
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig("##ProcThreadsFaults", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##ProcThreadsFaults",
+                                                                             axisConfig.xMin,
+                                                                             axisConfig.xMax,
+                                                                             formatAxisLocalized,
+                                                                             UI::Widgets::maxOfSeries(threadData, handleData, faultData),
+                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
         if (chart.active())
         {
             const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -1162,8 +1166,12 @@ void ProcessDetailsPanel::renderIoStats(const Domain::ProcessSnapshot& proc)
     // vectors, and the lambda is rendered alongside the matching NowBars below.
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig("##ProcIoHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##ProcIoHistory",
+                                                                             axisConfig.xMin,
+                                                                             axisConfig.xMax,
+                                                                             formatAxisBytesPerSec,
+                                                                             UI::Widgets::maxOfSeries(readData, writeData),
+                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
             const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -1263,8 +1271,12 @@ void ProcessDetailsPanel::renderNetworkStats(const Domain::ProcessSnapshot& proc
     // buffers; renderHistoryWithNowBars composes it with the summary bars.
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig("##ProcNetworkHistory", axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##ProcNetworkHistory",
+                                                                             axisConfig.xMin,
+                                                                             axisConfig.xMax,
+                                                                             formatAxisBytesPerSec,
+                                                                             UI::Widgets::maxOfSeries(sentData, recvData),
+                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
         if (chart.active())
         {
             const int plotCount = UI::Format::checkedCount(alignedCount);
@@ -1353,8 +1365,12 @@ void ProcessDetailsPanel::renderPowerUsage(const Domain::ProcessSnapshot& proc)
 
     auto plot = [&]()
     {
-        const UI::Widgets::HistoryChart chart(
-            UI::Widgets::autoFitHistoryConfig("##ProcPowerHistory", axisConfig.xMin, axisConfig.xMax, formatAxisWatts));
+        const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##ProcPowerHistory",
+                                                                             axisConfig.xMin,
+                                                                             axisConfig.xMax,
+                                                                             formatAxisWatts,
+                                                                             UI::Widgets::maxOfSeries(powerData),
+                                                                             UI::Widgets::RATE_AXIS_MIN_SPAN_WATTS));
         if (chart.active())
         {
             if (!powerData.empty())
@@ -1652,8 +1668,12 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs()
         // GPU Memory graph
         auto plotGpuMem = [&]()
         {
-            const UI::Widgets::HistoryChart chart(
-                UI::Widgets::autoFitHistoryConfig("##GPUMemPlot", axisConfig.xMin, axisConfig.xMax, formatAxisLocalized));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##GPUMemPlot",
+                                                                                 axisConfig.xMin,
+                                                                                 axisConfig.xMax,
+                                                                                 formatAxisLocalized,
+                                                                                 UI::Widgets::maxOfSeries(gpuMemVec),
+                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT));
             if (chart.active())
             {
                 if (plotCount > 0)

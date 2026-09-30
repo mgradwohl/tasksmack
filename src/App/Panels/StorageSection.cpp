@@ -112,7 +112,12 @@ void renderDiskCell(const std::string& deviceName,
         // this. ImPlotFlags_NoTitle keeps the plot title hidden (deviceName has no "##" prefix to
         // hide it via ImPlot's usual Label##ID convention) without needing to allocate a new
         // string just to add one (#823 review).
-        auto diskCfg = UI::Widgets::autoFitHistoryConfig(deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec);
+        auto diskCfg = UI::Widgets::rateHistoryConfig(deviceName.c_str(),
+                                                      axisConfig.xMin,
+                                                      axisConfig.xMax,
+                                                      formatAxisBytesPerSec,
+                                                      UI::Widgets::maxOfSeries(readData, writeData),
+                                                      UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
         diskCfg.flags |= ImPlotFlags_NoTitle;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(diskCfg);
@@ -369,8 +374,12 @@ void renderStorageSection(RenderContext& ctx)
 
         auto diskPlot = [&]()
         {
-            const UI::Widgets::HistoryChart chart(
-                UI::Widgets::autoFitHistoryConfig("##SystemDiskHistory", diskAxis.xMin, diskAxis.xMax, formatAxisBytesPerSec));
+            const UI::Widgets::HistoryChart chart(UI::Widgets::rateHistoryConfig("##SystemDiskHistory",
+                                                                                 diskAxis.xMin,
+                                                                                 diskAxis.xMax,
+                                                                                 formatAxisBytesPerSec,
+                                                                                 UI::Widgets::maxOfSeries(readData, writeData),
+                                                                                 UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
             if (chart.active())
             {
                 const int count = UI::Format::checkedCount(alignedDisk);
