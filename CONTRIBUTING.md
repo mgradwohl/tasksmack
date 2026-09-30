@@ -919,6 +919,26 @@ pwsh -File tools\profile-etw.ps1 resize -Phase App -RunDirectory $run
 pwsh -File tools\profile-etw.ps1 resize -Phase Check -RunDirectory $run
 ```
 
+**Provider set (`-ProviderSet`).** The default `Focused` uses `tools/TaskSmackResize.wprp`, which
+keeps exactly what attribution needs -- `CSwitch`, `ReadyThread` and `SampledProfile` with stacks on
+all three, plus `DxgKrnl`, `Dwm-Core`, `DXGI` and `Kernel-EventTracing` -- and deliberately omits
+`GeneralProfile.Verbose`'s stack-walked `Microsoft-Windows-Win32k` provider and its
+`DiskIO`/`DPC`/`Interrupt`/fault keywords. Note that basing a profile on the built-in `CPU.Verbose`
+is *not* sufficient: its own event collector still enables Win32k with stacks, which is why this
+profile declares its collectors explicitly.
+
+`-ProviderSet Verbose` restores the earlier `GeneralProfile.Verbose` + `GPU.Verbose` +
+`DesktopComposition.Verbose` set. It is an explicit opt-in rather than the default because, measured
+inside a real 1064 ms stall, that set accounted for **48.1%** of the sampled CPU it was recording
+(dominated by `EtwpLogKernelEvent`/`EtwpReserveTraceBuffer`/`KeQueryPerformanceCounter`) -- it was
+measuring its own logging more than the stall. On an identical 20-second workload the focused
+profile produced a **93 MB** ETL against **1026 MB**, both loss-free, with the ETW share of sampled
+CPU down to **1.8%**. See #912.
+
+The resolved providers, keywords and stack settings of whichever profile was used are retained in
+the run directory (`profiledetails-*.txt` for the focused profile, `<ProfileName>.txt` for the
+built-ins), so a capture's configuration is recoverable from its own artifacts.
+
 **Ring buffering for rare stalls (`-Buffering Ring`).** File mode records a fixed window and
 depends on the stall happening inside it, which is the wrong shape for a freeze that occurs
 once in many minutes. `-Buffering Ring` omits WPR's `-filemode` so events accumulate in an
@@ -965,12 +985,16 @@ records include UTC/QPC, PID and actual launcher elevation; `*-token.txt` retain
 (no RunAs; TaskSmack's manifest is asInvoker). These artifacts include machine/process
 information: inspect them before sharing.
 
-Collect requests `GeneralProfile.Verbose`, `GPU.Verbose` and
-`DesktopComposition.Verbose` in file mode. The installed profile definitions are retained
-as `*.Verbose.txt`; GeneralProfile supplies CSwitch/ReadyThread **stacks**, not just sampled
-CPU, while GPU/DesktopComposition add DxgKrnl/DWM. Profile availability/buffer sizes vary
-with the installed WPT version. Do not assume a requested provider emitted usable events:
-verify scheduler stacks and graphics/compositor events in the resulting trace.
+Collect requests whichever provider set `-ProviderSet` selects (see above): by default the single
+`tools/TaskSmackResize.wprp!TaskSmackResize` profile, whose resolved definition is retained as
+`profiledetails-1.txt`; with `-ProviderSet Verbose`, the three built-in profiles, retained as
+`*.Verbose.txt`. Either way the retained definition describes the variant actually recorded --
+`-profiledetails` is passed `-filemode` only when the capture uses file mode, since that flag is
+what selects a profile's `.File` variant over its `.Memory` one. The focused profile supplies
+CSwitch/ReadyThread **stacks**, not just sampled CPU, plus DxgKrnl/DWM/DXGI. Profile
+availability/buffer sizes vary with the installed WPT version. Do not assume a requested provider
+emitted usable events: verify scheduler stacks and graphics/compositor events in the resulting
+trace.
 
 Collector stop always targets its own generated instance, including on failures. A failed
 start never triggers a stop. Failed shutdown records the exact instance-specific recovery

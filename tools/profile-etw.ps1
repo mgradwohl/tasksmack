@@ -81,6 +81,12 @@ param(
     [ValidateSet('File', 'Ring')]
     [string]$Buffering = 'File',
 
+    # resize mode only: Focused uses tools/TaskSmackResize.wprp, which keeps the scheduler and
+    # sampling data attribution needs without the provider volume that made the earlier set
+    # account for ~48% of a measured stall's own CPU (#912). Verbose is the wider legacy set.
+    [ValidateSet('Focused', 'Verbose')]
+    [string]$ProviderSet = 'Focused',
+
     [string]$RunDirectory,
 
     [switch]$SkipBuild,
@@ -106,7 +112,7 @@ if ($Mode -eq 'resize') {
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'resize capture requires PowerShell 7 (pwsh).' }
     . (Join-Path $scriptDir 'profile-etw-resize.ps1')
     Invoke-ResizeCapture -Phase $Phase -RunDirectory $RunDirectory -Preset $Preset -SkipBuild:$SkipBuild `
-        -DurationSeconds $DurationSeconds -RepoRoot $repoRoot -Buffering $Buffering
+        -DurationSeconds $DurationSeconds -RepoRoot $repoRoot -Buffering $Buffering -ProviderSet $ProviderSet
     return
 }
 

@@ -1,0 +1,112 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes'?>
+<WindowsPerformanceRecorder
+    Author="TaskSmack"
+    Comments="Resize-stall attribution profile for tools/profile-etw.ps1 resize. Deliberately much lighter than the original GeneralProfile.Verbose + GPU.Verbose + DesktopComposition.Verbose set, which in a real capture (#882) accounted for 48.1% of the sampled CPU inside the very 1064 ms stall it was recording - dominated by the generic ETW event-logging path (EtwpLogKernelEvent, EtwpReserveTraceBuffer, KeQueryPerformanceCounter), i.e. by event volume rather than by any single provider. Collectors are defined explicitly rather than inherited via Base: CPU.Verbose looks like a lean starting point from its system keywords, but its event collector still enables Microsoft-Windows-Win32k with stacks plus JScript/DotNETRuntime/RPC providers, and stack-walking Win32k while a UI thread is being resized is the single heaviest thing this profile must not do. Buffer sizing follows tools/TaskSmackCPU.wprp, whose comment records why the built-in sizing dropped events on this hardware. See #912."
+    Company="TaskSmack"
+    Copyright="TaskSmack"
+    Tag="TaskSmack"
+    Team="TaskSmack"
+    Version="1.0"
+    >
+  <Profiles>
+
+    <SystemCollector Id="SystemCollector_TaskSmackResize" Name="TaskSmackResize System Collector">
+      <BufferSize Value="1024"/>
+      <Buffers Value="500"/>
+    </SystemCollector>
+
+    <EventCollector Id="EventCollector_TaskSmackResize" Name="TaskSmackResize Event Collector">
+      <BufferSize Value="1024"/>
+      <Buffers Value="200"/>
+    </EventCollector>
+
+    <!-- Exactly what attribution needs and nothing else. CSwitch/ReadyThread answer whether a
+         stalled UI thread is running, blocked or runnable and what readied it; SampledProfile
+         says where on-CPU time goes; Loader and ProcessThread are required for image/process
+         resolution. Stacks on all three are the point of the capture. Deliberately absent:
+         DiskIO, DPC, Interrupt, HardFaults/AllFaults and MemoryInfoWS, all of which
+         GeneralProfile.Verbose or GPU.Verbose enable and none of which this investigation reads. -->
+    <SystemProvider Id="SystemProvider_TaskSmackResize">
+      <Keywords>
+        <Keyword Value="CpuConfig"/>
+        <Keyword Value="CSwitch"/>
+        <Keyword Value="IdealProcessor"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="ReadyThread"/>
+        <Keyword Value="SampledProfile"/>
+        <Keyword Value="ThreadPriority"/>
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch"/>
+        <Stack Value="ReadyThread"/>
+        <Stack Value="SampledProfile"/>
+      </Stacks>
+    </SystemProvider>
+
+    <!-- GPU scheduler. Keyword mask and level taken from GPU.Verbose (0x277/0x05), which is
+         richer than DesktopComposition.Verbose's 0x65. Stacks kept: identifying which DxgKrnl
+         operation a stalled UI thread is inside is the whole question. -->
+    <EventProvider Id="EventProvider_DxgKrnl" Name="Microsoft-Windows-DxgKrnl" Level="5" Stack="true">
+      <Keywords>
+        <Keyword Value="0x277"/>
+      </Keywords>
+    </EventProvider>
+
+    <!-- Desktop compositor, to correlate a stall with DWM frame activity. -->
+    <EventProvider Id="EventProvider_DwmCore" Name="Microsoft-Windows-Dwm-Core" Level="6">
+      <Keywords>
+        <Keyword Value="0x1ffff"/>
+      </Keywords>
+    </EventProvider>
+
+    <!-- Present/swapchain path. -->
+    <EventProvider Id="EventProvider_DXGI" Name="Microsoft-Windows-DXGI" Level="6" Stack="true">
+      <Keywords>
+        <Keyword Value="0xf"/>
+      </Keywords>
+    </EventProvider>
+
+    <!-- ETW's own buffer and lost-event accounting, so trace validity is visible in the capture
+         rather than inferred afterwards (the concern #873 raises). -->
+    <EventProvider Id="EventProvider_KernelEventTracing" Name="Microsoft-Windows-Kernel-EventTracing" Level="15">
+      <Keywords>
+        <Keyword Value="0x40"/>
+      </Keywords>
+    </EventProvider>
+
+    <Profile
+        Description="Resize-stall attribution: scheduler and CPU sampling with stacks, plus GPU/compositor providers, without GeneralProfile's Win32k/DiskIO/DPC/Interrupt volume"
+        DetailLevel="Verbose"
+        Id="TaskSmackResize.Verbose.File"
+        LoggingMode="File"
+        Name="TaskSmackResize"
+        >
+      <Collectors>
+        <SystemCollectorId Value="SystemCollector_TaskSmackResize">
+          <SystemProviderId Value="SystemProvider_TaskSmackResize"/>
+        </SystemCollectorId>
+        <EventCollectorId Value="EventCollector_TaskSmackResize">
+          <EventProviders>
+            <EventProviderId Value="EventProvider_DxgKrnl"/>
+            <EventProviderId Value="EventProvider_DwmCore"/>
+            <EventProviderId Value="EventProvider_DXGI"/>
+            <EventProviderId Value="EventProvider_KernelEventTracing"/>
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+
+    <!-- Memory variant, required by the ring-buffer mode from #902 (-Buffering Ring): wpr records
+         into memory until a save is requested after a freeze is actually observed. -->
+    <Profile
+        Base="TaskSmackResize.Verbose.File"
+        Description="Ring-buffer variant of TaskSmackResize for -Buffering Ring captures"
+        DetailLevel="Verbose"
+        Id="TaskSmackResize.Verbose.Memory"
+        LoggingMode="Memory"
+        Name="TaskSmackResize"
+        />
+
+  </Profiles>
+</WindowsPerformanceRecorder>

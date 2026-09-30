@@ -74,12 +74,12 @@ try {
     }
 
     $run = New-TestRun
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run } 'requires a separately'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -RepoRoot $repo } 'requires a separately'
     $script:elevated = $true
     Assert-Throws { Invoke-ResizeCapture -Phase App -RunDirectory $run } 'normal-user'
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 601 } '15-600'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 601 -RepoRoot $repo } '15-600'
 
-    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo
     $saved = Get-Content -LiteralPath (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json
     Assert-True ($saved.State -eq 'saved') 'Collector did not save'
     $start = @($script:calls | Where-Object { $_.Arguments -contains '-start' })
@@ -87,27 +87,30 @@ try {
     Assert-True ($start.Count -eq 1 -and $stop.Count -eq 1) 'Wrong start/stop count'
     Assert-True ($start[0].Arguments[-1] -eq $saved.Instance -and $stop[0].Arguments[-1] -eq $saved.Instance) 'Instance ownership lost'
     Assert-True ($start[0].Arguments[-2] -eq '-instancename') 'Instance option must be last'
-    foreach ($profile in @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')) {
-        Assert-True ($start[0].Arguments -contains $profile) "Missing $profile"
+    # Default is now the focused profile (#912), not the three built-in Verbose profiles.
+    Assert-True (@($start[0].Arguments | Where-Object { $_ -like '*TaskSmackResize.wprp!TaskSmackResize' }).Count -eq 1) 'Focused profile not started'
+    foreach ($heavy in @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')) {
+        Assert-True (-not ($start[0].Arguments -contains $heavy)) "Focused default still started $heavy"
     }
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'already exists'
+    Assert-True ($saved.ProviderSet -eq 'focused') 'Provider set not recorded'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo } 'already exists'
     Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-cancel' }).Count -eq 0) 'Unexpected cancel'
 
     # A failed start must not stop any recording; a failed status must still stop ours.
     $script:calls.Clear()
     $script:failOn = '-start'
     $run = New-TestRun
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'simulated'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo } 'simulated'
     Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-stop' }).Count -eq 0) 'Stopped after failed start'
     Assert-True ((Get-Content (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json).State -eq 'failed') 'Start failure not preserved'
     $script:calls.Clear()
     $script:failOn = '-status'
     $run = New-TestRun
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'simulated'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo } 'simulated'
     Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-stop' }).Count -eq 1) 'Status failure leaked recording'
     $script:failOn = '-stop'
     $run = New-TestRun
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'simulated'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo } 'simulated'
     Assert-True ((Get-Content (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json).State -eq 'stop-failed') 'Stop failure not preserved'
 
     # Hash mismatch must stop launch before creating a process.
@@ -192,12 +195,12 @@ try {
     $script:calls.Clear()
     $run = New-TestRun
     function Get-Command { param($Name, $ErrorAction) throw "mock: '$Name' is not recognized" }
-    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 } 'not recognized'
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo } 'not recognized'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $run 'collector.json'))) 'Missing wpr consumed the collector claim'
     Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-start' }).Count -eq 0) 'Started a recording without wpr'
     # The prepared run must still be usable once the toolkit is available.
     function Get-Command { param($Name, $ErrorAction) @{ Source = "mock-$Name.exe" } }
-    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -RepoRoot $repo
     Assert-True ((Get-Content (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json).State -eq 'saved') 'Run unusable after a missing-wpr failure'
 
 
@@ -229,7 +232,7 @@ try {
     $script:calls.Clear()
     $run = New-TestRun
     function Wait-ResizeSaveRequest { param([string]$RunDirectory, [int]$TimeoutSeconds) return $true }
-    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -Buffering Ring
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run -DurationSeconds 15 -Buffering Ring -RepoRoot $repo
     $ringSaved = Get-Content -LiteralPath (Join-Path $run 'collector.json') -Raw | ConvertFrom-Json
     Assert-True ($ringSaved.State -eq 'saved') 'Ring collector did not save'
     Assert-True ($ringSaved.Buffering -eq 'ring') 'Ring buffering not recorded'
@@ -237,15 +240,19 @@ try {
     $ringStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
     Assert-True (-not ($ringStart.Arguments -contains '-filemode')) 'Ring mode still passed -filemode'
     Assert-True ($ringStart.Arguments[-2] -eq '-instancename') 'Instance option must remain last in ring mode'
-    foreach ($needed in @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')) {
-        Assert-True ($ringStart.Arguments -contains $needed) "Ring mode dropped $needed"
-    }
+    Assert-True (@($ringStart.Arguments | Where-Object { $_ -like '*TaskSmackResize.wprp!TaskSmackResize' }).Count -eq 1) 'Ring mode dropped the focused profile'
+    # -filemode selects a profile's .File variant, so a ring capture's retained profile details
+    # must omit it or they describe a variant the recording is not using.
+    $ringDetail = @($script:calls | Where-Object { $_.Arguments -contains '-profiledetails' })[0]
+    Assert-True (-not ($ringDetail.Arguments -contains '-filemode')) 'Ring mode documented the File variant'
     # File mode must be unchanged.
     $script:calls.Clear()
     $run2 = New-TestRun
-    Invoke-ResizeCapture -Phase Collect -RunDirectory $run2 -DurationSeconds 15
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $run2 -DurationSeconds 15 -RepoRoot $repo
     $fileStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
     Assert-True ($fileStart.Arguments -contains '-filemode') 'File mode lost -filemode'
+    $fileDetail = @($script:calls | Where-Object { $_.Arguments -contains '-profiledetails' })[0]
+    Assert-True ($fileDetail.Arguments -contains '-filemode') 'File mode stopped documenting the File variant'
     Assert-True ((Get-Content (Join-Path $run2 'collector.json') -Raw | ConvertFrom-Json).Buffering -eq 'file') 'File buffering not recorded'
 
     # Save phase: normal-user, ring-only, single-shot.
@@ -284,6 +291,38 @@ try {
     Assert-True $ringCheck.SameRun 'Ring Check rejected a valid ring run'
     Assert-True ($ringCheck.Buffering -eq 'ring') 'Ring Check did not record buffering'
     Assert-True ($ringCheck.Diagnostics -like '*RING MODE*') 'Ring Check dropped the buffer-depth caveat'
+
+    # ---- Provider set selection (#912) ------------------------------------------------
+    # The heavyweight set must stay reachable, and must be an explicit choice rather than the
+    # default: as the default it measured ~48% of its own logging inside a recorded stall.
+    $script:elevated = $true
+    $script:failOn = ''
+    $script:calls.Clear()
+    $verboseRun = New-TestRun
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $verboseRun -DurationSeconds 15 -RepoRoot $repo -ProviderSet Verbose
+    $vStart = @($script:calls | Where-Object { $_.Arguments -contains '-start' })[0]
+    foreach ($heavy in @('GeneralProfile.Verbose', 'GPU.Verbose', 'DesktopComposition.Verbose')) {
+        Assert-True ($vStart.Arguments -contains $heavy) "Verbose opt-in dropped $heavy"
+    }
+    Assert-True (@($vStart.Arguments | Where-Object { $_ -like '*TaskSmackResize.wprp*' }).Count -eq 0) 'Verbose opt-in also started the focused profile'
+    Assert-True ((Get-Content (Join-Path $verboseRun 'collector.json') -Raw | ConvertFrom-Json).ProviderSet -eq 'verbose') 'Verbose provider set not recorded'
+
+    # The resolved providers/keywords of the profile actually used must be retained, so a
+    # capture's configuration is recoverable from its own artifacts (#912). A focused profile
+    # spec is a path plus '!Name', which cannot be a filename verbatim.
+    $script:calls.Clear()
+    $detailRun = New-TestRun
+    Invoke-ResizeCapture -Phase Collect -RunDirectory $detailRun -DurationSeconds 15 -RepoRoot $repo
+    Assert-True (Test-Path -LiteralPath (Join-Path $detailRun 'profiledetails-1.txt')) 'Focused profile details not retained'
+    $detailCall = @($script:calls | Where-Object { $_.Arguments -contains '-profiledetails' })[0]
+    Assert-True (@($detailCall.Arguments | Where-Object { $_ -like '*TaskSmackResize.wprp!TaskSmackResize' }).Count -eq 1) 'Profile details taken for the wrong profile'
+
+    # A missing profile file must fail before the recording starts, not half-way through.
+    $script:calls.Clear()
+    $missingRun = New-TestRun
+    Assert-Throws { Invoke-ResizeCapture -Phase Collect -RunDirectory $missingRun -DurationSeconds 15 -RepoRoot (Join-Path $root 'no-such-repo') } 'Provider profile is missing'
+    Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-start' }).Count -eq 0) 'Started a recording without a provider profile'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $missingRun 'collector.json'))) 'Missing provider profile consumed the collector claim'
 
     Write-Host 'Resize capture lifecycle, overlap, ring-buffer, privilege, identity and failure tests passed.'
 }
