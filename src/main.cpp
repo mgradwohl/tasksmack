@@ -37,6 +37,7 @@
 #include <locale>
 #include <memory>
 #include <print>
+#include <string>
 #include <vector>
 
 namespace
@@ -115,7 +116,14 @@ auto runApp() -> int
     try
     {
         logPath = std::filesystem::temp_directory_path() / "tasksmack-debug.log";
+#ifdef _WIN32
+        // Native wide path: the target defines SPDLOG_WCHAR_FILENAMES, so spdlog's filename_t is
+        // std::wstring here. Passing a narrowed path would route through the active ANSI code
+        // page and fail, or open the wrong file, whenever %TEMP% contains characters outside it.
+        sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.wstring(), true));
+#else
         sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.string(), true));
+#endif
     }
     catch (const std::exception& e)
     {
@@ -134,7 +142,11 @@ auto runApp() -> int
 
     if (!logPath.empty())
     {
-        spdlog::info("Debug log file: {}", logPath.string());
+        // u8string(), not string(): std::filesystem::path::string() performs a narrowing
+        // conversion that can throw for a path the active code page cannot represent, and this
+        // sits outside the try block above. UTF-8 bytes are lossless and cannot throw.
+        const auto utf8Path = logPath.u8string();
+        spdlog::info("Debug log file: {}", std::string(utf8Path.begin(), utf8Path.end()));
     }
 
 #ifndef NDEBUG
