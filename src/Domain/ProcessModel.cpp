@@ -8,6 +8,7 @@
 #include "Platform/ProcessTypes.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
+#include "SingleLineText.h"
 
 #include <spdlog/spdlog.h>
 
@@ -723,8 +724,12 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
     snapshot.parentPid = current.parentPid;
-    snapshot.name = current.name;
-    snapshot.command = current.command;
+    // Sanitized here rather than in each platform probe: both /proc/[pid]/cmdline (which uses NUL
+    // only as the argument *separator*) and the Windows PEB command line can carry a newline inside
+    // an argument, and a process controls its own argv. See SingleLineText.h for why that breaks the
+    // process table (#919).
+    snapshot.name = toSingleLine(current.name);
+    snapshot.command = toSingleLine(current.command);
     snapshot.user = current.user;
     snapshot.displayState = translateState(current.state);
     snapshot.status = current.status;                 // Pass through status from platform probe

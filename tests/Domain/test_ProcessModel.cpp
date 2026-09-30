@@ -89,6 +89,27 @@ TEST(ProcessModelTest, UpdateFromCountersPublishesSnapshotsWithoutProbe)
     EXPECT_EQ(model.snapshotVersion(), 1);
 }
 
+TEST(ProcessModelTest, ProbeSuppliedControlCharactersNeverReachASnapshot)
+{
+    // A process controls its own argv, and a newline inside an argument survives both
+    // /proc/[pid]/cmdline (NUL is only the argument separator) and the Windows PEB command line.
+    // Rendered verbatim it makes a multi-line table cell, which grows that row taller than the rest
+    // and breaks the uniform-row-height assumption ImGuiListClipper relies on (#919). Sanitizing
+    // lives here in the Domain layer so both platform probes are covered by one rule.
+    Domain::ProcessModel model(nullptr);
+    auto counter = makeCounter(100, "na\nme", 'R', 1000, 500);
+    counter.command = "bash -c printf \"a\nb\"\tand\rmore";
+
+    model.updateFromCounters({counter}, 100000);
+
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1);
+    EXPECT_EQ(snapshots[0].command, "bash -c printf \"a b\" and more");
+    EXPECT_EQ(snapshots[0].name, "na me");
+    EXPECT_EQ(snapshots[0].command.find('\n'), std::string::npos);
+    EXPECT_EQ(snapshots[0].name.find('\n'), std::string::npos);
+}
+
 TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
 {
     auto probe = std::make_unique<MockProcessProbe>();
