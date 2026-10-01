@@ -332,18 +332,14 @@ class Theme
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
 
-    /// Register the title font (called by UILayer during initialization)
-    /// Register the title-bar display font along with the pixel size it was rasterized at.
-    ///
-    /// The size is stored because TitleBarLayer::height() must be answerable outside an ImGui frame
-    /// (SDL's hit-test callback needs it), where ImGui::GetFontSize() is unavailable.
-    void registerTitleFont(ImFont* font, float sizePx);
+    /// Register the title-bar display font (called by UILayer during initialization).
+    void registerTitleFont(ImFont* font);
 
     /// Register the fixed-size icon font used for the title bar's window and app controls.
     ///
     /// Separate from the body fonts because the icon ranges are merged into each of those at that
     /// font's size, which made the chrome controls track the Font Size setting.
-    void registerChromeIconFont(ImFont* font);
+    void registerChromeIconFont(ImFont* font, float sizePx);
 
     /// Icon font for title-bar controls; null if the icon font could not be loaded.
     [[nodiscard]] auto chromeIconFont() const -> ImFont*
@@ -351,10 +347,21 @@ class Theme
         return m_ChromeIconFont;
     }
 
-    /// Pixel size the title font was rasterized at. Valid outside an ImGui frame.
-    [[nodiscard]] auto titleFontSizePx() const -> float
+    /// Pixel size the chrome icon font was rasterized at. Callers that need a glyph drawn at a
+    /// different size push it relative to this rather than re-deriving it from the bar height.
+    [[nodiscard]] auto chromeIconFontSizePx() const -> float
     {
-        return m_TitleFontSizePx;
+        return m_ChromeIconFontSizePx;
+    }
+
+    /// Record the title bar's height in pixels, converted from points against the display scale.
+    void setTitleBarHeightPx(float heightPx);
+
+    /// Title bar height in pixels. Valid outside an ImGui frame, which SDL's hit-test callback
+    /// requires.
+    [[nodiscard]] auto titleBarHeightPx() const -> float
+    {
+        return m_TitleBarHeightPx;
     }
 
   private:
@@ -385,9 +392,11 @@ class Theme
     std::array<FontPair, FONT_SIZE_COUNT> m_Fonts{};
     ImFont* m_TitleFont = nullptr;      // Sixtyfour pixel font for title bar
     ImFont* m_ChromeIconFont = nullptr; // Fixed-size Font Awesome for title-bar controls
-    // Pixel size m_TitleFont was rasterized at. Defaults to a sane value so title-bar geometry is
-    // usable before fonts load; overwritten by registerTitleFont().
-    float m_TitleFontSizePx = 24.0F;
+    // Pixel size m_ChromeIconFont was rasterized at; overwritten by registerChromeIconFont().
+    float m_ChromeIconFontSizePx = 18.0F;
+    // Title bar height in pixels. Defaults to 24pt at a 1.0 display scale so geometry is usable
+    // before fonts load; overwritten by setTitleBarHeightPx().
+    float m_TitleBarHeightPx = 32.0F;
 
     void initializeFontSizes();
     void loadDefaultFallbackTheme();

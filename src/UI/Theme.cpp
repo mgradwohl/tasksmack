@@ -663,18 +663,26 @@ void Theme::registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont*
     m_Fonts[fontSizeIndex(size)] = {.regular = regular, .large = large, .monospace = monospace};
 }
 
-void Theme::registerTitleFont(ImFont* font, float sizePx)
+void Theme::registerTitleFont(ImFont* font)
 {
     m_TitleFont = font;
-    if (sizePx > 0.0F)
+}
+
+void Theme::setTitleBarHeightPx(float heightPx)
+{
+    if (heightPx > 0.0F)
     {
-        m_TitleFontSizePx = sizePx;
+        m_TitleBarHeightPx = heightPx;
     }
 }
 
-void Theme::registerChromeIconFont(ImFont* font)
+void Theme::registerChromeIconFont(ImFont* font, float sizePx)
 {
     m_ChromeIconFont = font;
+    if (sizePx > 0.0F)
+    {
+        m_ChromeIconFontSizePx = sizePx;
+    }
 }
 
 auto Theme::titleFont() const -> ImFont*
