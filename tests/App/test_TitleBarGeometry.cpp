@@ -945,14 +945,14 @@ TEST(TitleBarGeometryTest, ButtonWidthIsNeverNegative)
 
 TEST(TitleBarGeometryTest, MatchedGlyphSizeScalesUpAGlyphWithSmallerInk)
 {
-    // fa-xmark's ink covers 0.625 em against window-maximize's 0.875, so at a shared 18px it comes
-    // out 11.25px tall against 15.75px. Drawing it at 25.2px brings the two inks level.
-    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 15.75F, 11.25F), 25.2F);
+    // The real case: fa-xmark's ink spans 0.625 em of width against window-minimize's 1.000, so at
+    // a shared 18px it comes out 11.25px wide against 18px. Drawing it at 28.8px levels the two.
+    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 18.0F, 11.25F), 28.8F);
 }
 
 TEST(TitleBarGeometryTest, MatchedGlyphSizeLeavesAnAlreadyMatchingGlyphAlone)
 {
-    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 15.75F, 15.75F), 18.0F);
+    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 18.0F, 18.0F), 18.0F);
 }
 
 TEST(TitleBarGeometryTest, MatchedGlyphSizeScalesDownAGlyphWithLargerInk)
@@ -964,14 +964,14 @@ TEST(TitleBarGeometryTest, MatchedGlyphSizeFallsBackToTheReferenceSizeOnUnusable
 {
     // A glyph that failed to rasterize measures zero; drawing at the shared size is wrong but
     // readable, where dividing by it would not be.
-    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 15.75F, 0.0F), 18.0F);
+    EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 18.0F, 0.0F), 18.0F);
     EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, 0.0F, 11.25F), 18.0F);
     EXPECT_FLOAT_EQ(computeMatchedGlyphSize(18.0F, -1.0F, -1.0F), 18.0F);
 }
 
 TEST(TitleBarGeometryTest, MatchedGlyphSizeIsNeverNegative)
 {
-    EXPECT_GE(computeMatchedGlyphSize(-18.0F, 15.75F, 11.25F), 0.0F);
+    EXPECT_GE(computeMatchedGlyphSize(-18.0F, 18.0F, 11.25F), 0.0F);
 }
 
 } // namespace

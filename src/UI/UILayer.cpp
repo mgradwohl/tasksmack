@@ -158,21 +158,22 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
         theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
     }
 
-    // Load Sixtyfour display font for the custom title bar.
+    // The title bar's two physical sizes. Both are given in points and converted against the
+    // measured display scale, like every other font here, so the bar tracks display density; and
+    // both deliberately ignore the Font Size setting, because the title bar is chrome, not content.
     //
-    // Specified in points and converted against the measured display scale, like every other font
-    // here, so the title bar tracks display density. It deliberately does NOT track the Font Size
-    // setting: the title bar is chrome, and its height (and therefore its icon and window buttons)
-    // is derived from this size.
+    // They are independent of each other on purpose. The bar's height used to be derived from the
+    // title font plus padding, which is what made the bar, its icon and its window buttons balloon
+    // whenever a larger body font was picked, so nothing below may reintroduce that coupling: the
+    // wordmark is sized to look right as a wordmark, and the bar is sized to be a title bar.
     //
-    // Rounded to a whole pixel because this face is rasterized as a bitmap
-    // (ImGuiFreeTypeBuilderFlags_Bitmap below); a fractional size would render it soft.
+    // TITLE_FONT_PT is rounded to a whole pixel because the Sixtyfour face is rasterized as a
+    // bitmap (ImGuiFreeTypeBuilderFlags_Bitmap below); a fractional size would render it soft.
     constexpr float TITLE_FONT_PT = 18.0F;
     const float titleFontPx = std::round(pointsToPixels(TITLE_FONT_PT));
 
-    // Title bar height in points, so the bar tracks display density without tracking the Font Size
-    // setting. Everything drawn in the bar -- the application icon, the window and app buttons, and
-    // their glyphs -- is derived from this height, so they all scale together with it.
+    // Everything drawn in the bar -- the application icon, the window and app buttons, and their
+    // glyphs -- is derived from TITLE_BAR_PT, so they all scale together with it.
     constexpr float TITLE_BAR_PT = 24.0F;
     const float titleBarPx = std::round(pointsToPixels(TITLE_BAR_PT));
     theme.setTitleBarHeightPx(titleBarPx);

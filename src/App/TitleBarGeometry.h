@@ -75,8 +75,8 @@ enum class ResizeEdge : std::uint8_t
 /// the close button every time the window is maximized.
 ///
 /// @param referenceSizePx  Font size the reference glyph is drawn at.
-/// @param referenceInkPx   Reference glyph's ink height at that size.
-/// @param glyphInkPx       This glyph's ink height at that same size.
+/// @param referenceInkPx   Reference glyph's ink width at that size.
+/// @param glyphInkPx       This glyph's ink width at that same size.
 /// @return Font size for this glyph, or referenceSizePx if either measurement is unusable.
 [[nodiscard]] inline auto computeMatchedGlyphSize(const float referenceSizePx, const float referenceInkPx, const float glyphInkPx) -> float
 {
