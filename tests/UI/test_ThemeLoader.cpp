@@ -244,6 +244,31 @@ TEST(ThemeLoaderTest, HexToImVec4_ValidSixDigit)
     expectColorNear(black, ImVec4(0.0F, 0.0F, 0.0F, 1.0F));
 }
 
+TEST(ThemeLoaderTest, HexToImVec4_RejectsPartiallyHexFields)
+{
+    // from_chars reports success once it has consumed at least one digit, so "FZ" parses as 0x0F
+    // and stops at 'Z'. Checking only the error code therefore accepted these, silently turning
+    // "#FZ0000" into 0x0F0000 instead of flagging it. Each two-character field must be fully
+    // consumed, which is why the parse result's pointer is compared against the field's end.
+    const ImVec4 errorMagenta(1.0F, 0.0F, 1.0F, 1.0F);
+
+    expectColorNear(ThemeLoader::hexToImVec4("#FZ0000"), errorMagenta);
+    expectColorNear(ThemeLoader::hexToImVec4("#00FZ00"), errorMagenta);
+    expectColorNear(ThemeLoader::hexToImVec4("#0000FZ"), errorMagenta);
+    // Eight-digit form: the alpha field has the same requirement.
+    expectColorNear(ThemeLoader::hexToImVec4("#FF0000FZ"), errorMagenta);
+    // A trailing space is not a hex digit either, and must not pass as a partial field.
+    expectColorNear(ThemeLoader::hexToImVec4("#FF00 0"), errorMagenta);
+}
+
+TEST(ThemeLoaderTest, HexToImVec4_StillAcceptsLowercaseAndMixedCase)
+{
+    // Guard against the full-consumption check over-rejecting: every valid digit must still parse.
+    expectColorNear(ThemeLoader::hexToImVec4("#ff8040"), ImVec4(1.0F, 0.502F, 0.251F, 1.0F));
+    expectColorNear(ThemeLoader::hexToImVec4("#Ff8040"), ImVec4(1.0F, 0.502F, 0.251F, 1.0F));
+    expectColorNear(ThemeLoader::hexToImVec4("#abcdef80"), ImVec4(0.671F, 0.804F, 0.937F, 0.502F));
+}
+
 TEST(ThemeLoaderTest, HexToImVec4_ValidEightDigit)
 {
     // Red with 50% alpha (80 hex = 128 decimal = ~0.502)

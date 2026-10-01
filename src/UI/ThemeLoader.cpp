@@ -63,12 +63,18 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     // Use string_view's data() directly - no need to create a string copy
     const char* hexData = hex.data();
 
-    // Parse RGB components
-    auto [ptr1, ec1] = std::from_chars(hexData, hexData + 2, r, 16);
-    auto [ptr2, ec2] = std::from_chars(hexData + 2, hexData + 4, g, 16);
-    auto [ptr3, ec3] = std::from_chars(hexData + 4, hexData + 6, b, 16);
+    // Each field must parse AND consume both of its characters. A successful error code alone is
+    // not enough: from_chars("FZ", ..., 16) stops at 'Z' and still reports success, so "#FZ0000"
+    // used to be accepted as the colour 0x0F0000. Comparing ptr against the field's end is what
+    // rejects that -- and is why the returned pointer, previously bound and ignored (which is what
+    // CodeQL cpp/unused-local-variable was pointing at), is needed rather than discarded.
+    const std::from_chars_result red = std::from_chars(hexData, hexData + 2, r, 16);
+    const std::from_chars_result greenResult = std::from_chars(hexData + 2, hexData + 4, g, 16);
+    const std::from_chars_result blueResult = std::from_chars(hexData + 4, hexData + 6, b, 16);
 
-    if (ec1 != std::errc{} || ec2 != std::errc{} || ec3 != std::errc{})
+    const bool rgbParsed = red.ec == std::errc{} && red.ptr == hexData + 2 && greenResult.ec == std::errc{} &&
+                           greenResult.ptr == hexData + 4 && blueResult.ec == std::errc{} && blueResult.ptr == hexData + 6;
+    if (!rgbParsed)
     {
         spdlog::warn("Invalid hex color: {} (contains non-hex characters)", hex);
         return errorColor();
@@ -77,8 +83,9 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
     {
-        auto [ptrA, ecA] = std::from_chars(hexData + 6, hexData + 8, a, 16);
-        if (ecA != std::errc{})
+        // Same full-consumption requirement as the RGB fields above.
+        const std::from_chars_result alpha = std::from_chars(hexData + 6, hexData + 8, a, 16);
+        if (alpha.ec != std::errc{} || alpha.ptr != hexData + 8)
         {
             spdlog::warn("Invalid hex color alpha: {}", hex);
             return errorColor();

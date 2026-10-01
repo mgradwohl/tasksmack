@@ -1373,7 +1373,10 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
         std::string exceptionMessage;
         try
         {
-            [[maybe_unused]] auto& ref = Core::Application::get();
+            // Discarded rather than bound: get() is called for its throw, and binding the
+            // reference left an unused local that [[maybe_unused]] did not satisfy CodeQL about
+            // (cpp/unused-local-variable).
+            static_cast<void>(Core::Application::get());
         }
         catch (const std::runtime_error& e)
         {
