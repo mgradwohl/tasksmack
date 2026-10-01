@@ -55,6 +55,11 @@ TEST(DialogGeometryTest, ElevationButtonReproducesItsFormerPixelSize)
     EXPECT_FLOAT_EQ(computeActionButtonWidth(NARROW_LABEL_PX, REFERENCE_EM_PX, ELEVATION_BUTTON_MIN_EM), 100.0F);
 }
 
+TEST(DialogGeometryTest, SettingsButtonReproducesItsFormerPixelSize)
+{
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(NARROW_LABEL_PX, REFERENCE_EM_PX, SETTINGS_BUTTON_MIN_EM), 100.0F);
+}
+
 TEST(DialogGeometryTest, EveryDialogConstantScalesWithTheFont)
 {
     // The whole point of the change: double the font, double the geometry. A constant accidentally

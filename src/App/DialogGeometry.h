@@ -40,4 +40,10 @@ inline constexpr float ELEVATION_WIDTH_EM = 45.0F; // 480px
 /// Floor on the OK button's width.
 inline constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // 100px
 
+// ---- Settings dialog (#921) ----
+
+/// Floor on the Cancel/Apply buttons' width. The dialog's columns are measured from the text they
+/// hold rather than authored, so this is the only fixed-pixel value it had left.
+inline constexpr float SETTINGS_BUTTON_MIN_EM = 9.375F; // 100px
+
 } // namespace App

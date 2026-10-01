@@ -1,5 +1,6 @@
 #include "SettingsLayer.h"
 
+#include "App/DialogGeometry.h"
 #include "App/PlatformOpen.h"
 #include "App/SettingsLayerDetail.h"
 #include "App/UserConfig.h"
@@ -32,11 +33,6 @@ using Detail::findRefreshRateIndex;
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
 using Detail::REFRESH_RATE_OPTIONS;
-
-// Action-button floor in ems, so it tracks the Font Size setting and the display's density. It
-// reproduces the pixel value it replaces at the reference configuration -- the Medium preset on a
-// 1.0 display scale, where one em is 32/3 px. See UI/DialogMetrics.h (#921).
-constexpr float SETTINGS_BUTTON_MIN_EM = 9.375F; // was 100px
 
 namespace
 {
