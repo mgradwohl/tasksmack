@@ -285,7 +285,8 @@ class Theme
     /// dragged to a differently scaled monitor would grow the chrome while the text stayed put. See
     /// #943 for handling SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED across both.
     ///
-    /// Queues the rebuild rather than performing it, like setTheme() -- see markStyleDirty().
+    /// Queues the rebuild rather than performing it, like setTheme() -- see
+    /// applyPendingStyleChanges(), which flushes it at the next frame boundary.
     void setDisplayScale(float scale);
 
     [[nodiscard]] auto displayScale() const -> float
@@ -299,7 +300,11 @@ class Theme
         return m_CurrentFontSize;
     }
 
-    /// Set font size preset (triggers font rebuild on next frame)
+    /// Select a font size preset.
+    ///
+    /// Does not rebuild any font: every preset is pre-baked into the atlas at startup, so this
+    /// only changes which one regularFont()/largeFont() hand out. It does queue a style rebuild,
+    /// so padding and spacing follow the new size -- see applyPendingStyleChanges().
     void setFontSize(FontSize size);
 
     /// Get font size config
@@ -373,8 +378,8 @@ class Theme
     std::size_t m_CurrentThemeIndex = 0;
     std::optional<std::size_t> m_PendingThemeIndex; // Deferred theme change (applied next frame)
     // Set when a font-size or display-scale change needs the style rebuilt; flushed at the next
-    // frame boundary by applyPendingStyleChanges(). Mutable because applyImGuiStyle() is const.
-    mutable bool m_StyleDirty = false;
+    // frame boundary by applyPendingStyleChanges().
+    bool m_StyleDirty = false;
 
     FontSize m_CurrentFontSize = FontSize::Medium;
 
