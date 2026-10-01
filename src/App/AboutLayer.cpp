@@ -1,5 +1,6 @@
 #include "App/AboutLayer.h"
 
+#include "App/DialogGeometry.h"
 #include "App/PlatformOpen.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -22,14 +23,6 @@
 
 namespace App
 {
-
-// Dialog geometry in ems, so it tracks the Font Size setting and the display's density rather than
-// being pinned to one of each (#935). Each value reproduces the pixel size it replaces at the
-// reference configuration -- the Medium preset on a 1.0 display scale, where one em is 32/3 px --
-// so the dialog is unchanged there and scales from there. See UI/DialogMetrics.h.
-constexpr float ABOUT_MARGIN_EM = 3.0F;       // was 32px
-constexpr float ABOUT_ICON_EM = 9.0F;         // was 96px
-constexpr float ABOUT_BUTTON_MIN_EM = 11.25F; // was 120px
 
 AboutLayer* AboutLayer::s_Instance = nullptr;
 

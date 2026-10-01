@@ -10,10 +10,11 @@ namespace
 // One em at the reference configuration: the Medium preset (8pt) on a 1.0 display scale, at 96 DPI.
 constexpr float REFERENCE_EM = 32.0F / 3.0F;
 
-TEST(DialogMetricsTest, DialogWidthReproducesTheReplacedPixelSizeAtTheReferenceConfiguration)
+TEST(DialogMetricsTest, DialogWidthIsTheEmMultiple)
 {
-    // The elevation notice was a fixed 480px; 45 em must still be 480px at the reference, or this
-    // change would silently restyle a dialog it is only meant to make scale.
+    // Arithmetic only. That each dialog's *own* constant still reproduces the pixel size it replaced
+    // is asserted against the production symbols in tests/App/test_DialogGeometry.cpp -- a literal
+    // here would stay green while a call-site constant changed and the dialog restyled.
     EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM, 45.0F, 4000.0F), 480.0F);
 }
 
@@ -39,10 +40,10 @@ TEST(DialogMetricsTest, DialogWidthIgnoresAnUnusableViewport)
     EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM, 45.0F, -1.0F), 480.0F);
 }
 
-TEST(DialogMetricsTest, ActionButtonFloorReproducesTheReplacedPixelSizes)
+TEST(DialogMetricsTest, ActionButtonFloorDecidesForAShortLabel)
 {
-    // About was 120px (11.25 em) and the elevation notice 100px (9.375 em). "OK" is far narrower
-    // than either, so the floor is what decides both at the reference configuration.
+    // "OK" is far narrower than any floor the dialogs use, so the floor is what decides. The floors
+    // themselves are asserted against the production symbols in tests/App/test_DialogGeometry.cpp.
     EXPECT_FLOAT_EQ(computeActionButtonWidth(14.0F, REFERENCE_EM, 11.25F), 120.0F);
     EXPECT_FLOAT_EQ(computeActionButtonWidth(14.0F, REFERENCE_EM, 9.375F), 100.0F);
 }
