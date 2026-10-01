@@ -91,15 +91,25 @@ void ElevationNoticeLayer::renderDialog()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-        // 45 em is exactly the former fixed 480px at the reference configuration, clamped so a
-        // large font on a small window cannot push the dialog off-screen. This modal is the first
-        // thing a user sees when running unelevated and it blocks input until dismissed, so its
-        // proportions matter more than the usual cosmetic case (#937).
-        const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, viewport->WorkSize.x);
-        ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F), ImGuiCond_Appearing);
-
         ImGui::OpenPopup("Limited Data Available");
         m_OpenRequested = false;
+    }
+
+    // 45 em is exactly the former fixed 480px at the reference configuration, clamped so a large
+    // font on a small window cannot push the dialog off-screen. This modal is the first thing a user
+    // sees when running unelevated and it blocks input until dismissed, so its proportions matter
+    // more than the usual cosmetic case (#937).
+    //
+    // Reapplied on every frame the popup is open, not once with ImGuiCond_Appearing. ImGui only lets
+    // SetNextWindowSize override ImGuiWindowFlags_AlwaysAutoResize on frames where the size was
+    // actually set by the API -- see size_auto_fit_x_always in imgui.cpp and the comment above it --
+    // so a one-shot Appearing size is discarded by auto-fit from the second frame on and the clamp
+    // never binds. Height stays 0 so it still auto-fits its content.
+    if (ImGui::IsPopupOpen("Limited Data Available"))
+    {
+        const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
+        const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
+        ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
     }
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
@@ -129,7 +139,13 @@ void ElevationNoticeLayer::renderDialog()
                                               "Some per-process data may be unavailable.";
 #endif
 
+        // Wrapped to the window, because the width above is now a real constraint rather than a
+        // suggestion: on a narrow window the clamp can leave less content width than the longest
+        // line needs, and unwrapped text is simply clipped. The explicit blank lines in bodyText
+        // still separate the paragraphs; wrapping only reflows within them.
+        ImGui::PushTextWrapPos(0.0F);
         ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
+        ImGui::PopTextWrapPos();
 
         ImGui::Spacing();
         ImGui::Spacing();
