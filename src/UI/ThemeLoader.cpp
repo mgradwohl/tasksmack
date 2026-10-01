@@ -63,10 +63,12 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     // Use string_view's data() directly - no need to create a string copy
     const char* hexData = hex.data();
 
-    // Parse RGB components
-    auto [ptr1, ec1] = std::from_chars(hexData, hexData + 2, r, 16);
-    auto [ptr2, ec2] = std::from_chars(hexData + 2, hexData + 4, g, 16);
-    auto [ptr3, ec3] = std::from_chars(hexData + 4, hexData + 6, b, 16);
+    // Parse RGB components. Only the error code is needed: binding the returned pointer too left
+    // three unused locals (CodeQL cpp/unused-local-variable), and a structured binding cannot mark
+    // one element unused on its own.
+    const auto ec1 = std::from_chars(hexData, hexData + 2, r, 16).ec;
+    const auto ec2 = std::from_chars(hexData + 2, hexData + 4, g, 16).ec;
+    const auto ec3 = std::from_chars(hexData + 4, hexData + 6, b, 16).ec;
 
     if (ec1 != std::errc{} || ec2 != std::errc{} || ec3 != std::errc{})
     {
@@ -77,7 +79,7 @@ auto ThemeLoader::hexToImVec4(std::string_view hex) -> ImVec4
     // Parse alpha if present (8-digit hex)
     if (hex.size() == 8)
     {
-        auto [ptrA, ecA] = std::from_chars(hexData + 6, hexData + 8, a, 16);
+        const auto ecA = std::from_chars(hexData + 6, hexData + 8, a, 16).ec;
         if (ecA != std::errc{})
         {
             spdlog::warn("Invalid hex color alpha: {}", hex);

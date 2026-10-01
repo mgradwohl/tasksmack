@@ -8,6 +8,7 @@
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "CgroupFreezerPath.h"
 #include "NetlinkSocketStats.h"
 #endif
 
@@ -31,6 +32,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -87,6 +89,7 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
+using CgroupPath::buildContainedCgroupPath;
 using ProcParsing::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
@@ -834,17 +837,25 @@ std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesyst
                     // Skip if cgroupSubPath is empty or doesn't start with /
                     if (!cgroupSubPath.empty() && cgroupSubPath[0] == '/')
                     {
-                        const std::filesystem::path freezePathV1 =
-                            std::filesystem::path("/sys/fs/cgroup/freezer") / cgroupSubPath.substr(1) / "freezer.state";
-                        const std::string freezePathStr = freezePathV1.string();
-                        std::array<char, 16> freezeStateBuf{};
-                        const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
-                        if (freezeLen > 0)
+                        // cgroupSubPath came out of /proc/<pid>/cgroup, so it is untrusted input to
+                        // a file-access function (CodeQL cpp/path-injection). Validate containment
+                        // before opening anything: a ".." component would escape the freezer
+                        // hierarchy and make the FROZEN/FREEZING prefix test below a content oracle
+                        // for arbitrary readable files.
+                        const std::optional<std::filesystem::path> freezePathV1 = buildContainedCgroupPath(
+                            std::filesystem::path("/sys/fs/cgroup/freezer"), cgroupSubPath.substr(1), "freezer.state");
+                        if (freezePathV1.has_value())
                         {
-                            const std::string_view state(freezeStateBuf.data(), freezeLen);
-                            if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
+                            const std::string freezePathStr = freezePathV1->string();
+                            std::array<char, 16> freezeStateBuf{};
+                            const std::size_t freezeLen = readProcFile(freezePathStr.c_str(), freezeStateBuf.data(), freezeStateBuf.size());
+                            if (freezeLen > 0)
                             {
-                                return "Suspended";
+                                const std::string_view state(freezeStateBuf.data(), freezeLen);
+                                if (state.starts_with("FROZEN") || state.starts_with("FREEZING"))
+                                {
+                                    return "Suspended";
+                                }
                             }
                         }
                     }
