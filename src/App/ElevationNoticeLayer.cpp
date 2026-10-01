@@ -1,5 +1,6 @@
 #include "ElevationNoticeLayer.h"
 
+#include "App/DialogGeometry.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -17,13 +18,6 @@
 
 namespace App
 {
-
-// Dialog geometry in ems, so it tracks the Font Size setting and the display's density rather than
-// being pinned to one of each (#937). Each value reproduces the pixel size it replaces at the
-// reference configuration -- the Medium preset on a 1.0 display scale, where one em is 32/3 px.
-// See UI/DialogMetrics.h.
-constexpr float ELEVATION_WIDTH_EM = 45.0F;       // was 480px
-constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // was 100px
 
 ElevationNoticeLayer* ElevationNoticeLayer::s_Instance = nullptr;
 
