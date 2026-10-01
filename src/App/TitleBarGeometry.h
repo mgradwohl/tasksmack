@@ -64,6 +64,29 @@ enum class ResizeEdge : std::uint8_t
     return std::max(0.0F, titleBarHeightPx * aspect);
 }
 
+/// Font size at which one glyph must be drawn for its ink to come out the same size as a reference
+/// glyph drawn at `referenceSizePx`.
+///
+/// Font Awesome's control glyphs do not all fill their em box: measured from fa-solid-900.ttf,
+/// circle-question and window-maximize span the full 1.000 em of width and gear 0.953 em, but
+/// fa-xmark spans only 0.625 em. Drawn at one shared font size the close button's X therefore comes
+/// out 37% smaller than the icons beside it and reads as a lighter, different control. Rather than
+/// hard-code that ratio -- which would silently go stale if the icon font were replaced or
+/// restyled -- callers measure both glyphs' ink from the baked font and pass the heights here.
+///
+/// @param referenceSizePx  Font size the reference glyph is drawn at.
+/// @param referenceInkPx   Reference glyph's ink height at that size.
+/// @param glyphInkPx       This glyph's ink height at that same size.
+/// @return Font size for this glyph, or referenceSizePx if either measurement is unusable.
+[[nodiscard]] inline auto computeMatchedGlyphSize(const float referenceSizePx, const float referenceInkPx, const float glyphInkPx) -> float
+{
+    if (referenceSizePx <= 0.0F || referenceInkPx <= 0.0F || glyphInkPx <= 0.0F)
+    {
+        return std::max(0.0F, referenceSizePx);
+    }
+    return referenceSizePx * (referenceInkPx / glyphInkPx);
+}
+
 /// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
 /// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
 /// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.

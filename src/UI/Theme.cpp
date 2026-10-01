@@ -625,9 +625,21 @@ void Theme::registerTitleFont(ImFont* font, float sizePx)
     }
 }
 
-void Theme::registerChromeIconFont(ImFont* font)
+void Theme::setTitleBarHeightPx(float heightPx)
+{
+    if (heightPx > 0.0F)
+    {
+        m_TitleBarHeightPx = heightPx;
+    }
+}
+
+void Theme::registerChromeIconFont(ImFont* font, float sizePx)
 {
     m_ChromeIconFont = font;
+    if (sizePx > 0.0F)
+    {
+        m_ChromeIconFontSizePx = sizePx;
+    }
 }
 
 auto Theme::titleFont() const -> ImFont*

@@ -169,6 +169,14 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
     // (ImGuiFreeTypeBuilderFlags_Bitmap below); a fractional size would render it soft.
     constexpr float TITLE_FONT_PT = 18.0F;
     const float titleFontPx = std::round(pointsToPixels(TITLE_FONT_PT));
+
+    // Title bar height in points, so the bar tracks display density without tracking the Font Size
+    // setting. Everything drawn in the bar -- the application icon, the window and app buttons, and
+    // their glyphs -- is derived from this height, so they all scale together with it.
+    constexpr float TITLE_BAR_PT = 24.0F;
+    const float titleBarPx = std::round(pointsToPixels(TITLE_BAR_PT));
+    theme.setTitleBarHeightPx(titleBarPx);
+    spdlog::info("Title bar {}pt -> {}px (title font {}pt -> {}px)", TITLE_BAR_PT, titleBarPx, TITLE_FONT_PT, titleFontPx);
     auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
     if (std::filesystem::exists(titleFontPath))
     {
@@ -195,19 +203,25 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
     // The icon glyphs are otherwise merged into each body font at that font's size, so the controls
     // drawn under the globally pushed Theme::regularFont() grew and shrank with the Font Size
     // setting even once their boxes were fixed -- a 6x difference in rendered glyph area between the
-    // Small and Even Huger presets. Sizing it from the title font keeps the glyphs proportional to
-    // the bar they sit in, and independent of the body font like the rest of the chrome.
+    // Small and Even Huger presets. Sizing it from the bar keeps the glyphs proportional to the bar
+    // they sit in, and independent of the body font like the rest of the chrome.
+    //
+    // The ratio is set against the rest of the bar's contents rather than picked for looks: the
+    // application icon occupies 94% of the bar height and the "TaskSmack" wordmark about 66%, so
+    // controls at the 41% these glyphs previously rendered at read as a different, smaller family of
+    // chrome. 0.55 puts them at roughly the wordmark's cap height with even clearance above and
+    // below, and still well inside the TITLE_BAR_BUTTON_ASPECT-wide button box.
     if (hasIconFont)
     {
         constexpr float CHROME_ICON_RATIO = 0.55F;
-        const float chromeIconPx = std::round(titleFontPx * CHROME_ICON_RATIO);
+        const float chromeIconPx = std::round(titleBarPx * CHROME_ICON_RATIO);
         ImFontConfig chromeConfig;
         chromeConfig.PixelSnapH = true;
         chromeConfig.GlyphMinAdvanceX = chromeIconPx; // keep the controls monospaced
         ImFont* chromeIconFont = imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), chromeIconPx, &chromeConfig, ICON_RANGES);
         if (chromeIconFont != nullptr)
         {
-            theme.registerChromeIconFont(chromeIconFont);
+            theme.registerChromeIconFont(chromeIconFont, chromeIconPx);
             spdlog::info("Loaded chrome icon font at {}px", chromeIconPx);
         }
     }

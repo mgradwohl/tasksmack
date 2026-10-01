@@ -33,11 +33,6 @@
 namespace App
 {
 
-// Vertical breathing room above plus below the title text, as a fraction of the title font size.
-// Expressed relative to the font rather than in pixels so the bar keeps its proportions as display
-// density changes; 0.75 reproduces the bar's previous look at the default density.
-constexpr float TITLE_BAR_PADDING_RATIO = 0.75F;
-
 // How far the icon is inset from the bar's full height, as a fraction of that height.
 constexpr float TITLE_BAR_ICON_INSET_RATIO = 0.06F;
 
@@ -58,8 +53,10 @@ constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
 // including the hit-test bug that a body-font-derived height caused.
 auto TitleBarLayer::height() -> float
 {
-    const float titleFontPx = UI::Theme::get().titleFontSizePx();
-    return computeTitleBarHeight(titleFontPx, titleFontPx * TITLE_BAR_PADDING_RATIO);
+    // Specified in points and converted once against the display scale (see UILayer), so the bar is
+    // a fixed physical size on any display. Read from Theme rather than recomputed so it is valid
+    // outside an ImGui frame, which SDL's hit-test callback needs.
+    return UI::Theme::get().titleBarHeightPx();
 }
 
 namespace
@@ -68,6 +65,49 @@ namespace
 // (computeIsPointInBounds, computeDetectResizeEdge) so they're directly unit-testable
 // without linking this file - see #769. The resize-perf-tracing env-var check below now
 // reuses Core::isEnvFlagEnabled() instead of its own duplicate case-insensitive parser.
+
+// Code points of the title-bar control glyphs, needed to look their ink boxes up in the baked icon
+// font. They must stay in step with the matching ICON_FA_* strings in IconsFontAwesome6.h.
+constexpr ImWchar CHROME_GLYPH_WINDOW_MAXIMIZE = 0xF2D0;
+constexpr ImWchar CHROME_GLYPH_XMARK = 0xF00D;
+
+// Draw one chrome glyph over a title-bar button, sized so its ink matches the window-maximize icon
+// beside it and centred on that ink rather than on its text line box.
+//
+// ImGui::Button centres a label by its line box, which is right only while every glyph sits the
+// same way inside its em box. fa-xmark does not (see computeMatchedGlyphSize), so left as a button
+// label its X comes out both smaller and higher than its neighbours. The baked glyph carries its
+// ink rectangle in X0/Y0..X1/Y1 relative to the text layout position, so both corrections are read
+// from the font itself and neither needs a constant here that a change of icon font would stale.
+//
+// A no-op when the chrome icon font is missing; the caller falls back to a plain button label.
+void drawChromeGlyphMatched(
+    ImFont* font, float chromeIconPx, const char* text, ImWchar codepoint, const ImVec2& rectMin, const ImVec2& rectMax)
+{
+    ImFontBaked* baked = (font != nullptr) ? font->GetFontBaked(chromeIconPx) : nullptr;
+    if (baked == nullptr)
+    {
+        return;
+    }
+    const ImFontGlyph* reference = baked->FindGlyphNoFallback(CHROME_GLYPH_WINDOW_MAXIMIZE);
+    const ImFontGlyph* atBaseSize = baked->FindGlyphNoFallback(codepoint);
+    if (reference == nullptr || atBaseSize == nullptr)
+    {
+        return;
+    }
+
+    const float matchedPx = computeMatchedGlyphSize(chromeIconPx, reference->Y1 - reference->Y0, atBaseSize->Y1 - atBaseSize->Y0);
+    ImFontBaked* matchedBaked = font->GetFontBaked(matchedPx);
+    const ImFontGlyph* glyph = (matchedBaked != nullptr) ? matchedBaked->FindGlyphNoFallback(codepoint) : nullptr;
+    if (glyph == nullptr)
+    {
+        return;
+    }
+
+    const ImVec2 center((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F);
+    const ImVec2 pos(center.x - ((glyph->X0 + glyph->X1) * 0.5F), center.y - ((glyph->Y0 + glyph->Y1) * 0.5F));
+    ImGui::GetWindowDrawList()->AddText(font, matchedPx, pos, ImGui::GetColorU32(ImGuiCol_Text), text);
+}
 
 // Shared resize border thickness — must stay in sync between hit-test and cursor detection.
 constexpr float RESIZE_BORDER_THICKNESS = 8.0F;
@@ -1096,10 +1136,21 @@ void TitleBarLayer::renderTitleBar()
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.closeButtonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.closeButtonActive);
-    if (ImGui::Button(ICON_FA_XMARK "##Close", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    // The X is drawn over an unlabelled button rather than passed as that button's label: fa-xmark
+    // fills much less of its em box than the icons beside it, so it needs both its own font size
+    // and centring on its ink, neither of which a button label can express. The labelled form is
+    // the fallback for when the chrome icon font failed to load.
+    const char* closeLabel = (chromeIcons != nullptr) ? "##Close" : ICON_FA_XMARK "##Close";
+    if (ImGui::Button(closeLabel, ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
     {
         window.requestClose();
     }
+    drawChromeGlyphMatched(chromeIcons,
+                           UI::Theme::get().chromeIconFontSizePx(),
+                           ICON_FA_XMARK,
+                           CHROME_GLYPH_XMARK,
+                           ImGui::GetItemRectMin(),
+                           ImGui::GetItemRectMax());
     ImGui::PopStyleColor(2);
     m_CloseBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
