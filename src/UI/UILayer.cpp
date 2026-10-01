@@ -190,6 +190,28 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
         spdlog::warn("Sixtyfour title font not found at {}", titleFontPath);
     }
 
+    // Chrome icon font: Font Awesome at a fixed size for the title bar's window and app controls.
+    //
+    // The icon glyphs are otherwise merged into each body font at that font's size, so the controls
+    // drawn under the globally pushed Theme::regularFont() grew and shrank with the Font Size
+    // setting even once their boxes were fixed -- a 6x difference in rendered glyph area between the
+    // Small and Even Huger presets. Sizing it from the title font keeps the glyphs proportional to
+    // the bar they sit in, and independent of the body font like the rest of the chrome.
+    if (hasIconFont)
+    {
+        constexpr float CHROME_ICON_RATIO = 0.55F;
+        const float chromeIconPx = std::round(titleFontPx * CHROME_ICON_RATIO);
+        ImFontConfig chromeConfig;
+        chromeConfig.PixelSnapH = true;
+        chromeConfig.GlyphMinAdvanceX = chromeIconPx; // keep the controls monospaced
+        ImFont* chromeIconFont = imguiIO.Fonts->AddFontFromFileTTF(iconFontPath.c_str(), chromeIconPx, &chromeConfig, ICON_RANGES);
+        if (chromeIconFont != nullptr)
+        {
+            theme.registerChromeIconFont(chromeIconFont);
+            spdlog::info("Loaded chrome icon font at {}px", chromeIconPx);
+        }
+    }
+
     spdlog::info("Pre-baked {} fonts into atlas using FreeType", imguiIO.Fonts->Fonts.Size);
 }
 

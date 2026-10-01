@@ -625,6 +625,11 @@ void Theme::registerTitleFont(ImFont* font, float sizePx)
     }
 }
 
+void Theme::registerChromeIconFont(ImFont* font)
+{
+    m_ChromeIconFont = font;
+}
+
 auto Theme::titleFont() const -> ImFont*
 {
     return m_TitleFont;

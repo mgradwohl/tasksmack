@@ -1080,6 +1080,17 @@ void TitleBarLayer::renderTitleBar()
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
 
+    // These controls draw Font Awesome glyphs, which are merged into every body font at that font's
+    // size. Left under the globally pushed body font they grew and shrank with the Font Size setting
+    // inside their now-fixed boxes, so the chrome was only half independent of it. The dedicated
+    // fixed-size icon font keeps them proportional to the bar instead.
+    ImFont* chromeIcons = UI::Theme::get().chromeIconFont();
+    const bool pushedChromeIcons = chromeIcons != nullptr;
+    if (pushedChromeIcons)
+    {
+        ImGui::PushFont(chromeIcons);
+    }
+
     // Close button (hover/active colors from theme)
     float buttonX = rightX - BUTTON_WIDTH;
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
@@ -1142,6 +1153,10 @@ void TitleBarLayer::renderTitleBar()
     }
     m_HelpBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
+    if (pushedChromeIcons)
+    {
+        ImGui::PopFont();
+    }
     ImGui::PopStyleColor(3); // Button colors
     ImGui::PopStyleVar(2);   // Frame padding, item spacing
 
