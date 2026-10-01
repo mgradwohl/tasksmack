@@ -63,10 +63,21 @@ TEST(CgroupFreezerPathTest, RejectsRerootingPaths)
     EXPECT_TRUE(built("/etc/passwd", "freezer.state").empty());
 }
 
-TEST(CgroupFreezerPathTest, RejectsEmptyInputs)
+TEST(CgroupFreezerPathTest, BuildsTheRootCgroupPathForAnEmptyRelativePart)
 {
-    EXPECT_TRUE(built("", "freezer.state").empty());
+    // A process in the freezer hierarchy's root has a cgroup-v1 line of ".../freezer:/", and the
+    // caller strips the leading slash, so the root arrives here as "". Rejecting it would silently
+    // skip /sys/fs/cgroup/freezer/freezer.state and lose Suspended detection for root-cgroup
+    // processes. Verified byte-identical to what the unvalidated construction produced for "".
+    EXPECT_EQ(built(""), "/sys/fs/cgroup/freezer/freezer.state");
+}
+
+TEST(CgroupFreezerPathTest, RejectsAnEmptyLeaf)
+{
+    // Unlike the relative part, an empty leaf has no meaning: it would name the base directory,
+    // and there is no file there to read.
     EXPECT_TRUE(built("user.slice", "").empty());
+    EXPECT_TRUE(built("", "").empty());
 }
 
 TEST(CgroupFreezerPathTest, AcceptsASingleDotComponentWhichNormalisesAway)

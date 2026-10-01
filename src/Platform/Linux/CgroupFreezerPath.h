@@ -21,7 +21,8 @@ namespace Platform::CgroupPath
 }
 
 /// Builds `base / relative / leaf`, returning nullopt unless the result provably stays inside
-/// `base`.
+/// `base`. An empty `relative` means the base itself and yields `base / leaf`; an empty `leaf` is
+/// rejected, since there would be no file to read.
 ///
 /// `relative` originates from /proc/<pid>/cgroup, i.e. it is read out of a file and is therefore
 /// untrusted input to a file-access function (CodeQL cpp/path-injection, alert #2948). A ".."
@@ -42,29 +43,41 @@ namespace Platform::CgroupPath
 [[nodiscard]] inline std::optional<std::filesystem::path>
 buildContainedCgroupPath(const std::filesystem::path& base, std::string_view relative, std::string_view leaf)
 {
-    if (relative.empty() || leaf.empty())
+    if (leaf.empty())
     {
         return std::nullopt;
     }
 
-    const std::filesystem::path relativePath(relative);
-
-    // Must be genuinely relative. Re-rooting ("/etc") or a drive-relative form would otherwise
-    // replace the base entirely when appended.
-    if (relativePath.has_root_directory() || relativePath.has_root_name())
+    // An empty `relative` is legitimate and must not be rejected: a process in the freezer
+    // hierarchy's root has a cgroup-v1 line of ".../freezer:/", and the caller strips that leading
+    // slash, so the root membership arrives here as "". It means the base itself, i.e.
+    // <base>/<leaf> -- byte-identical to what the unvalidated construction this replaced produced
+    // for that input, so root-cgroup detection keeps working.
+    std::filesystem::path candidate = base;
+    if (!relative.empty())
     {
-        return std::nullopt;
-    }
+        const std::filesystem::path relativePath(relative);
 
-    for (const auto& component : relativePath)
-    {
-        if (component == "..")
+        // Must be genuinely relative. Re-rooting ("/etc") or a drive-relative form would otherwise
+        // replace the base entirely when appended.
+        if (relativePath.has_root_directory() || relativePath.has_root_name())
         {
             return std::nullopt;
         }
-    }
 
-    std::filesystem::path candidate = (base / relativePath / leaf).lexically_normal();
+        for (const auto& component : relativePath)
+        {
+            if (component == "..")
+            {
+                return std::nullopt;
+            }
+        }
+
+        candidate /= relativePath;
+    }
+    candidate /= leaf;
+    candidate = candidate.lexically_normal();
+
     if (!isContainedIn(base, candidate))
     {
         return std::nullopt;
