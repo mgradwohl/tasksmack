@@ -9,12 +9,14 @@
 #include "Core/Layer.h"
 #include "Core/VideoBackend.h"
 #include "UI/AssetPath.h"
+#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <filesystem>
@@ -30,6 +32,11 @@ using Detail::findRefreshRateIndex;
 using Detail::FONT_SIZE_OPTIONS;
 using Detail::HISTORY_OPTIONS;
 using Detail::REFRESH_RATE_OPTIONS;
+
+// Action-button floor in ems, so it tracks the Font Size setting and the display's density. It
+// reproduces the pixel value it replaces at the reference configuration -- the Medium preset on a
+// 1.0 display scale, where one em is 32/3 px. See UI/DialogMetrics.h (#921).
+constexpr float SETTINGS_BUTTON_MIN_EM = 9.375F; // was 100px
 
 namespace
 {
@@ -215,7 +222,15 @@ void SettingsLayer::renderSettingsDialog()
     // Center the popup
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowSize(ImVec2(450.0F, 0.0F), ImGuiCond_Appearing);
+    // No explicit width. The former fixed 450px is gone and nothing replaces it: the popup is
+    // ImGuiWindowFlags_AlwaysAutoResize and every column below is measured from the text it has to
+    // hold, so auto-fit already produces exactly the width the content needs at the current font.
+    //
+    // Deliberately not re-expressed as an em multiple. ImGui honours SetNextWindowSize over
+    // AlwaysAutoResize only on frames where the size was genuinely set by the API, so an
+    // ImGuiCond_Appearing width is discarded by auto-fit from the second frame on -- it would be
+    // inert code that merely looked like it was doing something. See #947's review of the same
+    // pattern in ElevationNoticeLayer, where the width is authored and so is reapplied every frame.
 
     const ImGuiWindowFlags popupFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove;
 
@@ -231,14 +246,42 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Theme dropdown
-        constexpr float LABEL_WIDTH = 150.0F;
-        constexpr float COMBO_WIDTH = 250.0F;
+        // Column geometry, measured from the text it has to hold rather than fixed at 150/250px.
+        // Those constants only looked right at one font size: at Small the labels used a fraction of
+        // the 150px column and the 250px combos dwarfed values like "Small" and "250 ms", while at
+        // Even Huger 150px was barely enough for "Metric Refresh Rate" (#921).
+        //
+        // Measuring is better than an em multiple here because these columns hold variable text: it
+        // is self-documenting, it tracks the theme list and option arrays if either gains an entry,
+        // and it absorbs the glyph-metric differences between platforms automatically.
+        const float labelGap = style.ItemSpacing.x * 2.0F;
+        const float widestLabel = std::max({ImGui::CalcTextSize("Theme").x,
+                                            ImGui::CalcTextSize("Font Size").x,
+                                            ImGui::CalcTextSize("Metric Refresh Rate").x,
+                                            ImGui::CalcTextSize("Metric History").x});
+        const float valueColumn = UI::DialogMetrics::computeValueColumnStart(widestLabel, labelGap);
 
+        // What a combo needs beyond its text: ImGui's frame padding either side, plus the arrow
+        // button, which it draws as a square of the frame height.
+        const float comboDecoration = (style.FramePadding.x * 2.0F) + ImGui::GetFrameHeight();
+
+        float widestAppearanceValue = 0.0F;
+        for (const auto& themeEntry : m_Themes)
+        {
+            widestAppearanceValue = std::max(widestAppearanceValue, ImGui::CalcTextSize(themeEntry.name.c_str()).x);
+        }
+        for (const auto& option : FONT_SIZE_OPTIONS)
+        {
+            widestAppearanceValue =
+                std::max(widestAppearanceValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        const float appearanceComboWidth = widestAppearanceValue + comboDecoration;
+
+        // Theme dropdown
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Theme");
-        ImGui::SameLine(LABEL_WIDTH);
-        ImGui::SetNextItemWidth(COMBO_WIDTH);
+        ImGui::SameLine(valueColumn);
+        ImGui::SetNextItemWidth(appearanceComboWidth);
 
         if (!m_Themes.empty())
         {
@@ -266,8 +309,8 @@ void SettingsLayer::renderSettingsDialog()
         // Font Size dropdown
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Font Size");
-        ImGui::SameLine(LABEL_WIDTH);
-        ImGui::SetNextItemWidth(COMBO_WIDTH);
+        ImGui::SameLine(valueColumn);
+        ImGui::SetNextItemWidth(appearanceComboWidth);
 
         // NOLINT comments below: label is always initialized from a string literal, so .data() is null-terminated
         const char* currentFontSize =
@@ -297,9 +340,22 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // PERFORMANCE Section
         // ========================================
-        constexpr float PERF_COMBO_WIDTH = 150.0F;
-        // Right-align with Appearance combos: start at LABEL_WIDTH + (COMBO_WIDTH - PERF_COMBO_WIDTH)
-        const float perfLabelWidth = LABEL_WIDTH + (COMBO_WIDTH - PERF_COMBO_WIDTH);
+        // The performance combos hold much shorter values ("250 ms", "5 minutes") than the theme
+        // names above, so they get their own measured width and keep the established look by sharing
+        // the Appearance combos' right edge.
+        float widestPerfValue = 0.0F;
+        for (const auto& option : REFRESH_RATE_OPTIONS)
+        {
+            widestPerfValue =
+                std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        for (const auto& option : HISTORY_OPTIONS)
+        {
+            widestPerfValue =
+                std::max(widestPerfValue, ImGui::CalcTextSize(option.label.data(), option.label.data() + option.label.size()).x);
+        }
+        const float perfComboWidth = widestPerfValue + comboDecoration;
+        const float perfLabelWidth = UI::DialogMetrics::computeRightAlignedStart(valueColumn, appearanceComboWidth, perfComboWidth);
 
         ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_GAUGE_HIGH "  PERFORMANCE");
         ImGui::Separator();
@@ -309,7 +365,7 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Metric Refresh Rate");
         ImGui::SameLine(perfLabelWidth);
-        ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
+        ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentRefresh =
             REFRESH_RATE_OPTIONS[m_SelectedRefreshRateIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
@@ -337,7 +393,7 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::AlignTextToFramePadding();
         ImGui::Text("Metric History");
         ImGui::SameLine(perfLabelWidth);
-        ImGui::SetNextItemWidth(PERF_COMBO_WIDTH);
+        ImGui::SetNextItemWidth(perfComboWidth);
 
         const char* currentHistory =
             HISTORY_OPTIONS[m_SelectedHistoryIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
@@ -408,7 +464,11 @@ void SettingsLayer::renderSettingsDialog()
         // ========================================
         // Buttons
         // ========================================
-        const float buttonWidth = 100.0F;
+        // Floor of 9.375 em is exactly the former fixed 100px at the reference configuration; the
+        // measured term takes over for whichever of the two labels is wider once the font grows.
+        const float buttonWidth = std::max(
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Cancel").x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM),
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, ImGui::GetFontSize(), SETTINGS_BUTTON_MIN_EM));
         const float totalButtonWidth = (buttonWidth * 2.0F) + style.ItemSpacing.x;
         const float availWidth = ImGui::GetContentRegionAvail().x;
 

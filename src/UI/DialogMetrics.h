@@ -77,4 +77,36 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return std::max(forLabel, safeMinEm * safeEm);
 }
 
+/// Left edge of the value column in a dialog laid out as label / control rows.
+///
+/// Measured from the widest label rather than guessed, so the column is exactly as wide as the text
+/// needs at the current font. A fixed column is wrong in both directions: too wide leaves dead space
+/// between short labels and their controls, too narrow lets a long label run into them (#921).
+///
+/// @param widestLabelPx  Widest of the row labels, i.e. max of ImGui::CalcTextSize(label).x.
+/// @param gapPx          Space between the label column and the controls.
+[[nodiscard]] inline float computeValueColumnStart(float widestLabelPx, float gapPx) noexcept
+{
+    const float safeLabel = (std::isfinite(widestLabelPx) && widestLabelPx > 0.0F) ? widestLabelPx : 0.0F;
+    const float safeGap = (std::isfinite(gapPx) && gapPx > 0.0F) ? gapPx : 0.0F;
+    return safeLabel + safeGap;
+}
+
+/// Start offset for a narrower control that must share a right edge with a wider one above it.
+///
+/// Clamped so it can never start left of the value column: if the narrower control were ever the
+/// wider of the two -- a longer translation, or an option list that grew -- the naive offset goes
+/// negative relative to the column and the control is drawn over the labels.
+///
+/// @param valueColumnStartPx  Left edge of the value column, from computeValueColumnStart().
+/// @param wideWidthPx         Width of the control defining the shared right edge.
+/// @param narrowWidthPx       Width of the control being aligned to it.
+[[nodiscard]] inline float computeRightAlignedStart(float valueColumnStartPx, float wideWidthPx, float narrowWidthPx) noexcept
+{
+    const float safeColumn = (std::isfinite(valueColumnStartPx) && valueColumnStartPx > 0.0F) ? valueColumnStartPx : 0.0F;
+    const float safeWide = (std::isfinite(wideWidthPx) && wideWidthPx > 0.0F) ? wideWidthPx : 0.0F;
+    const float safeNarrow = (std::isfinite(narrowWidthPx) && narrowWidthPx > 0.0F) ? narrowWidthPx : 0.0F;
+    return safeColumn + std::max(0.0F, safeWide - safeNarrow);
+}
+
 } // namespace UI::DialogMetrics

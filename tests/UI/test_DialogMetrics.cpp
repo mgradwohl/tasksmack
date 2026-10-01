@@ -70,5 +70,33 @@ TEST(DialogMetricsTest, MetricsSurviveDegenerateInputs)
     EXPECT_GT(computeActionButtonWidth(0.0F, REFERENCE_EM, 11.25F), 0.0F);
 }
 
+TEST(DialogMetricsTest, ValueColumnStartsAfterTheWidestLabel)
+{
+    EXPECT_FLOAT_EQ(computeValueColumnStart(120.0F, 16.0F), 136.0F);
+}
+
+TEST(DialogMetricsTest, ValueColumnToleratesAnUnmeasuredLabel)
+{
+    // CalcTextSize returns zero before a font is pushed; a negative column start would be handed to
+    // ImGui::SameLine().
+    EXPECT_GE(computeValueColumnStart(0.0F, 16.0F), 0.0F);
+    EXPECT_GE(computeValueColumnStart(-5.0F, -5.0F), 0.0F);
+}
+
+TEST(DialogMetricsTest, NarrowControlSharesTheRightEdgeOfTheWiderOne)
+{
+    // Settings' performance combos are narrower than its appearance combos and must end flush with
+    // them: column 150, wide 250, narrow 150 -> start at 250, so both finish at 400.
+    EXPECT_FLOAT_EQ(computeRightAlignedStart(150.0F, 250.0F, 150.0F), 250.0F);
+}
+
+TEST(DialogMetricsTest, RightAlignedStartNeverRunsBackOverTheLabels)
+{
+    // If the "narrow" control ever became the wider of the two -- a longer translation, or an option
+    // list that grew -- the naive offset goes left of the value column and draws over the labels.
+    EXPECT_FLOAT_EQ(computeRightAlignedStart(150.0F, 150.0F, 250.0F), 150.0F);
+    EXPECT_GE(computeRightAlignedStart(150.0F, 100.0F, 400.0F), 150.0F);
+}
+
 } // namespace
 } // namespace UI::DialogMetrics
