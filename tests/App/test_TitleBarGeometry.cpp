@@ -919,35 +919,6 @@ TEST(ComputeDetectResizeEdgeTest, ThicknessBoundaryIsExclusiveNearFarEdge)
 
 // ========== Title bar chrome sizing (#936: chrome scales with density, not the body font) ==========
 
-TEST(TitleBarGeometryTest, HeightIsFontSizePlusPadding)
-{
-    EXPECT_FLOAT_EQ(computeTitleBarHeight(24.0F, 18.0F), 42.0F);
-}
-
-TEST(TitleBarGeometryTest, HeightScalesWithDisplayDensityViaTheFontSize)
-{
-    // The caller passes an already-DPI-derived font size, so a 2x display doubles the bar.
-    const float atOneX = computeTitleBarHeight(24.0F, 24.0F * 0.75F);
-    const float atTwoX = computeTitleBarHeight(48.0F, 48.0F * 0.75F);
-    EXPECT_FLOAT_EQ(atTwoX, atOneX * 2.0F);
-}
-
-TEST(TitleBarGeometryTest, HeightIsNeverBelowTheFontItself)
-{
-    // A zero or negative padding must not produce a bar too short to draw the title in.
-    EXPECT_GE(computeTitleBarHeight(24.0F, 0.0F), 24.0F);
-    EXPECT_GE(computeTitleBarHeight(24.0F, -50.0F), 24.0F);
-}
-
-TEST(TitleBarGeometryTest, HeightSurvivesADegenerateFontSize)
-{
-    // Guards the case that motivated this: the height is queried from SDL's hit-test callback,
-    // outside any ImGui frame. It must never return zero there, or the whole window becomes a
-    // resize edge and dragging breaks.
-    EXPECT_GT(computeTitleBarHeight(0.0F, 0.0F), 0.0F);
-    EXPECT_GT(computeTitleBarHeight(-10.0F, -10.0F), 0.0F);
-}
-
 TEST(TitleBarGeometryTest, IconIsInsetFromTheBarHeight)
 {
     EXPECT_FLOAT_EQ(computeTitleBarIconSize(40.0F, 4.0F), 36.0F);

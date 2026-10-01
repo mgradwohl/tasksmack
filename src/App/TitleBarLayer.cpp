@@ -48,9 +48,9 @@ constexpr float TITLE_BAR_TITLE_GAP_RATIO = 0.29F;
 // Gap separating the window controls from the app buttons, as a fraction of the bar height.
 constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
 
-// The title bar is chrome and is sized from the title font and display density only -- never from
-// the application's Font Size setting. See computeTitleBarHeight() in TitleBarGeometry.h for why,
-// including the hit-test bug that a body-font-derived height caused.
+// The title bar is chrome and is sized from display density only -- never from the application's
+// Font Size setting. See the note at the top of TitleBarGeometry.h for why, including the hit-test
+// bug that a body-font-derived height caused.
 auto TitleBarLayer::height() -> float
 {
     // Specified in points and converted once against the display scale (see UILayer), so the bar is
@@ -68,15 +68,20 @@ namespace
 
 // Code points of the title-bar control glyphs, needed to look their ink boxes up in the baked icon
 // font. They must stay in step with the matching ICON_FA_* strings in IconsFontAwesome6.h.
-constexpr ImWchar CHROME_GLYPH_WINDOW_MAXIMIZE = 0xF2D0;
+constexpr ImWchar CHROME_GLYPH_WINDOW_MINIMIZE = 0xF2D1;
 constexpr ImWchar CHROME_GLYPH_XMARK = 0xF00D;
 
-// Draw one chrome glyph over a title-bar button, sized so its ink matches the window-maximize icon
-// beside it and centred on that ink rather than on its text line box.
+// Draw one chrome glyph over a title-bar button, sized so its ink matches the control glyphs beside
+// it and centred on that ink rather than on its text line box.
+//
+// window-minimize is the reference because it is the one control glyph the bar always shows at the
+// same size: it spans the full em of ink width, as window-maximize, window-restore and
+// circle-question do, and unlike the maximize button it never swaps glyph with the window state.
+// See computeMatchedGlyphSize() for why the match is made on width rather than height.
 //
 // ImGui::Button centres a label by its line box, which is right only while every glyph sits the
-// same way inside its em box. fa-xmark does not (see computeMatchedGlyphSize), so left as a button
-// label its X comes out both smaller and higher than its neighbours. The baked glyph carries its
+// same way inside its em box. fa-xmark does not, so left as a button label its X comes out both
+// smaller and higher than its neighbours. The baked glyph carries its
 // ink rectangle in X0/Y0..X1/Y1 relative to the text layout position, so both corrections are read
 // from the font itself and neither needs a constant here that a change of icon font would stale.
 //
@@ -89,14 +94,14 @@ void drawChromeGlyphMatched(
     {
         return;
     }
-    const ImFontGlyph* reference = baked->FindGlyphNoFallback(CHROME_GLYPH_WINDOW_MAXIMIZE);
+    const ImFontGlyph* reference = baked->FindGlyphNoFallback(CHROME_GLYPH_WINDOW_MINIMIZE);
     const ImFontGlyph* atBaseSize = baked->FindGlyphNoFallback(codepoint);
     if (reference == nullptr || atBaseSize == nullptr)
     {
         return;
     }
 
-    const float matchedPx = computeMatchedGlyphSize(chromeIconPx, reference->Y1 - reference->Y0, atBaseSize->Y1 - atBaseSize->Y0);
+    const float matchedPx = computeMatchedGlyphSize(chromeIconPx, reference->X1 - reference->X0, atBaseSize->X1 - atBaseSize->X0);
     ImFontBaked* matchedBaked = font->GetFontBaked(matchedPx);
     const ImFontGlyph* glyph = (matchedBaked != nullptr) ? matchedBaked->FindGlyphNoFallback(codepoint) : nullptr;
     if (glyph == nullptr)

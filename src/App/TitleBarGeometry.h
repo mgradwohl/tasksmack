@@ -23,28 +23,22 @@ enum class ResizeEdge : std::uint8_t
     BottomRight,
 };
 
-/// Height of the custom title bar, in pixels.
-///
-/// Deliberately independent of the application's Font Size setting. The title bar is chrome, not
-/// content: its label is drawn in the fixed Sixtyfour display font, and its icon and window buttons
-/// are sized from this height, so tying it to the body font made the icon and buttons balloon when
-/// the user picked a larger font -- which is not how a window frame behaves on either platform.
-///
-/// Being font-independent also fixes a latent bug rather than only a cosmetic one. SDL calls
-/// hitTestCallback() outside any ImGui frame, and that callback needs this height to decide what is
-/// a drag region and what is a resize edge. A body-font-derived height queried there returned a
-/// 6px title bar (ImGui::GetFontSize() is 0 with no font pushed), so drag and resize hit-testing was
-/// computed against nonsense. Nothing here touches ImGui state, so it is valid at any time.
-///
-/// @param titleFontPx  Pixel size the title font was rasterized at (already DPI-derived).
-/// @param paddingPx    Total vertical padding above plus below the title text.
-/// @return Height in pixels, never below the font size itself.
-[[nodiscard]] inline auto computeTitleBarHeight(const float titleFontPx, const float paddingPx) -> float
-{
-    const float safeFont = (titleFontPx > 0.0F) ? titleFontPx : 1.0F;
-    const float safePadding = (paddingPx > 0.0F) ? paddingPx : 0.0F;
-    return safeFont + safePadding;
-}
+// The title bar's height is not computed here. It is specified in points in UILayer, converted once
+// against the display scale and stored on Theme (see Theme::titleBarHeightPx), for two reasons.
+//
+// It must be independent of the application's Font Size setting: the title bar is chrome, not
+// content, its label is drawn in the fixed Sixtyfour display font, and its icon and window buttons
+// are sized from this height, so tying it to the body font made the icon and buttons balloon when
+// the user picked a larger font -- which is not how a window frame behaves on either platform.
+//
+// It must also be answerable outside an ImGui frame, which fixes a latent bug rather than only a
+// cosmetic one. SDL calls hitTestCallback() with no frame in flight, and that callback needs this
+// height to decide what is a drag region and what is a resize edge. A body-font-derived height
+// queried there returned a 6px title bar (ImGui::GetFontSize() is 0 with no font pushed), so drag
+// and resize hit-testing was computed against nonsense.
+//
+// Everything below takes that height as a parameter and touches no ImGui state, so it is valid at
+// any time.
 
 /// Size of the square application icon drawn at the left of the title bar.
 ///
@@ -67,12 +61,18 @@ enum class ResizeEdge : std::uint8_t
 /// Font size at which one glyph must be drawn for its ink to come out the same size as a reference
 /// glyph drawn at `referenceSizePx`.
 ///
-/// Font Awesome's control glyphs do not all fill their em box: measured from fa-solid-900.ttf,
-/// circle-question and window-maximize span the full 1.000 em of width and gear 0.953 em, but
-/// fa-xmark spans only 0.625 em. Drawn at one shared font size the close button's X therefore comes
-/// out 37% smaller than the icons beside it and reads as a lighter, different control. Rather than
-/// hard-code that ratio -- which would silently go stale if the icon font were replaced or
-/// restyled -- callers measure both glyphs' ink from the baked font and pass the heights here.
+/// Font Awesome's control glyphs do not all fill their em box. Measured from fa-solid-900.ttf, every
+/// one of window-minimize, window-maximize, window-restore and circle-question spans the full
+/// 1.000 em of ink width, and gear 0.953 em, but fa-xmark spans only 0.625 em. Drawn at one shared
+/// font size the close button's X therefore comes out 37% smaller than the icons beside it and reads
+/// as a lighter, different control. Rather than hard-code that ratio -- which would silently go
+/// stale if the icon font were replaced or restyled -- callers measure both glyphs' ink from the
+/// baked font and pass the measurements here.
+///
+/// Match on ink *width*, not height: the heights disagree between glyphs that are equally wide
+/// (window-maximize is 0.875 em tall against window-restore's 1.000 em), and the maximize button
+/// swaps between those two with the window state, so a height reference taken from it would resize
+/// the close button every time the window is maximized.
 ///
 /// @param referenceSizePx  Font size the reference glyph is drawn at.
 /// @param referenceInkPx   Reference glyph's ink height at that size.

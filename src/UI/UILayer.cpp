@@ -185,7 +185,7 @@ void UILayer::loadAllFonts(const std::filesystem::path& assetsDir)
         ImFont* titleFont = imguiIO.Fonts->AddFontFromFileTTF(titleFontPath.c_str(), titleFontPx, &titleConfig);
         if (titleFont != nullptr)
         {
-            theme.registerTitleFont(titleFont, titleFontPx);
+            theme.registerTitleFont(titleFont);
             spdlog::info("Loaded Sixtyfour title font at {}pt -> {}px", TITLE_FONT_PT, titleFontPx);
         }
         else

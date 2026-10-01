@@ -307,12 +307,8 @@ class Theme
     /// Register pre-baked fonts (called by UILayer during initialization)
     void registerFonts(FontSize size, ImFont* regular, ImFont* large, ImFont* monospace);
 
-    /// Register the title font (called by UILayer during initialization)
-    /// Register the title-bar display font along with the pixel size it was rasterized at.
-    ///
-    /// The size is stored because TitleBarLayer::height() must be answerable outside an ImGui frame
-    /// (SDL's hit-test callback needs it), where ImGui::GetFontSize() is unavailable.
-    void registerTitleFont(ImFont* font, float sizePx);
+    /// Register the title-bar display font (called by UILayer during initialization).
+    void registerTitleFont(ImFont* font);
 
     /// Register the fixed-size icon font used for the title bar's window and app controls.
     ///
@@ -343,12 +339,6 @@ class Theme
         return m_TitleBarHeightPx;
     }
 
-    /// Pixel size the title font was rasterized at. Valid outside an ImGui frame.
-    [[nodiscard]] auto titleFontSizePx() const -> float
-    {
-        return m_TitleFontSizePx;
-    }
-
   private:
     Theme();
     ~Theme() = default;
@@ -373,9 +363,6 @@ class Theme
     ImFont* m_ChromeIconFont = nullptr; // Fixed-size Font Awesome for title-bar controls
     // Pixel size m_ChromeIconFont was rasterized at; overwritten by registerChromeIconFont().
     float m_ChromeIconFontSizePx = 18.0F;
-    // Pixel size m_TitleFont was rasterized at. Defaults to a sane value so title-bar geometry is
-    // usable before fonts load; overwritten by registerTitleFont().
-    float m_TitleFontSizePx = 24.0F;
     // Title bar height in pixels. Defaults to 24pt at a 1.0 display scale so geometry is usable
     // before fonts load; overwritten by setTitleBarHeightPx().
     float m_TitleBarHeightPx = 32.0F;
