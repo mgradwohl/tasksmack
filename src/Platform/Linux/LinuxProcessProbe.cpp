@@ -4,11 +4,11 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "CgroupFreezerPath.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/PlatformConfig.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
-#include "CgroupFreezerPath.h"
 #include "NetlinkSocketStats.h"
 #endif
 
