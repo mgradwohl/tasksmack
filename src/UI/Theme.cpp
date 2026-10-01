@@ -452,6 +452,16 @@ void Theme::applyImGuiStyle() const
     style.FramePadding = ImVec2(4.0F * scale, 3.0F * scale);
     style.ItemSpacing = ImVec2(8.0F * scale, 4.0F * scale);
     style.ItemInnerSpacing = ImVec2(4.0F * scale, 4.0F * scale);
+    // Authored here rather than left at ImGui's default, which is this same ImVec2(4, 2) -- so the
+    // look is unchanged at the reference configuration, but the value now scales. It is the one
+    // style field this application reads without authoring, and it is the second most read of them
+    // all: thirteen sites depend on it, and not for cosmetics but for layout arithmetic. ChartGrid
+    // subtracts rows*CellPadding.y*2 from the available height to decide whether a scrollbar is
+    // needed (#823), CpuCoresSection and StorageSection fold it into their cell-height floors, and
+    // ProcessDetailsPanel sizes columns by it. Several of those cache their result keyed on
+    // CellPadding.y changing, so they already assume it tracks the style -- leaving it unscaled
+    // while ItemSpacing beside it scaled would have made that assumption quietly wrong.
+    style.CellPadding = ImVec2(4.0F * scale, 2.0F * scale);
     style.IndentSpacing = 20.0F * scale;
     style.ScrollbarSize = 14.0F * scale;
     style.GrabMinSize = 10.0F * scale;
