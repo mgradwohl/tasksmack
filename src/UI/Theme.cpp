@@ -7,6 +7,7 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <string_view>
@@ -290,12 +291,20 @@ void Theme::setTheme(std::size_t index)
     spdlog::debug("Theme change queued: index={}", index);
 }
 
-auto Theme::applyPendingTheme() -> bool
+auto Theme::applyPendingStyleChanges() -> bool
 {
     if (!m_PendingThemeIndex.has_value())
     {
+        // A font-size or display-scale change still needs the style rebuilt, just without the
+        // theme-changed signal.
+        if (m_StyleDirty)
+        {
+            m_StyleDirty = false;
+            applyImGuiStyle();
+        }
         return false;
     }
+    m_StyleDirty = false;
 
     const std::size_t index = m_PendingThemeIndex.value();
     m_PendingThemeIndex.reset();
@@ -518,20 +527,26 @@ void Theme::setFontSize(FontSize size)
     m_CurrentFontSize = size;
     spdlog::info("Font size changed to: {}", fontConfig().name);
 
-    // Rebuild the style so padding, spacing and scrollbars follow the new font size. Without this
-    // the chrome keeps the previous preset's proportions until the next theme change (#936).
-    applyImGuiStyle();
+    // Queue a style rebuild so padding, spacing and scrollbars follow the new font size; without it
+    // the chrome keeps the previous preset's proportions until the next theme change (#936). Queued
+    // rather than applied because the settings dialog calls this from inside a live frame --
+    // see applyPendingStyleChanges().
+    m_StyleDirty = true;
 }
 
 void Theme::setDisplayScale(float scale)
 {
-    if (scale == m_DisplayScale)
+    // Compared with a tolerance rather than ==: this is a "has the density actually changed" guard
+    // on a value SDL computes in floating point, and an exact comparison is both meaningless at
+    // that precision and flagged by CodeQL.
+    constexpr float SCALE_EPSILON = 1e-4F;
+    if (std::abs(scale - m_DisplayScale) < SCALE_EPSILON)
     {
         return;
     }
     m_DisplayScale = scale;
     spdlog::info("Display scale set to: {:.2f}", scale);
-    applyImGuiStyle();
+    m_StyleDirty = true;
 }
 
 auto Theme::fontConfig() const -> const FontSizeConfig&

@@ -374,7 +374,7 @@ void UILayer::beginFrame()
 {
     // Apply any pending theme change BEFORE starting the ImGui frame
     // This ensures all widgets rendered this frame use the new theme colors
-    Theme::get().applyPendingTheme();
+    Theme::get().applyPendingStyleChanges();
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
