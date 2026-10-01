@@ -4,6 +4,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -16,6 +17,13 @@
 
 namespace App
 {
+
+// Dialog geometry in ems, so it tracks the Font Size setting and the display's density rather than
+// being pinned to one of each (#937). Each value reproduces the pixel size it replaces at the
+// reference configuration -- the Medium preset on a 1.0 display scale, where one em is 32/3 px.
+// See UI/DialogMetrics.h.
+constexpr float ELEVATION_WIDTH_EM = 45.0F;       // was 480px
+constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // was 100px
 
 ElevationNoticeLayer* ElevationNoticeLayer::s_Instance = nullptr;
 
@@ -83,7 +91,12 @@ void ElevationNoticeLayer::renderDialog()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-        ImGui::SetNextWindowSize(ImVec2(480.0F, 0.0F), ImGuiCond_Appearing);
+        // 45 em is exactly the former fixed 480px at the reference configuration, clamped so a
+        // large font on a small window cannot push the dialog off-screen. This modal is the first
+        // thing a user sees when running unelevated and it blocks input until dismissed, so its
+        // proportions matter more than the usual cosmetic case (#937).
+        const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, viewport->WorkSize.x);
+        ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F), ImGuiCond_Appearing);
 
         ImGui::OpenPopup("Limited Data Available");
         m_OpenRequested = false;
@@ -128,8 +141,11 @@ void ElevationNoticeLayer::renderDialog()
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Right-align OK button
-        const float buttonWidth = 100.0F;
+        // Right-align OK button. The floor is 9.375 em, exactly the former fixed 100px at the
+        // reference configuration; the measured-label term only takes over if the label grows wider
+        // than that. A fixed-pixel button is a real interaction cost on a HiDPI display (#937).
+        const float buttonWidth =
+            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM);
         const float availX = ImGui::GetContentRegionAvail().x;
         const float offset = std::max(0.0F, availX - buttonWidth);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
