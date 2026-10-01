@@ -243,6 +243,14 @@ void UILayer::onAttach()
         // Disable ImGui's default INI file - we store layout state in TOML config
         imguiIO.IniFilename = nullptr;
 
+        // Feed the measured display density to Theme before any style is built, so ImGuiStyle
+        // sizes scale with DPI as well as font size (#936). Fonts already use this scale via
+        // pointsToPixels(); the style did not, which is what left all padding fixed at 96 DPI.
+        if (SDL_Window* scaleWindow = Core::Application::get().getWindow().getHandle(); scaleWindow != nullptr)
+        {
+            Theme::get().setDisplayScale(SDL_GetWindowDisplayScale(scaleWindow));
+        }
+
         // Pre-bake fonts for all size presets
         // Locate assets directory once (searches build dir and FHS install paths)
         const auto assetsDir = findAssetsDir();

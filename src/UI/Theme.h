@@ -269,6 +269,16 @@ class Theme
     // ============ Font Size Management ============
 
     /// Get current font size preset
+    /// Display scale from SDL_GetWindowDisplayScale(), 1.0 at 96 DPI. Feeds the ImGuiStyle scale
+    /// factor so chrome tracks display density as well as font size (#936). Set once the window
+    /// exists; re-applies the style so the change takes effect immediately.
+    void setDisplayScale(float scale);
+
+    [[nodiscard]] auto displayScale() const -> float
+    {
+        return m_DisplayScale;
+    }
+
     [[nodiscard]] auto currentFontSize() const -> FontSize
     {
         return m_CurrentFontSize;
@@ -342,6 +352,9 @@ class Theme
     std::optional<std::size_t> m_PendingThemeIndex; // Deferred theme change (applied next frame)
 
     FontSize m_CurrentFontSize = FontSize::Medium;
+
+    // Display density, 1.0 at 96 DPI. Defaults to 1.0 so the style is sane before the window exists.
+    float m_DisplayScale = 1.0F;
     std::array<FontSizeConfig, FONT_SIZE_COUNT> m_FontSizes;
 
     // Pre-baked fonts for each size preset (regular and large variants)
