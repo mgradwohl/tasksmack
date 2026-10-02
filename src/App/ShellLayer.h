@@ -60,9 +60,8 @@ class ShellLayer : public Core::Layer
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
-    std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt on PID change
-    std::int32_t m_CachedLabelPid = -1;  // PID for which m_CachedDetailsTabLabel was built
-    std::uint64_t m_CachedLabelKey = 0;  // ...and its unique key, since a PID can be reused
+    std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt when the name changes
+    std::string m_CachedLabelText;       // The panel's label text m_CachedDetailsTabLabel was built from
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

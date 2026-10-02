@@ -247,7 +247,7 @@ void ProcessDetailsPanel::render(bool* open)
     ImGui::End();
 }
 
-std::string ProcessDetailsPanel::tabLabel() const
+const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !m_CachedSnapshot.name.empty())
     {

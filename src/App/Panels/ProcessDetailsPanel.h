@@ -48,7 +48,9 @@ class ProcessDetailsPanel : public Panel
     void renderContent() override;
 
     /// Get a label for this panel (process name or "Select a process").
-    [[nodiscard]] std::string tabLabel() const;
+    /// Returned by reference so a caller can compare it against a cached copy every frame without
+    /// allocating. The reference is valid until the next updateWithSnapshot() or selection change.
+    [[nodiscard]] const std::string& tabLabel() const;
 
     /// Handle application events (process selection)
     void onEvent(Core::Event& event) override;
