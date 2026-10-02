@@ -11,6 +11,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "UI/ChartWidgets.h"
+#include "UI/DialogMetrics.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -85,15 +86,9 @@ using Detail::getNicePosition;
 using Detail::NICE_MAX;
 using Detail::NICE_MIN;
 using Detail::NICE_RANGE;
-using Detail::PRIORITY_BADGE_ARROW_SIZE;
-using Detail::PRIORITY_BADGE_CORNER_RADIUS;
-using Detail::PRIORITY_BADGE_HEIGHT;
+using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 using Detail::PRIORITY_GRADIENT_SEGMENTS;
-using Detail::PRIORITY_LABEL_PADDING;
-using Detail::PRIORITY_SLIDER_CORNER_RADIUS;
-using Detail::PRIORITY_SLIDER_HEIGHT;
-using Detail::PRIORITY_SLIDER_WIDTH;
-using Detail::PRIORITY_THUMB_OUTLINE_THICKNESS;
+using Detail::PRIORITY_LABEL_PADDING_EM;
 
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Platform::makeProcessActions())
@@ -116,9 +111,10 @@ struct ProcessDetailsPanel::PrioritySliderContext
     float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
     int32_t niceValue = 0;      // Current nice value
     const ImGuiStyle* style = nullptr;
-    ImVec4 priorityHighColor;   // Theme color for high-priority end
-    ImVec4 priorityNormalColor; // Theme color for normal priority
-    ImVec4 priorityLowColor;    // Theme color for low-priority end
+    ImVec4 priorityHighColor;              // Theme color for high-priority end
+    ImVec4 priorityNormalColor;            // Theme color for normal priority
+    ImVec4 priorityLowColor;               // Theme color for low-priority end
+    Detail::PrioritySliderMetrics metrics; // Font-derived pixel geometry for this frame
 };
 
 void ProcessDetailsPanel::updateWithSnapshot(const Domain::ProcessSnapshot* snapshot, std::uint64_t snapshotVersion, float deltaTime)
@@ -2053,8 +2049,14 @@ void ProcessDetailsPanel::renderPrioritySection()
     // ========================================
 
     // Calculate "High" label width for offsetting the slider
+    const float emPx = ImGui::GetFontSize();
+    const float labelPadding = PRIORITY_LABEL_PADDING_EM * emPx;
     const ImVec2 highLabelSize = ImGui::CalcTextSize("High");
-    const float highLabelOffset = highLabelSize.x + PRIORITY_LABEL_PADDING;
+    const float highLabelOffset = highLabelSize.x + labelPadding;
+
+    // The track gets whatever the panel has left once both labels and their padding are placed, so a
+    // large font on a narrow panel shortens the track rather than pushing "Low" out of view.
+    const float availableTrackWidth = ImGui::GetContentRegionAvail().x - highLabelOffset - labelPadding - ImGui::CalcTextSize("Low").x;
 
     // Build context for helper methods
     PrioritySliderContext ctx;
@@ -2065,11 +2067,15 @@ void ProcessDetailsPanel::renderPrioritySection()
     ctx.priorityHighColor = theme.scheme().priorityHighColor;
     ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
     ctx.priorityLowColor = theme.scheme().priorityLowColor;
+    // A panel too narrow to leave any room is not "unconstrained": pass the smallest positive width
+    // so the track falls to its floor instead of its full authored width.
+    ctx.metrics = Detail::computePrioritySliderMetrics(emPx, std::max(availableTrackWidth, 1.0F));
+    const Detail::PrioritySliderMetrics& metrics = ctx.metrics;
 
     // Reserve space for badge above slider (offset by High label width)
     const ImVec2 rowStart = ImGui::GetCursorScreenPos();
     ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
-    ImGui::Dummy(ImVec2(highLabelOffset + PRIORITY_SLIDER_WIDTH, PRIORITY_BADGE_HEIGHT + PRIORITY_BADGE_ARROW_SIZE));
+    ImGui::Dummy(ImVec2(highLabelOffset + metrics.sliderWidth, metrics.badgeHeight + metrics.badgeArrowSize));
 
     // Draw the value badge/callout above the slider position
     drawPriorityBadge(drawList, ctx);
@@ -2077,7 +2083,7 @@ void ProcessDetailsPanel::renderPrioritySection()
     // Draw "High" label (left of slider, vertically centered with slider)
     // Note: 'theme' is already declared in the outer scope
     const float sliderRowY = ImGui::GetCursorPosY();
-    const float labelCenterY = sliderRowY + ((PRIORITY_SLIDER_HEIGHT - highLabelSize.y) * 0.5F);
+    const float labelCenterY = sliderRowY + ((metrics.sliderHeight - highLabelSize.y) * 0.5F);
     ImGui::SetCursorPosY(labelCenterY);
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textError);
     ImGui::TextUnformatted("High");
@@ -2089,7 +2095,7 @@ void ProcessDetailsPanel::renderPrioritySection()
 
     // Draw the gradient slider bar
     ctx.sliderMin = ImGui::GetCursorScreenPos();
-    ctx.sliderMax = ImVec2(ctx.sliderMin.x + PRIORITY_SLIDER_WIDTH, ctx.sliderMin.y + PRIORITY_SLIDER_HEIGHT);
+    ctx.sliderMax = ImVec2(ctx.sliderMin.x + metrics.sliderWidth, ctx.sliderMin.y + metrics.sliderHeight);
     // Store window-local X coordinate for scale label positioning
     ctx.sliderLocalX = ctx.sliderMin.x - ImGui::GetWindowPos().x;
 
@@ -2097,13 +2103,13 @@ void ProcessDetailsPanel::renderPrioritySection()
     drawPriorityGradient(drawList, ctx);
 
     // Draw slider border
-    drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), PRIORITY_SLIDER_CORNER_RADIUS);
+    drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), metrics.sliderCornerRadius);
 
     // Draw slider thumb/handle
     drawPriorityThumb(drawList, ctx);
 
     // Make the slider interactive with an invisible button
-    ImGui::InvisibleButton("##priority_slider", ImVec2(PRIORITY_SLIDER_WIDTH, PRIORITY_SLIDER_HEIGHT));
+    ImGui::InvisibleButton("##priority_slider", ImVec2(metrics.sliderWidth, metrics.sliderHeight));
     handlePrioritySliderInput(ctx);
 
     // Draw "Low" label and "Default" label
@@ -2131,8 +2137,11 @@ void ProcessDetailsPanel::renderPrioritySection()
     const bool canApply = m_PriorityChanged && m_HasSnapshot;
 
     // Right-align the Apply button
-    constexpr float APPLY_BUTTON_WIDTH = 120.0F;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + PRIORITY_SLIDER_WIDTH - APPLY_BUTTON_WIDTH);
+    const float applyButtonWidth =
+        UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM);
+    // The track starts after the "High" label, so the label offset belongs in the sum: without it the
+    // button stopped that far short of the track's right edge.
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, highLabelOffset + metrics.sliderWidth - applyButtonWidth));
 
     // Apply button with success (green) styling
     {
@@ -2144,7 +2153,7 @@ void ProcessDetailsPanel::renderPrioritySection()
         {
             ImGui::BeginDisabled();
         }
-        if (ImGui::Button("Apply", ImVec2(APPLY_BUTTON_WIDTH, 0)))
+        if (ImGui::Button("Apply", ImVec2(applyButtonWidth, 0)))
         {
             auto result = m_ProcessActions->setPriority(m_SelectedPid, m_PriorityNiceValue);
             if (result.success)
@@ -2186,7 +2195,7 @@ void ProcessDetailsPanel::renderPrioritySection()
 
 void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
 {
-    const float badgeX = ctx.cursorStart.x + (ctx.normalizedPos * PRIORITY_SLIDER_WIDTH);
+    const float badgeX = ctx.cursorStart.x + (ctx.normalizedPos * ctx.metrics.sliderWidth);
     const float badgeY = ctx.cursorStart.y;
 
     // Badge text
@@ -2197,36 +2206,36 @@ void ProcessDetailsPanel::drawPriorityBadge(ImDrawList* drawList, const Priority
 
     // Clamp badge position to stay within slider bounds
     const float clampedBadgeX =
-        std::clamp(badgeX, ctx.cursorStart.x + badgeHalfWidth, ctx.cursorStart.x + PRIORITY_SLIDER_WIDTH - badgeHalfWidth);
+        std::clamp(badgeX, ctx.cursorStart.x + badgeHalfWidth, ctx.cursorStart.x + ctx.metrics.sliderWidth - badgeHalfWidth);
 
     // Badge rectangle
     const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
-    const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + PRIORITY_BADGE_HEIGHT);
+    const ImVec2 badgeMax(clampedBadgeX + badgeHalfWidth, badgeY + ctx.metrics.badgeHeight);
 
     // Badge color based on nice value
     const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
 
     // Draw badge rectangle with rounded corners
-    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, PRIORITY_BADGE_CORNER_RADIUS);
+    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, ctx.metrics.badgeCornerRadius);
 
     // Draw arrow pointing down from badge
-    const ImVec2 arrowTip(badgeX, badgeMax.y + PRIORITY_BADGE_ARROW_SIZE);
-    const ImVec2 arrowLeft(badgeX - PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
-    const ImVec2 arrowRight(badgeX + PRIORITY_BADGE_ARROW_SIZE, badgeMax.y);
+    const ImVec2 arrowTip(badgeX, badgeMax.y + ctx.metrics.badgeArrowSize);
+    const ImVec2 arrowLeft(badgeX - ctx.metrics.badgeArrowSize, badgeMax.y);
+    const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
     // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
     const ImU32 badgeTextColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
 
     // Draw badge text using the theme-specified badge text color (white on dark themes, near-black on light)
-    const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((PRIORITY_BADGE_HEIGHT - textSize.y) * 0.5F));
+    const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((ctx.metrics.badgeHeight - textSize.y) * 0.5F));
     drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
 }
 
 void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
 {
     constexpr auto SEGMENTS = static_cast<int>(PRIORITY_GRADIENT_SEGMENTS);
-    const float segmentWidth = PRIORITY_SLIDER_WIDTH / PRIORITY_GRADIENT_SEGMENTS;
+    const float segmentWidth = ctx.metrics.sliderWidth / PRIORITY_GRADIENT_SEGMENTS;
 
     for (int i = 0; i < SEGMENTS; ++i)
     {
@@ -2246,15 +2255,15 @@ void ProcessDetailsPanel::drawPriorityGradient(ImDrawList* drawList, const Prior
 
 void ProcessDetailsPanel::drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx)
 {
-    const float thumbX = ctx.sliderMin.x + (ctx.normalizedPos * PRIORITY_SLIDER_WIDTH);
-    const float thumbRadius = PRIORITY_SLIDER_HEIGHT * 0.6F;
-    const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (PRIORITY_SLIDER_HEIGHT * 0.5F));
+    const float thumbX = ctx.sliderMin.x + (ctx.normalizedPos * ctx.metrics.sliderWidth);
+    const float thumbRadius = ctx.metrics.thumbRadius;
+    const ImVec2 thumbCenter(thumbX, ctx.sliderMin.y + (ctx.metrics.sliderHeight * 0.5F));
 
     // Cache the badge text color as U32 once per call (avoids repeated theme lookup and conversion)
     const ImU32 thumbFillColorU32 = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().priorityBadgeTextColor);
 
     // Thumb outline
-    drawList->AddCircleFilled(thumbCenter, thumbRadius + PRIORITY_THUMB_OUTLINE_THICKNESS, ImGui::GetColorU32(ImGuiCol_Border));
+    drawList->AddCircleFilled(thumbCenter, thumbRadius + ctx.metrics.thumbOutlineThickness, ImGui::GetColorU32(ImGuiCol_Border));
     // Thumb fill: uses the badge text color (white on dark, near-black on light) for matching contrast
     drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
@@ -2265,7 +2274,7 @@ void ProcessDetailsPanel::handlePrioritySliderInput(const PrioritySliderContext&
     if (ImGui::IsItemActive())
     {
         const float mouseX = ImGui::GetIO().MousePos.x;
-        const float relX = std::clamp((mouseX - ctx.sliderMin.x) / PRIORITY_SLIDER_WIDTH, 0.0F, 1.0F);
+        const float relX = std::clamp((mouseX - ctx.sliderMin.x) / ctx.metrics.sliderWidth, 0.0F, 1.0F);
         const int32_t newNice = getNiceFromPosition(relX);
         if (newNice != m_PriorityNiceValue)
         {
@@ -2329,7 +2338,7 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& c
 
     // "Low" label (right of slider, colored blue)
     // Position it after the slider with padding (sliderLocalX + width = right edge)
-    const float lowLabelX = ctx.sliderLocalX + PRIORITY_SLIDER_WIDTH + PRIORITY_LABEL_PADDING;
+    const float lowLabelX = ctx.sliderLocalX + ctx.metrics.sliderWidth + ctx.metrics.labelPadding;
     ImGui::SameLine();
     ImGui::SetCursorPosX(lowLabelX);
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textInfo);
@@ -2338,7 +2347,7 @@ void ProcessDetailsPanel::drawPriorityScaleLabels(const PrioritySliderContext& c
 
     // "Default" label centered below the 0 position on the slider
     // Use getNicePosition(0) for consistency with other position calculations
-    const float defaultX = ctx.sliderLocalX + (getNicePosition(0) * PRIORITY_SLIDER_WIDTH);
+    const float defaultX = ctx.sliderLocalX + (getNicePosition(0) * ctx.metrics.sliderWidth);
     const ImVec2 defaultSize = ImGui::CalcTextSize("Default");
     ImGui::SetCursorPosX(defaultX - (defaultSize.x * 0.5F));
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);

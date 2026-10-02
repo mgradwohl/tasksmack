@@ -1,7 +1,11 @@
+#include "App/DialogGeometry.h"
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
 #include "Domain/PriorityConfig.h"
 
 #include <gtest/gtest.h>
+
+#include <cmath>
+#include <limits>
 
 namespace App::Detail
 {
@@ -19,12 +23,105 @@ TEST(PriorityHelpersTest, ConstantsAreValid)
     EXPECT_EQ(NICE_MAX, 19);
     EXPECT_EQ(NICE_RANGE, 39);
 
-    // Verify slider dimensions are positive
-    EXPECT_GT(PRIORITY_SLIDER_WIDTH, 0.0F);
-    EXPECT_GT(PRIORITY_SLIDER_HEIGHT, 0.0F);
-    EXPECT_GT(PRIORITY_BADGE_HEIGHT, 0.0F);
-    EXPECT_GT(PRIORITY_BADGE_ARROW_SIZE, 0.0F);
+    // The gradient segment count is a count, not a size, and stays a plain constant
     EXPECT_GT(PRIORITY_GRADIENT_SEGMENTS, 0.0F);
+}
+
+// =============================================================================
+// Slider Geometry Tests (#938)
+// =============================================================================
+
+// The em multiples were derived from the pixel sizes they replaced, so at the reference em the
+// slider must reproduce those sizes exactly. Asserting the header's own constants (not literals
+// restated here) is what catches a call-site constant being changed and the control restyling.
+TEST(PriorityHelpersTest, SliderMetricsReproduceOriginalPixelsAtReferenceEm)
+{
+    const PrioritySliderMetrics m = computePrioritySliderMetrics(App::REFERENCE_EM_PX, 0.0F);
+
+    EXPECT_FLOAT_EQ(m.sliderWidth, 400.0F);
+    EXPECT_FLOAT_EQ(m.sliderHeight, 12.0F);
+    EXPECT_FLOAT_EQ(m.badgeHeight, 24.0F);
+    EXPECT_FLOAT_EQ(m.badgeArrowSize, 8.0F);
+    EXPECT_FLOAT_EQ(m.sliderCornerRadius, 2.0F);
+    EXPECT_FLOAT_EQ(m.badgeCornerRadius, 4.0F);
+    EXPECT_FLOAT_EQ(m.thumbOutlineThickness, 2.0F);
+    EXPECT_FLOAT_EQ(m.labelPadding, 8.0F);
+    EXPECT_FLOAT_EQ(m.thumbRadius, 12.0F * 0.6F);
+    EXPECT_FLOAT_EQ(PRIORITY_APPLY_BUTTON_MIN_EM * App::REFERENCE_EM_PX, 120.0F);
+}
+
+TEST(PriorityHelpersTest, SliderMetricsScaleLinearlyWithEm)
+{
+    const PrioritySliderMetrics base = computePrioritySliderMetrics(App::REFERENCE_EM_PX, 0.0F);
+    const PrioritySliderMetrics doubled = computePrioritySliderMetrics(App::REFERENCE_EM_PX * 2.0F, 0.0F);
+
+    EXPECT_FLOAT_EQ(doubled.sliderWidth, base.sliderWidth * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.sliderHeight, base.sliderHeight * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.badgeHeight, base.badgeHeight * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.badgeArrowSize, base.badgeArrowSize * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.sliderCornerRadius, base.sliderCornerRadius * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.badgeCornerRadius, base.badgeCornerRadius * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.thumbRadius, base.thumbRadius * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.thumbOutlineThickness, base.thumbOutlineThickness * 2.0F);
+    EXPECT_FLOAT_EQ(doubled.labelPadding, base.labelPadding * 2.0F);
+}
+
+// The defect in #938: a 24px badge around text that grows with the font. The text is one em tall,
+// so the badge must clear it at every em, including ones far outside the preset range.
+TEST(PriorityHelpersTest, BadgeAlwaysTallerThanItsText)
+{
+    for (const float em : {4.0F, 8.0F, App::REFERENCE_EM_PX, 21.4F, 48.0F, 96.0F})
+    {
+        const PrioritySliderMetrics m = computePrioritySliderMetrics(em, 0.0F);
+        EXPECT_GT(m.badgeHeight, em) << "em=" << em;
+    }
+}
+
+TEST(PriorityHelpersTest, SliderWidthIsCappedToAvailableSpace)
+{
+    const float em = 24.0F; // authored width would be 900px
+    const PrioritySliderMetrics m = computePrioritySliderMetrics(em, 500.0F);
+    EXPECT_FLOAT_EQ(m.sliderWidth, 500.0F);
+}
+
+TEST(PriorityHelpersTest, SliderWidthIsNotStretchedToAvailableSpace)
+{
+    const PrioritySliderMetrics m = computePrioritySliderMetrics(App::REFERENCE_EM_PX, 2000.0F);
+    EXPECT_FLOAT_EQ(m.sliderWidth, 400.0F);
+}
+
+TEST(PriorityHelpersTest, SliderWidthFloorWinsOverAvailableSpace)
+{
+    const float em = 24.0F;
+    const PrioritySliderMetrics m = computePrioritySliderMetrics(em, 1.0F);
+    EXPECT_FLOAT_EQ(m.sliderWidth, PRIORITY_SLIDER_MIN_WIDTH_EM * em);
+}
+
+TEST(PriorityHelpersTest, SliderWidthUnconstrainedWhenAvailableIsNotUsable)
+{
+    const float authored = PRIORITY_SLIDER_WIDTH_EM * 24.0F;
+    EXPECT_FLOAT_EQ(computePrioritySliderMetrics(24.0F, 0.0F).sliderWidth, authored);
+    EXPECT_FLOAT_EQ(computePrioritySliderMetrics(24.0F, -50.0F).sliderWidth, authored);
+    EXPECT_FLOAT_EQ(computePrioritySliderMetrics(24.0F, std::numeric_limits<float>::quiet_NaN()).sliderWidth, authored);
+    EXPECT_FLOAT_EQ(computePrioritySliderMetrics(24.0F, std::numeric_limits<float>::infinity()).sliderWidth, authored);
+}
+
+TEST(PriorityHelpersTest, ThumbOutlineNeverThinnerThanOnePixel)
+{
+    const PrioritySliderMetrics m = computePrioritySliderMetrics(2.0F, 0.0F);
+    EXPECT_FLOAT_EQ(m.thumbOutlineThickness, PRIORITY_THUMB_OUTLINE_MIN_PX);
+}
+
+TEST(PriorityHelpersTest, SliderMetricsSurviveDegenerateEm)
+{
+    for (const float em : {0.0F, -8.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        const PrioritySliderMetrics m = computePrioritySliderMetrics(em, 300.0F);
+        EXPECT_TRUE(std::isfinite(m.sliderWidth));
+        EXPECT_GT(m.sliderWidth, 0.0F);
+        EXPECT_GT(m.sliderHeight, 0.0F);
+        EXPECT_GT(m.badgeHeight, 0.0F);
+    }
 }
 
 // =============================================================================
