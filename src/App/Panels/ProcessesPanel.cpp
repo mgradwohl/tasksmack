@@ -915,12 +915,20 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
     int colIdx = 0;
     for (const ProcessColumn col : allProcessColumns())
     {
-        if (!ImGui::TableSetColumnIndex(colIdx))
+        const bool columnVisible = ImGui::TableSetColumnIndex(colIdx);
+        ++colIdx;
+
+        // The PID column anchors the row's selectable, so it is entered even when it is not
+        // visible. TableSetColumnIndex() returns false for a column scrolled out of view as well
+        // as for a hidden one, and skipping PID on that basis skipped the only item that makes the
+        // row clickable: with the table scrolled right, rows could not be selected and the
+        // selected row lost its highlight (#962). The selectable spans all columns and is drawn
+        // and hit-tested against the whole table, not this cell, so it works from a clipped
+        // column; PID cannot be hidden (canHide is false), so it is never a disabled one.
+        if (!columnVisible && col != ProcessColumn::PID)
         {
-            ++colIdx;
             continue; // Column is hidden or clipped
         }
-        ++colIdx;
 
         // PID column: selectable row anchor and right-aligned PID text. The tree indent and
         // expand/collapse control deliberately do NOT live here -- see the comment below and #906.
@@ -952,6 +960,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
                 // Emit process selection event for other panels to react
                 Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
                 Core::Application::get().raiseEvent(event);
+            }
+            if (!columnVisible)
+            {
+                continue; // Scrolled out of view: the row stays selectable, the PID text is not drawn
             }
             ImGui::SameLine(0.0F, 0.0F);
             // Keep PID text right-aligned in its column in both list and tree modes.

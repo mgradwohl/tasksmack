@@ -21,6 +21,7 @@
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/TabContent.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -377,9 +378,13 @@ void SystemMetricsPanel::renderContent()
 
     if (ImGui::BeginTabBar("SystemTabs"))
     {
+        // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
         if (ImGui::BeginTabItem(ICON_FA_GAUGE_HIGH "  Overview"))
         {
-            renderOverview();
+            {
+                const UI::Widgets::TabContentScope content("##OverviewContent");
+                renderOverview();
+            }
             ImGui::EndTabItem();
         }
 
@@ -396,7 +401,10 @@ void SystemMetricsPanel::renderContent()
                     .refreshInterval = m_RefreshInterval,
                     .smoothedPerCore = &m_SmoothedPerCore,
                 };
-                CpuCoresSection::renderCpuCoresSection(cpuCtx);
+                {
+                    const UI::Widgets::TabContentScope content("##CpuCoresContent");
+                    CpuCoresSection::renderCpuCoresSection(cpuCtx);
+                }
                 ImGui::EndTabItem();
             }
         }
@@ -415,7 +423,10 @@ void SystemMetricsPanel::renderContent()
                     .refreshInterval = m_RefreshInterval,
                     .smoothedGPUs = &m_SmoothedGPUs,
                 };
-                GpuSection::renderGpuSection(gpuCtx);
+                {
+                    const UI::Widgets::TabContentScope content("##GpuContent");
+                    GpuSection::renderGpuSection(gpuCtx);
+                }
                 ImGui::EndTabItem();
             }
         }
@@ -442,7 +453,10 @@ void SystemMetricsPanel::renderContent()
                     .smoothedNetInitialized = &m_SmoothedNetwork.initialized,
                     .selectedNetworkInterface = &m_SelectedNetworkInterface,
                 };
-                NetworkSection::renderNetworkSection(netCtx);
+                {
+                    const UI::Widgets::TabContentScope content("##NetworkContent");
+                    NetworkSection::renderNetworkSection(netCtx);
+                }
                 ImGui::EndTabItem();
             }
         }

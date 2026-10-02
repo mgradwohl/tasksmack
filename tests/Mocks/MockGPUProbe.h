@@ -82,9 +82,9 @@ class MockGPUProbe : public Platform::IGPUProbe
 {
   public:
     // Builder pattern methods for fluent API
-    MockGPUProbe& withGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test")
+    MockGPUProbe& withGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test", bool isIntegrated = false)
     {
-        m_GPUInfo.push_back(makeGPUInfo(id, name, vendor));
+        m_GPUInfo.push_back(makeGPUInfo(id, name, vendor, isIntegrated));
         m_Counters.push_back(makeGPUCounters(id));
         return *this;
     }
